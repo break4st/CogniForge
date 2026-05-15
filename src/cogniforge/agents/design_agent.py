@@ -49,7 +49,7 @@ class DesignAgent(BaseAgent):
                 doc_type=DocumentType.LLD,
                 title=title,
                 content=content,
-                path=f"wiki/lld/{module}/{doc_id}.md",
+                path=f".cogniforge/wiki/lld/{module}/{doc_id}.md",
                 author="design_agent",
                 metadata={"module": module}
             )

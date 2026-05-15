@@ -53,7 +53,7 @@ class ReviewAgent(BaseAgent):
                 doc_type=DocumentType.REPORT,
                 title=f"Code Review Report - {module}",
                 content=content,
-                path=f"wiki/reports/{doc_id}.md",
+                path=f".cogniforge/wiki/reports/{doc_id}.md",
                 author="review_agent",
                 metadata={"module": module, "passed": all_passed, "files": files}
             )

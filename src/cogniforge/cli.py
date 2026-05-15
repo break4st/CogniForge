@@ -108,7 +108,7 @@ def init(ctx: Context, prd: str):
 
     # 确保wiki结构
     for subdir in ["prd", "sad", "lld", "decisions", "tasks", "qa", "reports", "ops"]:
-        (ctx.config.repo_path / "wiki" / subdir).mkdir(parents=True, exist_ok=True)
+        (ctx.config.repo_path / ".cogniforge" / "wiki" / subdir).mkdir(parents=True, exist_ok=True)
     (ctx.config.repo_path / "src").mkdir(parents=True, exist_ok=True)
     (ctx.config.repo_path / "tests").mkdir(parents=True, exist_ok=True)
 

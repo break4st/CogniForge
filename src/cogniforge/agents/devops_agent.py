@@ -57,7 +57,7 @@ class DevOpsAgent(BaseAgent):
                 doc_type=DocumentType.DEPLOY,
                 title=f"Deployment Configuration - {module}",
                 content=content,
-                path="wiki/ops/deploy.md",
+                path=".cogniforge/wiki/ops/deploy.md",
                 author="devops_agent",
                 metadata={"module": module, "environment": environment}
             )
@@ -137,7 +137,7 @@ class DevOpsAgent(BaseAgent):
                 doc_type=DocumentType.REPORT,
                 title=f"Deployment Report - {module}",
                 content=content,
-                path=f"wiki/reports/{doc_id}.md",
+                path=f".cogniforge/wiki/reports/{doc_id}.md",
                 author="devops_agent",
                 metadata={"module": module, "environment": environment, "status": "deployed"}
             )
@@ -180,7 +180,7 @@ class DevOpsAgent(BaseAgent):
                 doc_type=DocumentType.REPORT,
                 title=f"Rollback Report - {module}",
                 content=content,
-                path=f"wiki/reports/{doc_id}.md",
+                path=f".cogniforge/wiki/reports/{doc_id}.md",
                 author="devops_agent",
                 metadata={"module": module, "environment": environment, "status": "rolled_back"}
             )

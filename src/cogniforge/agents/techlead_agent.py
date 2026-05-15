@@ -116,7 +116,7 @@ class TechLeadAgent(BaseAgent):
                 doc_type=DocumentType.REPORT,
                 title=f"Quality Report - {step}",
                 content=content,
-                path=f"wiki/reports/{doc_id}.md",
+                path=f".cogniforge/wiki/reports/{doc_id}.md",
                 author="techlead_agent",
                 metadata={"step": step, "passed": all_passed}
             )

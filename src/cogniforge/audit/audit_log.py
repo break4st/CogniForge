@@ -76,7 +76,7 @@ class AuditLog:
     def __init__(self, config: Config):
         self.config = config
         self.entries: list[AuditEntry] = []
-        self._audit_dir = config.repo_path / "wiki" / "reports" / "audit"
+        self._audit_dir = config.repo_path / ".cogniforge" / "wiki" / "reports" / "audit"
         self._ensure_audit_dir()
 
     def _ensure_audit_dir(self) -> None:

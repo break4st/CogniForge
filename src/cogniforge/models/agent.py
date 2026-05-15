@@ -36,7 +36,7 @@ AGENT_DEFINITIONS: dict[AgentRole, AgentDefinition] = {
         ],
         input_docs=[],
         output_docs=["prd"],
-        allowed_modify=["wiki/prd/"],
+        allowed_modify=[".cogniforge/wiki/prd/"],
     ),
     AgentRole.ARCHITECT: AgentDefinition(
         role=AgentRole.ARCHITECT,
@@ -49,7 +49,7 @@ AGENT_DEFINITIONS: dict[AgentRole, AgentDefinition] = {
         ],
         input_docs=["prd"],
         output_docs=["sad", "adr"],
-        allowed_modify=["wiki/sad/", "wiki/decisions/"],
+        allowed_modify=[".cogniforge/wiki/sad/", ".cogniforge/wiki/decisions/"],
     ),
     AgentRole.DESIGN: AgentDefinition(
         role=AgentRole.DESIGN,
@@ -62,7 +62,7 @@ AGENT_DEFINITIONS: dict[AgentRole, AgentDefinition] = {
         ],
         input_docs=["prd", "sad"],
         output_docs=["lld"],
-        allowed_modify=["wiki/lld/"],
+        allowed_modify=[".cogniforge/wiki/lld/"],
     ),
     AgentRole.TECHLEAD: AgentDefinition(
         role=AgentRole.TECHLEAD,
@@ -77,7 +77,7 @@ AGENT_DEFINITIONS: dict[AgentRole, AgentDefinition] = {
         ],
         input_docs=["prd", "sad", "lld", "tasks"],
         output_docs=["tasks"],
-        allowed_modify=["wiki/tasks/"],
+        allowed_modify=[".cogniforge/wiki/tasks/"],
     ),
     AgentRole.DEV: AgentDefinition(
         role=AgentRole.DEV,
@@ -103,7 +103,7 @@ AGENT_DEFINITIONS: dict[AgentRole, AgentDefinition] = {
         ],
         input_docs=["code", "lld"],
         output_docs=["report"],
-        allowed_modify=["wiki/reports/"],
+        allowed_modify=[".cogniforge/wiki/reports/"],
     ),
     AgentRole.QA: AgentDefinition(
         role=AgentRole.QA,
@@ -116,7 +116,7 @@ AGENT_DEFINITIONS: dict[AgentRole, AgentDefinition] = {
         ],
         input_docs=["lld", "tasks"],
         output_docs=["test_case", "report"],
-        allowed_modify=["wiki/qa/", "wiki/reports/"],
+        allowed_modify=[".cogniforge/wiki/qa/", ".cogniforge/wiki/reports/"],
     ),
     AgentRole.DEVOPS: AgentDefinition(
         role=AgentRole.DEVOPS,
@@ -129,7 +129,7 @@ AGENT_DEFINITIONS: dict[AgentRole, AgentDefinition] = {
         ],
         input_docs=["sad", "lld"],
         output_docs=["deploy"],
-        allowed_modify=["wiki/ops/", "infra/"],
+        allowed_modify=[".cogniforge/wiki/ops/", "infra/"],
     ),
 }
 

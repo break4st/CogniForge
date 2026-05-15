@@ -63,14 +63,14 @@ DAG_STEPS = [
 
 # Wiki directory structure
 WIKI_STRUCTURE = {
-    DocumentType.PRD: "wiki/prd",
-    DocumentType.SAD: "wiki/sad",
-    DocumentType.LLD: "wiki/lld",
-    DocumentType.ADR: "wiki/decisions",
-    DocumentType.TASK: "wiki/tasks",
-    DocumentType.TEST_CASE: "wiki/qa",
-    DocumentType.REPORT: "wiki/reports",
-    DocumentType.DEPLOY: "wiki/ops",
+    DocumentType.PRD: ".cogniforge/wiki/prd",
+    DocumentType.SAD: ".cogniforge/wiki/sad",
+    DocumentType.LLD: ".cogniforge/wiki/lld",
+    DocumentType.ADR: ".cogniforge/wiki/decisions",
+    DocumentType.TASK: ".cogniforge/wiki/tasks",
+    DocumentType.TEST_CASE: ".cogniforge/wiki/qa",
+    DocumentType.REPORT: ".cogniforge/wiki/reports",
+    DocumentType.DEPLOY: ".cogniforge/wiki/ops",
 }
 
 # Gate requirements for quality control

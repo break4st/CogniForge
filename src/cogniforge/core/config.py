@@ -10,26 +10,26 @@ class Config(BaseModel):
 
     # Repository paths
     repo_path: Path = Field(default_factory=Path.cwd)
-    wiki_path: Path = Field(default=Path("wiki"))
+    wiki_path: Path = Field(default=Path(".cogniforge/wiki"))
     src_path: Path = Field(default=Path("src"))
 
     # Context loading
     context_global_patterns: list[str] = Field(
         default=[
-            "wiki/prd/*.md",
-            "wiki/sad/*.md",
-            "wiki/decisions/*.md",
+            ".cogniforge/wiki/prd/*.md",
+            ".cogniforge/wiki/sad/*.md",
+            ".cogniforge/wiki/decisions/*.md",
         ]
     )
     context_module_patterns: list[str] = Field(
         default=[
-            "wiki/lld/{module}/*.md",
+            ".cogniforge/wiki/lld/{module}/*.md",
             "src/{module}/*.py",
         ]
     )
     context_task_patterns: list[str] = Field(
         default=[
-            "wiki/tasks/{task_id}.md",
+            ".cogniforge/wiki/tasks/{task_id}.md",
         ]
     )
 

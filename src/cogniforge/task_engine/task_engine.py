@@ -30,7 +30,7 @@ class TaskEngine:
 
     def _load_tasks(self) -> None:
         """Load existing tasks from wiki/tasks/"""
-        tasks_dir = self.config.repo_path / "wiki/tasks"
+        tasks_dir = self.config.repo_path / ".cogniforge/wiki/tasks"
         if not tasks_dir.exists():
             return
 
@@ -99,7 +99,7 @@ class TaskEngine:
 
     def _save_task(self, task: Task, commit_message: str) -> None:
         """Save task to wiki and commit"""
-        task_path = Path(f"wiki/tasks/{task.task_id}.md")
+        task_path = Path(f".cogniforge/wiki/tasks/{task.task_id}.md")
         full_path = self.config.repo_path / task_path
 
         full_path.parent.mkdir(parents=True, exist_ok=True)

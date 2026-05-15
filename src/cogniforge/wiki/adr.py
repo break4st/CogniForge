@@ -43,7 +43,7 @@ class ADRManager:
             doc_type=DocumentType.ADR,
             title=f"ADR-{adr_id}: {title}",
             content=content,
-            path=f"wiki/decisions/ADR-{adr_id}.md",
+            path=f".cogniforge/wiki/decisions/ADR-{adr_id}.md",
             author=author
         )
 

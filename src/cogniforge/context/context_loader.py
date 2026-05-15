@@ -65,11 +65,11 @@ class ContextLoader:
         context = {}
 
         # LLD for the module
-        lld_pattern = f"wiki/lld/{module}/*.md"
+        lld_pattern = f".cogniforge/wiki/lld/{module}/*.md"
         context.update(self._load_by_pattern(lld_pattern))
 
         # Also check wiki/lld/{module}.md for single-file LLD
-        single_lld = f"wiki/lld/{module}.md"
+        single_lld = f".cogniforge/wiki/lld/{module}.md"
         if (self.repo_path / single_lld).exists():
             context[single_lld] = self._read_file(single_lld)
 
@@ -85,7 +85,7 @@ class ContextLoader:
         context = {}
 
         # Task definition file
-        task_file = f"wiki/tasks/{task_id}.md"
+        task_file = f".cogniforge/wiki/tasks/{task_id}.md"
         if (self.repo_path / task_file).exists():
             context[task_file] = self._read_file(task_file)
 
@@ -123,19 +123,19 @@ class ContextLoader:
         for doc_type in doc_types:
             # Map doc type to path patterns
             if doc_type == "prd":
-                context.update(self._load_by_pattern("wiki/prd/*.md"))
+                context.update(self._load_by_pattern(".cogniforge/wiki/prd/*.md"))
             elif doc_type == "sad":
-                context.update(self._load_by_pattern("wiki/sad/*.md"))
+                context.update(self._load_by_pattern(".cogniforge/wiki/sad/*.md"))
             elif doc_type == "adr":
-                context.update(self._load_by_pattern("wiki/decisions/*.md"))
+                context.update(self._load_by_pattern(".cogniforge/wiki/decisions/*.md"))
             elif doc_type == "lld":
-                context.update(self._load_by_pattern("wiki/lld/**/*.md"))
+                context.update(self._load_by_pattern(".cogniforge/wiki/lld/**/*.md"))
             elif doc_type == "tasks":
-                context.update(self._load_by_pattern("wiki/tasks/*.md"))
+                context.update(self._load_by_pattern(".cogniforge/wiki/tasks/*.md"))
             elif doc_type == "test_case":
-                context.update(self._load_by_pattern("wiki/qa/*.md"))
+                context.update(self._load_by_pattern(".cogniforge/wiki/qa/*.md"))
             elif doc_type == "report":
-                context.update(self._load_by_pattern("wiki/reports/*.md"))
+                context.update(self._load_by_pattern(".cogniforge/wiki/reports/*.md"))
 
         return context
 

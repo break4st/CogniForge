@@ -57,7 +57,7 @@ class QAAgent(BaseAgent):
                 doc_type=DocumentType.TEST_CASE,
                 title=f"Test Cases - {module}",
                 content=content,
-                path=f"wiki/qa/test_cases.md",
+                path=f".cogniforge/wiki/qa/test_cases.md",
                 author="qa_agent",
                 metadata={"module": module, "count": len(test_cases)}
             )
@@ -181,7 +181,7 @@ class QAAgent(BaseAgent):
                 doc_type=DocumentType.REPORT,
                 title=f"Test Report - {module}",
                 content=content,
-                path=f"wiki/reports/{doc_id}.md",
+                path=f".cogniforge/wiki/reports/{doc_id}.md",
                 author="qa_agent",
                 metadata={"module": module, "passed": test_results.get("passed", False)}
             )

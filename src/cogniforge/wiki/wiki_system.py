@@ -21,14 +21,14 @@ class WikiSystem:
     """
 
     WIKI_STRUCTURE = {
-        DocumentType.PRD: "wiki/prd/{doc_id}.md",
-        DocumentType.SAD: "wiki/sad/{doc_id}.md",
-        DocumentType.LLD: "wiki/lld/{module}/{doc_id}.md",
-        DocumentType.ADR: "wiki/decisions/{doc_id}.md",
-        DocumentType.TASK: "wiki/tasks/{task_id}.md",
-        DocumentType.TEST_CASE: "wiki/qa/test_cases.md",
-        DocumentType.REPORT: "wiki/reports/{doc_id}.md",
-        DocumentType.DEPLOY: "wiki/ops/deploy.md",
+        DocumentType.PRD: ".cogniforge/wiki/prd/{doc_id}.md",
+        DocumentType.SAD: ".cogniforge/wiki/sad/{doc_id}.md",
+        DocumentType.LLD: ".cogniforge/wiki/lld/{module}/{doc_id}.md",
+        DocumentType.ADR: ".cogniforge/wiki/decisions/{doc_id}.md",
+        DocumentType.TASK: ".cogniforge/wiki/tasks/{task_id}.md",
+        DocumentType.TEST_CASE: ".cogniforge/wiki/qa/test_cases.md",
+        DocumentType.REPORT: ".cogniforge/wiki/reports/{doc_id}.md",
+        DocumentType.DEPLOY: ".cogniforge/wiki/ops/deploy.md",
     }
 
     def __init__(self, config: Config, git_storage: GitStorage):
@@ -75,7 +75,7 @@ class WikiSystem:
 
         # For documents that don't use doc_id in path
         if doc_type == DocumentType.TEST_CASE:
-            path = self.repo_path / "wiki/qa/test_cases.md"
+            path = self.repo_path / ".cogniforge/wiki/qa/test_cases.md"
         elif not kwargs:
             path = self.repo_path / path_template.format(**{"doc_id": doc_id or ""})
         else:
@@ -145,9 +145,9 @@ class WikiSystem:
         documents = []
 
         if doc_type == DocumentType.TEST_CASE:
-            pattern = "wiki/qa/*.md"
+            pattern = ".cogniforge/wiki/qa/*.md"
         elif module and doc_type == DocumentType.LLD:
-            pattern = f"wiki/lld/{module}/*.md"
+            pattern = f".cogniforge/wiki/lld/{module}/*.md"
         else:
             dir_path = self.WIKI_STRUCTURE[doc_type].split("/{")[0]
             pattern = f"{dir_path}/*.md"

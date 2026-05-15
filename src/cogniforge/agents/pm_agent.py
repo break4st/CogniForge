@@ -49,7 +49,7 @@ class PMAgent(BaseAgent):
                 doc_type=DocumentType.PRD,
                 title=title,
                 content=content,
-                path=f"wiki/prd/{doc_id}.md",
+                path=f".cogniforge/wiki/prd/{doc_id}.md",
                 author="pm_agent"
             )
 

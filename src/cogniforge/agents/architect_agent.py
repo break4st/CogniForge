@@ -52,7 +52,7 @@ class ArchitectAgent(BaseAgent):
                 doc_type=DocumentType.SAD,
                 title=title,
                 content=content,
-                path=f"wiki/sad/{doc_id}.md",
+                path=f".cogniforge/wiki/sad/{doc_id}.md",
                 author="architect_agent"
             )
 
