@@ -686,5 +686,40 @@ def pending_reviews(ctx: Context, agent_role: str):
         click.echo()
 
 
+@cli.command()
+@pass_context
+def repl(ctx: Context):
+    """Start interactive REPL session (Claude Code style).
+
+    Type natural language at each step — the system interprets your
+    intent, runs the right agent, and guides you through the workflow.
+
+    Built-in commands:
+      /status   Show workflow state
+      /steps    List all DAG steps
+      /skip     Approve + advance current step
+      /help     Show help
+      /quit     Exit REPL
+    """
+    from cogniforge.llm.base import create_llm_adapter, LLMProvider
+    from cogniforge.repl import Repl
+
+    adapter = create_llm_adapter(
+        LLMProvider(ctx.config.llm_provider),
+        config={
+            "repo_path": str(ctx.config.repo_path),
+            "model": ctx.config.llm_model,
+        },
+    )
+
+    repl_runner = Repl(
+        workflow=ctx.workflow,
+        agents=ctx.agents,
+        task_engine=ctx.task_engine,
+        llm=adapter,
+    )
+    repl_runner.run()
+
+
 if __name__ == "__main__":
     cli()
