@@ -19,6 +19,7 @@ PRD → 架构 → 设计 → 代码 → 测试 → 上线 → 复盘
 | **DAG 驱动** | 系统执行必须遵循明确流程图 |
 | **单一职责** | 每个 Agent 只做一件事 |
 | **可审核** | 所有 AI 输出必须可审查、可追溯 |
+| **设计先行** | 先改设计文档，后写代码 |
 
 ## 行为准则
 
@@ -143,12 +144,40 @@ llm_model = "claude-sonnet-4-20250514"
 
 ## Git 提交规范
 
+### 提交格式
+
 ```
-feat: task-xxx 描述
-fix: bug-xxx 描述
-docs: update ADR
+<prefix>: <简短描述>
 ```
+
+**prefix 清单：**
+
+| prefix | 用途 |
+|--------|------|
+| `feat` | 新功能、新能力 |
+| `fix` | Bug 修复 |
+| `docs` | 文档变更（wiki、CLAUDE.md 等） |
+| `refactor` | 代码重构，行为不变 |
+| `test` | 测试相关 |
+| `chore` | 杂项（配置、依赖、构建） |
+
+### 禁止事项
+
+- **禁止 `Co-Authored-By`** — 提交者始终是当前 git user，不加 Co-Authored-By 尾注
+- **禁止提交空内容** — 没有变更则不提交
+- **禁止 `git add -A` / `git add .`** — 按具体文件路径添加，避免扫入敏感文件
+- **禁止提交前不检查 diff** — 每次提交前必须 `git diff --staged` 确认暂存内容
+
+### 提交流程
+
+1. `git status` — 确认变更范围
+2. `git diff` — 审查所有改动
+3. 按文件 `git add <具体路径>` — 精确暂存
+4. `git diff --staged` — 再次确认
+5. `git commit -m "$(cat <<'EOF' ... EOF)"` — 提交
+
+> 提交后检查 `git status` 确认工作区干净。
 
 ## 设计文档
 
-完整设计文档位于 `wiki/docs/DESIGN.md`
+完整设计文档位于 `wiki/docs/DESIGN.html`
