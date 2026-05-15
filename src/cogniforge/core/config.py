@@ -42,6 +42,7 @@ class Config(BaseModel):
     llm_model: str = Field(default="claude-sonnet-4-20250514")
     llm_api_key: str = Field(default="")
     llm_api_base: str = Field(default="")
+    claude_cli_path: str = Field(default="claude")
     codex_cli_path: str = Field(default="codex")
     codex_approval_mode: str = Field(default="never")
     codex_sandbox: str = Field(default="read-only")
@@ -61,6 +62,8 @@ class Config(BaseModel):
             data["llm_provider"] = os.environ.get("LLM_PROVIDER", "claude_code")
         if not data.get("llm_model"):
             data["llm_model"] = os.environ.get("LLM_MODEL", "claude-sonnet-4-20250514")
+        if not data.get("claude_cli_path"):
+            data["claude_cli_path"] = os.environ.get("CLAUDE_CLI_PATH", "claude")
         if not data.get("codex_cli_path"):
             data["codex_cli_path"] = os.environ.get("CODEX_CLI_PATH", "codex")
         if not data.get("codex_approval_mode"):

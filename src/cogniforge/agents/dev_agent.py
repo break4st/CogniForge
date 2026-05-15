@@ -34,6 +34,7 @@ class DevAgent(BaseAgent):
                 "api_key": self.config.llm_api_key,
                 "api_base": self.config.llm_api_base,
                 "repo_path": self.config.repo_path,
+                "claude_cli_path": self.config.claude_cli_path,
                 "codex_cli_path": self.config.codex_cli_path,
                 "approval_mode": self.config.codex_approval_mode,
                 "sandbox": self.config.codex_sandbox,
