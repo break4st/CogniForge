@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CogniForge 设计文档 v1.0</title>
+<title>CogniForge 设计文档 v1.1</title>
 <style>
   /* ═══════════════ Variables ═══════════════ */
   :root {
@@ -465,7 +465,7 @@
 <nav class="sidebar">
   <div class="sidebar-logo">
     <div class="name"><span>CogniForge</span> Design</div>
-    <div class="ver">Version 1.0</div>
+    <div class="ver">Version 1.1</div>
   </div>
   <div class="sidebar-nav">
     <a href="#s1"><span class="num">01</span>系统概述</a>
@@ -477,6 +477,7 @@
     <a href="#s7"><span class="num">07</span>任务系统</a>
     <a href="#s8"><span class="num">08</span>Agent 实现</a>
     <a href="#s9"><span class="num">09</span>执行引擎</a>
+    <a href="#s9-repl" style="padding-left:36px"><span class="num"></span>REPL 交互模式</a>
     <a href="#s10"><span class="num">10</span>审计系统</a>
     <a href="#s11"><span class="num">11</span>Git 持久化</a>
     <a href="#s12"><span class="num">12</span>质量控制</a>
@@ -497,7 +498,7 @@
   <h1>CogniForge <span>设计文档</span></h1>
   <div class="tagline">OpenX Workflow &middot; Document-Driven &middot; Multi-Agent Development System</div>
   <div class="badges">
-    <span class="badge accent">v1.0</span>
+    <span class="badge accent">v1.1</span>
     <span class="badge">System Design</span>
     <span class="badge">17 Chapters</span>
   </div>
@@ -875,6 +876,7 @@ cogniforge <span class="hl-keyword">approve</span>          <span class="hl-comm
 cogniforge <span class="hl-keyword">reject</span>           <span class="hl-comment"># 拒绝 → 返工</span>
 cogniforge <span class="hl-keyword">advance</span>          <span class="hl-comment"># 审批通过后进入下一步</span>
 cogniforge <span class="hl-keyword">wait</span>             <span class="hl-comment"># 阻塞等待人工确认</span>
+cogniforge <span class="hl-keyword">repl</span>             <span class="hl-comment"># 自然语言 REPL 交互（Claude Code 风格）</span>
 cogniforge <span class="hl-keyword">history</span>          <span class="hl-comment"># 完整操作审计追踪</span></code></pre>
 
     <h3>9.3 状态持久化</h3>
@@ -888,6 +890,95 @@ cogniforge <span class="hl-keyword">history</span>          <span class="hl-comm
     <div class="callout good">
       <strong>中断恢复：</strong>进程退出后重新 <code>cogniforge start</code> 自动从上次断点恢复，无需手动干预。
     </div>
+
+    <h3 id="s9-repl">9.4 REPL 交互模式 (v1.1)</h3>
+    <p><code>cogniforge repl</code> 提供 Claude Code / Codex CLI 风格的自然语言 REPL：</p>
+
+    <h4>设计理念</h4>
+    <div class="callout">
+      <strong>LLM 只做一件事：</strong>把自然语言转成 Agent 需要的结构化 JSON。REPL 层极薄，不做复杂 prompt 工程。
+    </div>
+
+    <h4>架构</h4>
+    <pre><code>User 输入自然语言
+    ↓
+REPL 构建 prompt（step_context + user_input）
+    ↓
+LLM 适配器 → 结构化 JSON action
+    ↓
+REPL 执行 action（run_agent | approve | reject | respond）
+    ↓
+显示结果，循环</code></pre>
+
+    <h4>交互示例</h4>
+    <pre><code>$ cogniforge repl
+
+  CogniForge REPL
+  Current step: prd — 审批产品需求文档 (PRD)
+
+  ╭─ PRD (pm agent) ───────────────────────────╮
+  │  Describe: title, overview, requirements...  │
+  │  Type naturally — the system extracts.       │
+  ╰──────────────────────────────────────────────╯
+
+> 创建一个用户认证系统，支持邮箱注册和登录
+
+  ⠇ Interpreting...
+  ⠋ Running pm agent...
+
+  [✓] PRD created: prd-001
+       wiki/prd/prd-001.md
+
+  ╭─ Review: 审批产品需求文档 (PRD) ──────╮
+  │  Choose [approve/reject/retry]: approve
+  ╰──────────────────────────────────────╯
+
+  ✓ Approved: prd
+  → Next: req_review — 审批需求评审
+
+  ╭─ Review: 审批需求评审 ─────────────────╮
+  │  Enter ↵  →  approve & advance         │
+  ╰────────────────────────────────────────╯
+
+> (press Enter to approve)</code></pre>
+
+    <h4>UX 设计要点 (v1.1)</h4>
+    <table>
+      <thead><tr><th>特性</th><th>实现</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>步骤提示</td><td><code>_print_step_hint()</code></td><td>每步显示当前需要输入什么字段，用户知道要描述什么</td></tr>
+        <tr><td>加载动画</td><td><code>Spinner</code> 类</td><td>Braille 字符旋转动画，LLM 解释和 Agent 执行时显示</td></tr>
+        <tr><td>交互菜单</td><td><code>_post_agent_menu()</code></td><td>Agent 执行后用 <code>click.Choice</code> 提供 approve/reject/retry 可选项</td></tr>
+        <tr><td>回车审批</td><td>空输入处理</td><td>评审步骤直接按 Enter = 审批通过</td></tr>
+      </tbody>
+    </table>
+
+    <h4>核心组件</h4>
+    <table>
+      <thead><tr><th>组件</th><th>文件</th><th>职责</th></tr></thead>
+      <tbody>
+        <tr><td><code>Repl</code> 类</td><td><code>repl.py</code></td><td>主循环 + 斜杠命令 + action 执行</td></tr>
+        <tr><td>LLM 适配器</td><td><code>llm/</code></td><td>自然语言 → JSON 转换（claude -p 非交互模式）</td></tr>
+        <tr><td>Schema 映射</td><td><code>repl.py:AGENT_SCHEMAS</code></td><td>每步 Agent 输入字段描述（硬编码，直接简单）</td></tr>
+      </tbody>
+    </table>
+
+    <h4>内置命令（不走 LLM）</h4>
+    <pre><code>/status    查看工作流状态
+/steps     列出所有 DAG 步骤和进度
+/skip      跳过当前步骤（approve + advance 一步完成）
+/clear     重置工作流到初始状态
+/help      显示帮助
+/quit      退出 REPL</code></pre>
+
+    <h4>解析容错</h4>
+    <p>LLM 返回可能带 markdown 代码块标记（<code>```json ... ```</code>），REPL 自动剥离后 parse JSON。解析失败时自动重试一次。</p>
+
+    <h4>断点恢复</h4>
+    <p>REPL 启动时自动检查 <code>.cogniforge/workflow_state.json</code>，若已存在则从当前步骤继续。可在 REPL 和手动命令间自由切换。</p>
+
+    <h4>TEST 分支处理</h4>
+    <p>QA agent 执行后根据 <code>data.passed</code> 判断结果：通过则引导用户选择 UAT 或继续修复，失败则自动进入 FIX 步骤。</p>
   </div>
 </div>
 
@@ -1078,7 +1169,7 @@ cogniforge <span class="hl-keyword">pending_reviews</span>   <span class="hl-com
 </div>
 
 <div class="footer">
-  CogniForge Design Document &middot; Version 1.0 &middot; OpenX + Document-Driven + Multi-Agent
+  CogniForge Design Document &middot; Version 1.1 &middot; OpenX + Document-Driven + Multi-Agent
 </div>
 
 </div>

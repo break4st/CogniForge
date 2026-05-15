@@ -180,4 +180,4 @@ llm_model = "claude-sonnet-4-20250514"
 
 ## 设计文档
 
-完整设计文档位于 `wiki/docs/DESIGN.html`
+完整设计文档位于 `DESIGN.html`
