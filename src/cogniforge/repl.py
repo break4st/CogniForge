@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import itertools
 import json
+import os
 import re
+import select
 import sys
+import termios
 import threading
 import time
+import tty
+from pathlib import Path
 from typing import Optional
 
 import click
@@ -32,7 +37,6 @@ from cogniforge.repl_text import (
     CHOICE_APPROVE,
     CHOICE_REJECT,
     CHOICE_RETRY,
-    CHOICE_PROMPT,
     APPROVE_CONFIRM,
     REJECT_PROMPT,
     REJECT_DEFAULT,
@@ -92,10 +96,21 @@ def _step_label(step: Optional[DAGStep]) -> str:
 
 
 def _display_width(text: str) -> int:
-    """Terminal display width — CJK characters count as 2."""
+    """Terminal display width — East Asian wide characters count as 2."""
     w = 0
     for ch in text:
-        if ord(ch) > 0x2000:  # broad coverage for CJK + full-width
+        cp = ord(ch)
+        if (
+            0x4E00 <= cp <= 0x9FFF    # CJK Unified Ideographs
+            or 0x3400 <= cp <= 0x4DBF  # CJK Extension A
+            or 0x3000 <= cp <= 0x303F  # CJK Symbols & Punctuation
+            or 0xFF01 <= cp <= 0xFF60  # Fullwidth Forms
+            or 0xFFE0 <= cp <= 0xFFE6  # Fullwidth Signs
+            or 0x2E80 <= cp <= 0x2FDF  # CJK Radicals Supplement
+            or 0xFE30 <= cp <= 0xFE4F  # CJK Compatibility Forms
+            or 0xF900 <= cp <= 0xFAFF  # CJK Compatibility Ideographs
+            or 0x20000 <= cp <= 0x2FFFF  # CJK Extension B+
+        ):
             w += 2
         else:
             w += 1
@@ -109,24 +124,109 @@ def _draw_box(top_line: str, lines: list[str], bottom_close: bool = True) -> str
     lines: body lines
     """
     all_lines = [top_line] + lines
-    max_w = max(_display_width(ln) for ln in all_lines)
+    content_w = max(_display_width(ln) for ln in all_lines)
+    # Ensure room for ─ padding around title in top border (needs ≥2 extra cols)
+    max_w = max(content_w, _display_width(top_line) + 2)
 
-    def _pad(ln: str, fill: str = " ") -> str:
-        return ln + fill * (max_w - _display_width(ln))
+    def _pad(ln: str) -> str:
+        return ln + " " * (max_w - _display_width(ln))
 
-    # Top: ╭─ title ───────────╮  (filled with ─ after title)
-    title_dw = _display_width(top_line)
-    # Space before title, space after, then fill with ─
-    fill_w = max_w - title_dw - 2  # 2 = leading space + trailing space
-    if fill_w >= 0:
-        top = f"  ╭─ {top_line} {'─' * fill_w}─╮"
-    else:
-        top = f"  ╭─ {top_line} ─╮"
+    # Top: ╭─ title ───────╮
+    fill_w = max_w - _display_width(top_line) - 2  # always ≥ 0 now
+    top = f"  ╭─ {top_line} {'─' * fill_w}─╮"
 
     body = [f"  │ {_pad(ln)} │" for ln in lines]
     bottom = f"  ╰─{'─' * max_w}─╯" if bottom_close else None
 
     return "\n".join([top] + body + ([bottom] if bottom else []))
+
+
+# ---------------------------------------------------------------------------
+# Arrow-key select menu
+# ---------------------------------------------------------------------------
+
+
+def _read_key() -> str:
+    """Read a single keypress from stdin in raw mode. Returns 'up'/'down'/'enter'/esc/char."""
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        b = os.read(fd, 1)
+        if b == b"\x1b":
+            # Check if more bytes follow (escape sequence)
+            r, _, _ = select.select([sys.stdin], [], [], 0.05)
+            if r:
+                more = os.read(fd, 2)
+                seq = b + more
+                if seq == b"\x1b[A":
+                    return "up"
+                elif seq == b"\x1b[B":
+                    return "down"
+            return "esc"
+        elif b == b"\r" or b == b"\n":
+            return "enter"
+        else:
+            try:
+                return b.decode("utf-8")
+            except UnicodeDecodeError:
+                return ""
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _select(options: list[tuple[str, str]], default: int = 0) -> str:
+    """Arrow-key navigable menu.  Falls back to plain input if no TTY.
+
+    options: [(value, label), ...]
+    default: index of default selection
+    """
+    n = len(options)
+    labels = [label for _val, label in options]
+
+    # Fallback for non-TTY (tests, pipes)
+    if not sys.stdin.isatty():
+        for i, label in enumerate(labels):
+            mark = "→" if i == default else " "
+            click.echo(f"  {mark} {label}")
+        choice = click.prompt(
+            "  输入选项",
+            type=click.Choice([v for v, _ in options]),
+            default=options[default][0],
+            show_choices=False,
+        )
+        return choice.strip()
+
+    idx = default
+
+    def _redraw() -> None:
+        """Clear from cursor and redraw all options, leaving cursor at top line."""
+        sys.stdout.write("\033[J")  # Clear from cursor to end of screen
+        for i, label in enumerate(labels):
+            prefix = "❯" if i == idx else " "
+            sys.stdout.write(f"\r\033[K  {prefix} {label}\n")
+        # Move cursor back to first option
+        sys.stdout.write(f"\033[{n}A")
+        sys.stdout.flush()
+
+    # Initial draw
+    sys.stdout.write("\n")
+    _redraw()
+
+    while True:
+        key = _read_key()
+        if key == "enter":
+            sys.stdout.write(f"\033[{n}B\n")
+            sys.stdout.flush()
+            return options[idx][0]
+        elif key == "up":
+            idx = (idx - 1) % n
+            _redraw()
+        elif key == "down":
+            idx = (idx + 1) % n
+            _redraw()
+        elif key == "esc":
+            return options[idx][0]
 
 
 # ---------------------------------------------------------------------------
@@ -394,7 +494,9 @@ class Repl:
         status_icon = "✓" if result.get("status") == "success" else "✗"
         lines = [f"\n  [{status_icon}] {result.get('message', '')}"]
         for a in result.get("artifacts", []):
-            lines.append(f"       {a}")
+            abs_path = (Path.cwd() / a).resolve()
+            link = f"\033]8;;file://{abs_path}\033\\{a}\033]8;;\033\\"
+            lines.append(f"       {link}")
 
         step = self.workflow.current_step
         if step:
@@ -413,21 +515,14 @@ class Repl:
         """Interactive menu shown after each agent execution."""
         click.echo(_draw_box(
             top_line=step.get_approval_prompt(),
-            lines=[
-                f"[approve] {CHOICE_APPROVE}",
-                f"[reject]  {CHOICE_REJECT}",
-                f"[retry]   {CHOICE_RETRY}",
-            ],
+            lines=["使用 ↑↓ 选择，回车确认"],
             bottom_close=False,
         ))
-        choice = click.prompt(
-            CHOICE_PROMPT,
-            type=click.Choice(["approve", "reject", "retry"]),
-            default="approve",
-            show_choices=False,
-            prompt_suffix=" → ",
-        ).strip()
-        return choice
+        return _select([
+            ("approve", CHOICE_APPROVE),
+            ("reject", CHOICE_REJECT),
+            ("retry", CHOICE_RETRY),
+        ], default=0)
 
     def _exec_approve(self, action: dict) -> str:
         step = self.workflow.current_step

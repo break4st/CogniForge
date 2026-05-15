@@ -109,8 +109,6 @@ SPINNER_RUNNING = "正在运行 {agent} agent"
 CHOICE_APPROVE = "审批通过，进入下一步"
 CHOICE_REJECT = "拒绝，返回修改"
 CHOICE_RETRY = "用新的描述重新生成"
-CHOICE_PROMPT = "  请选择"
-
 APPROVE_CONFIRM = "  确认审批通过？"
 
 REJECT_PROMPT = "  拒绝原因"
