@@ -6,6 +6,7 @@ import itertools
 import json
 import os
 import re
+import readline
 import select
 import sys
 import termios
@@ -63,6 +64,7 @@ from cogniforge.repl_text import (
     STATUS_TASKS,
     PROMPT_REVIEW,
     PROMPT_AGENT,
+    PROMPT_AGENT_PRD,
     PROMPT_RETRY_SUFFIX,
     PARSE_RETRY,
     PARSE_FAIL,
@@ -266,6 +268,22 @@ class Spinner:
 
 
 # ---------------------------------------------------------------------------
+# Multi-line input helper
+# ---------------------------------------------------------------------------
+
+
+def _collect_multiline(prompt: str) -> list[str]:
+    """Collect multiple lines of input until an empty line."""
+    lines: list[str] = []
+    while True:
+        line = input(prompt)
+        if not line.strip():
+            break
+        lines.append(line)
+    return lines
+
+
+# ---------------------------------------------------------------------------
 # REPL
 # ---------------------------------------------------------------------------
 
@@ -285,6 +303,7 @@ class Repl:
         self.task_engine = task_engine
         self.llm = llm
         self._last_printed_step: Optional[str] = None
+        self._last_prd_input: dict = {}  # stored for retry modification
 
     # ---- main loop -------------------------------------------------------
 
@@ -307,7 +326,7 @@ class Repl:
                 step = self.workflow.current_step
                 if step is None:
                     click.echo(WORKFLOW_COMPLETE)
-                    user_input = click.prompt("cogniforge", default="").strip()
+                    user_input = input("cogniforge []: ").strip()
                     if user_input in ("/quit", "/exit", "/q"):
                         break
                     continue
@@ -318,7 +337,7 @@ class Repl:
                     self._print_step_hint(step)
                     self._last_printed_step = step_key
 
-                user_input = click.prompt("cogniforge", default="").strip()
+                user_input = input("cogniforge []: ").strip()
 
                 # Review steps: empty input = approve
                 if not user_input and step and step.value in REVIEW_STEPS:
@@ -350,6 +369,18 @@ class Repl:
                 if action is None:
                     continue
 
+                # PRD step: LLM decides if more info needed, wizard fills gaps
+                if (step and step.value == "prd"
+                        and action.get("action") == "respond"):
+                    try:
+                        seed = action.get("input", {})
+                        click.echo(f"\n  {action.get('message', '需要补充一些信息')}")
+                        result = self._wizard_prd(seed=seed, initial=user_input)
+                        click.echo(result or "")
+                    except (KeyboardInterrupt, EOFError):
+                        click.echo("\n  ⚠ 已取消\n")
+                    continue
+
                 # Execute
                 try:
                     result_text = self._execute(action)
@@ -357,8 +388,153 @@ class Repl:
                 except Exception as exc:
                     click.echo(AGENT_EXEC_ERROR.format(error=exc))
 
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             click.echo(PAUSE_MESSAGE.format(step_label=_step_label(self.workflow.current_step)))
+
+    # ---- card-based PRD wizard -------------------------------------------
+
+    # ANSI color codes for card headers
+    _CARD_COLORS = {
+        "purple": "\033[35m",
+        "blue":   "\033[34m",
+        "cyan":   "\033[36m",
+        "green":  "\033[32m",
+        "amber":  "\033[33m",
+        "reset":  "\033[0m",
+    }
+
+    def _card_header(self, icon: str, title: str, color: str = "blue") -> None:
+        """Draw a colored card header line."""
+        c = self._CARD_COLORS.get(color, self._CARD_COLORS["blue"])
+        width = 52
+        text = f"  {icon}  {title}  "
+        pad = width - _display_width(text)
+        click.echo(f"\n  {c}┌{text}{'─' * max(pad, 0)}┐{self._CARD_COLORS['reset']}")
+
+    def _card_hint(self, text: str) -> None:
+        """Draw a hint line inside the card."""
+        click.echo(f"  │  {text}")
+
+    def _card_prompt(self, prompt: str = "> ") -> str:
+        """Read input inside a card context."""
+        return input(f"  │  {prompt}").strip()
+
+    def _wizard_prd(self, seed: dict | None = None, initial: str = "") -> str | None:
+        """Card-based PRD wizard — only shows cards for missing fields.
+
+        Args:
+            seed: Already-extracted fields from a prior LLM pass.
+            initial: The user's original natural-language input.
+
+        Returns the approval result string, or None if user cancelled.
+        """
+        click.echo()
+        seed = seed or {}
+
+        # What we already have
+        title = seed.get("title", "")
+        overview = seed.get("overview", "")
+        reqs = seed.get("requirements", [])
+        stories = seed.get("user_stories", [])
+        priorities = seed.get("priorities", {})
+
+        # --- Card 1: 项目名称 (only if missing) ---
+        if not title:
+            self._card_header("📋", "项目名称", "purple")
+            self._card_hint("这个项目叫什么名字？")
+            if initial:
+                self._card_hint(f"\033[2m从你的描述中提取: {initial[:60]}...\033[0m")
+            title = input("  > ").strip()
+        if not title:
+            click.echo("  ⚠ 已取消")
+            return None
+
+        # --- Card 2: 项目概述 (only if missing) ---
+        if not overview:
+            self._card_header("📄", "项目概述", "blue")
+            self._card_hint(f"「{title}」要解决什么问题？目标用户是谁？")
+            overview = input("  > ").strip()
+        if not overview:
+            overview = title
+
+        # --- Card 3: 功能需求 (only if missing) ---
+        requirements_text = ""
+        if not reqs:
+            self._card_header("📝", "功能需求", "cyan")
+            self._card_hint("需要哪些核心功能？用自然语言描述。")
+            self._card_hint("（例如：「用户注册 - 支持手机号和邮箱」）")
+            lines = _collect_multiline("  > ")
+            requirements_text = "\n".join(lines) if lines else ""
+
+        # --- Card 4: 用户故事 (only if missing) ---
+        stories_text = ""
+        if not stories:
+            self._card_header("👥", "用户故事", "green")
+            self._card_hint("谁会使用这个系统？他们想做什么？")
+            self._card_hint("（例如：「作为学生，我想要查看成绩单」）")
+            lines = _collect_multiline("  > ")
+            stories_text = "\n".join(lines) if lines else ""
+
+        # --- Card 5: 优先级 (only if missing) ---
+        priorities_text = ""
+        if not priorities:
+            self._card_header("🎯", "优先级", "amber")
+            self._card_hint("哪些功能最重要？按高/中/低标注优先级。")
+            self._card_hint("（直接回车跳过）")
+            priorities_text = input("  > ").strip()
+
+        # --- Build structured input via LLM ---
+        spinner = Spinner(SPINNER_INTERPRETING)
+        spinner.start()
+        try:
+            schema = AGENT_SCHEMAS.get("prd", {})
+            parts = [
+                f"当前工作流步骤: prd",
+                f"要运行的 agent: pm",
+                f"需要的 JSON 字段: {schema.get('fields', '')}",
+                "",
+                f"用户初始描述: {initial}",
+                f"已有字段: title={title!r}, overview={overview!r}",
+                f"已有 requirements: {json.dumps(reqs, ensure_ascii=False)}",
+                f"已有 user_stories: {json.dumps(stories, ensure_ascii=False)}",
+                f"已有 priorities: {json.dumps(priorities, ensure_ascii=False)}",
+            ]
+            if requirements_text:
+                parts.append(f"补充需求描述: {requirements_text}")
+            if stories_text:
+                parts.append(f"补充用户故事: {stories_text}")
+            if priorities_text:
+                parts.append(f"补充优先级: {priorities_text}")
+            parts.extend([
+                "",
+                '返回 JSON: {"action": "run_agent", "agent": "pm", "input": {从以上信息提取}}',
+                "如果信息仍然不足以生成 PRD，返回 run_agent 并尽力填充已有字段。",
+                "只返回合法 JSON。不要 markdown。不要多余文字。",
+            ])
+            prompt = "\n".join(parts)
+            response = self.llm.generate(prompt)
+            raw = response.content if hasattr(response, "content") else str(response)
+            action = json.loads(_extract_json(raw))
+        except Exception:
+            # Fallback: build input directly
+            input_data = {
+                "title": title,
+                "overview": overview,
+                "requirements": reqs or [
+                    {"name": "核心需求", "description": requirements_text or initial,
+                     "acceptance_criteria": []}
+                ],
+                "user_stories": stories or [
+                    {"role": "用户", "action": stories_text or initial, "goal": ""}
+                ],
+                "priorities": priorities or {},
+            }
+            action = {"action": "run_agent", "agent": "pm", "input": input_data}
+        finally:
+            spinner.stop()
+
+        click.echo()
+        return self._execute(action)
 
     # ---- step hints ------------------------------------------------------
 
@@ -433,6 +609,12 @@ class Repl:
 
         if step_value in REVIEW_STEPS:
             prompt = PROMPT_REVIEW.format(step_value=step_value, user_input=user_input)
+        elif step_value == "prd":
+            schema = AGENT_SCHEMAS.get(step_value, {})
+            prompt = PROMPT_AGENT_PRD.format(
+                fields=schema.get("fields", ""),
+                user_input=user_input,
+            )
         else:
             schema = AGENT_SCHEMAS.get(step_value, {})
             prompt = PROMPT_AGENT.format(
@@ -481,6 +663,10 @@ class Repl:
 
         input_data = action.get("input", {})
 
+        # Store PRD input for retry modification
+        if agent_role == "pm":
+            self._last_prd_input = dict(input_data)
+
         if agent_role == "dev" and "task" not in input_data:
             input_data["task"] = self._pick_or_create_task(input_data)
 
@@ -498,18 +684,62 @@ class Repl:
             link = f"\033]8;;file://{abs_path}\033\\{a}\033]8;;\033\\"
             lines.append(f"       {link}")
 
+        # Print artifacts immediately so the user can preview before approving
+        click.echo("\n".join(lines))
+
         step = self.workflow.current_step
         if step:
             action_choice = self._post_agent_menu(step)
             if action_choice == "approve":
-                lines.append(self._exec_approve({"comment": ""}))
+                return self._exec_approve({"comment": ""})
             elif action_choice == "reject":
                 reason = click.prompt(REJECT_PROMPT, default=REJECT_DEFAULT)
-                lines.append(self._exec_reject({"comment": reason}))
+                return self._exec_reject({"comment": reason})
             elif action_choice == "retry":
-                lines.append(f"  {CHOICE_RETRY}")
+                return self._exec_retry_modify(agent_role)
 
-        return "\n".join(lines)
+        return ""
+
+    def _exec_retry_modify(self, agent_role: str) -> str:
+        """Retry with modifications: prompt user, let LLM merge changes, re-run agent."""
+        if agent_role != "pm" or not self._last_prd_input:
+            return f"  {CHOICE_RETRY}"
+
+        click.echo()
+        self._card_header("✏️", "修改内容", "amber")
+        self._card_hint("请描述需要修改的地方，LLM 会基于上一版进行修改。")
+        modifications = input("  > ").strip()
+        if not modifications:
+            return "  ⚠ 未输入修改内容，已取消"
+
+        # LLM merges original input + modification request
+        spinner = Spinner("正在根据你的反馈修改")
+        spinner.start()
+        try:
+            schema = AGENT_SCHEMAS.get("prd", {})
+            prompt = (
+                f"当前工作流步骤: prd\n"
+                f"要运行的 agent: pm\n"
+                f"需要的 JSON 字段: {schema.get('fields', '')}\n\n"
+                f"当前 PRD 数据:\n{json.dumps(self._last_prd_input, ensure_ascii=False, indent=2)}\n\n"
+                f"用户要求做以下修改:\n{modifications}\n\n"
+                f"基于用户的修改要求，返回修改后的完整 PRD 数据。\n"
+                f'返回 JSON: {{"action": "run_agent", "agent": "pm", '
+                f'"input": {{...修改后的完整字段...}} }}\n'
+                f"只返回合法 JSON。不要 markdown。不要多余文字。"
+            )
+            response = self.llm.generate(prompt)
+            raw = response.content if hasattr(response, "content") else str(response)
+            action = json.loads(_extract_json(raw))
+        except Exception:
+            # Fallback: keep original data unchanged
+            action = {"action": "run_agent", "agent": "pm",
+                       "input": self._last_prd_input}
+        finally:
+            spinner.stop()
+
+        # Re-execute: run agent + show links + show menu (recursive call)
+        return self._exec_run_agent(action)
 
     def _post_agent_menu(self, step) -> str:
         """Interactive menu shown after each agent execution."""

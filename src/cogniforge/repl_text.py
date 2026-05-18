@@ -108,7 +108,7 @@ SPINNER_RUNNING = "正在运行 {agent} agent"
 
 CHOICE_APPROVE = "审批通过，进入下一步"
 CHOICE_REJECT = "拒绝，返回修改"
-CHOICE_RETRY = "用新的描述重新生成"
+CHOICE_RETRY = "提出修改意见，在上一版基础上修改"
 APPROVE_CONFIRM = "  确认审批通过？"
 
 REJECT_PROMPT = "  拒绝原因"
@@ -190,7 +190,23 @@ PROMPT_AGENT = (
     '"input": {{...从用户消息中提取字段...}} }}\n'
     '如果用户想审批通过: {{"action": "approve"}}\n'
     '如果用户想拒绝: {{"action": "reject", "comment": "原因"}}\n'
-    '如果信息不足: {{"action": "respond", "message": "追问内容"}}\n\n'
+    '如果信息严重不足无法做任何提取: {{"action": "respond", "message": "追问内容"}}\n\n'
+    '用户说: "{user_input}"\n\n'
+    "只返回合法 JSON。不要 markdown。不要多余文字。"
+)
+
+# PRD step: aggressive extraction — fill what you can, ask only when truly empty
+PROMPT_AGENT_PRD = (
+    "当前工作流步骤: prd\n"
+    "要运行的 agent: pm\n"
+    "需要的 JSON 字段: {fields}\n\n"
+    "从用户消息中提取所有可用的 PRD 信息。尽力填充每个字段，即使信息不完整。\n"
+    "不要反问用户、不要列清单追问。能从用户话里推理出来的就填上。\n\n"
+    '信息充足时返回: {{"action": "run_agent", "agent": "pm", '
+    '"input": {{title, overview, requirements: [{{name, description, acceptance_criteria}}], '
+    'user_stories: [{{role, action, goal}}], priorities}} }}\n'
+    '信息严重不足时（用户消息完全不含项目内容）才返回: '
+    '{{"action": "respond", "message": "请描述一下项目"}}\n\n'
     '用户说: "{user_input}"\n\n'
     "只返回合法 JSON。不要 markdown。不要多余文字。"
 )
