@@ -123,7 +123,7 @@ class ContextLoader:
         for doc_type in doc_types:
             # Map doc type to path patterns
             if doc_type == "prd":
-                context.update(self._load_by_pattern(".cogniforge/wiki/prd/*.md"))
+                context.update(self._load_by_pattern(".cogniforge/wiki/prd/*.html"))
             elif doc_type == "sad":
                 context.update(self._load_by_pattern(".cogniforge/wiki/sad/*.md"))
             elif doc_type == "adr":

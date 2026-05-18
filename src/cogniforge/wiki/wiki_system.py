@@ -21,7 +21,7 @@ class WikiSystem:
     """
 
     WIKI_STRUCTURE = {
-        DocumentType.PRD: ".cogniforge/wiki/prd/{doc_id}.md",
+        DocumentType.PRD: ".cogniforge/wiki/prd/{doc_id}.html",
         DocumentType.SAD: ".cogniforge/wiki/sad/{doc_id}.md",
         DocumentType.LLD: ".cogniforge/wiki/lld/{module}/{doc_id}.md",
         DocumentType.ADR: ".cogniforge/wiki/decisions/{doc_id}.md",
@@ -85,6 +85,15 @@ class WikiSystem:
             return None
 
         content = path.read_text(encoding="utf-8")
+        if path.suffix == ".html":
+            return Document(
+                doc_id=doc_id or path.stem,
+                doc_type=doc_type,
+                title=doc_id or path.stem,
+                content=content,
+                path=str(path.relative_to(self.repo_path)),
+                author="pm_agent",
+            )
         return Document.from_markdown(str(path.relative_to(self.repo_path)), content)
 
     def write_document(
@@ -97,9 +106,11 @@ class WikiSystem:
         doc_path = self.repo_path / doc.path
         doc_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Write content
-        markdown = doc.to_markdown()
-        doc_path.write_text(markdown, encoding="utf-8")
+        # Write content — HTML docs use raw content, markdown goes through to_markdown()
+        if doc_path.suffix == ".html":
+            doc_path.write_text(doc.content, encoding="utf-8")
+        else:
+            doc_path.write_text(doc.to_markdown(), encoding="utf-8")
 
         # Stage in Git
         self.git_storage.repo.index.add([doc.path])
@@ -150,7 +161,8 @@ class WikiSystem:
             pattern = f".cogniforge/wiki/lld/{module}/*.md"
         else:
             dir_path = self.WIKI_STRUCTURE[doc_type].split("/{")[0]
-            pattern = f"{dir_path}/*.md"
+            ext = ".html" if doc_type == DocumentType.PRD else ".md"
+            pattern = f"{dir_path}/*{ext}"
 
         full_pattern = str(self.repo_path / pattern)
 
@@ -158,7 +170,17 @@ class WikiSystem:
             rel_path = str(Path(file_path).relative_to(self.repo_path))
             content = Path(file_path).read_text(encoding="utf-8")
             try:
-                doc = Document.from_markdown(rel_path, content)
+                if Path(file_path).suffix == ".html":
+                    doc = Document(
+                        doc_id=Path(file_path).stem,
+                        doc_type=doc_type,
+                        title=Path(file_path).stem,
+                        content=content,
+                        path=rel_path,
+                        author="pm_agent",
+                    )
+                else:
+                    doc = Document.from_markdown(rel_path, content)
                 documents.append(doc)
             except Exception:
                 # Skip files that can't be parsed
