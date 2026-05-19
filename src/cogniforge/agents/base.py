@@ -1,7 +1,9 @@
 """Base agent - abstract base class for all agents with audit trail"""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Optional, Any
+from typing import Optional, Any, TYPE_CHECKING
 import time
 
 from cogniforge.core.config import Config
@@ -12,6 +14,9 @@ from cogniforge.context.context_loader import ContextLoader
 from cogniforge.wiki.wiki_system import WikiSystem
 from cogniforge.models.document import Document
 from cogniforge.audit.audit_log import AuditLog
+
+if TYPE_CHECKING:
+    from cogniforge.llm.base import BaseLLMAdapter
 
 
 class BaseAgent(ABC):
@@ -32,7 +37,8 @@ class BaseAgent(ABC):
         wiki_system: WikiSystem,
         context_loader: ContextLoader,
         config: Optional[Config] = None,
-        audit_log: Optional[AuditLog] = None
+        audit_log: Optional[AuditLog] = None,
+        agent: Optional["BaseLLMAdapter"] = None,
     ):
         self.role = role
         self.wiki_system = wiki_system
@@ -40,6 +46,7 @@ class BaseAgent(ABC):
         self.config = config or Config()
         self.definition = get_agent_definition(role)
         self.audit_log = audit_log or AuditLog(self.config)
+        self.agent = agent
 
         if not self.definition:
             raise AgentError(f"No definition found for role {role}")
