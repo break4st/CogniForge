@@ -70,10 +70,7 @@ from cogniforge.repl_text import (
     INTERPRET_FAIL,
     AGENT_NO_ROLE,
     AGENT_EXEC_ERROR,
-    SAD_CHOICE_TITLE,
-    SAD_CHOICE_AUTO,
-    SAD_CHOICE_MANUAL,
-    SAD_AUTO_PROMPT,
+    DESIGN_STEP_CHOICES,
 )
 
 # ---------------------------------------------------------------------------
@@ -345,17 +342,18 @@ class Repl:
                     click.echo(self._exec_approve({"comment": ""}))
                     continue
 
-                # SAD step: let user choose between manual description and auto-design
-                if step and step.value == "sad":
+                # Design steps (SAD/LLD): let user choose between manual and auto-design
+                if step and step.value in DESIGN_STEP_CHOICES:
+                    _, label_auto, label_manual, auto_prompt = DESIGN_STEP_CHOICES[step.value]
                     choice = _select(
                         [
-                            ("auto", SAD_CHOICE_AUTO),
-                            ("manual", SAD_CHOICE_MANUAL),
+                            ("auto", label_auto),
+                            ("manual", label_manual),
                         ],
                         default=0,
                     )
                     if choice == "auto":
-                        user_input = SAD_AUTO_PROMPT
+                        user_input = auto_prompt
                     else:
                         click.echo()
                         user_input = input("cogniforge []: ").strip()
@@ -567,10 +565,11 @@ class Repl:
             ))
             return
 
-        # SAD step: choice menu handles input — don't show "请描述" prompt
-        if step.value == "sad":
+        # Design steps (SAD/LLD): choice menu handles input — don't show "请描述"
+        if step.value in DESIGN_STEP_CHOICES:
+            title, _, _, _ = DESIGN_STEP_CHOICES[step.value]
             click.echo(_draw_box(
-                top_line=SAD_CHOICE_TITLE,
+                top_line=title,
                 lines=["使用 ↑↓ 选择，回车确认"],
             ))
             return
