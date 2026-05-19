@@ -70,6 +70,10 @@ from cogniforge.repl_text import (
     INTERPRET_FAIL,
     AGENT_NO_ROLE,
     AGENT_EXEC_ERROR,
+    SAD_CHOICE_TITLE,
+    SAD_CHOICE_AUTO,
+    SAD_CHOICE_MANUAL,
+    SAD_AUTO_PROMPT,
 )
 
 # ---------------------------------------------------------------------------
@@ -341,7 +345,22 @@ class Repl:
                     click.echo(self._exec_approve({"comment": ""}))
                     continue
 
-                user_input = input("cogniforge []: ").strip()
+                # SAD step: let user choose between manual description and auto-design
+                if step and step.value == "sad":
+                    choice = _select(
+                        [
+                            ("auto", SAD_CHOICE_AUTO),
+                            ("manual", SAD_CHOICE_MANUAL),
+                        ],
+                        default=0,
+                    )
+                    if choice == "auto":
+                        user_input = SAD_AUTO_PROMPT
+                    else:
+                        click.echo()
+                        user_input = input("cogniforge []: ").strip()
+                else:
+                    user_input = input("cogniforge []: ").strip()
 
                 if not user_input:
                     continue
@@ -545,6 +564,14 @@ class Repl:
             click.echo(_draw_box(
                 top_line=step.get_approval_prompt(),
                 lines=["回车 ↵ → 审批通过，进入下一步", "Ctrl+C → 拒绝，返回修改"],
+            ))
+            return
+
+        # SAD step: choice menu handles input — don't show "请描述" prompt
+        if step.value == "sad":
+            click.echo(_draw_box(
+                top_line=SAD_CHOICE_TITLE,
+                lines=["使用 ↑↓ 选择，回车确认"],
             ))
             return
 
