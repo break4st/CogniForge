@@ -296,7 +296,7 @@ class Repl:
         workflow: Workflow,
         agents: dict[str, object],
         task_engine: TaskEngine,
-        llm: BaseLLMAdapter,
+        agent: BaseLLMAdapter,
     ) -> None:
         self.workflow = workflow
         self.agents = agents
