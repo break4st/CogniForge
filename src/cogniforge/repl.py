@@ -38,7 +38,6 @@ from cogniforge.repl_text import (
     CHOICE_APPROVE,
     CHOICE_REJECT,
     CHOICE_RETRY,
-    APPROVE_CONFIRM,
     REJECT_PROMPT,
     REJECT_DEFAULT,
     APPROVE_OK,
@@ -337,13 +336,12 @@ class Repl:
                     self._print_step_hint(step)
                     self._last_printed_step = step_key
 
-                user_input = input("cogniforge []: ").strip()
-
-                # Review steps: empty input = approve
-                if not user_input and step and step.value in REVIEW_STEPS:
-                    if click.confirm(APPROVE_CONFIRM, default=True):
-                        click.echo(self._exec_approve({"comment": ""}))
+                # Auto-skip review steps — no user input needed
+                if step and step.value in REVIEW_STEPS:
+                    click.echo(self._exec_approve({"comment": ""}))
                     continue
+
+                user_input = input("cogniforge []: ").strip()
 
                 if not user_input:
                     continue
@@ -764,6 +762,11 @@ class Repl:
 
         self.workflow.approve(comment=action.get("comment", ""), approver="repl_user")
         next_step = self.workflow.advance()
+
+        # Auto-skip review steps — no need for a second confirmation
+        while next_step and next_step.value in REVIEW_STEPS:
+            self.workflow.approve(comment="", approver="repl_user")
+            next_step = self.workflow.advance()
 
         lines = [APPROVE_OK.format(step=step.value)]
         if next_step:
