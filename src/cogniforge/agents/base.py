@@ -39,6 +39,7 @@ class BaseAgent(ABC):
         config: Optional[Config] = None,
         audit_log: Optional[AuditLog] = None,
         agent: Optional["BaseLLMAdapter"] = None,
+        task_engine: Optional[Any] = None,
     ):
         self.role = role
         self.wiki_system = wiki_system
@@ -47,6 +48,7 @@ class BaseAgent(ABC):
         self.definition = get_agent_definition(role)
         self.audit_log = audit_log or AuditLog(self.config)
         self.agent = agent
+        self.task_engine = task_engine
 
         if not self.definition:
             raise AgentError(f"No definition found for role {role}")
