@@ -397,6 +397,8 @@ def agent(ctx: Context, role: str, input_file: str):
         if result.get('artifacts'):
             click.echo(f"产出文件:")
             for artifact in result['artifacts']:
+                if artifact.endswith(".json"):
+                    continue
                 click.echo(f"  - {artifact}")
 
         if result.get('data'):

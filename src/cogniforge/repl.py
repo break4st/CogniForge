@@ -679,7 +679,10 @@ class Repl:
 
         status_icon = "✓" if result.get("status") == "success" else "✗"
         lines = [f"\n  [{status_icon}] {result.get('message', '')}"]
+        # Only show user-facing files (HTML), not internal JSON
         for a in result.get("artifacts", []):
+            if a.endswith(".json"):
+                continue
             abs_path = (Path.cwd() / a).resolve()
             link = f"\033]8;;file://{abs_path}\033\\{a}\033]8;;\033\\"
             lines.append(f"       {link}")
