@@ -12,6 +12,7 @@ from cogniforge.wiki.wiki_system import WikiSystem
 from cogniforge.wiki.adr import ADRManager
 from cogniforge.task_engine.task_engine import TaskEngine
 from cogniforge.task_engine.dag import DAGStep, DAGDefinition, ApprovalStatus
+from cogniforge.llm.base import create_llm_adapter
 from cogniforge.agents.base import BaseAgent
 from cogniforge.agents.pm_agent import PMAgent
 from cogniforge.agents.architect_agent import ArchitectAgent
@@ -59,32 +60,49 @@ def init_context(ctx: Context) -> None:
     ctx.task_engine = TaskEngine(ctx.config, ctx.git_storage)
     ctx.workflow = Workflow(DAGDefinition(), repo_path=ctx.config.repo_path)
 
+    # Initialize LLM adapter (shared by all agents and REPL)
+    from cogniforge.llm.base import LLMProvider
+    agent = create_llm_adapter(
+        LLMProvider(ctx.config.llm_provider),
+        config={
+            "model": ctx.config.llm_model,
+            "repo_path": str(ctx.config.repo_path),
+        },
+    )
+
     # Initialize agents
     ctx.agents = {
         AgentRole.PM.value: PMAgent(
-            AgentRole.PM, ctx.wiki_system, ctx.context_loader, ctx.config
+            AgentRole.PM, ctx.wiki_system, ctx.context_loader, ctx.config,
+            agent=agent,
         ),
         AgentRole.ARCHITECT.value: ArchitectAgent(
-            AgentRole.ARCHITECT, ctx.wiki_system, ctx.context_loader, ctx.config
+            AgentRole.ARCHITECT, ctx.wiki_system, ctx.context_loader, ctx.config,
+            agent=agent,
         ),
         AgentRole.DESIGN.value: DesignAgent(
-            AgentRole.DESIGN, ctx.wiki_system, ctx.context_loader, ctx.config
+            AgentRole.DESIGN, ctx.wiki_system, ctx.context_loader, ctx.config,
+            agent=agent,
         ),
         AgentRole.TECHLEAD.value: TechLeadAgent(
             AgentRole.TECHLEAD, ctx.wiki_system, ctx.context_loader, ctx.config,
-            task_engine=ctx.task_engine
+            task_engine=ctx.task_engine, agent=agent,
         ),
         AgentRole.DEV.value: DevAgent(
-            AgentRole.DEV, ctx.wiki_system, ctx.context_loader, ctx.config
+            AgentRole.DEV, ctx.wiki_system, ctx.context_loader, ctx.config,
+            agent=agent,
         ),
         AgentRole.REVIEWER.value: ReviewAgent(
-            AgentRole.REVIEWER, ctx.wiki_system, ctx.context_loader, ctx.config
+            AgentRole.REVIEWER, ctx.wiki_system, ctx.context_loader, ctx.config,
+            agent=agent,
         ),
         AgentRole.QA.value: QAAgent(
-            AgentRole.QA, ctx.wiki_system, ctx.context_loader, ctx.config
+            AgentRole.QA, ctx.wiki_system, ctx.context_loader, ctx.config,
+            agent=agent,
         ),
         AgentRole.DEVOPS.value: DevOpsAgent(
-            AgentRole.DEVOPS, ctx.wiki_system, ctx.context_loader, ctx.config
+            AgentRole.DEVOPS, ctx.wiki_system, ctx.context_loader, ctx.config,
+            agent=agent,
         ),
     }
 
@@ -716,7 +734,7 @@ def repl(ctx: Context):
         workflow=ctx.workflow,
         agents=ctx.agents,
         task_engine=ctx.task_engine,
-        llm=adapter,
+        agent=adapter,
     )
     repl_runner.run()
 

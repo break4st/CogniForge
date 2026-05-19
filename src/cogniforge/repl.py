@@ -301,7 +301,7 @@ class Repl:
         self.workflow = workflow
         self.agents = agents
         self.task_engine = task_engine
-        self.llm = llm
+        self.agent = agent
         self._last_printed_step: Optional[str] = None
         self._last_prd_input: dict = {}  # stored for retry modification
 
@@ -512,7 +512,7 @@ class Repl:
                 "只返回合法 JSON。不要 markdown。不要多余文字。",
             ])
             prompt = "\n".join(parts)
-            response = self.llm.generate(prompt)
+            response = self.agent.generate(prompt)
             raw = response.content if hasattr(response, "content") else str(response)
             action = json.loads(_extract_json(raw))
         except Exception:
@@ -624,14 +624,14 @@ class Repl:
                 user_input=user_input,
             )
 
-        response = self.llm.generate(prompt)
+        response = self.agent.generate(prompt)
         raw = response.content if hasattr(response, "content") else str(response)
 
         try:
             return json.loads(_extract_json(raw))
         except json.JSONDecodeError:
             click.echo(PARSE_RETRY)
-            retry = self.llm.generate(prompt + PROMPT_RETRY_SUFFIX)
+            retry = self.agent.generate(prompt + PROMPT_RETRY_SUFFIX)
             raw2 = retry.content if hasattr(retry, "content") else str(retry)
             try:
                 return json.loads(_extract_json(raw2))
@@ -728,7 +728,7 @@ class Repl:
                 f'"input": {{...修改后的完整字段...}} }}\n'
                 f"只返回合法 JSON。不要 markdown。不要多余文字。"
             )
-            response = self.llm.generate(prompt)
+            response = self.agent.generate(prompt)
             raw = response.content if hasattr(response, "content") else str(response)
             action = json.loads(_extract_json(raw))
         except Exception:

@@ -1,200 +1,93 @@
 """DevOps Agent - Deployment and Infrastructure Agent"""
 
-from typing import Optional
+from __future__ import annotations
+
+import json
+from pathlib import Path
 
 from cogniforge.agents.base import BaseAgent
-from cogniforge.core.constants import AgentRole, DocumentType
-from cogniforge.models.document import Document
+from cogniforge.core.exceptions import AgentError
 
 
 class DevOpsAgent(BaseAgent):
-    """
-    DevOps Agent.
-
-    Responsibilities:
-    - Write deployment configs
-    - Prepare infrastructure
-    - Deploy releases
-    """
+    """DevOps Agent — delegates deploy config generation to Claude Code.
+    Deploy / rollback are operational stubs."""
 
     def run(self, input_data: dict) -> dict:
-        """
-        Execute DevOps activities.
-
-        Args:
-            input_data: {
-                "action": str,  # "prepare_deploy", "deploy", "rollback"
-                "module": str,
-                "environment": str,  # "dev", "staging", "prod"
-            }
-        """
-        action = input_data.get("action", "prepare_deploy")
-        module = input_data.get("module", "unknown")
-
-        if action == "prepare_deploy":
-            return self._prepare_deployment(input_data)
-        elif action == "deploy":
-            return self._deploy(input_data)
-        elif action == "rollback":
-            return self._rollback(input_data)
-        else:
-            return self.format_result(
-                status="failed",
-                message=f"Unknown action: {action}"
-            )
-
-    def _prepare_deployment(self, input_data: dict) -> dict:
-        """Prepare deployment configuration"""
         try:
-            module = input_data.get("module", "unknown")
-            environment = input_data.get("environment", "dev")
+            action = input_data.get("action", "prepare_deploy")
 
-            # Generate deployment config
-            content = self._generate_deploy_config(module, environment)
+            if action == "deploy":
+                return self._deploy(input_data)
 
-            doc = Document(
-                doc_id=f"deploy-{module}",
-                doc_type=DocumentType.DEPLOY,
-                title=f"Deployment Configuration - {module}",
-                content=content,
-                path=".cogniforge/wiki/ops/deploy.md",
-                author="devops_agent",
-                metadata={"module": module, "environment": environment}
-            )
+            if action == "rollback":
+                return self._rollback(input_data)
 
-            self.write_document(doc, f"feat: prepare deployment for {module}")
+            if self.agent is None:
+                raise AgentError("DevOpsAgent requires a Claude Code agent for this action")
 
-            return self.format_result(
-                status="success",
-                message=f"Deployment config prepared for {module} ({environment})",
-                artifacts=[doc.path]
-            )
+            if action == "prepare_deploy":
+                return self._agentic_prepare_deploy(input_data)
+            else:
+                return self.format_result(
+                    status="failed", message=f"Unknown action: {action}"
+                )
 
         except Exception as e:
-            return self.format_result(
-                status="failed",
-                message=str(e)
+            return self.format_result(status="failed", message=str(e))
+
+    def _agentic_prepare_deploy(self, input_data: dict) -> dict:
+        module = input_data.get("module", "unknown")
+        environment = input_data.get("environment", "dev")
+        version = input_data.get("version", "latest")
+        output_path = f".cogniforge/wiki/ops/deploy.md"
+
+        prompt = (
+            f"为以下模块准备部署配置:\n\n"
+            f"模块: {module}\n"
+            f"环境: {environment}\n"
+            f"版本: {version}\n\n"
+            f"要求：\n"
+            f"1. 先阅读 .cogniforge/wiki/sad/ 了解系统架构\n"
+            f"2. 先阅读 .cogniforge/wiki/lld/{module}/ 了解模块设计\n"
+            f"3. 生成部署配置写入: {output_path}\n"
+            f"4. 包含: Docker 配置、环境变量、网络设置、健康检查\n"
+            f"5. 使用中文\n"
+            f"6. 完成后用中文回复确认"
+        )
+
+        response = self.agent.generate_agentic(prompt, role="devops")
+
+        output_abs = Path(self.config.repo_path) / output_path
+        if output_abs.exists():
+            self.wiki_system.git_storage.repo.index.add([output_path])
+            self.wiki_system.git_storage.commit(
+                f"feat: deploy config for {module}", "devops_agent"
             )
-
-    def _generate_deploy_config(self, module: str, environment: str) -> str:
-        """Generate deployment configuration content"""
-        lines = [
-            f"# Deployment Configuration - {module}",
-            "",
-            f"**Environment**: {environment}",
-            f"**Module**: {module}",
-            "",
-            "---",
-            "",
-            "## Deployment Steps",
-            "",
-            "1. Build application",
-            "2. Run database migrations",
-            "3. Deploy to target environment",
-            "4. Verify deployment",
-            "",
-            "## Configuration",
-            "",
-            f"```yaml",
-            f"module: {module}",
-            f"environment: {environment}",
-            f"version: latest",
-            f"```",
-            "",
-            "## Health Check",
-            "",
-            "- Endpoint: `/health`",
-            "- Expected: `200 OK`",
-        ]
-
-        return "\n".join(lines)
+            return self.format_result(
+                status="success",
+                message=f"Deploy config prepared for {module}",
+                artifacts=[output_path],
+                reasoning=response.content,
+            )
+        return self.format_result(
+            status="failed", message=f"Deploy config not produced for {module}"
+        )
 
     def _deploy(self, input_data: dict) -> dict:
-        """Execute deployment"""
-        try:
-            module = input_data.get("module", "unknown")
-            environment = input_data.get("environment", "dev")
-
-            # In real implementation, this would:
-            # 1. Connect to deployment target
-            # 2. Execute deployment steps
-            # 3. Verify deployment
-
-            # Generate deployment report
-            content = f"# Deployment Report - {module}\n\n"
-            content += f"**Environment**: {environment}\n\n"
-            content += f"**Status**: DEPLOYED\n\n"
-            content += f"**Timestamp**: Deployment completed\n\n"
-            content += "## Deployment Log\n\n"
-            content += "- Build: SUCCESS\n"
-            content += "- Migrate: SUCCESS\n"
-            content += "- Deploy: SUCCESS\n"
-            content += "- Verify: SUCCESS\n"
-
-            doc_id = f"deploy-report-{module}"
-            doc = Document(
-                doc_id=doc_id,
-                doc_type=DocumentType.REPORT,
-                title=f"Deployment Report - {module}",
-                content=content,
-                path=f".cogniforge/wiki/reports/{doc_id}.md",
-                author="devops_agent",
-                metadata={"module": module, "environment": environment, "status": "deployed"}
-            )
-
-            self.write_document(doc, f"feat: deploy {module} to {environment}")
-
-            return self.format_result(
-                status="success",
-                message=f"Successfully deployed {module} to {environment}",
-                artifacts=[doc.path]
-            )
-
-        except Exception as e:
-            return self.format_result(
-                status="failed",
-                message=str(e)
-            )
+        module = input_data.get("module", "unknown")
+        environment = input_data.get("environment", "dev")
+        return self.format_result(
+            status="success",
+            message=f"Deploy {module} to {environment} (operational stub)",
+            data={"module": module, "environment": environment},
+        )
 
     def _rollback(self, input_data: dict) -> dict:
-        """Execute rollback"""
-        try:
-            module = input_data.get("module", "unknown")
-            environment = input_data.get("environment", "dev")
-            version = input_data.get("version", "previous")
-
-            # Generate rollback report
-            content = f"# Rollback Report - {module}\n\n"
-            content += f"**Environment**: {environment}\n\n"
-            content += f"**Rollback to**: {version}\n\n"
-            content += f"**Status**: ROLLED BACK\n\n"
-            content += "## Rollback Log\n\n"
-            content += "- Stop service: SUCCESS\n"
-            content += "- Restore previous version: SUCCESS\n"
-            content += "- Start service: SUCCESS\n"
-            content += "- Verify: SUCCESS\n"
-
-            doc_id = f"rollback-report-{module}"
-            doc = Document(
-                doc_id=doc_id,
-                doc_type=DocumentType.REPORT,
-                title=f"Rollback Report - {module}",
-                content=content,
-                path=f".cogniforge/wiki/reports/{doc_id}.md",
-                author="devops_agent",
-                metadata={"module": module, "environment": environment, "status": "rolled_back"}
-            )
-
-            self.write_document(doc, f"fix: rollback {module} to {version}")
-
-            return self.format_result(
-                status="success",
-                message=f"Successfully rolled back {module} to {version}",
-                artifacts=[doc.path]
-            )
-
-        except Exception as e:
-            return self.format_result(
-                status="failed",
-                message=str(e)
-            )
+        module = input_data.get("module", "unknown")
+        version = input_data.get("version", "previous")
+        return self.format_result(
+            status="success",
+            message=f"Rollback {module} to {version} (operational stub)",
+            data={"module": module, "version": version},
+        )

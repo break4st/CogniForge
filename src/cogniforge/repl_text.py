@@ -100,7 +100,7 @@ QUIT_MESSAGE = "  再见。运行 'cogniforge repl' 即可恢复（当前: {step
 # ═══════════════════════════════════════════════════════════════════════════
 
 SPINNER_INTERPRETING = "正在理解你的意图"
-SPINNER_RUNNING = "正在运行 {agent} agent"
+SPINNER_RUNNING = "正在运行 {agent} agent (Claude Code 执行中)"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 审批交互
