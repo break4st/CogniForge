@@ -1,0 +1,299 @@
+{
+  "meta": {
+    "doc_id": "lld-student-service-001",
+    "type": "lld",
+    "module": "student-service",
+    "title": "学生信息服务详细设计",
+    "author": "design_agent",
+    "created": "2026-05-19 20:08"
+  },
+  "overview": "基于PRD中学生信息管理需求与SAD中student-service职责定义，本模块负责学生档案的完整生命周期管理，包括学生基本信息的增删改查、学号唯一性校验、多条件组合查询以及批量导入导出功能。服务采用RESTful API对外暴露能力，数据存储于PostgreSQL，热点数据通过Redis加速读取，学生信息变更事件通过消息队列异步通知其他服务（如statistics-service更新统计缓存、class-service同步班级成员列表）。所有接口经过API Gateway统一接入，请求经由JWT鉴权后方可到达本服务。",
+
+  "data_models": [
+    {
+      "name": "Student",
+      "type": "Entity",
+      "description": "学生档案主实体，映射数据库表 students，存储学生完整生命周期信息。逻辑删除（status=withdrawn）而非物理删除，保留历史记录。",
+      "table_name": "students",
+      "fields": [
+        { "name": "id", "type": "UUID", "description": "学生唯一标识（系统内部ID），主键，由应用层生成（UUID v7）", "constraints": "PK, NOT NULL, DEFAULT gen_random_uuid()", "index": true },
+        { "name": "student_number", "type": "VARCHAR(32)", "description": "学号，业务唯一标识，不可重复", "constraints": "UNIQUE, NOT NULL", "index": true },
+        { "name": "name", "type": "VARCHAR(64)", "description": "学生姓名", "constraints": "NOT NULL" },
+        { "name": "gender", "type": "ENUM(male,female,other)", "description": "性别", "constraints": "NOT NULL" },
+        { "name": "phone", "type": "VARCHAR(20)", "description": "联系电话", "constraints": "" },
+        { "name": "email", "type": "VARCHAR(128)", "description": "电子邮箱", "constraints": "" },
+        { "name": "enrollment_date", "type": "DATE", "description": "入学日期", "constraints": "NOT NULL" },
+        { "name": "grade_id", "type": "UUID", "description": "所在年级ID，关联grade-service", "constraints": "NOT NULL", "index": true },
+        { "name": "class_id", "type": "UUID", "description": "所在班级ID，关联class-service", "constraints": "", "index": true },
+        { "name": "status", "type": "ENUM(active,graduated,suspended,withdrawn)", "description": "在校状态，withdrawn表示逻辑删除", "constraints": "NOT NULL, DEFAULT 'active'" },
+        { "name": "address", "type": "TEXT", "description": "家庭住址", "constraints": "" },
+        { "name": "created_at", "type": "TIMESTAMP", "description": "创建时间", "constraints": "NOT NULL, DEFAULT CURRENT_TIMESTAMP" },
+        { "name": "updated_at", "type": "TIMESTAMP", "description": "最后更新时间", "constraints": "NOT NULL, DEFAULT CURRENT_TIMESTAMP" }
+      ],
+      "indexes": [
+        { "name": "idx_students_grade_id", "columns": ["grade_id"], "type": "BTREE" },
+        { "name": "idx_students_class_id", "columns": ["class_id"], "type": "BTREE" },
+        { "name": "idx_students_status", "columns": ["status"], "type": "BTREE" },
+        { "name": "idx_students_name", "columns": ["name"], "type": "BTREE" },
+        { "name": "uk_student_number", "columns": ["student_number"], "type": "UNIQUE" }
+      ],
+      "audit": true
+    },
+    {
+      "name": "StudentCreateRequest",
+      "type": "DTO",
+      "description": "创建学生请求体，前端表单提交时的数据结构。服务端需校验必填字段及字段格式合法性。",
+      "fields": [
+        { "name": "student_number", "type": "VARCHAR(32)", "description": "学号（必填），格式校验：字母+数字组合，长度4-32", "validation": "required, pattern: ^[A-Za-z0-9]+$, size: 4-32" },
+        { "name": "name", "type": "VARCHAR(64)", "description": "姓名（必填），长度1-64", "validation": "required, size: 1-64" },
+        { "name": "gender", "type": "ENUM(male,female,other)", "description": "性别（必填），枚举值之一", "validation": "required, oneOf: male/female/other" },
+        { "name": "phone", "type": "VARCHAR(20)", "description": "联系电话，格式校验：手机号或固话", "validation": "pattern: ^\\+?[0-9-]{7,20}$" },
+        { "name": "email", "type": "VARCHAR(128)", "description": "邮箱，格式校验：标准邮箱格式", "validation": "pattern: ^[\\w.-]+@[\\w.-]+\\.\\w{2,}$" },
+        { "name": "enrollment_date", "type": "DATE", "description": "入学日期（必填），格式 yyyy-MM-dd", "validation": "required, date format: yyyy-MM-dd" },
+        { "name": "grade_id", "type": "UUID", "description": "年级ID（必填），存在于grade-service中", "validation": "required, uuid format" },
+        { "name": "class_id", "type": "UUID", "description": "班级ID（选填），存在于class-service中", "validation": "uuid format" },
+        { "name": "address", "type": "TEXT", "description": "家庭住址（选填），最长500字", "validation": "max: 500" }
+      ]
+    },
+    {
+      "name": "StudentUpdateRequest",
+      "type": "DTO",
+      "description": "更新学生请求体。采用部分更新语义（PATCH-like），仅包含需要修改的字段，未传字段保持原值不变。",
+      "fields": [
+        { "name": "name", "type": "VARCHAR(64)", "description": "姓名", "validation": "size: 1-64" },
+        { "name": "gender", "type": "ENUM(male,female,other)", "description": "性别", "validation": "oneOf: male/female/other" },
+        { "name": "phone", "type": "VARCHAR(20)", "description": "联系电话", "validation": "pattern: ^\\+?[0-9-]{7,20}$" },
+        { "name": "email", "type": "VARCHAR(128)", "description": "邮箱", "validation": "pattern: ^[\\w.-]+@[\\w.-]+\\.\\w{2,}$" },
+        { "name": "grade_id", "type": "UUID", "description": "年级ID", "validation": "uuid format" },
+        { "name": "class_id", "type": "UUID", "description": "班级ID", "validation": "uuid format" },
+        { "name": "status", "type": "ENUM(active,graduated,suspended,withdrawn)", "description": "在校状态，状态转换需遵循合法流向", "validation": "status_transition_rules" },
+        { "name": "address", "type": "TEXT", "description": "家庭住址", "validation": "max: 500" }
+      ]
+    },
+    {
+      "name": "StudentQuery",
+      "type": "VO",
+      "description": "组合查询参数对象，用于 listStudents 和 exportStudents 接口的过滤条件封装。全部参数均为可选。",
+      "fields": [
+        { "name": "keyword", "type": "VARCHAR(64)", "description": "搜索关键词，模糊匹配姓名或学号（LIKE %keyword%）", "validation": "max: 64" },
+        { "name": "grade_id", "type": "UUID", "description": "按年级精确筛选" },
+        { "name": "class_id", "type": "UUID", "description": "按班级精确筛选" },
+        { "name": "status", "type": "ENUM(active,graduated,suspended,withdrawn)", "description": "按在校状态筛选" },
+        { "name": "gender", "type": "ENUM(male,female,other)", "description": "按性别筛选" },
+        { "name": "page", "type": "INTEGER", "description": "页码（从1开始），默认1", "validation": "min: 1, default: 1" },
+        { "name": "size", "type": "INTEGER", "description": "每页条数，默认20，最大100", "validation": "min: 1, max: 100, default: 20" },
+        { "name": "sort_by", "type": "VARCHAR(32)", "description": "排序字段，可选值：created_at / updated_at / student_number / name。默认 created_at", "validation": "oneOf: created_at/updated_at/student_number/name, default: created_at" },
+        { "name": "sort_order", "type": "ENUM(asc,desc)", "description": "排序方向，默认 desc", "validation": "oneOf: asc/desc, default: desc" }
+      ]
+    },
+    {
+      "name": "StudentPageResult",
+      "type": "DTO",
+      "description": "分页查询结果封装，包含总数和当前页数据。total用于前端计算总页数。",
+      "fields": [
+        { "name": "total", "type": "LONG", "description": "总记录数（符合查询条件的全部记录数，非当前页数）" },
+        { "name": "page", "type": "INTEGER", "description": "当前页码" },
+        { "name": "size", "type": "INTEGER", "description": "每页条数" },
+        { "name": "items", "type": "List<Student>", "description": "当前页学生列表" }
+      ]
+    },
+    {
+      "name": "ImportTaskResult",
+      "type": "DTO",
+      "description": "批量导入异步任务结果，用于客户端轮询导入进度。",
+      "fields": [
+        { "name": "task_id", "type": "VARCHAR(36)", "description": "导入任务唯一ID" },
+        { "name": "status", "type": "ENUM(pending,processing,completed,failed)", "description": "任务状态" },
+        { "name": "total_rows", "type": "INTEGER", "description": "文件总行数（含表头）" },
+        { "name": "success_count", "type": "INTEGER", "description": "成功导入数" },
+        { "name": "skip_count", "type": "INTEGER", "description": "跳过行数（学号重复/数据非法）" },
+        { "name": "error_details", "type": "List<ImportErrorRow>", "description": "错误详情列表" }
+      ]
+    }
+  ],
+
+  "interfaces": [
+    {
+      "name": "createStudent",
+      "endpoint": "POST /api/v1/students",
+      "description": "创建学生记录。学号不能重复，必填字段缺失返回400。创建成功后发布StudentCreatedEvent到消息队列，消息体包含学生ID和完整信息快照。",
+      "method": "POST",
+      "content_type": "application/json",
+      "parameters": [
+        { "name": "body", "type": "StudentCreateRequest", "location": "body", "description": "学生创建请求体" }
+      ],
+      "responses": [
+        { "status": 201, "description": "创建成功，返回完整Student对象", "response_body": "Student" },
+        { "status": 400, "description": "请求参数校验失败（字段缺失/格式错误/学号重复）", "response_body": "ErrorResponse" },
+        { "status": 409, "description": "学号已存在（DUPLICATE_STUDENT_NUMBER）", "response_body": "ErrorResponse" }
+      ],
+      "event_publish": {
+        "event_name": "StudentCreatedEvent",
+        "exchange": "student.exchange",
+        "routing_key": "student.created",
+        "payload": { "student_id": "UUID", "student_number": "VARCHAR(32)", "name": "VARCHAR(64)", "grade_id": "UUID", "class_id": "UUID", "event_time": "TIMESTAMP" }
+      },
+      "cache_operation": "创建后使对应缓存失效（若有缓存）"
+    },
+    {
+      "name": "updateStudent",
+      "endpoint": "PUT /api/v1/students/{id}",
+      "description": "更新学生信息。支持部分更新（仅修改请求体中传入的字段），未传字段保持原值。status字段变更需遵循状态机规则（active↔suspended, active→graduated, any→withdrawn，不允许 graduated→active 等逆向流转）。学生不存在返回404。更新成功后发布StudentUpdatedEvent。",
+      "method": "PUT",
+      "content_type": "application/json",
+      "parameters": [
+        { "name": "id", "type": "UUID", "location": "path", "description": "学生ID（路径参数）" },
+        { "name": "body", "type": "StudentUpdateRequest", "location": "body", "description": "学生更新请求体" }
+      ],
+      "responses": [
+        { "status": 200, "description": "更新成功，返回更新后的Student对象", "response_body": "Student" },
+        { "status": 400, "description": "请求数据校验失败", "response_body": "ErrorResponse" },
+        { "status": 404, "description": "学生不存在（STUDENT_NOT_FOUND）", "response_body": "ErrorResponse" },
+        { "status": 409, "description": "状态转换非法（STUDENT_STATUS_CONFLICT）", "response_body": "ErrorResponse" }
+      ],
+      "event_publish": {
+        "event_name": "StudentUpdatedEvent",
+        "exchange": "student.exchange",
+        "routing_key": "student.updated",
+        "payload": { "student_id": "UUID", "changes": "Map<String, Object>", "event_time": "TIMESTAMP" }
+      },
+      "cache_operation": "更新后清除该学生的Redis缓存（删除 students:{id}）"
+    },
+    {
+      "name": "deleteStudent",
+      "endpoint": "DELETE /api/v1/students/{id}",
+      "description": "逻辑删除学生记录。将status设置为withdrawn而非物理删除，保留历史数据。已处于withdrawn状态再次删除返回409。学生不存在返回404。删除后发布StudentDeletedEvent。",
+      "method": "DELETE",
+      "parameters": [
+        { "name": "id", "type": "UUID", "location": "path", "description": "学生ID（路径参数）" }
+      ],
+      "responses": [
+        { "status": 200, "description": "删除成功（逻辑删除），返回更新后的Student对象", "response_body": "Student" },
+        { "status": 404, "description": "学生不存在（STUDENT_NOT_FOUND）", "response_body": "ErrorResponse" },
+        { "status": 409, "description": "学生已处于withdrawn状态（STUDENT_STATUS_CONFLICT）", "response_body": "ErrorResponse" }
+      ],
+      "event_publish": {
+        "event_name": "StudentDeletedEvent",
+        "exchange": "student.exchange",
+        "routing_key": "student.deleted",
+        "payload": { "student_id": "UUID", "event_time": "TIMESTAMP" }
+      },
+      "cache_operation": "删除后清除该学生的Redis缓存"
+    },
+    {
+      "name": "getStudent",
+      "endpoint": "GET /api/v1/students/{id}",
+      "description": "根据ID查询学生详情。读取路径：①优先查Redis缓存，key为 students:{id}，命中直接返回；②未命中则查询PostgreSQL；③数据库查到后回填Redis缓存并设置TTL=600秒；④数据库查不到返回404。已逻辑删除（withdrawn）的学生可被查到。",
+      "method": "GET",
+      "parameters": [
+        { "name": "id", "type": "UUID", "location": "path", "description": "学生ID（路径参数）" }
+      ],
+      "responses": [
+        { "status": 200, "description": "查询成功，返回Student对象", "response_body": "Student" },
+        { "status": 404, "description": "学生不存在（STUDENT_NOT_FOUND）", "response_body": "ErrorResponse" }
+      ],
+      "cache_operation": "使用 Cache-Aside 模式，Redis key: students:{id}, TTL: 600s。热点学生（3分钟内被查询超过100次）续期TTL至1800s"
+    },
+    {
+      "name": "listStudents",
+      "endpoint": "GET /api/v1/students",
+      "description": "分页组合查询学生列表。支持按姓名/学号关键词（LIKE模糊匹配）、年级、班级、状态、性别等多条件组合过滤。所有条件之间为AND关系，同一条件仅支持单选（如不可同时筛选多个年级）。查询结果不缓存，直接查数据库。默认仅返回status!=withdrawn的记录。",
+      "method": "GET",
+      "parameters": [
+        { "name": "keyword", "type": "VARCHAR(64)", "location": "query", "description": "搜索关键词，匹配姓名或学号" },
+        { "name": "grade_id", "type": "UUID", "location": "query", "description": "年级ID筛选" },
+        { "name": "class_id", "type": "UUID", "location": "query", "description": "班级ID筛选" },
+        { "name": "status", "type": "STRING", "location": "query", "description": "在校状态筛选（需传枚举值）" },
+        { "name": "gender", "type": "STRING", "location": "query", "description": "性别筛选" },
+        { "name": "page", "type": "INTEGER", "location": "query", "description": "页码（查询参数，默认1）" },
+        { "name": "size", "type": "INTEGER", "location": "query", "description": "每页条数（查询参数，默认20，最大100）" }
+      ],
+      "responses": [
+        { "status": 200, "description": "查询成功，返回分页结果", "response_body": "StudentPageResult" },
+        { "status": 400, "description": "查询参数校验失败", "response_body": "ErrorResponse" }
+      ],
+      "cache_operation": "不缓存"
+    },
+    {
+      "name": "importStudents",
+      "endpoint": "POST /api/v1/students/import",
+      "description": "批量导入学生信息。支持Excel(.xlsx/.xls)和CSV格式。文件通过Multipart形式上传，后端先校验文件类型和大小（上限10MB），校验通过后创建导入任务并异步处理。异步处理流程：逐行解析 → 校验学号唯一性（数据库查重+本次导入去重）→ 合法行写入 → 非法行/重复行跳过并记录原因。处理进度持久化到import_tasks表，客户端通过task_id轮询ImportTaskResult。同一学号在本次导入中重复出现，仅第一个有效行被导入，后续重复行跳过。",
+      "method": "POST",
+      "content_type": "multipart/form-data",
+      "parameters": [
+        { "name": "file", "type": "MultipartFile", "location": "form-data", "description": "导入文件，支持 .xlsx/.xls/.csv，最大10MB" },
+        { "name": "format", "type": "ENUM(excel,csv)", "location": "query", "description": "文件格式（默认excel，不传则自动根据文件扩展名判断）" }
+      ],
+      "responses": [
+        { "status": 202, "description": "文件接收成功，开始异步导入，返回任务信息", "response_body": "ImportTaskResult" },
+        { "status": 400, "description": "文件格式不支持或内容解析失败", "response_body": "ErrorResponse" },
+        { "status": 413, "description": "文件超过10MB限制（IMPORT_FILE_TOO_LARGE）", "response_body": "ErrorResponse" }
+      ],
+      "limitations": {
+        "max_file_size": "10MB",
+        "max_rows_per_import": 50000,
+        "supported_formats": ["xlsx", "xls", "csv"],
+        "timeout": "超过30分钟未完成的任务标记为failed"
+      },
+      "cache_operation": "导入完成后批量清除受影响的学生缓存"
+    },
+    {
+      "name": "exportStudents",
+      "endpoint": "GET /api/v1/students/export",
+      "description": "按查询条件导出学生数据。同步模式（结果数<10000条）：直接生成文件内容流式返回，Content-Type为application/octet-stream。异步模式（结果数>=10000条）：返回任务ID，后台生成文件后客户端通过下载链接获取。导出列固定为：学号、姓名、性别、电话、邮箱、入学日期、年级、班级、状态、住址。省去系统内部ID和时间戳字段。",
+      "method": "GET",
+      "parameters": [
+        { "name": "keyword", "type": "VARCHAR(64)", "location": "query", "description": "搜索关键词" },
+        { "name": "grade_id", "type": "UUID", "location": "query", "description": "年级ID筛选" },
+        { "name": "class_id", "type": "UUID", "location": "query", "description": "班级ID筛选" },
+        { "name": "status", "type": "STRING", "location": "query", "description": "在校状态筛选" },
+        { "name": "format", "type": "ENUM(excel,csv)", "location": "query", "description": "导出格式（默认excel）" }
+      ],
+      "responses": [
+        { "status": 200, "description": "同步导出成功，返回文件流（Content-Disposition: attachment）" },
+        { "status": 202, "description": "异步导出（数据量过大），返回ExportTaskResult包含task_id和下载链接" },
+        { "status": 400, "description": "导出参数校验失败", "response_body": "ErrorResponse" }
+      ],
+      "cache_operation": "不缓存"
+    }
+  ],
+
+  "error_handling": "采用统一错误响应格式：{ \"code\": \"ERROR_CODE\", \"message\": \"人类可读描述\", \"details\": {}, \"trace_id\": \"请求追踪ID\" }。HTTP状态码对应规则：200成功、201创建成功、400请求参数校验失败（字段缺失/格式错误）、404资源不存在、409业务冲突（学号重复/状态转换非法）、413导入文件超限（超过10MB）、429请求频率超限（由API Gateway层限流实现）、500内部服务错误。关键错误码定义：STUDENT_NOT_FOUND（学生不存在）、DUPLICATE_STUDENT_NUMBER（学号重复）、INVALID_STUDENT_DATA（学生数据校验失败）、IMPORT_FILE_TOO_LARGE（导入文件超过10MB）、IMPORT_PARSE_ERROR（导入文件格式错误/解析失败）、STUDENT_STATUS_CONFLICT（状态转换非法，如从graduated转回active）。所有业务异常记录审计日志到audit_log表，trace_id通过请求头X-Request-Id传入并在服务调用链中传递，贯穿API Gateway→student-service→DB/MQ全链路，用于问题排查和日志聚合。",
+
+  "status_machine": {
+    "description": "学生在校状态转换规则，非法转换返回 STUDENT_STATUS_CONFLICT",
+    "states": ["active", "graduated", "suspended", "withdrawn"],
+    "transitions": [
+      { "from": "active", "to": "suspended", "description": "休学" },
+      { "from": "active", "to": "graduated", "description": "毕业" },
+      { "from": "active", "to": "withdrawn", "description": "退学/逻辑删除" },
+      { "from": "suspended", "to": "active", "description": "复学" },
+      { "from": "suspended", "to": "withdrawn", "description": "退学/逻辑删除" },
+      { "from": "graduated", "to": "withdrawn", "description": "逻辑删除" }
+    ],
+    "terminal_states": ["withdrawn"]
+  },
+
+  "redis_design": {
+    "key_patterns": [
+      { "key": "students:{id}", "value_type": "json(Student)", "ttl": "600s", "usage": "单学生缓存，getStudent接口使用" },
+      { "key": "students:{id}:hot", "value_type": "boolean", "ttl": "动态", "usage": "热点标记，查询超过阈值时续期TTL" }
+    ],
+    "eviction_policy": "allkeys-lru"
+  },
+
+  "mq_design": {
+    "exchange": "student.exchange",
+    "type": "topic",
+    "bindings": [
+      { "routing_key": "student.created", "description": "学生创建事件" },
+      { "routing_key": "student.updated", "description": "学生更新事件" },
+      { "routing_key": "student.deleted", "description": "学生删除事件" }
+    ],
+    "consumers": [
+      { "service": "statistics-service", "description": "消费事件更新统计缓存" },
+      { "service": "class-service", "description": "消费事件同步班级成员列表" }
+    ],
+    "reliability": "publisher confirm + 死信队列重试（最多3次，失败后进入死信队列人工处理）"
+  }
+}
