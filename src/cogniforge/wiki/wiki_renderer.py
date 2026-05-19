@@ -293,12 +293,16 @@ def render_file(json_path: Path, wiki_root: Path | None = None) -> Optional[Path
     doc_type = meta.get("type", "prd")
     html = render_to_html(doc_type, data)
 
-    # Determine the HTML output path under html/ subdir
-    if wiki_root is None:
-        # Guess wiki root: 3 levels up from .cogniforge/wiki/{type}/file.json
-        wiki_root = json_path.parent.parent.parent  # wiki dir
-
-    html_dir = wiki_root / "html" / json_path.parent.relative_to(wiki_root)
+    # Map .cogniforge/wiki/{type}[/{module}]/file.json → .cogniforge/html/{type}[/{module}]/file.html
+    path_str = str(json_path)
+    marker = ".cogniforge/wiki/"
+    idx = path_str.find(marker)
+    if idx != -1:
+        cogniforge_root = Path(path_str[:idx + len(".cogniforge/")])
+        rel = Path(path_str[idx + len(marker):])
+        html_dir = cogniforge_root / "html" / rel.parent
+    else:
+        html_dir = json_path.parent.parent / "html"
     html_dir.mkdir(parents=True, exist_ok=True)
     html_path = html_dir / (json_path.stem + ".html")
     html_path.write_text(html, encoding="utf-8")

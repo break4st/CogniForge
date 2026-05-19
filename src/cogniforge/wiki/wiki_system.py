@@ -55,11 +55,10 @@ class WikiSystem:
                   module: str = "", task_id: str = "") -> Path:
         """Return the path for the user-format HTML file (under html/ subdir)."""
         agent_p = self.agent_path(doc_type, doc_id=doc_id, module=module, task_id=task_id)
-        # Map: .cogniforge/wiki/{type}/...json → .cogniforge/wiki/html/{type}/...html
+        # Map: .cogniforge/wiki/{type}/...json → .cogniforge/html/{type}/...html
         rel = agent_p.relative_to(self.repo_path)
-        parts = rel.parts  # ['cogniforge', 'wiki', 'prd', 'prd-001.json']
-        # Replace 2nd-level dir with 'html/{type}'
-        html_parts = list(parts[:2]) + ["html"] + list(parts[2:])
+        parts = rel.parts  # ['.cogniforge', 'wiki', 'prd', 'prd-001.json']
+        html_parts = [parts[0], "html"] + list(parts[2:])
         html_rel = Path(*html_parts)
         return (self.repo_path / html_rel).with_suffix(".html")
 
@@ -212,6 +211,6 @@ class WikiSystem:
         dirs = {p.split("/{")[0] for p in self._AGENT_PATHS.values()}
         for d in dirs:
             (self.repo_path / d).mkdir(parents=True, exist_ok=True)
-            # Also ensure corresponding html/ subdir
-            html_d = str(Path(d).parent / "html" / Path(d).name)
+            # Ensure corresponding html/ subdir: .cogniforge/wiki/{type} → .cogniforge/html/{type}
+            html_d = str(Path(d).parent.parent / "html" / Path(d).name)
             (self.repo_path / html_d).mkdir(parents=True, exist_ok=True)
