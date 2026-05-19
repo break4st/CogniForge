@@ -61,11 +61,10 @@ class PMAgent(BaseAgent):
             f' "priorities": {{"需求名": "高/中/低"}}\n'
             f"}}\n\n"
             f"要求:\n"
-            f"1. 先阅读 DESIGN.html 了解项目视觉风格\n"
-            f"2. 将完整的 JSON 写入: {json_path}\n"
-            f"3. 所有文字使用中文\n"
-            f"4. 不要写入 .html 文件（HTML 由系统自动渲染）\n"
-            f"5. 完成后用中文回复确认"
+            f"1. 将完整的 JSON 写入: {json_path}\n"
+            f"2. 所有文字使用中文\n"
+            f"3. 不要写入 .html 文件（HTML 由系统自动渲染）\n"
+            f"4. 完成后用中文回复确认"
         )
 
         response = self.agent.generate_agentic(prompt, role="pm")

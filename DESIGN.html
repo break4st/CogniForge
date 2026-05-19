@@ -895,18 +895,19 @@ Git 提交（JSON + HTML 各一份）</code></pre>
         prompt = build_task_prompt(...)          <span class="hl-comment"># 中文指令</span>
         response = self.agent.generate_agentic(  <span class="hl-comment"># Claude Code agent</span>
             prompt, role=<span class="hl-string">"pm"</span>)
-        <span class="hl-comment"># Claude Code 自己读了 DESIGN.html、已有 PRD，</span>
-        <span class="hl-comment"># 生成了 HTML 并写入 .cogniforge/wiki/prd/prd-003.html</span>
+        <span class="hl-comment"># Claude Code 读取已有 PRD 了解格式，</span>
+        <span class="hl-comment"># 生成 JSON 写入 .cogniforge/wiki/prd/prd-003.json</span>
+        <span class="hl-comment"># wiki_renderer 随后自动渲染为 HTML</span>
         git_stage_and_commit(output_path)</code></pre>
 
     <h3>8.2 Agent Role → Claude Code Role 映射</h3>
     <table>
       <thead><tr><th>CogniForge Agent</th><th>Claude Code role</th><th>系统提示词要点</th></tr></thead>
       <tbody>
-        <tr><td>PMAgent</td><td><code>pm</code></td><td>读 DESIGN.html + 已有 PRD → 生成自包含 HTML PRD</td></tr>
-        <tr><td>ArchitectAgent</td><td><code>architect</code></td><td>读 PRD + DESIGN.html → 生成 SAD 架构文档</td></tr>
+        <tr><td>PMAgent</td><td><code>pm</code></td><td>读已有 PRD → 生成 PRD JSON（系统自动渲染 HTML）</td></tr>
+        <tr><td>ArchitectAgent</td><td><code>architect</code></td><td>读 PRD → 生成 SAD 架构文档</td></tr>
         <tr><td>DesignAgent</td><td><code>design</code></td><td>读 PRD + SAD → 生成 LLD 详细设计</td></tr>
-        <tr><td>DevAgent</td><td><code>dev</code></td><td>读 LLD + CLAUDE.md → 写代码 + 写测试 + 跑 pytest</td></tr>
+        <tr><td>DevAgent</td><td><code>dev</code></td><td>读 LLD → 写代码 + 写测试 + 跑 pytest（约束外置）</td></tr>
         <tr><td>ReviewAgent</td><td><code>reviewer</code></td><td>读 LLD + 代码 → 生成 CR 报告</td></tr>
         <tr><td>QAAgent</td><td><code>qa</code></td><td>读 LLD + 代码 → 生成测试用例 + 跑测试 + 出报告</td></tr>
         <tr><td>TechLeadAgent</td><td><code>techlead</code></td><td>读全部上下文 → WBS 分解 + 质量评估</td></tr>
@@ -919,25 +920,25 @@ Git 提交（JSON + HTML 各一份）</code></pre>
   ↓
 self.agent.generate_agentic(prompt, role=<span class="hl-string">"pm"</span>)
   ↓
-subprocess: claude -p <span class="hl-string">"prompt"</span> \
-  --tools Read,Write,Edit,Bash \
-  --permission-mode auto \
-  --append-system-prompt <span class="hl-string">"你是 PM Agent..."</span> \
-  --output-format json
+System Prompt = ROLE_PROMPTS[role] + ConstraintLoader.load(role) + 工具提示
+  ↓
+Anthropic SDK with tools (Read, Write, Bash, ListDir)
   ↓
 Claude Code agent:
-  ├─ Read DESIGN.html          <span class="hl-comment"># 了解视觉风格</span>
   ├─ Read 已有 PRD 文件         <span class="hl-comment"># 了解文档格式</span>
   ├─ Think                     <span class="hl-comment"># 理解需求，设计文档结构</span>
-  ├─ Write output_file.html    <span class="hl-comment"># 生成自包含 HTML</span>
+  ├─ Write output_file.json    <span class="hl-comment"># 生成 JSON（Agent Format）</span>
   └─ Return result             <span class="hl-comment"># 返回确认信息</span>
+  ↓
+CogniForge: wiki_renderer 渲染 HTML（使用内置 _SHARED_CSS）
   ↓
 CogniForge: git add + git commit
   ↓
 REPL: 显示文件链接 + 审批菜单</code></pre>
 
-    <h3>8.4 Role System Prompt</h3>
-    <p>每个角色都有预定义的中文系统提示词（<code>ROLE_PROMPTS</code>），通过 <code>--append-system-prompt</code> 附加到 Claude Code 的默认系统提示词（默认系统提示词已包含 CLAUDE.md）。</p>
+    <h3>8.4 Role System Prompt & 约束系统</h3>
+    <p><code>ROLE_PROMPTS</code> 仅包含身份和职责（"你是 X Agent，职责: Y"）。行为约束外置为 <code>.cogniforge/constraints/{role}.md</code> 文件，由 <code>ConstraintLoader</code> 加载后注入 system prompt。文件不存在时使用内置默认值，确保系统在任何项目都能运行。</p>
+    <p>用户可编辑约束文件定制各角色行为，无需修改源码。<code>cogniforge init</code> 会自动生成全部默认约束文件。</p>
 
     <table>
       <thead><tr><th>设计原则</th><th>说明</th></tr></thead>
@@ -1065,7 +1066,8 @@ REPL: 显示文件链接 + 审批菜单
         <tr><td><code>Repl</code> 类</td><td><code>repl.py</code></td><td>主循环 + 斜杠命令 + action 执行 + 卡片向导</td></tr>
         <tr><td>ClaudeCodeAdapter</td><td><code>llm/claude_code_adapter.py</code></td><td>双模式：纯文本 generate() + agentic generate_agentic()</td></tr>
         <tr><td>Agent Roles</td><td><code>agents/*.py</code></td><td>8 个 Agent，每个委托给 Claude Code，只做编排</td></tr>
-        <tr><td>Role Prompts</td><td><code>llm/claude_code_adapter.py:ROLE_PROMPTS</code></td><td>8 套中文角色系统提示词</td></tr>
+        <tr><td>Role Prompts</td><td><code>llm/claude_code_adapter.py:ROLE_PROMPTS</code></td><td>8 套身份+职责定义，行为约束外置为 .md 文件</td></tr>
+        <tr><td>约束系统</td><td><code>constraints/constraint_loader.py</code></td><td>从 .cogniforge/constraints/{role}.md 加载，不存在时用内置默认值</td></tr>
       </tbody>
     </table>
 

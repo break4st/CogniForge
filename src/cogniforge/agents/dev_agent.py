@@ -41,13 +41,11 @@ class DevAgent(BaseAgent):
             f"描述: {task_desc}\n\n"
             f"要求：\n"
             f"1. 先阅读 .cogniforge/wiki/lld/{module}/ 下的 LLD 了解详细设计\n"
-            f"2. 阅读 CLAUDE.md 了解项目规范和行为准则\n"
-            f"3. 编写代码到 src/{module}/ 目录\n"
-            f"4. 遵循 Python 最佳实践，使用 type hints\n"
-            f"5. 编写对应的单元测试到 tests/ 目录\n"
-            f"6. 代码写完后运行 pytest 验证\n"
-            f"7. CLAUDE.md 要求：简单优先，精准修改，不加不必要的抽象\n"
-            f"8. 完成后用中文回复确认"
+            f"2. 编写代码到 src/{module}/ 目录\n"
+            f"3. 遵循 Python 最佳实践，使用 type hints\n"
+            f"4. 编写对应的单元测试到 tests/ 目录\n"
+            f"5. 代码写完后运行 pytest 验证\n"
+            f"6. 完成后用中文回复确认"
         )
 
         response = self.agent.generate_agentic(prompt, role="dev")

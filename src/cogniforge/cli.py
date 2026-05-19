@@ -25,6 +25,7 @@ from cogniforge.agents.devops_agent import DevOpsAgent
 from cogniforge.orchestration.workflow import Workflow, StepResult
 from cogniforge.execution.execution_engine import ExecutionEngine
 from cogniforge.execution.worker_pool import WorkerPool
+from cogniforge.constraints import ConstraintLoader
 
 
 # Configure logging
@@ -62,11 +63,13 @@ def init_context(ctx: Context) -> None:
 
     # Initialize LLM adapter (shared by all agents and REPL)
     from cogniforge.llm.base import LLMProvider
+    constraint_loader = ConstraintLoader(ctx.config.repo_path)
     agent = create_llm_adapter(
         LLMProvider(ctx.config.llm_provider),
         config={
             "model": ctx.config.llm_model,
             "repo_path": str(ctx.config.repo_path),
+            "constraint_loader": constraint_loader,
         },
     )
 
@@ -129,6 +132,12 @@ def init(ctx: Context, prd: str):
         (ctx.config.repo_path / ".cogniforge" / "wiki" / subdir).mkdir(parents=True, exist_ok=True)
     (ctx.config.repo_path / "src").mkdir(parents=True, exist_ok=True)
     (ctx.config.repo_path / "tests").mkdir(parents=True, exist_ok=True)
+
+    # 生成默认约束文件
+    loader = ConstraintLoader(ctx.config.repo_path)
+    created = loader.init_all()
+    if created:
+        click.echo(f"✓ 已生成 {len(created)} 个角色约束文件")
 
     click.echo("✓ 项目结构已创建")
     click.echo("\n下一步: 使用 'cogniforge start' 启动工作流")

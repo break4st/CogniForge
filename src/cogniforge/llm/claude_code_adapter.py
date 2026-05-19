@@ -18,43 +18,35 @@ from cogniforge.llm.base import BaseLLMAdapter, LLMResponse, LLMMessage
 ROLE_PROMPTS: dict[str, str] = {
     "pm": (
         "你是 CogniForge 系统的 PM (Product Manager) Agent。\n"
-        "职责: 根据用户数据生成产品需求文档 (PRD)。\n"
-        "要求: 先阅读 DESIGN.html 和已有 PRD 了解风格，生成 JSON，所有文字用中文。"
+        "职责: 根据用户数据生成产品需求文档 (PRD)。"
     ),
     "architect": (
         "你是 CogniForge 系统的 Architect Agent。\n"
-        "职责: 根据 PRD 生成系统架构文档 (SAD) JSON。\n"
-        "要求: 先阅读 PRD，包含组件设计/拓扑/数据流，使用中文。"
+        "职责: 根据 PRD 生成系统架构文档 (SAD) JSON。"
     ),
     "design": (
         "你是 CogniForge 系统的 Design (MDE) Agent。\n"
-        "职责: 根据 PRD + SAD 生成详细设计文档 (LLD) JSON。\n"
-        "要求: 先阅读 PRD 和 SAD，包含数据模型/接口定义/错误处理，使用中文。"
+        "职责: 根据 PRD + SAD 生成详细设计文档 (LLD) JSON。"
     ),
     "dev": (
         "你是 CogniForge 系统的 Dev Agent。\n"
-        "职责: 根据 LLD 编写代码和测试，运行 pytest 验证。\n"
-        "要求: 先阅读 LLD 和 CLAUDE.md，遵循简单优先原则，使用中文。"
+        "职责: 根据 LLD 编写代码和测试，运行 pytest 验证。"
     ),
     "reviewer": (
         "你是 CogniForge 系统的 Reviewer Agent。\n"
-        "职责: 代码评审，生成 CR 报告 JSON。\n"
-        "要求: 阅读 LLD 和代码，检查安全性/简洁性/合规性，使用中文。"
+        "职责: 代码评审，生成 CR 报告 JSON。"
     ),
     "qa": (
         "你是 CogniForge 系统的 QA Agent。\n"
-        "职责: 生成测试用例 JSON，执行测试，生成报告。\n"
-        "要求: 阅读 LLD 和代码，覆盖正常/边界/错误路径，使用中文。"
+        "职责: 生成测试用例 JSON，执行测试，生成报告。"
     ),
     "techlead": (
         "你是 CogniForge 系统的 Tech Lead Agent。\n"
-        "职责: 工作分解 (WBS)，质量评估。\n"
-        "要求: 阅读全部上下文，按依赖排序，使用中文。"
+        "职责: 工作分解 (WBS)，质量评估。"
     ),
     "devops": (
         "你是 CogniForge 系统的 DevOps Agent。\n"
-        "职责: 生成部署配置 JSON。\n"
-        "要求: 阅读 SAD 和 LLD，包含 Docker/环境变量/健康检查，使用中文。"
+        "职责: 生成部署配置 JSON。"
     ),
 }
 
@@ -190,6 +182,14 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
         system_parts: list[str] = []
         if role and role in ROLE_PROMPTS:
             system_parts.append(ROLE_PROMPTS[role])
+
+        # Inject per-role constraints (from .md file or built-in default)
+        constraint_loader = self.config.get("constraint_loader")
+        if constraint_loader and role:
+            constraints = constraint_loader.load(role)
+            if constraints:
+                system_parts.append(constraints)
+
         system_parts.append(
             f"工作目录: {self.repo_path}\n"
             "你可以使用 read_file / write_file / list_dir / run_bash 工具完成任务。\n"

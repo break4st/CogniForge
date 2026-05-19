@@ -36,11 +36,8 @@ class ReviewAgent(BaseAgent):
             f"要求：\n"
             f"1. 先阅读 .cogniforge/wiki/lld/{module}/ 下的 LLD 了解设计意图\n"
             f"2. 阅读相关代码文件\n"
-            f"3. 检查：代码是否符合设计、是否安全、是否简洁\n"
-            f"4. 检查 CLAUDE.md 中列出的行为准则是否被遵守\n"
-            f"5. 生成 CR 报告写入: {output_path}\n"
-            f"6. 报告中使用 PASS/FAIL 标注每项检查\n"
-            f"7. 使用中文\n"
+            f"3. 生成 CR 报告写入: {output_path}\n"
+            f"4. 报告中使用 PASS/FAIL 标注每项检查\n"
         )
 
         response = self.agent.generate_agentic(prompt, role="reviewer")
