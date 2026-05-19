@@ -16,9 +16,9 @@ class Config(BaseModel):
     # Context loading
     context_global_patterns: list[str] = Field(
         default=[
-            ".cogniforge/wiki/prd/*.html",
-            ".cogniforge/wiki/sad/*.md",
-            ".cogniforge/wiki/decisions/*.md",
+            ".cogniforge/wiki/prd/*.json",       # Agent format (source of truth)
+            ".cogniforge/wiki/sad/*.json",
+            ".cogniforge/wiki/decisions/*.json",
         ]
     )
     context_module_patterns: list[str] = Field(

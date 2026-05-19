@@ -123,19 +123,19 @@ class ContextLoader:
         for doc_type in doc_types:
             # Map doc type to path patterns
             if doc_type == "prd":
-                context.update(self._load_by_pattern(".cogniforge/wiki/prd/*.html"))
+                context.update(self._load_by_pattern(".cogniforge/wiki/prd/*.json"))
             elif doc_type == "sad":
-                context.update(self._load_by_pattern(".cogniforge/wiki/sad/*.md"))
+                context.update(self._load_by_pattern(".cogniforge/wiki/sad/*.json"))
             elif doc_type == "adr":
-                context.update(self._load_by_pattern(".cogniforge/wiki/decisions/*.md"))
+                context.update(self._load_by_pattern(".cogniforge/wiki/decisions/*.json"))
             elif doc_type == "lld":
-                context.update(self._load_by_pattern(".cogniforge/wiki/lld/**/*.md"))
+                context.update(self._load_by_pattern(".cogniforge/wiki/lld/**/*.json"))
             elif doc_type == "tasks":
-                context.update(self._load_by_pattern(".cogniforge/wiki/tasks/*.md"))
+                context.update(self._load_by_pattern(".cogniforge/wiki/tasks/*.json"))
             elif doc_type == "test_case":
-                context.update(self._load_by_pattern(".cogniforge/wiki/qa/*.md"))
+                context.update(self._load_by_pattern(".cogniforge/wiki/qa/*.json"))
             elif doc_type == "report":
-                context.update(self._load_by_pattern(".cogniforge/wiki/reports/*.md"))
+                context.update(self._load_by_pattern(".cogniforge/wiki/reports/*.json"))
 
         return context
 
