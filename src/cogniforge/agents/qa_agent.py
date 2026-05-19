@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 from cogniforge.agents.base import BaseAgent
+from cogniforge.core.constants import DocumentType
 from cogniforge.core.exceptions import AgentError
 
 
@@ -37,72 +40,60 @@ class QAAgent(BaseAgent):
 
     def _agentic_generate_tests(self, input_data: dict) -> dict:
         module = input_data.get("module", "unknown")
-        output_path = f".cogniforge/wiki/qa/test_cases_{module}.md"
+        test_cases = input_data.get("test_cases", [])
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        doc_id = f"test_cases_{module}"
+        json_path = self.wiki_system.agent_path(DocumentType.TEST_CASE, doc_id=doc_id)
 
         prompt = (
-            f"为以下模块生成测试用例:\n\n"
-            f"模块: {module}\n\n"
-            f"要求：\n"
-            f"1. 先阅读 .cogniforge/wiki/lld/{module}/ 下的 LLD 了解设计\n"
+            f"为以下模块生成测试用例，以 JSON 格式输出并写入:\n\n"
+            f"输出路径: {json_path}\n"
+            f"JSON 结构: {{\"meta\": {{\"doc_id\": \"{doc_id}\", \"type\": \"test_case\", "
+            f"\"module\": \"{module}\", \"title\": \"测试用例 - {module}\", "
+            f"\"author\": \"qa_agent\", \"created\": \"{now}\"}},\n"
+            f" \"test_cases\": [{{\"name\": \"...\", \"type\": \"unit/integration/...\", "
+            f"\"priority\": \"high/medium/low\", \"description\": \"...\", "
+            f"\"steps\": [\"...\"], \"expected_result\": \"...\"}}]}}\n\n"
+            f"输入数据:\n"
+            f"module: {module}\n"
+            f"test_cases: {json.dumps(test_cases, ensure_ascii=False)}\n\n"
+            f"要求:\n"
+            f"1. 先阅读 .cogniforge/wiki/lld/{module}/ 了解设计\n"
             f"2. 阅读 src/{module}/ 下的代码了解实现\n"
-            f"3. 生成测试用例文档写入: {output_path}\n"
+            f"3. 覆盖正常路径、边界条件、错误处理\n"
             f"4. 生成对应的 pytest 测试代码写入 tests/test_{module}.py\n"
-            f"5. 覆盖正常路径、边界条件、错误处理\n"
-            f"6. 完成后用中文回复确认"
+            f"5. 使用中文、只写 JSON 不写 HTML、完成后回复确认"
         )
 
         response = self.agent.generate_agentic(prompt, role="qa")
 
-        artifacts = []
-        for p in [output_path, f"tests/test_{module}.py"]:
-            if (Path(self.config.repo_path) / p).exists():
-                artifacts.append(p)
-                self.wiki_system.git_storage.repo.index.add([p])
-
-        if artifacts:
-            self.wiki_system.git_storage.commit(
-                f"test: add test cases for {module}", "qa_agent"
-            )
-
-        return self.format_result(
-            status="success",
-            message=f"Tests generated for {module}",
-            artifacts=artifacts,
-            reasoning=response.content,
-        )
+        return self._commit_result(json_path, f"测试用例 - {module}", response.content,
+                                   extra_paths=[f"tests/test_{module}.py"])
 
     def _agentic_report(self, input_data: dict) -> dict:
         module = input_data.get("module", "unknown")
-        output_path = f".cogniforge/wiki/reports/test-{module}.md"
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        doc_id = f"test-{module}"
+        json_path = self.wiki_system.agent_path(DocumentType.REPORT, doc_id=doc_id)
 
         prompt = (
-            f"为以下模块生成测试报告:\n\n"
-            f"模块: {module}\n\n"
-            f"要求：\n"
+            f"为以下模块生成测试报告，以 JSON 格式输出并写入:\n\n"
+            f"输出路径: {json_path}\n"
+            f"JSON 结构: {{\"meta\": {{\"doc_id\": \"{doc_id}\", \"type\": \"report\", "
+            f"\"title\": \"测试报告 - {module}\", "
+            f"\"author\": \"qa_agent\", \"created\": \"{now}\"}},\n"
+            f" \"content\": \"... (测试覆盖率、通过/失败统计、风险评估)\"}}\n\n"
+            f"输入数据:\n"
+            f"module: {module}\n\n"
+            f"要求:\n"
             f"1. 阅读 tests/test_{module}.py 和 src/{module}/ 下的代码\n"
             f"2. 运行 pytest 获取测试结果\n"
-            f"3. 生成测试报告写入: {output_path}\n"
-            f"4. 包含：测试覆盖率、通过/失败统计、风险评估\n"
-            f"5. 使用中文\n"
+            f"3. 在 content 字段中包含：测试覆盖率、通过/失败统计、风险评估\n"
+            f"4. 使用中文、只写 JSON 不写 HTML、完成后回复确认"
         )
 
         response = self.agent.generate_agentic(prompt, role="qa")
-
-        output_abs = Path(self.config.repo_path) / output_path
-        if output_abs.exists():
-            self.wiki_system.git_storage.repo.index.add([output_path])
-            self.wiki_system.git_storage.commit(
-                f"docs: test report for {module}", "qa_agent"
-            )
-            return self.format_result(
-                status="success",
-                message=f"Test report generated for {module}",
-                artifacts=[output_path],
-                reasoning=response.content,
-            )
-        return self.format_result(
-            status="failed", message=f"Test report not produced for {module}"
-        )
+        return self._commit_result(json_path, f"测试报告 - {module}", response.content)
 
     def _execute_tests(self, input_data: dict) -> dict:
         module = input_data.get("module", "unknown")
@@ -132,3 +123,36 @@ class QAAgent(BaseAgent):
                 status="failed", message=str(e),
                 data={"passed": False, "output": "", "error": str(e)},
             )
+
+    def _commit_result(self, json_path: Path, title: str, reasoning: str = "",
+                       extra_paths: list[str] | None = None) -> dict:
+        json_abs = Path(self.config.repo_path) / json_path
+        if not json_abs.exists():
+            return self.format_result(status="failed",
+                                       message=f"Claude Code did not produce {json_path}")
+
+        rel_json = str(json_path.relative_to(self.config.repo_path))
+        self.wiki_system.git_storage.repo.index.add([rel_json])
+
+        from cogniforge.wiki.wiki_renderer import render_file
+        html_path = render_file(json_abs)
+        rel_html = str(html_path.relative_to(self.config.repo_path)) if html_path else ""
+        if rel_html:
+            self.wiki_system.git_storage.repo.index.add([rel_html])
+
+        artifacts = [rel_json]
+        if rel_html:
+            artifacts.append(rel_html)
+        for p in (extra_paths or []):
+            if (Path(self.config.repo_path) / p).exists():
+                self.wiki_system.git_storage.repo.index.add([p])
+                artifacts.append(p)
+
+        self.wiki_system.git_storage.commit(f"test: add test cases for {title}", "qa_agent")
+
+        return self.format_result(
+            status="success",
+            message=f"Tests generated: {json_path.stem}",
+            artifacts=artifacts,
+            reasoning=reasoning,
+        )

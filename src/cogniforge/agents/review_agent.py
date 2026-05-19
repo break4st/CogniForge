@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from cogniforge.agents.base import BaseAgent
+from cogniforge.core.constants import DocumentType
 from cogniforge.core.exceptions import AgentError
 
 
@@ -20,40 +22,57 @@ class ReviewAgent(BaseAgent):
             module = input_data.get("module", "unknown")
             files = input_data.get("files", [])
 
-            return self._run_agentic(module, files)
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            doc_id = f"cr-{module}"
+            json_path = self.wiki_system.agent_path(DocumentType.REPORT, doc_id=doc_id)
+
+            prompt = (
+                f"对以下模块进行代码评审，以 JSON 格式输出并写入:\n\n"
+                f"输出路径: {json_path}\n"
+                f"JSON 结构: {{\"meta\": {{\"doc_id\": \"{doc_id}\", \"type\": \"report\", "
+                f"\"title\": \"CR 报告 - {module}\", "
+                f"\"author\": \"review_agent\", \"created\": \"{now}\"}},\n"
+                f" \"content\": \"... (使用 PASS/FAIL 标注每项检查，包含改进建议)\"}}\n\n"
+                f"输入数据:\n"
+                f"module: {module}\n"
+                f"files: {', '.join(files) if files else '所有变更文件'}\n\n"
+                f"要求:\n"
+                f"1. 先阅读 .cogniforge/wiki/lld/{module}/ 了解设计意图\n"
+                f"2. 阅读相关代码文件\n"
+                f"3. 在 content 字段中使用 PASS/FAIL 标注每项检查\n"
+                f"4. 使用中文、只写 JSON 不写 HTML、完成后回复确认"
+            )
+
+            response = self.agent.generate_agentic(prompt, role="reviewer")
+            return self._commit_result(json_path, f"CR 报告 - {module}", response.content)
 
         except Exception as e:
             return self.format_result(status="failed", message=str(e))
 
-    def _run_agentic(self, module: str, files: list) -> dict:
-        doc_id = f"cr-{module}"
-        output_path = f".cogniforge/wiki/reports/{doc_id}.md"
+    def _commit_result(self, json_path: Path, title: str, reasoning: str = "") -> dict:
+        json_abs = Path(self.config.repo_path) / json_path
+        if not json_abs.exists():
+            return self.format_result(status="failed",
+                                       message=f"Claude Code did not produce {json_path}")
 
-        prompt = (
-            f"对以下模块进行代码评审:\n\n"
-            f"模块: {module}\n"
-            f"文件: {', '.join(files) if files else '所有变更文件'}\n\n"
-            f"要求：\n"
-            f"1. 先阅读 .cogniforge/wiki/lld/{module}/ 下的 LLD 了解设计意图\n"
-            f"2. 阅读相关代码文件\n"
-            f"3. 生成 CR 报告写入: {output_path}\n"
-            f"4. 报告中使用 PASS/FAIL 标注每项检查\n"
-        )
+        rel_json = str(json_path.relative_to(self.config.repo_path))
+        self.wiki_system.git_storage.repo.index.add([rel_json])
 
-        response = self.agent.generate_agentic(prompt, role="reviewer")
+        from cogniforge.wiki.wiki_renderer import render_file
+        html_path = render_file(json_abs)
+        rel_html = str(html_path.relative_to(self.config.repo_path)) if html_path else ""
+        if rel_html:
+            self.wiki_system.git_storage.repo.index.add([rel_html])
 
-        output_abs = Path(self.config.repo_path) / output_path
-        if output_abs.exists():
-            self.wiki_system.git_storage.repo.index.add([output_path])
-            self.wiki_system.git_storage.commit(
-                f"feat: code review for {module}", "review_agent"
-            )
-            return self.format_result(
-                status="success",
-                message=f"CR completed for {module}",
-                artifacts=[output_path],
-                reasoning=response.content,
-            )
+        artifacts = [rel_json]
+        if rel_html:
+            artifacts.append(rel_html)
+
+        self.wiki_system.git_storage.commit(f"feat: code review for {title}", "review_agent")
+
         return self.format_result(
-            status="failed", message=f"CR report not produced for {module}"
+            status="success",
+            message=f"CR completed: {json_path.stem}",
+            artifacts=artifacts,
+            reasoning=reasoning,
         )
