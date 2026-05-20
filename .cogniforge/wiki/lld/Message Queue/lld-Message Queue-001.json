@@ -1,0 +1,216 @@
+{
+  "meta": {
+    "doc_id": "lld-Message Queue-001",
+    "type": "lld",
+    "module": "Message Queue",
+    "title": "LLD - Message Queue",
+    "author": "design_agent",
+    "created": "2026-05-20 11:31"
+  },
+  "overview": "消息队列模块，为系统提供异步消息处理能力，主要用于统计任务计算、缓存预热/重建等耗时操作的异步化执行。采用轻量级消息代理模式：Producer 将消息投递到指定 Topic，Consumer Worker 从 Topic 拉取消息并执行对应业务逻辑，处理完成后提交 Ack 确认。消息队列支持可靠投递（at-least-once 语义）、自动重试（指数退避，最多 3 次）和死信队列（超过重试次数或处理超时的消息转入 DLQ）。消息生命周期流转：created（创建）→ pending（待消费）→ processing（处理中）→ completed（成功）/ failed（失败）→ 超过重试次数转入 dead（死信）。Topic 按业务用途划分为 stats_calc（统计计算）、cache_warm（缓存预热）、cache_rebuild（缓存重建），支持后续按需扩展。采用 Redis Streams 作为底层存储以实现消息持久化和消费者组管理，Worker 实例支持水平扩展，同一消费者组内的消息通过 Redis Streams 的消费者组机制实现负载均衡。",
+  "data_models": [
+    {
+      "name": "MessageRecord",
+      "type": "struct",
+      "fields": [
+        { "name": "messageId", "type": "string", "description": "消息 ID，UUID v4 格式，全局唯一" },
+        { "name": "topic", "type": "string", "description": "Topic 名称枚举：'stats_calc' / 'cache_warm' / 'cache_rebuild'，表示消息所属业务类型" },
+        { "name": "body", "type": "object", "description": "消息体，JSON 格式，包含业务处理所需的全部参数。不同 topic 的消息体结构不同，由对应的 MessageSchema 定义" },
+        { "name": "status", "type": "string", "description": "消息状态枚举：'pending' / 'processing' / 'completed' / 'failed' / 'dead'，默认 'pending'" },
+        { "name": "retryCount", "type": "int", "description": "已重试次数，默认 0，最大 3。每次处理失败后递增" },
+        { "name": "maxRetries", "type": "int", "description": "最大重试次数，固定 3。超过后消息转入 dead 状态" },
+        { "name": "priority", "type": "int", "description": "消息优先级，取值 0-9，数值越大优先级越高，默认 5。高优先级消息在消费时优先被拉取" },
+        { "name": "timeoutSeconds", "type": "int", "description": "消息处理超时时间（秒），默认 300（5 分钟）。超过此时间未 Ack 的消息视为处理失败，自动重试或转死信" },
+        { "name": "errorMessage", "type": "string", "description": "最后一次处理失败的错误信息，status=failed/dead 时填充，用于排查问题" },
+        { "name": "createdAt", "type": "string", "description": "消息创建时间 ISO 8601" },
+        { "name": "processingAt", "type": "string", "description": "最近一次开始处理时间 ISO 8601，status 变为 processing 时更新" },
+        { "name": "completedAt", "type": "string", "description": "处理完成时间 ISO 8601，status 变为 completed/failed/dead 时更新" }
+      ]
+    },
+    {
+      "name": "TopicConfig",
+      "type": "config",
+      "fields": [
+        { "name": "topic", "type": "string", "description": "Topic 名称，如 'stats_calc' / 'cache_warm' / 'cache_rebuild'" },
+        { "name": "description", "type": "string", "description": "Topic 用途说明" },
+        { "name": "consumerGroup", "type": "string", "description": "消费者组名称，同一组内的消费者实例负载均衡消费消息" },
+        { "name": "maxRetries", "type": "int", "description": "该 Topic 的消息最大重试次数，默认 3" },
+        { "name": "defaultTimeoutSeconds", "type": "int", "description": "该 Topic 的消息默认处理超时时间（秒）" },
+        { "name": "deadLetterRetentionHours", "type": "int", "description": "死信消息保留时长（小时），默认 72 小时后自动清理" }
+      ]
+    },
+    {
+      "name": "StatsCalcMessage",
+      "type": "struct",
+      "fields": [
+        { "name": "type", "type": "string", "description": "统计类型枚举：'student' / 'class' / 'grade' / 'all'，与 Statistics Service 的 refresh type 一致" },
+        { "name": "dimensionId", "type": "number", "description": "维度 ID，type=student/class/grade 时指定具体业务 ID，type=all 时为 null" },
+        { "name": "period", "type": "string", "description": "统计周期，如 '2026-SEM1'，可选。为 null 时表示统计全部已有周期" },
+        { "name": "taskId", "type": "string", "description": "对应的 statistics_task 表任务 ID UUID，用于回调更新任务状态和进度" },
+        { "name": "triggerSource", "type": "string", "description": "触发来源，'manual'（用户手动刷新） / 'auto'（定时任务触发），用于日志审计" }
+      ]
+    },
+    {
+      "name": "CacheWarmMessage",
+      "type": "struct",
+      "fields": [
+        { "name": "cacheKey", "type": "string", "description": "需要预热的缓存 Key，如 'cache:class:5:members' 或 'stats:dashboard:2026-SEM1'" },
+        { "name": "dataSource", "type": "string", "description": "数据来源方法/查询标识，用于 Worker 定位如何重新生成缓存数据" },
+        { "name": "ttlSeconds", "type": "number", "description": "缓存 TTL（秒），写入缓存时使用" }
+      ]
+    },
+    {
+      "name": "CacheRebuildMessage",
+      "type": "struct",
+      "fields": [
+        { "name": "prefix", "type": "string", "description": "需要重建的缓存 Key 前缀，如 'cache:class' / 'stats:student:*'，多个前缀用逗号分隔" },
+        { "name": "reason", "type": "string", "description": "重建原因，如 'batch_class_change'（批量分班变更） / 'data_migration'（数据迁移），用于日志审计" }
+      ]
+    },
+    {
+      "name": "DeadLetterRecord",
+      "type": "struct",
+      "fields": [
+        { "name": "messageId", "type": "string", "description": "原始消息 ID" },
+        { "name": "topic", "type": "string", "description": "原始 Topic" },
+        { "name": "body", "type": "object", "description": "原始消息体" },
+        { "name": "failureHistory", "type": "object[]", "description": "失败历史记录数组，每项包含 { attempt: number, error: string, timestamp: string }，记录每次重试的时间戳和错误信息" },
+        { "name": "deadAt", "type": "string", "description": "转入死信队列的时间 ISO 8601" },
+        { "name": "expireAt", "type": "string", "description": "死信过期时间 ISO 8601，超过此时间的死信可被自动清理" }
+      ]
+    },
+    {
+      "name": "AckResult",
+      "type": "struct",
+      "fields": [
+        { "name": "messageId", "type": "string", "description": "被确认的消息 ID" },
+        { "name": "status", "type": "string", "description": "处理结果状态：'completed'（成功）/ 'failed'（失败，需重试）/ 'dead'（失败且不再重试），由 Consumer Worker 在业务逻辑执行完毕后上报" },
+        { "name": "errorMessage", "type": "string", "description": "处理异常时的错误信息，status=failed/dead 时填充" }
+      ]
+    },
+    {
+      "name": "QueueMetrics",
+      "type": "monitor",
+      "fields": [
+        { "name": "topic", "type": "string", "description": "Topic 名称" },
+        { "name": "pendingCount", "type": "int", "description": "待消费消息数" },
+        { "name": "processingCount", "type": "int", "description": "正在处理的消息数" },
+        { "name": "deadCount", "type": "int", "description": "当前死信数" },
+        { "name": "completedCount", "type": "int", "description": "累计完成消息数（从上次指标重置以来）" },
+        { "name": "failedCount", "type": "int", "description": "累计失败消息数（从上次指标重置以来）" },
+        { "name": "avgProcessingTimeMs", "type": "float", "description": "平均消息处理耗时（毫秒），滑动窗口计算" },
+        { "name": "throughputPerMinute", "type": "float", "description": "最近 1 分钟的消息吞吐量（条/分钟）" },
+        { "name": "backlogEstimate", "type": "int", "description": "积压估算：pending + processing 的消息总数，用于判断是否触发消费者扩容" }
+      ]
+    },
+    {
+      "name": "MessageQueueConfig",
+      "type": "config",
+      "fields": [
+        { "name": "enablePersistence", "type": "boolean", "description": "是否启用消息持久化，默认 true。通过 Redis Streams 的 RDB/AOF 持久化保证消息不丢失" },
+        { "name": "pollIntervalMs", "type": "int", "description": "消费者轮询间隔（毫秒），默认 1000。消费者空闲时每隔此时间拉取一次新消息" },
+        { "name": "batchSize", "type": "int", "description": "消费者批量拉取消息数，默认 10。每次轮询最多拉取的待处理消息数，用于控制并发度" },
+        { "name": "claimIntervalSeconds", "type": "int", "description": "消息认领检查间隔（秒），默认 60。检查长时间未 Ack 的消息并将其重新分配给其他消费者" },
+        { "name": "cleanupIntervalHours", "type": "int", "description": "死信和过期消息清理间隔（小时），默认 24。定时清理超过保留时长的死信和已完成消息" }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "投递消息",
+      "endpoint": "MQ.produce(topic: string, body: object, options?: ProduceOptions): string",
+      "description": "向指定 Topic 投递一条消息。返回生成的 messageId（UUID）。消息写入 Redis Stream 并记录 MessageRecord。投递前校验 topic 是否已注册、body 是否符合对应 schema。投递成功后消息状态设为 pending，等待 Worker 拉取消费",
+      "parameters": [
+        { "name": "topic", "type": "string", "description": "目标 Topic 名称，必须是在 TopicConfig 中已注册的 Topic，可选值：'stats_calc' / 'cache_warm' / 'cache_rebuild'" },
+        { "name": "body", "type": "object", "description": "消息体内容 JSON，必须符合对应 Topic 的 MessageSchema 定义" },
+        { "name": "options.priority", "type": "int", "description": "可选，消息优先级 0-9，默认 5。值越高优先级越高，消费者优先拉取高优先级消息" },
+        { "name": "options.timeoutSeconds", "type": "int", "description": "可选，自定义处理超时秒数，覆盖 Topic 默认超时配置" }
+      ]
+    },
+    {
+      "name": "注册消费者",
+      "endpoint": "MQ.consume(topic: string, handler: ConsumerHandler): ConsumerRegistration",
+      "description": "注册一个指定 Topic 的消费者处理函数。消费者启动后持续轮询 Topic 中的待处理消息（按 pollIntervalMs 间隔），每次拉取 batchSize 条消息，每条消息由 handler 异步处理。ConsumerHandler 签名：(message: MessageRecord) => Promise<AckResult>。注册返回 ConsumerRegistration 包含 registrationId 和 topic",
+      "parameters": [
+        { "name": "topic", "type": "string", "description": "要消费的 Topic 名称" },
+        { "name": "handler", "type": "function", "description": "消息处理回调函数，接收 MessageRecord 参数，返回 AckResult。函数内执行业务逻辑（如聚合计算、缓存回填），处理完毕后通过 AckResult 上报结果" },
+        { "name": "options.concurrency", "type": "int", "description": "可选，消费者并发处理数，默认 5。限制同时处理的消息数量" }
+      ]
+    },
+    {
+      "name": "确认消息处理",
+      "endpoint": "MQ.ack(messageId: string, result: AckResult): boolean",
+      "description": "Consumer Worker 在处理完消息后调用此接口确认处理结果。处理成功 status='completed' 时将消息从 pending 队列移除并记录完成状态；处理失败 status='failed' 时递增 retryCount；若 retryCount >= maxRetries 则消息转入死信队列（status='dead'）。内部自动更新 MessageRecord 的 processingAt/completedAt 时间戳",
+      "parameters": [
+        { "name": "messageId", "type": "string", "description": "消息 ID" },
+        { "name": "result.status", "type": "string", "description": "处理结果：'completed'（成功）/'failed'（可重试失败）/'dead'（不可重试失败，如消息格式错误）" },
+        { "name": "result.errorMessage", "type": "string", "description": "失败时的错误描述，便于追溯" }
+      ]
+    },
+    {
+      "name": "查询消息状态",
+      "endpoint": "MQ.getMessage(messageId: string): MessageRecord | null",
+      "description": "根据 messageId 查询消息的完整状态记录。返回 MessageRecord 包含当前状态、重试次数、错误信息等。消息不存在时返回 null。供 Statistics Service 的轮询机制和运维监控使用",
+      "parameters": [
+        { "name": "messageId", "type": "string", "description": "消息 ID" }
+      ]
+    },
+    {
+      "name": "重新投递死信消息",
+      "endpoint": "MQ.redeliver(messageId: string): string",
+      "description": "将死信队列中的消息重新投递到原始 Topic 进行重试。创建一条新消息（新的 messageId），body 和 topic 与原消息一致，retryCount 重置为 0。用于运维人员排查死信原因并修复后手动重试。返回新的 messageId",
+      "parameters": [
+        { "name": "messageId", "type": "string", "description": "需要重新投递的死信消息 ID" }
+      ]
+    },
+    {
+      "name": "批量重新投递死信",
+      "endpoint": "MQ.redeliverBatch(topic?: string): string[]",
+      "description": "批量重新投递死信消息。不传 topic 时投递所有 Topic 下的死信，传 topic 时仅投递指定 Topic 的死信。返回所有新消息 ID 的数组。用于全量死信恢复场景",
+      "parameters": [
+        { "name": "topic", "type": "string", "description": "可选，指定 Topic 名称，仅重新投递该 Topic 下的死信" }
+      ]
+    },
+    {
+      "name": "查看死信列表",
+      "endpoint": "MQ.listDeadLetters(topic?: string, page?: int, pageSize?: int): DeadLetterRecord[]",
+      "description": "分页查询死信队列中的消息列表，按 deadAt 降序排列。支持按 Topic 过滤。每项 DeadLetterRecord 包含完整的失败历史记录，供运维人员分析失败原因和决定是否重新投递",
+      "parameters": [
+        { "name": "topic", "type": "string", "description": "可选，按 Topic 过滤死信" },
+        { "name": "page", "type": "int", "description": "页码，从 1 开始，默认 1" },
+        { "name": "pageSize", "type": "int", "description": "每页条数，默认 20，最大 100" }
+      ]
+    },
+    {
+      "name": "获取队列指标",
+      "endpoint": "MQ.metrics(topic?: string): QueueMetrics | QueueMetrics[]",
+      "description": "获取消息队列的运行指标。传 topic 时返回该 Topic 的指标，不传时返回所有 Topic 的指标数组。指标包括各状态消息数量、平均处理耗时、吞吐量、积压估算等。由运维监控系统定期采集，用于评估消息队列健康度和消费者处理能力",
+      "parameters": [
+        { "name": "topic", "type": "string", "description": "可选，指定 Topic 名称，仅返回该 Topic 的指标" }
+      ]
+    },
+    {
+      "name": "暂停消费者",
+      "endpoint": "MQ.pauseConsumer(registrationId: string): boolean",
+      "description": "暂停指定消费者的消息拉取。暂停后消费者实例仍存活但不再从队列拉取新消息，当前正在处理的消息继续执行直到超时或完成。用于运维排障或消费者服务升级场景。返回 true 表示暂停成功",
+      "parameters": [
+        { "name": "registrationId", "type": "string", "description": "消费者注册 ID，由 MQ.consume 返回" }
+      ]
+    },
+    {
+      "name": "恢复消费者",
+      "endpoint": "MQ.resumeConsumer(registrationId: string): boolean",
+      "description": "恢复已暂停的消费者，使其继续从队列拉取消息。自动从上次暂停位置继续消费，不丢失消息。返回 true 表示恢复成功",
+      "parameters": [
+        { "name": "registrationId", "type": "string", "description": "消费者注册 ID" }
+      ]
+    },
+    {
+      "name": "清理过期消息",
+      "endpoint": "MQ.cleanup(): CleanupResult",
+      "description": "手动触发过期消息清理。清理规则：超过保留时长的死信、超过 7 天的已完成消息、超过 7 天的失败消息。该接口也由定时任务（每 24 小时）自动调用。返回清理结果包含：{ removedDeadCount: int, removedCompletedCount: int, removedFailedCount: int }",
+      "parameters": []
+    }
+  ],
+  "error_handling": "消息队列模块的异常统一以 MqException 形式抛出，包含 errorCode 枚举：TOPIC_NOT_FOUND（Topic 未注册，检查 TopicConfig 配置）、INVALID_MESSAGE_BODY（消息体不符合对应 MessageSchema，校验 body 的必填字段和类型）、MESSAGE_PROCESSING_TIMEOUT（消息处理超时，超过 timeoutSeconds 后触发认领机制）、MESSAGE_ACK_FAILED（Ack 确认操作本身失败，如 Redis 写入异常）、CONSUMER_REGISTRATION_FAILED（消费者注册失败，如 Topic 不存在或无可用消费者组）。重试策略：Consumer Worker 处理消息时业务逻辑抛出的业务异常（如数据库连接失败、下游服务超时）通过 MQ.ack 返回 failed 状态触发重试，重试采用指数退避：第一次重试延迟 30 秒，第二次 60 秒，第三次 120 秒（最大 3 次）；消息格式错误、参数校验失败等不可重试的异常由 Worker 直接以 status='dead' 确认，不触发重试。死信处理：转入死信的消息由运维人员通过 listDeadLetters 查看失败历史，分析根因后通过 redeliver 重新投递，或手动清除。消息认领机制：MQ 内部定时（每 claimIntervalSeconds 秒）扫描所有 processing 状态的消息，检查是否超时（processingAt + timeoutSeconds < now），超时的消息重新标记为 pending 并递增 retryCount（但不重置 processingAt），防止 Consumer 崩溃导致消息永远卡在 processing 状态。Redis 不可用时的降级策略：MQ.produce 投递失败（Redis 连接异常）时，调用方可选择将消息以 WARN 日志落盘，后续由定时扫描任务（cron 每 5 分钟）从 statistics_task 表扫描长期 pending 的记录重新投递。消费者端 Redis 断连时自动暂停消费，按指数退避重连（1s → 2s → 4s → 8s，最大 60 秒），重连成功后自动恢复消费。监控告警：当任意 Topic 的 pendingCount > 100 或 deadCount > 10 时，记录 ERROR 级别告警日志并在运维指标中标记异常，触发 ops 通知渠道。"
+}
