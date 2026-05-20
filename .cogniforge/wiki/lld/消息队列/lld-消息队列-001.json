@@ -1,0 +1,169 @@
+{
+  "meta": {
+    "doc_id": "lld-消息队列-001",
+    "type": "lld",
+    "module": "消息队列",
+    "title": "LLD - 消息队列",
+    "author": "design_agent",
+    "created": "2026-05-20 16:15"
+  },
+  "overview": "消息队列是基于 AMQP 协议的异步消息中间件，位于系统数据层，核心作用是解耦部署编排服务与SSH执行代理之间的同步依赖。部署编排服务将部署任务以消息形式投递至 deployment.tasks 队列，SSH执行代理异步消费执行；SSH执行代理在执行过程中将日志行与状态变更以消息形式回写至 deployment.logs 队列，部署编排服务异步消费处理后推送 WebSocket 及更新数据库。采用 Direct Exchange 路由模型，消息持久化确保 Broker 重启不丢消息。每条队列绑定独立死信交换机（DLX），消费失败重试3次后自动路由至死信队列，防止消息堆积阻塞正常消费。配合消费者确认机制（manual ack）实现 Exactly-Once 投递语义（结合业务幂等去重），prefetch_count=1 保证公平分发。所有队列设置消息 TTL（24h），超时未消费的消息自动过期进入死信队列。",
+  "data_models": [
+    {
+      "name": "deployment.tasks",
+      "type": "exchange",
+      "description": "部署任务交换机与队列拓扑定义。部署编排服务作为生产者将 DeploymentTaskMessage 投递至此交换机，通过路由键 deployment.tasks 转发至绑定队列，SSH执行代理作为消费者从队列拉取消息。交换机和队列均为 durable（持久化），Broker 重启后自动重建。绑定死信交换机 dlx.deployment，消息消费失败（nack requeue=false 或超时未 ack）后自动路由至死信队列。消息 TTL=86400000ms（24h），超时未消费进入死信队列。",
+      "fields": [
+        { "name": "exchange_name", "type": "string", "description": "amq.direct（使用 AMQP 标准 Direct Exchange，或以同名 exchange 创建 type=direct）" },
+        { "name": "exchange_type", "type": "string", "description": "direct — 直连交换机，通过路由键精确匹配队列" },
+        { "name": "exchange_durable", "type": "boolean", "description": "true — 交换机持久化，Broker 重启后不丢失定义" },
+        { "name": "queue_name", "type": "string", "description": "deployment.tasks — 部署任务队列名" },
+        { "name": "queue_durable", "type": "boolean", "description": "true — 队列持久化，Broker 重启后重建" },
+        { "name": "routing_key", "type": "string", "description": "deployment.tasks — 路由键，与队列名一致" },
+        { "name": "prefetch_count", "type": "integer", "description": "1 — 每次只投递一条消息给消费者，防止单个消费者积压多条消息，保证公平分发" },
+        { "name": "message_ttl_ms", "type": "integer", "description": "86400000 — 消息存活时间 24 小时，超时未消费自动死信" },
+        { "name": "delivery_mode", "type": "integer", "description": "2 — 消息持久化投递，写入磁盘，重启不丢失" },
+        { "name": "dlx_exchange", "type": "string", "description": "dlx.deployment — 死信交换机名称，消息消费失败后的目标交换机" },
+        { "name": "dlx_routing_key", "type": "string", "description": "deployment.tasks.dlx — 死信路由键，将消息路由至死信队列" },
+        { "name": "dlx_queue", "type": "string", "description": "deployment.tasks.dlx — 死信队列名，存储超过重试次数或超时的死信消息" },
+        { "name": "max_retry", "type": "integer", "description": "3 — 消费失败最大重试次数，超过后自动 dead-letter" }
+      ]
+    },
+    {
+      "name": "deployment.logs",
+      "type": "exchange",
+      "description": "日志回写交换机与队列拓扑定义。SSH执行代理作为生产者将 DeploymentLogMessage 投递至此交换机，部署编排服务作为消费者异步消费处理后更新数据库 and WebSocket 推送。交换机/队列持久化，绑定额外的死信处理。日志消息体量较大但单条体积极小，prefetch_count=100 允许批量消费提升吞吐。消息 TTL=3600000ms（1h），日志消息时效性要求低于任务消息。",
+      "fields": [
+        { "name": "exchange_name", "type": "string", "description": "amq.direct（复用标准 Direct Exchange）" },
+        { "name": "exchange_type", "type": "string", "description": "direct — 直连交换机" },
+        { "name": "exchange_durable", "type": "boolean", "description": "true" },
+        { "name": "queue_name", "type": "string", "description": "deployment.logs — 日志回写队列名" },
+        { "name": "queue_durable", "type": "boolean", "description": "true" },
+        { "name": "routing_key", "type": "string", "description": "deployment.logs — 路由键" },
+        { "name": "prefetch_count", "type": "integer", "description": "100 — 日志消息批量消费提升吞吐" },
+        { "name": "message_ttl_ms", "type": "integer", "description": "3600000 — 日志消息 1 小时 TTL" },
+        { "name": "delivery_mode", "type": "integer", "description": "2 — 消息持久化" },
+        { "name": "dlx_exchange", "type": "string", "description": "dlx.deployment — 与任务队列共用同一死信交换机" },
+        { "name": "dlx_routing_key", "type": "string", "description": "deployment.logs.dlx — 日志死信路由键" },
+        { "name": "dlx_queue", "type": "string", "description": "deployment.logs.dlx — 日志死信队列" },
+        { "name": "max_retry", "type": "integer", "description": "3 — 消费失败最大重试次数" }
+      ]
+    },
+    {
+      "name": "dlx.deployment",
+      "type": "exchange",
+      "description": "部署模块通用死信交换机。所有部署相关队列的死信消息统一路由至该交换机，根据 routing_key 分发至不同的死信队列。运维人员可通过监控死信队列堆积情况发现消费异常。死信交换机本身不设置 TTL，死信消息永久保留至人工处理或设置独立 TTL。死信队列采用懒加载消费方式（不自动消费，需手动拉取），避免异常消息重复触发消费错误。",
+      "fields": [
+        { "name": "exchange_name", "type": "string", "description": "dlx.deployment — 死信交换机名" },
+        { "name": "exchange_type", "type": "string", "description": "direct — 直连分发，根据路由键精确匹配死信队列" },
+        { "name": "exchange_durable", "type": "boolean", "description": "true" },
+        { "name": "queues", "type": "array", "description": "绑定的死信队列：deployment.tasks.dlx（路由键 deployment.tasks.dlx）、deployment.logs.dlx（路由键 deployment.logs.dlx）" }
+      ]
+    },
+    {
+      "name": "MessageAckState",
+      "type": "internal",
+      "description": "消息消费确认状态模型。每条消息被消费者接收后必须显式确认（ack）或拒绝（nack），未确认的消息在消费者断线后自动重新入队投递至其他消费者。该机制保障消息不会因消费者进程崩溃而丢失。部署编排服务和SSH执行代理均采用手动确认模式（autoAck=false），消息处理成功后调用 channel.basicAck 确认，处理失败时调用 channel.basicNack 并决定是否 requeue。",
+      "fields": [
+        { "name": "delivery_tag", "type": "integer", "description": "AMQP 投递标签，每条消息的唯一投递标识，用于 ack/nack 时指定消息" },
+        { "name": "consumer_tag", "type": "string", "description": "消费者标签，标识消费通道中的具体消费者实例" },
+        { "name": "redelivered", "type": "boolean", "description": "是否为重投递消息（消费者 nack requeue 导致），辅助幂等判断" },
+        { "name": "retry_count", "type": "integer", "description": "消息已重试次数，通过死信队列 header x-death 或业务自定义 header 记录" },
+        { "name": "ack_action", "type": "string", "description": "确认动作枚举：ack（处理成功，确认消费）/ nack_requeue（处理失败，重新入队再次消费）/ nack_deadletter（处理失败，不重新入队，转死信）" }
+      ]
+    },
+    {
+      "name": "ConnectionPoolConfig",
+      "type": "config",
+      "description": "AMQP 连接池配置。消息队列客户端使用连接池管理底层 TCP 连接（Connection）与通道（Channel）。Connection 为长连接，Channel 为轻量级复用通道。部署编排服务和 SSH执行代理 各自维护独立的连接池，连接池配置保持一致。",
+      "fields": [
+        { "name": "host", "type": "string", "description": "消息队列服务器地址，如 192.168.1.100" },
+        { "name": "port", "type": "integer", "description": "AMQP 端口，默认为 5672" },
+        { "name": "vhost", "type": "string", "description": "虚拟主机，如 /deploy" },
+        { "name": "username", "type": "string", "description": "登录用户名" },
+        { "name": "password", "type": "string", "description": "登录密码" },
+        { "name": "connection_timeout_ms", "type": "integer", "description": "连接超时时间，5000ms" },
+        { "name": "heartbeat_interval_s", "type": "integer", "description": "心跳间隔秒数，60s，用于检测连接是否存活" },
+        { "name": "max_connections", "type": "integer", "description": "最大连接数，默认 5" },
+        { "name": "max_channels_per_connection", "type": "integer", "description": "单连接最大通道数，默认 10" },
+        { "name": "recovery_interval_ms", "type": "integer", "description": "自动重连间隔，5000ms" }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "PublishToTasks",
+      "endpoint": "AMQP::channel.basicPublish — exchange=amq.direct, routingKey=deployment.tasks",
+      "description": "部署任务消息投递接口。部署编排服务 TriggerDeployment 流程中在部署记录创建成功后调用此接口，将 DeploymentTaskMessage 投递至 deployment.tasks 交换机。投递时设置 deliveryMode=2（持久化）和 expiration=86400000（24h TTL）。投递失败时业务层回滚部署记录并返回 502。该接口要求必须确认消息已到达交换机（Publisher Confirm 模式），防止 Broker 接收前丢失。",
+      "parameters": [
+        { "name": "exchange", "type": "string", "description": "目标交换机，固定值 amq.direct" },
+        { "name": "routingKey", "type": "string", "description": "路由键，固定值 deployment.tasks" },
+        { "name": "body", "type": "JSON string", "description": "DeploymentTaskMessage 的 JSON 序列化字符串" },
+        { "name": "deliveryMode", "type": "integer", "description": "消息持久化标识，固定值 2" },
+        { "name": "expiration", "type": "string", "description": "消息 TTL（毫秒），固定值 '86400000'（24h）" },
+        { "name": "headers", "type": "object", "description": "消息头，包含 content_type=application/json 及自定义 trace_id 用于链路追踪" }
+      ]
+    },
+    {
+      "name": "PublishToLogs",
+      "endpoint": "AMQP::channel.basicPublish — exchange=amq.direct, routingKey=deployment.logs",
+      "description": "日志回写消息投递接口。SSH执行代理在部署执行过程中调用此接口，将 DeploymentLogMessage 投递至 deployment.logs 交换机。日志消息重要性低于任务消息，不要求 Publisher Confirm 严格确认（Fire-and-Forget 模式），代理内部重试3次仍失败后降级至本地日志，不阻塞部署执行。但 status_change 类型的消息建议启用 Publisher Confirm，确保部署状态变更可靠传递。",
+      "parameters": [
+        { "name": "exchange", "type": "string", "description": "目标交换机，固定值 amq.direct" },
+        { "name": "routingKey", "type": "string", "description": "路由键，固定值 deployment.logs" },
+        { "name": "body", "type": "JSON string", "description": "DeploymentLogMessage 的 JSON 序列化字符串" },
+        { "name": "deliveryMode", "type": "integer", "description": "消息持久化标识，固定值 2" },
+        { "name": "expiration", "type": "string", "description": "消息 TTL（毫秒），固定值 '3600000'（1h）" },
+        { "name": "headers", "type": "object", "description": "消息头，包含 content_type=application/json" }
+      ]
+    },
+    {
+      "name": "ConsumeDeploymentTasks",
+      "endpoint": "AMQP::channel.basicConsume — queue=deployment.tasks, autoAck=false",
+      "description": "部署任务消费接口。SSH执行代理通过此接口从 deployment.tasks 队列拉取任务消息。采用手动确认模式（autoAck=false），消息处理成功（脚本启动完成）后调用 basicAck 告知 Broker 删除消息；处理失败时调用 basicNack(requeue=true)，Broker 将消息重新入队投递给其他消费者。同一消息最多重试3次，重试次数记录在消息头 x-death 中，超过3次后调用 basicNack(requeue=false) 将消息投递至死信队列。",
+      "parameters": [
+        { "name": "queue", "type": "string", "description": "队列名，固定值 deployment.tasks" },
+        { "name": "autoAck", "type": "boolean", "description": "是否自动确认，固定值 false（手动确认）" },
+        { "name": "prefetchCount", "type": "integer", "description": "QoS 预取计数，固定值 1（每次只取一条，保证公平分发）" },
+        { "name": "consumerTag", "type": "string", "description": "消费者标签，格式 ssh-agent-{hostname}-{pid}，用于运维识别消费者来源" },
+        { "name": "callback", "type": "function", "description": "消息处理回调函数，接收 deliveryTag/envelope/body/properties，内部实现幂等去重、反序列化、SSH执行、ack/nack 决策" }
+      ]
+    },
+    {
+      "name": "ConsumeDeploymentLogs",
+      "endpoint": "AMQP::channel.basicConsume — queue=deployment.logs, autoAck=false",
+      "description": "日志回写消息消费接口。部署编排服务通过此接口从 deployment.logs 队列拉取 SSH执行代理 回写的日志消息。采用手动确认（autoAck=false）和批量确认模式配合 prefetch_count=100 提升吞吐。消费处理逻辑：反序列化为 DeploymentLogMessage → type=log 写入 deployment_logs 表 + WebSocket 推送 → type=status_change 更新 deployments 表 + WebSocket 推送。处理成功后 basicAck 单条确认；WARN 级别异常使用 basicNack(requeue=true) 重试；ERROR 级别异常使用 basicNack(requeue=false) 投递死信。",
+      "parameters": [
+        { "name": "queue", "type": "string", "description": "队列名，固定值 deployment.logs" },
+        { "name": "autoAck", "type": "boolean", "description": "是否自动确认，固定值 false" },
+        { "name": "prefetchCount", "type": "integer", "description": "QoS 预取计数，固定值 100（批量消费提升吞吐）" },
+        { "name": "consumerTag", "type": "string", "description": "消费者标签，格式 orchestrator-{hostname}-{pid}" },
+        { "name": "callback", "type": "function", "description": "消息处理回调函数" }
+      ]
+    },
+    {
+      "name": "AcknowledgeMessage",
+      "endpoint": "AMQP::channel.basicAck / basicNack",
+      "description": "消息确认与拒绝接口。消费者处理完消息后需显式调用确认或拒绝接口告知 Broker 处理结果。basicAck 通知 Broker 消息已成功处理可删除；basicNack 通知 Broker 需重新入队或投递死信。确认操作必须在消费通道中执行，Broker 通过 deliveryTag 精确定位消息。",
+      "parameters": [
+        { "name": "action", "type": "string", "description": "确认动作，枚举值：ack / nack_requeue / nack_deadletter" },
+        { "name": "deliveryTag", "type": "integer", "description": "投递标签，从消息投递回调中获取，唯一标识本次投递" },
+        { "name": "multiple", "type": "boolean", "description": "是否批量确认，true 表示确认 deliveryTag 及之前所有未确认消息（仅用于 basicAck）" },
+        { "name": "requeue", "type": "boolean", "description": "nack 时是否重新入队：nack_requeue=true（重试）、nack_deadletter=false（死信）" }
+      ]
+    },
+    {
+      "name": "ConnectionManager",
+      "endpoint": "AMQP::connect / close / recovery",
+      "description": "连接生命周期管理接口。消息队列客户端与 Broker 之间通过 TCP 长连接通信，连接管理器负责连接的创建、心跳保活、自动重连与优雅关闭。所有生产者和消费者共享连接管理器实例，通过 Channel 复用连接。Broker 重启或网络闪断时自动重连，重连期间生产者消息排队缓冲至本地内存（最多 1000 条），消费者连接恢复后自动恢复队列监听。",
+      "parameters": [
+        { "name": "connect", "type": "function", "description": "建立与 Broker 的 TCP 连接，参数从 ConnectionPoolConfig 读取，返回 Connection 对象" },
+        { "name": "createChannel", "type": "function", "description": "在已有连接上创建 AMQP 通道（Channel），每个 Channel 独立序号。生产者和消费者使用不同 Channel 隔离" },
+        { "name": "closeChannel", "type": "function", "description": "关闭指定 Channel，释放资源。服务关闭时逐个关闭所有 Channel" },
+        { "name": "closeConnection", "type": "function", "description": "关闭与 Broker 的 TCP 连接，优雅关闭时先停止消费者再关闭连接" },
+        { "name": "recoveryCallback", "type": "function", "description": "Broker 断线重连成功后的恢复回调，自动重新声明交换机/队列/绑定并恢复消费者监听" }
+      ]
+    }
+  ],
+  "error_handling": "消息队列提供分层错误处理策略，覆盖生产者投递异常、消费者处理异常、连接层异常三类场景：\n1. 生产者投递失败：PublishToTasks/PublishToLogs 投递时 Broker 连接不可用或写入超时（3s），客户端捕获 AMQPException 后重试3次（间隔500ms），仍失败则回滚业务操作（部署编排服务将部署记录标记为 failure 并返回502 SSH_KEY_DECRYPT_FAIL），或降级记录本地日志（SSH执行代理回写日志时）。启用 Publisher Confirm 模式确保投递确认，Broker 返回 basicAck 前客户端阻塞等待。\n2. 消费者消息反序列化失败：ConsumeDeploymentTasks 接收的消息 JSON 格式损坏或字段缺失，调用 basicNack(requeue=false) 直接投递死信队列，记录错误日志并输出 messageId 用于排查，错误码 MSG_DESERIALIZE_FAILED。\n3. 消费者处理超时：部署编排服务消费 deployment.logs 消息时写入 MySQL 超时（>5s），调用 basicNack(requeue=true) 重新入队。重试累计3次后 basicNack(requeue=false) 投递死信，错误码 MSG_CONSUME_TIMEOUT。\n4. 消费者业务异常：SSH执行代理 SSH 连接失败阶段触发 nack，deployment.tasks 消息重新入队。需注意 Broker 默认 immediate requeue 会导致死循环，因此客户端在 nack 前检查 x-death header 中的重试次数：重试 <3 次时 basicNack(requeue=true)，≥3 次时 basicNack(requeue=false) 投递死信。\n5. 连接断线自动重连：Broker 宕机或网络分区导致连接断开时，客户端自动重连（心跳超时 60s 触发检测）。重连间隔 5s，最多重试 10 次。重连期间生产者使用本地内存缓冲队列（容量 1000 条队列缓冲，日志消息最多缓冲 5000 条），消费者监听自动恢复（队列和交换机声明在内置 onReconnect 回调中重做）。第 11 次连接后仍失败则触发服务级降级：部署编排服务返回 503 并提示用户稍后重试，SSH执行代理停止消费并等待人工恢复。\n6. 死信队列堆积告警：deployment.tasks.dlx 和 deployment.logs.dlx 队列消息数超过告警阈值（任务死信 >10 条、日志死信 >100 条）时触发告警通知运维人员。告警通过独立监控进程定时（每 5 分钟）调用 Management API（RabbitMQ HTTP API）查询队列深度实现。\n7. 消息重复投递：消费者进程在处理消息过程中崩溃（已处理完成但未 ack），Broker 检测到连接断开后将未 ack 消息重新入队投递给其他消费者。消费者需通过 task_id（DeploymentTaskMessage）幂等去重：SSH执行代理在消费前检查 task_id 是否已在本地已处理集合中（内存 Set + 定时清理），存在则 basicAck 并跳过执行。\n8. 无序消费风险：deployment.logs 同一 deployment_id 的日志消息可能被多个消费者实例并行消费导致顺序错乱。解决方案：在消费者端按 deployment_id 分组，同一 deployment_id 的消息由同一 goroutine/线程串行处理，或使用 Sender Ack 模式在写入 MySQL 时通过 sequence 字段检测乱序并重排。\n9. 队列积压：deployment.tasks 队列堆积（部署请求 > 消费能力）时水位升高。监控队列深度，超过 500 条时触发告警。系统通过 SSH执行代理 水平扩展（增加消费者实例数量）提升消费速度实现削峰填谷。deployment.logs 堆积不阻塞关键业务，日志写入 MySQL 可能延迟但不会丢失。\n10. 优雅关闭：收到 SIGTERM 信号时，生产者停止投递新消息并刷新本地缓冲队列中剩余消息至 Broker；消费者调用 channel.basicCancel 取消监听，等待正在处理的消息完成 ack（最多 30s），30s 后未完成的强制 nack 并关闭连接。确保服务重启期间消息不丢失不重复处理。"
+}
