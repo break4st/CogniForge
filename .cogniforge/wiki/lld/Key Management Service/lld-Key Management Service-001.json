@@ -1,0 +1,144 @@
+{
+  "meta": {
+    "doc_id": "lld-Key Management Service-001",
+    "type": "lld",
+    "module": "Key Management Service",
+    "title": "LLD - Key Management Service",
+    "author": "design_agent",
+    "created": "2026-05-20 17:12"
+  },
+  "overview": {
+    "description": "密钥管理服务（Key Management Service）负责SSH密钥对的完整生命周期管理，包括密钥对的生成、导入、加密存储、删除以及与部署环境的关联管理。提供外部REST API供API Gateway调用以管理密钥，同时提供内部解密接口供Deployment Orchestrator在部署流程中获取解密后的SSH密钥。所有操作均通过Audit Service记录审计日志。",
+    "dependencies": ["Audit Service"],
+    "tech_stack": ["Go", "Gin / Go-Zero", "PostgreSQL 15+", "golang.org/x/crypto/ssh"]
+  },
+  "data_models": [
+    {
+      "name": "ssh_keys",
+      "type": "table",
+      "description": "SSH密钥存储表，私钥经过AES-256-GCM加密后存储，公钥及元信息明文存储",
+      "fields": [
+        {"name": "id", "type": "VARCHAR(36)", "required": true, "description": "密钥唯一标识(UUID v4)"},
+        {"name": "name", "type": "VARCHAR(255)", "required": true, "description": "密钥名称/别名，同一项目内唯一"},
+        {"name": "key_type", "type": "VARCHAR(50)", "required": true, "description": "密钥类型: rsa|ed25519|ecdsa"},
+        {"name": "encrypted_private_key", "type": "TEXT", "required": true, "description": "AES-256-GCM加密后的私钥PEM内容(Base64编码)"},
+        {"name": "public_key", "type": "TEXT", "required": true, "description": "明文公钥内容(OpenSSH authorized_keys格式)"},
+        {"name": "fingerprint", "type": "VARCHAR(255)", "required": true, "description": "密钥指纹(SHA256)"},
+        {"name": "project_id", "type": "VARCHAR(36)", "required": false, "description": "关联项目ID，null表示全局密钥"},
+        {"name": "environment_id", "type": "VARCHAR(36)", "required": false, "description": "关联环境ID，null表示未绑定环境"},
+        {"name": "created_by", "type": "VARCHAR(255)", "required": true, "description": "创建者标识"},
+        {"name": "created_at", "type": "TIMESTAMP", "required": true, "description": "创建时间"},
+        {"name": "updated_at", "type": "TIMESTAMP", "required": true, "description": "最后更新时间"}
+      ]
+    },
+    {
+      "name": "encryption_config",
+      "type": "config",
+      "description": "密钥加密配置项，定义加密算法和主密钥来源",
+      "fields": [
+        {"name": "encryption_algorithm", "type": "string", "required": true, "description": "加密算法，固定为AES-256-GCM"},
+        {"name": "master_key_source", "type": "string", "required": true, "description": "主密钥来源: env(环境变量)|kms(外部KMS)"},
+        {"name": "nonce_bytes", "type": "int", "required": true, "description": "GCM nonce字节数，固定12"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "Import/Generate SSH Key",
+      "method": "POST",
+      "endpoint": "/api/keys",
+      "description": "导入已有密钥对或自动生成新的密钥对。请求体包含privateKey时执行导入，否则执行生成操作。",
+      "parameters": [
+        {"name": "name", "type": "string", "description": "密钥名称，同一项目内唯一"},
+        {"name": "keyType", "type": "string", "description": "密钥类型: rsa|ed25519|ecdsa（生成时默认rsa-4096）"},
+        {"name": "privateKey", "type": "string", "description": "导入时提供的私钥PEM内容（可选，不提供则自动生成）"},
+        {"name": "publicKey", "type": "string", "description": "导入时提供的公钥内容（可选，不提供则自动从私钥提取）"},
+        {"name": "projectId", "type": "string", "description": "关联项目ID（可选）"},
+        {"name": "passphrase", "type": "string", "description": "私钥加密口令（可选，用于解密受口令保护的导入密钥）"}
+      ],
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string",
+          "name": "string",
+          "keyType": "string",
+          "fingerprint": "string",
+          "publicKey": "string",
+          "projectId": "string",
+          "createdAt": "datetime"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数无效（密钥格式错误、缺少必填字段或不支持的密钥类型）"},
+        {"code": 409, "message": "密钥名称已存在"},
+        {"code": 500, "message": "密钥生成或加密存储内部失败"}
+      ]
+    },
+    {
+      "name": "List SSH Keys",
+      "method": "GET",
+      "endpoint": "/api/keys",
+      "description": "获取SSH密钥列表，支持按项目和环境筛选，返回结果不包含私钥内容",
+      "parameters": [
+        {"name": "projectId", "type": "string", "description": "按项目ID筛选（可选）"},
+        {"name": "environmentId", "type": "string", "description": "按环境ID筛选（可选）"},
+        {"name": "page", "type": "int", "description": "页码，默认1"},
+        {"name": "pageSize", "type": "int", "description": "每页条数，默认20"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "keys": "array",
+          "total": "int"
+        }
+      },
+      "error_codes": [
+        {"code": 500, "message": "查询数据库失败"}
+      ]
+    },
+    {
+      "name": "Delete SSH Key",
+      "method": "DELETE",
+      "endpoint": "/api/keys/:id",
+      "description": "删除指定的SSH密钥。若密钥已被环境绑定则拒绝删除。",
+      "parameters": [
+        {"name": "id", "type": "string", "description": "密钥ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "message": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "密钥不存在"},
+        {"code": 409, "message": "密钥已被环境绑定，需先解绑再删除"},
+        {"code": 500, "message": "删除数据库记录失败"}
+      ]
+    },
+    {
+      "name": "Get SSH Key (Internal)",
+      "method": "GET",
+      "endpoint": "/api/internal/keys/:id/decrypt",
+      "description": "内部接口，Deployment Orchestrator获取解密后的SSH密钥用于部署（仅内部服务间调用，不对外暴露）。调用方需位于内部网络白名单。",
+      "parameters": [
+        {"name": "id", "type": "string", "description": "密钥ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "key_id": "string",
+          "private_key": "string（解密后的PEM内容）",
+          "public_key": "string",
+          "key_type": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 403, "message": "调用方不在内部网络白名单内，无权访问"},
+        {"code": 404, "message": "密钥ID不存在"},
+        {"code": 500, "message": "私钥解密失败（主密钥不可用或密文损坏）"}
+      ]
+    }
+  ],
+  "error_handling": "密钥管理服务错误处理策略：(1)参数校验层 — Controller层对所有入参进行严格校验，包括密钥名称非空、keyType合法性、privateKey的PEM格式有效性、passphrase格式校验，校验失败返回400及明确错误描述。(2)业务逻辑层 — Create操作需检查密钥名称在项目范围内的唯一性，重复返回409；Delete操作需检查密钥是否被Environment Management Service中的环境绑定，已绑定返回409提示先解绑；Decrypt内部接口需校验调用方来源IP是否在内部网络白名单内，非白名单调用返回403。(3)数据持久化层 — 私钥加密(AES-256-GCM)失败返回500并触发告警；数据库连接失败在Service层封装为可重试错误，结合指数退避策略最多重试3次。(4)审计日志 — 所有写操作（Create/Delete）必须同步调用Audit Service记录审计日志；若审计日志写入失败，操作应回滚事务并返回500，避免产生未审计的数据变更。(5)密钥生成 — 若golang.org/x/crypto/ssh密钥生成失败，返回500并记录详细错误栈以便定位。"
+}
