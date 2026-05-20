@@ -75,6 +75,7 @@ from cogniforge.repl_text import (
     LLD_MODULES_FOUND,
     LLD_AUTO_ALL_CHOICE,
     LLD_PROGRESS,
+    STEP_SEPARATOR,
 )
 
 # ---------------------------------------------------------------------------
@@ -354,6 +355,7 @@ class Repl:
         agent = self.agents.get("design")
         for i, comp in enumerate(modules, 1):
             mod_name = comp.get("name", "unknown")
+            click.echo(C_DIM + f"\n  {STEP_SEPARATOR}" + C_RESET)
             click.echo(
                 f"\n  [{C_AMBER}{i}/{total}{C_RESET}] "
                 + LLD_PROGRESS.format(module=mod_name)
@@ -434,6 +436,7 @@ class Repl:
                 # Reprint hint when step changes
                 step_key = step.value
                 if step_key != self._last_printed_step:
+                    click.echo(C_DIM + f"\n  {STEP_SEPARATOR}" + C_RESET)
                     self._print_step_hint(step)
                     self._last_printed_step = step_key
 
@@ -940,7 +943,8 @@ class Repl:
             self.workflow.approve(comment="", approver="repl_user")
             next_step = self.workflow.advance()
 
-        lines = [f"  {C_GREEN}✓{C_RESET} 已审批: {step.value}"]
+        lines = [C_DIM + STEP_SEPARATOR + C_RESET,
+                 f"  {C_GREEN}✓{C_RESET} 已审批: {step.value}"]
         if next_step:
             lines.append(APPROVE_NEXT.format(step_label=_step_label(next_step)))
         else:
@@ -955,6 +959,7 @@ class Repl:
         comment = action.get("comment", REJECT_DEFAULT)
         self.workflow.reject(comment=comment, approver="repl_user")
         return "\n".join([
+            C_DIM + STEP_SEPARATOR + C_RESET,
             f"  {C_RED}✗{C_RESET} 已拒绝: {step.value}",
             REJECT_REASON.format(reason=comment),
             REJECT_HINT,
