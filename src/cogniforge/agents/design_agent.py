@@ -158,16 +158,35 @@ class DesignAgent(BaseAgent):
                             parts.append(f"  parameters: {json.dumps(params, ensure_ascii=False)}")
             parts.append("")
 
-        # ── 5. System topology (brief) ──
+        # ── 5. System architecture context (layers + data flows) ──
         if sad_data:
-            topo = sad_data.get("topology", "")
-            flow = sad_data.get("data_flow", "")
-            if topo or flow:
-                parts.append("=== 系统全局拓扑 ===")
-                if topo:
-                    parts.append(f"拓扑: {topo.strip()}")
-                if flow:
-                    parts.append(f"数据流: {flow.strip()}")
+            arch = sad_data.get("architecture", {})
+            flow = sad_data.get("data_flow", [])
+            has_arch = isinstance(arch, dict) and arch
+            has_flow = isinstance(flow, list) and flow
+
+            if has_arch or has_flow:
+                parts.append("=== 系统全局架构上下文 ===")
+                if has_arch:
+                    layers = arch.get("layers", [])
+                    connections = arch.get("connections", [])
+                    if layers:
+                        layer_lines = []
+                        for i, layer in enumerate(layers):
+                            comps = ", ".join(layer.get("components", []))
+                            layer_lines.append(f"  {layer.get('name', '?')}: [{comps}]")
+                            if i < len(layers) - 1 and i < len(connections):
+                                layer_lines.append(f"    ↕ {connections[i].get('protocol', '')}")
+                        parts.append("分层拓扑:")
+                        parts.extend(layer_lines)
+                if has_flow:
+                    flow_lines = []
+                    for i, f in enumerate(flow):
+                        name = f.get("name", f"Flow {i + 1}")
+                        steps = " → ".join(f.get("steps", []))
+                        flow_lines.append(f"  {i + 1}. {name}: {steps}")
+                    parts.append("数据流:")
+                    parts.extend(flow_lines)
                 parts.append("")
 
         return "\n".join(parts) if parts else ""

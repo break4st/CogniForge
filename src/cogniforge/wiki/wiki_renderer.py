@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -695,73 +694,63 @@ def _render_prd(d: dict) -> str:
 
 
 def _render_overview_section(data) -> str:
+    if not isinstance(data, dict):
+        return "<p>系统概述数据缺失</p>"
+
+    desc = data.get("description", "")
+    roles = data.get("roles", [])
     parts = []
-    if isinstance(data, dict):
-        desc = data.get("description", "")
-        roles = data.get("roles", [])
-        if desc:
-            parts.append(
-                '<div class="overview-hero">'
-                '<div class="hero-label">系统定位</div>'
-                f"<p>{_esc(desc)}</p>"
+    if desc:
+        parts.append(
+            '<div class="overview-hero">'
+            '<div class="hero-label">系统定位</div>'
+            f"<p>{_esc(desc)}</p>"
+            "</div>"
+        )
+    if roles:
+        role_colors = {
+            "管理员": ("rgba(124,111,247,0.15)", "#c4b5fd"),
+            "老师":   ("rgba(91,141,239,0.15)", "#93c5fd"),
+            "学生":   ("rgba(52,211,153,0.15)", "#6ee7b7"),
+        }
+        role_icons = {"管理员": "👤", "老师": "👩‍🏫", "学生": "🎓"}
+        cards = []
+        for r in roles:
+            name = r.get("name", "")
+            perms_list = r.get("permissions", [])
+            bg, color = role_colors.get(name, ("rgba(255,255,255,0.04)", "var(--c-muted)"))
+            icon = role_icons.get(name, "👤")
+            perms_html = "".join(f"<li>{_esc(p)}</li>" for p in perms_list)
+            cards.append(
+                '<div class="role-card">'
+                f'<div class="role-icon" style="background:{bg};color:{color}">{icon}</div>'
+                f'<div class="role-name">{_esc(name)}</div>'
+                f'<ul class="role-perms">{perms_html}</ul>'
                 "</div>"
             )
-        if roles:
-            role_colors = {
-                "管理员": ("rgba(124,111,247,0.15)", "#c4b5fd"),
-                "老师":   ("rgba(91,141,239,0.15)", "#93c5fd"),
-                "学生":   ("rgba(52,211,153,0.15)", "#6ee7b7"),
-            }
-            role_icons = {"管理员": "👤", "老师": "👩‍🏫", "学生": "🎓"}
-            cards = []
-            for r in roles:
-                name = r.get("name", "")
-                perms_list = r.get("permissions", [])
-                bg, color = role_colors.get(name, ("rgba(255,255,255,0.04)", "var(--c-muted)"))
-                icon = role_icons.get(name, "👤")
-                perms_html = "".join(f"<li>{_esc(p)}</li>" for p in perms_list)
-                cards.append(
-                    '<div class="role-card">'
-                    f'<div class="role-icon" style="background:{bg};color:{color}">{icon}</div>'
-                    f'<div class="role-name">{_esc(name)}</div>'
-                    f'<ul class="role-perms">{perms_html}</ul>'
-                    "</div>"
-                )
-            parts.append(f'<div class="role-cards">{"".join(cards)}</div>')
-        if not desc and not roles:
-            parts.append("<p>暂无概述</p>")
-    else:
-        # Legacy string — plain text fallback
-        text = str(data) if data else ""
-        if text:
-            parts.append(f"<p>{_esc(text)}</p>")
+        parts.append(f'<div class="role-cards">{"".join(cards)}</div>')
+    if not desc and not roles:
+        parts.append("<p>暂无概述</p>")
     return "\n".join(parts)
 
 
 def _render_architecture_section(data, components: list) -> str:
+    if not isinstance(data, dict):
+        return "<p>架构数据缺失</p>"
+
+    desc_text = data.get("description", "")
+    style = data.get("style", "")
+    features = data.get("features", [])
+    layers = data.get("layers", [])
+    connections = data.get("connections", [])
     parts = []
-    features = []
-    desc_text = ""
-    style = ""
-    layers = []
-    connections = []
 
-    if isinstance(data, dict):
-        desc_text = data.get("description", "")
-        style = data.get("style", "")
-        features = data.get("features", [])
-        layers = data.get("layers", [])
-        connections = data.get("connections", [])
-    else:
-        desc_text = str(data) if data else ""
-
-    # Style badge + description
     if style:
         parts.append(f'<div class="arch-style-badge">{_esc(style)}</div>')
     if desc_text:
         parts.append(f'<div class="arch-desc">{_esc(desc_text)}</div>')
 
-    # Layered diagram with component names + protocol labels
+    # Layered diagram
     if layers:
         diag_parts = []
         css_map = {
@@ -770,17 +759,14 @@ def _render_architecture_section(data, components: list) -> str:
         }
         for idx, layer in enumerate(layers):
             layer_name = layer.get("name", "")
-            layer_comps = layer.get("components", [])
             boxes = []
-            for comp_name in layer_comps:
+            for comp_name in layer.get("components", []):
                 css_cls = "service"
                 for c in components:
                     if c.get("name") == comp_name:
                         css_cls = css_map.get(c.get("type", ""), "service")
                         break
-                boxes.append(
-                    f'<div class="topo-node {css_cls}">{_esc(comp_name)}</div>'
-                )
+                boxes.append(f'<div class="topo-node {css_cls}">{_esc(comp_name)}</div>')
             if boxes:
                 diag_parts.append(
                     '<div class="topo-tier">'
@@ -789,15 +775,12 @@ def _render_architecture_section(data, components: list) -> str:
                     '</div>'
                 )
             if idx < len(layers) - 1 and idx < len(connections):
-                conn = connections[idx]
-                proto = conn.get("protocol", "")
-                proto_lines = [f'<div class="topo-connector-line"><span class="proto">{_esc(proto)}</span></div>']
+                proto = connections[idx].get("protocol", "")
                 diag_parts.append(
                     '<div class="topo-connector">'
-                    f'{"".join(proto_lines)}'
+                    f'<div class="topo-connector-line"><span class="proto">{_esc(proto)}</span></div>'
                     '</div>'
                 )
-
         parts.append(f'<div class="topo-diagram">{"".join(diag_parts)}</div>')
 
     # Feature tags
@@ -817,195 +800,48 @@ def _render_architecture_section(data, components: list) -> str:
                     break
             tags.append(
                 f'<span class="arch-feature-tag">'
-                f'<span class="dot" style="background:{color}"></span>'
-                f'{_esc(f)}'
+                f'<span class="dot" style="background:{color}"></span>{_esc(f)}'
                 f'</span>'
             )
-        if tags:
-            parts.append(f'<div class="arch-features">{"".join(tags)}</div>')
-    elif not isinstance(data, dict) and desc_text:
-        # Legacy string — regex feature extraction
-        feature_map = [
-            (r"微服务", "微服务架构", "var(--c-accent2)"),
-            (r"API Gateway", "API Gateway", "var(--c-accent)"),
-            (r"关系型数据库", "关系型数据库", "var(--c-green)"),
-            (r"Redis|缓存", "Redis 缓存", "var(--c-amber)"),
-            (r"消息队列", "消息队列", "var(--c-red)"),
-            (r"RESTful", "RESTful API", "var(--c-cyan)"),
-            (r"独立部署", "独立部署演进", "var(--c-accent)"),
-        ]
-        tags = []
-        for pattern, label, color in feature_map:
-            if re.search(pattern, desc_text):
-                tags.append(
-                    f'<span class="arch-feature-tag">'
-                    f'<span class="dot" style="background:{color}"></span>'
-                    f'{label}'
-                    f'</span>'
-                )
         if tags:
             parts.append(f'<div class="arch-features">{"".join(tags)}</div>')
 
     if not parts:
         parts.append("<p>暂无架构描述</p>")
-
-    return "\n".join(parts)
-
-
-def _render_topology_section(data, components: list) -> str:
-    parts = []
-
-    if isinstance(data, dict):
-        desc = data.get("description", "")
-        layers = data.get("layers", [])
-        connections = data.get("connections", [])
-        if desc:
-            parts.append(f'<div class="arch-desc">{_esc(desc)}</div>')
-
-        # Build topology diagram from structured layers + connections
-        diag_parts = []
-        css_map = {
-            "frontend": "frontend", "gateway": "gateway", "service": "service",
-            "db": "db", "cache": "cache", "mq": "mq",
-        }
-        for idx, layer in enumerate(layers):
-            layer_name = layer.get("name", "")
-            layer_comps = layer.get("components", [])
-            boxes = []
-            for comp_name in layer_comps:
-                # Match to component type for CSS class
-                css_cls = "service"
-                for c in components:
-                    if c.get("name") == comp_name:
-                        css_cls = css_map.get(c.get("type", ""), "service")
-                        break
-                boxes.append(
-                    f'<div class="topo-node {css_cls}">{_esc(comp_name)}</div>'
-                )
-            if boxes:
-                diag_parts.append(
-                    '<div class="topo-tier">'
-                    f'<div class="topo-tier-label">{_esc(layer_name)}</div>'
-                    f'<div class="topo-tier-content">{"".join(boxes)}</div>'
-                    '</div>'
-                )
-            # Connection row after this layer (except last)
-            if idx < len(layers) - 1 and idx < len(connections):
-                conn = connections[idx]
-                proto = conn.get("protocol", "")
-                proto_lines = [f'<div class="topo-connector-line"><span class="proto">{_esc(proto)}</span></div>']
-                diag_parts.append(
-                    '<div class="topo-connector">'
-                    f'{"".join(proto_lines)}'
-                    '</div>'
-                )
-
-        if diag_parts:
-            parts.append(f'<div class="topo-diagram">{"".join(diag_parts)}</div>')
-        if not diag_parts and not desc:
-            parts.append("<p>暂无拓扑数据</p>")
-    else:
-        # Legacy string — plain text fallback + component-based diagram
-        text = str(data) if data else ""
-        if text:
-            parts.append(f'<div class="arch-desc">{_esc(text)}</div>')
-
-        grouped: dict[str, list] = {}
-        for c in components:
-            t = c.get("type", "")
-            grouped.setdefault(t, []).append(c)
-
-        tier_defs = [
-            ("接入层", ["frontend"]),
-            ("网关层", ["gateway"]),
-            ("服务层", ["service"]),
-            ("数据层", ["db", "cache", "mq"]),
-        ]
-        proto_defs = [
-            ["HTTPS / TLS"],
-            ["REST / JSON", "REST / JSON", "REST / JSON", "REST / JSON"],
-            ["SQL", "SQL / Redis Proto", "AMQP / MQTT"],
-        ]
-
-        diag_parts = []
-        for idx, (label, keys) in enumerate(tier_defs):
-            items = []
-            for k in keys:
-                items.extend(grouped.get(k, []))
-            if not items:
-                continue
-            css_map_s = {
-                "frontend": "frontend", "gateway": "gateway", "service": "service",
-                "db": "db", "cache": "cache", "mq": "mq",
-            }
-            boxes = []
-            for c in items:
-                css_cls = css_map_s.get(c.get("type", ""), "service")
-                boxes.append(
-                    f'<div class="topo-node {css_cls}">{_esc(c.get("name", ""))}</div>'
-                )
-            diag_parts.append(
-                '<div class="topo-tier">'
-                f'<div class="topo-tier-label">{label}</div>'
-                f'<div class="topo-tier-content">{"".join(boxes)}</div>'
-                '</div>'
-            )
-            if idx < len(proto_defs):
-                proto_lines = []
-                for proto in proto_defs[idx]:
-                    proto_lines.append(
-                        f'<div class="topo-connector-line"><span class="proto">{_esc(proto)}</span></div>'
-                    )
-                diag_parts.append(
-                    '<div class="topo-connector">'
-                    f'{"".join(proto_lines)}'
-                    '</div>'
-                )
-
-        if diag_parts:
-            parts.append(f'<div class="topo-diagram">{"".join(diag_parts)}</div>')
-        if not diag_parts:
-            return f"<p>{_esc(text)}</p>" if text else "<p>暂无拓扑数据</p>"
-
     return "\n".join(parts)
 
 
 def _render_dataflow_section(data) -> str:
-    if not data:
+    if not isinstance(data, list) or not data:
         return "<p>暂无数据流描述</p>"
 
-    if isinstance(data, list):
-        # Structured — array of {name, steps[]}
-        schemes = [
-            ("rgba(52,211,153,0.15)", "var(--c-green)"),
-            ("rgba(91,141,239,0.15)", "var(--c-accent)"),
-            ("rgba(251,191,36,0.12)", "var(--c-amber)"),
-            ("rgba(124,111,247,0.15)", "var(--c-accent2)"),
-        ]
-        cards = []
-        for idx, flow in enumerate(data):
-            name = flow.get("name", f"Flow {idx + 1}")
-            steps = flow.get("steps", [])
-            bg, color = schemes[idx % len(schemes)]
-            step_htmls = []
-            for si, step in enumerate(steps):
-                css = "start" if si == 0 else ("end" if si == len(steps) - 1 else "mid")
-                step_htmls.append(f'<span class="flow-step {css}">{_esc(step)}</span>')
-                if si < len(steps) - 1:
-                    step_htmls.append('<span class="flow-arrow">→</span>')
-            cards.append(
-                '<div class="flow-card">'
-                '<div class="flow-card-header">'
-                f'<div class="flow-num" style="background:{bg};color:{color}">{idx + 1}</div>'
-                f'<div class="flow-name">{_esc(name)}</div>'
-                '</div>'
-                f'<div class="flow-steps">{"".join(step_htmls)}</div>'
-                '</div>'
-            )
-        return f'<div class="flow-cards">{"".join(cards)}</div>'
-
-    # Legacy string — plain text fallback
-    return f"<p>{_esc(str(data))}</p>"
+    schemes = [
+        ("rgba(52,211,153,0.15)", "var(--c-green)"),
+        ("rgba(91,141,239,0.15)", "var(--c-accent)"),
+        ("rgba(251,191,36,0.12)", "var(--c-amber)"),
+        ("rgba(124,111,247,0.15)", "var(--c-accent2)"),
+    ]
+    cards = []
+    for idx, flow in enumerate(data):
+        name = flow.get("name", f"Flow {idx + 1}")
+        steps = flow.get("steps", [])
+        bg, color = schemes[idx % len(schemes)]
+        step_htmls = []
+        for si, step in enumerate(steps):
+            css = "start" if si == 0 else ("end" if si == len(steps) - 1 else "mid")
+            step_htmls.append(f'<span class="flow-step {css}">{_esc(step)}</span>')
+            if si < len(steps) - 1:
+                step_htmls.append('<span class="flow-arrow">→</span>')
+        cards.append(
+            '<div class="flow-card">'
+            '<div class="flow-card-header">'
+            f'<div class="flow-num" style="background:{bg};color:{color}">{idx + 1}</div>'
+            f'<div class="flow-name">{_esc(name)}</div>'
+            '</div>'
+            f'<div class="flow-steps">{"".join(step_htmls)}</div>'
+            '</div>'
+        )
+    return f'<div class="flow-cards">{"".join(cards)}</div>'
 
 
 # ---------------------------------------------------------------------------
