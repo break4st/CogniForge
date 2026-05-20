@@ -2,1426 +2,450 @@
   "meta": {
     "doc_id": "sad-001",
     "type": "sad",
-    "title": "学生管理系统 - 系统架构设计",
+    "title": "自动化部署系统",
     "author": "architect_agent",
-    "created": "2026-05-20 13:44"
+    "created": "2026-05-20 15:21",
+    "version": 1
   },
-  "system_overview": "构建一个全面的学生管理系统，用于高效管理学生信息、班级信息、年级信息以及学习统计数据，为学校提供数字化的管理解决方案。系统支持三类用户角色：管理员（管理学生、班级和年级信息）、老师（查看所教班级的学生信息和统计数据）、学生（查看个人基本信息和学习统计数据）。",
-  "architecture": "采用微服务架构风格，将系统拆分为多个高内聚低耦合的领域服务。前端通过 API Gateway 统一接入，后端按业务领域划分为学生服务、班级服务、年级服务、统计服务四个微服务，共享关系型数据库作为主存储，Redis 作为缓存层提升查询性能，消息队列用于异步统计任务解耦。每个微服务独立部署、独立演进，通过 API Gateway 对外暴露 RESTful 接口。",
+  "system_overview": {
+    "description": "实现将打包好的可执行文件自动化部署到指定远程服务器的功能。支持用户自定义多套部署环境（如测试线、灰度线、正式线等），每套环境可通过SSH密钥配置安全连接，部署时自动在远程服务器上创建版本文件夹并生成执行脚本，实现一键式自动化部署。用户可创建和管理多个项目，每个项目拥有独立的部署环境配置，支持在项目间灵活切换，满足多项目并行管理的需求。",
+    "roles": [
+      {
+        "name": "开发工程师",
+        "permissions": [
+          "创建和管理多个项目",
+          "配置多套部署环境（测试线、灰度线、正式线）",
+          "上传和管理SSH密钥",
+          "执行一键自动化部署",
+          "查看部署进度和结果",
+          "在项目间切换管理"
+        ]
+      },
+      {
+        "name": "运维工程师",
+        "permissions": [
+          "管理各环境的SSH密钥和服务器连接配置",
+          "测试服务器连通性",
+          "审核部署环境配置安全性",
+          "管理远程服务器访问权限"
+        ]
+      }
+    ]
+  },
+  "architecture": {
+    "style": "前后端分离的模块化架构",
+    "description": "系统采用前后端分离的模块化架构，前端提供Web UI交互界面，后端按业务领域划分为项目管理、环境管理、部署执行、密钥管理等核心服务模块。通过消息队列实现异步部署任务调度，结合加密存储保障密钥安全，支持多环境多服务器的自动化部署流程。",
+    "features": [
+      "前后端分离，独立部署和扩展",
+      "模块化设计，各服务职责单一",
+      "异步部署任务队列，支持并发和重试",
+      "加密存储敏感信息（SSH密钥等）",
+      "可插拔的环境配置管理",
+      "实时部署状态推送"
+    ]
+  },
   "components": [
     {
       "name": "Web UI",
       "type": "frontend",
-      "description": "用户交互界面，面向管理员、老师、学生三类角色提供不同的视图和操作能力",
+      "description": "基于Web的图形用户界面，提供项目管理、环境配置、部署操作和状态查看等功能",
       "responsibilities": [
-        "提供学生信息管理界面（增删改查）",
-        "提供班级信息管理界面（创建、编辑、分配学生）",
-        "提供年级信息管理界面（创建、编辑、关联班级）",
-        "提供学习统计数据看板和可视化图表",
-        "基于用户角色（管理员/老师/学生）控制功能权限和视图范围"
+        "项目列表展示与搜索筛选",
+        "部署环境配置表单",
+        "部署操作入口与进度展示",
+        "SSH密钥上传管理界面",
+        "部署历史与日志查看"
       ]
     },
     {
       "name": "API Gateway",
       "type": "gateway",
-      "description": "系统统一入口，负责请求路由、身份认证、限流和协议转换",
+      "description": "统一API网关，负责请求路由、认证鉴权、限流和日志记录",
       "responsibilities": [
-        "统一接收所有客户端请求并路由到对应后端服务",
-        "用户身份认证与 Token 校验",
-        "请求频率限制和访问控制",
-        "请求/响应格式统一转换",
-        "跨域处理和日志记录"
+        "请求路由转发",
+        "用户身份认证",
+        "接口访问控制",
+        "请求日志记录",
+        "限流保护"
       ]
     },
     {
-      "name": "Student Service",
+      "name": "Project Service",
       "type": "service",
-      "description": "学生信息管理核心服务，负责学生基础数据的增删改查",
+      "description": "项目管理服务，负责项目的CRUD操作和项目间切换",
       "responsibilities": [
-        "学生基本信息的创建、修改、删除",
-        "按条件查询学生信息（姓名、学号、班级等）",
-        "学生信息的唯一性校验（学号不可重复）",
-        "学生-班级关联关系的维护"
+        "项目创建、编辑、删除",
+        "项目列表查询与关键字搜索",
+        "项目切换管理",
+        "项目与环境的关联管理"
       ]
     },
     {
-      "name": "Class Service",
+      "name": "Environment Service",
       "type": "service",
-      "description": "班级信息管理服务，负责班级的创建维护及学生分配管理",
+      "description": "环境管理服务，负责部署环境的配置管理和连通性测试",
       "responsibilities": [
-        "班级的创建、编辑和删除",
-        "班级列表和详情查询",
-        "学生分配到班级的管理",
-        "班级下学生名单的查询",
-        "班级-年级关联关系的维护"
+        "环境创建、编辑、删除",
+        "环境类型标签管理",
+        "服务器地址、端口、用户名等连接信息配置",
+        "连通性测试"
       ]
     },
     {
-      "name": "Grade Service",
+      "name": "Key Management Service",
       "type": "service",
-      "description": "年级信息管理服务，负责年级的划分及与班级的层级关联",
+      "description": "密钥管理服务，负责SSH密钥的安全存储和管理",
       "responsibilities": [
-        "年级信息的创建、编辑和查询",
-        "年级列表的查看",
-        "班级与年级的层级关联管理",
-        "年级下班级结构的查看"
+        "SSH密钥上传与存储",
+        "密钥内容加密解密",
+        "密钥与环境的关联管理",
+        "密钥更换与轮转"
       ]
     },
     {
-      "name": "Statistics Service",
+      "name": "Deployment Service",
       "type": "service",
-      "description": "学习统计服务，负责学习数据的记录、统计分析和报告生成",
+      "description": "部署执行服务，负责自动化部署流程的编排和执行",
       "responsibilities": [
-        "学生学习数据的录入和存储",
-        "按学生维度统计学习情况",
-        "按班级/年级维度汇总统计",
-        "统计报告和图表数据的生成",
-        "异步处理大批量统计数据计算任务"
-      ]
-    },
-    {
-      "name": "Relational Database",
-      "type": "db",
-      "description": "关系型数据库，作为系统的主存储，持久化所有业务数据",
-      "responsibilities": [
-        "存储学生、班级、年级等基础数据",
-        "存储学习记录和统计数据",
-        "确保数据一致性和事务完整性",
-        "支持复杂查询和聚合分析"
-      ]
-    },
-    {
-      "name": "Cache",
-      "type": "cache",
-      "description": "Redis 缓存层，提升热点数据的查询性能，减轻数据库压力",
-      "responsibilities": [
-        "缓存学生信息查询结果",
-        "缓存班级/年级列表和结构数据",
-        "缓存统计结果减少重复计算",
-        "处理缓存失效和更新策略"
+        "部署任务创建与调度",
+        "可执行文件上传到远程服务器",
+        "远程版本目录创建",
+        "启动/停止/重启执行脚本生成",
+        "部署状态跟踪与反馈"
       ]
     },
     {
       "name": "Message Queue",
       "type": "mq",
-      "description": "消息队列，用于异步任务处理，解耦核心业务与统计计算",
+      "description": "消息队列，负责异步部署任务分发和状态变更通知",
       "responsibilities": [
-        "接收统计数据计算请求",
-        "异步分发统计任务到 Statistics Service",
-        "削峰填谷，避免统计任务阻塞核心业务流程",
-        "保证消息可靠投递和消费"
+        "部署任务异步分发",
+        "部署状态变更通知推送",
+        "失败任务重试机制"
+      ]
+    },
+    {
+      "name": "Relational Database",
+      "type": "db",
+      "description": "关系型数据库，存储项目、环境、密钥、部署记录等全部结构化数据",
+      "responsibilities": [
+        "项目数据持久化",
+        "环境配置数据存储",
+        "密钥元数据存储",
+        "部署历史记录存储"
+      ]
+    },
+    {
+      "name": "Cache",
+      "type": "cache",
+      "description": "缓存服务，缓存项目列表、环境配置等热点数据，提升系统响应速度",
+      "responsibilities": [
+        "缓存项目列表数据",
+        "缓存环境配置信息",
+        "缓存用户会话信息"
       ]
     }
   ],
   "contracts": [
     {
-      "interface": "用户登录认证",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
+      "interface": "Project Management API",
+      "provider": "Project Service",
+      "consumers": ["API Gateway"],
       "type": "REST",
-      "endpoint": "POST /api/auth/login",
+      "endpoint": "POST/GET/PUT/DELETE /api/projects[/{id}]",
       "request": {
-        "path_params": [],
-        "query_params": [],
+        "path_params": [
+          {"name": "id", "type": "string", "description": "项目ID（查询/更新/删除时必填）"}
+        ],
+        "query_params": [
+          {"name": "keyword", "type": "string", "description": "搜索关键字", "required": false},
+          {"name": "page", "type": "int", "description": "页码", "required": false},
+          {"name": "size", "type": "int", "description": "每页条数", "required": false}
+        ],
         "body": {
-          "username": "string",
-          "password": "string",
-          "role": "string (admin|teacher|student)"
-        }
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "token": "string",
-          "expires_in": "number (秒)",
-          "user_info": {
-            "id": "number",
-            "username": "string",
-            "role": "string",
-            "name": "string"
+          "type": "object",
+          "properties": {
+            "name": {"type": "string", "description": "项目名称"},
+            "description": {"type": "string", "description": "项目描述", "required": false}
           }
         }
       },
-      "description": "用户登录认证接口，返回 JWT Token 用于后续请求鉴权"
-    },
-    {
-      "interface": "学生创建",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
-      "type": "REST",
-      "endpoint": "POST /api/students",
-      "request": {
-        "path_params": [],
-        "query_params": [],
-        "body": {
-          "name": "string",
-          "student_no": "string",
-          "contact_phone": "string",
-          "contact_email": "string",
-          "class_id": "number (optional)"
-        }
-      },
       "response": {
-        "status": 201,
+        "status": 200,
         "body": {
-          "id": "number",
-          "name": "string",
-          "student_no": "string",
-          "contact_phone": "string",
-          "contact_email": "string",
-          "class_id": "number",
-          "created_at": "string (datetime)"
+          "type": "object",
+          "properties": {
+            "id": {"type": "string", "description": "项目ID"},
+            "name": {"type": "string", "description": "项目名称"},
+            "description": {"type": "string", "description": "项目描述"},
+            "environment_count": {"type": "int", "description": "关联环境数量"},
+            "created_at": {"type": "string", "description": "创建时间"},
+            "updated_at": {"type": "string", "description": "更新时间"}
+          }
         }
       },
-      "description": "创建新的学生信息，学号 student_no 全局唯一不可重复"
+      "description": "项目管理相关CRUD接口，通过API Gateway路由至Project Service，支持项目的创建、查询、更新和删除"
     },
     {
-      "interface": "学生更新",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
+      "interface": "Environment Configuration API",
+      "provider": "Environment Service",
+      "consumers": ["API Gateway"],
       "type": "REST",
-      "endpoint": "PUT /api/students/{id}",
+      "endpoint": "POST/GET/PUT/DELETE /api/projects/{projectId}/environments[/{id}]",
       "request": {
         "path_params": [
-          {"name": "id", "type": "number", "description": "学生 ID"}
+          {"name": "projectId", "type": "string", "description": "所属项目ID"},
+          {"name": "id", "type": "string", "description": "环境ID（查询/更新/删除时必填）"}
         ],
         "query_params": [],
         "body": {
-          "name": "string (optional)",
-          "contact_phone": "string (optional)",
-          "contact_email": "string (optional)",
-          "class_id": "number (optional)"
+          "type": "object",
+          "properties": {
+            "name": {"type": "string", "description": "环境名称"},
+            "label": {"type": "string", "description": "环境标签（测试线/灰度线/正式线）"},
+            "server_host": {"type": "string", "description": "服务器地址"},
+            "server_port": {"type": "int", "description": "SSH端口，默认22"},
+            "server_user": {"type": "string", "description": "服务器登录用户名"},
+            "key_id": {"type": "string", "description": "关联的SSH密钥ID"},
+            "deploy_path": {"type": "string", "description": "远程部署基础路径"}
+          }
         }
       },
       "response": {
         "status": 200,
         "body": {
-          "id": "number",
-          "name": "string",
-          "student_no": "string",
-          "contact_phone": "string",
-          "contact_email": "string",
-          "class_id": "number",
-          "updated_at": "string (datetime)"
+          "type": "object",
+          "properties": {
+            "id": {"type": "string", "description": "环境ID"},
+            "project_id": {"type": "string", "description": "所属项目ID"},
+            "name": {"type": "string", "description": "环境名称"},
+            "label": {"type": "string", "description": "环境标签"},
+            "server_host": {"type": "string", "description": "服务器地址"},
+            "server_port": {"type": "int", "description": "SSH端口"},
+            "server_user": {"type": "string", "description": "登录用户名"},
+            "key_id": {"type": "string", "description": "关联密钥ID"},
+            "deploy_path": {"type": "string", "description": "部署路径"},
+            "last_test_at": {"type": "string", "description": "上次连通性测试时间", "required": false},
+            "created_at": {"type": "string", "description": "创建时间"}
+          }
         }
       },
-      "description": "更新指定学生的信息，仅可修改非学号字段"
+      "description": "环境配置管理接口，支持环境的CRUD操作以及连通性测试（POST /environments/{id}/test-connection）"
     },
     {
-      "interface": "学生删除",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
+      "interface": "Key Management API",
+      "provider": "Key Management Service",
+      "consumers": ["API Gateway"],
       "type": "REST",
-      "endpoint": "DELETE /api/students/{id}",
+      "endpoint": "POST/GET/DELETE /api/keys[/{id}]",
       "request": {
         "path_params": [
-          {"name": "id", "type": "number", "description": "学生 ID"}
-        ],
-        "query_params": [],
-        "body": {}
-      },
-      "response": {
-        "status": 204,
-        "body": {}
-      },
-      "description": "删除指定学生信息"
-    },
-    {
-      "interface": "学生列表查询",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
-      "type": "REST",
-      "endpoint": "GET /api/students",
-      "request": {
-        "path_params": [],
-        "query_params": [
-          {"name": "name", "type": "string (optional)", "description": "按姓名筛选"},
-          {"name": "student_no", "type": "string (optional)", "description": "按学号筛选"},
-          {"name": "class_id", "type": "number (optional)", "description": "按班级筛选"},
-          {"name": "page", "type": "number (optional)", "description": "页码，默认 1"},
-          {"name": "page_size", "type": "number (optional)", "description": "每页条数，默认 20"}
-        ],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "total": "number",
-          "page": "number",
-          "page_size": "number",
-          "items": [
-            {
-              "id": "number",
-              "name": "string",
-              "student_no": "string",
-              "contact_phone": "string",
-              "contact_email": "string",
-              "class_id": "number",
-              "class_name": "string",
-              "created_at": "string (datetime)"
-            }
-          ]
-        }
-      },
-      "description": "按条件分页查询学生列表，支持模糊匹配"
-    },
-    {
-      "interface": "学生详情查询",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
-      "type": "REST",
-      "endpoint": "GET /api/students/{id}",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "学生 ID"}
-        ],
-        "query_params": [],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "number",
-          "name": "string",
-          "student_no": "string",
-          "contact_phone": "string",
-          "contact_email": "string",
-          "class_id": "number",
-          "class_name": "string",
-          "created_at": "string (datetime)",
-          "updated_at": "string (datetime)"
-        }
-      },
-      "description": "查询指定学生的详细信息"
-    },
-    {
-      "interface": "学生分班",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
-      "type": "REST",
-      "endpoint": "PUT /api/students/{id}/class",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "学生 ID"}
+          {"name": "id", "type": "string", "description": "密钥ID（查询/删除时必填）"}
         ],
         "query_params": [],
         "body": {
-          "class_id": "number"
+          "type": "object",
+          "properties": {
+            "name": {"type": "string", "description": "密钥名称"},
+            "private_key": {"type": "string", "description": "SSH私钥内容（上传时明文传输，服务端加密存储）"},
+            "passphrase": {"type": "string", "description": "密钥口令（可选）", "required": false},
+            "description": {"type": "string", "description": "密钥描述", "required": false}
+          }
         }
       },
       "response": {
         "status": 200,
         "body": {
-          "id": "number",
-          "name": "string",
-          "class_id": "number",
-          "class_name": "string",
-          "updated_at": "string (datetime)"
+          "type": "object",
+          "properties": {
+            "id": {"type": "string", "description": "密钥ID"},
+            "name": {"type": "string", "description": "密钥名称"},
+            "fingerprint": {"type": "string", "description": "密钥指纹"},
+            "description": {"type": "string", "description": "密钥描述"},
+            "created_at": {"type": "string", "description": "创建时间"}
+          }
         }
       },
-      "description": "将学生分配到指定班级，需校验班级存在性"
+      "description": "SSH密钥管理接口，支持密钥的上传、列表查看、删除和轮换。密钥私钥内容在服务端加密存储，返回数据不包含私钥原文"
     },
     {
-      "interface": "班级创建",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
+      "interface": "Deployment Execution API",
+      "provider": "Deployment Service",
+      "consumers": ["API Gateway"],
       "type": "REST",
-      "endpoint": "POST /api/classes",
-      "request": {
-        "path_params": [],
-        "query_params": [],
-        "body": {
-          "name": "string",
-          "grade_id": "number (optional)",
-          "description": "string (optional)"
-        }
-      },
-      "response": {
-        "status": 201,
-        "body": {
-          "id": "number",
-          "name": "string",
-          "grade_id": "number",
-          "description": "string",
-          "created_at": "string (datetime)"
-        }
-      },
-      "description": "创建新的班级信息"
-    },
-    {
-      "interface": "班级更新",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
-      "type": "REST",
-      "endpoint": "PUT /api/classes/{id}",
+      "endpoint": "POST/GET /api/deployments[/{id}]",
       "request": {
         "path_params": [
-          {"name": "id", "type": "number", "description": "班级 ID"}
-        ],
-        "query_params": [],
-        "body": {
-          "name": "string (optional)",
-          "grade_id": "number (optional)",
-          "description": "string (optional)"
-        }
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "number",
-          "name": "string",
-          "grade_id": "number",
-          "description": "string",
-          "updated_at": "string (datetime)"
-        }
-      },
-      "description": "更新指定班级的信息"
-    },
-    {
-      "interface": "班级删除",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
-      "type": "REST",
-      "endpoint": "DELETE /api/classes/{id}",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "班级 ID"}
-        ],
-        "query_params": [],
-        "body": {}
-      },
-      "response": {
-        "status": 204,
-        "body": {}
-      },
-      "description": "删除指定班级信息"
-    },
-    {
-      "interface": "班级列表查询",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
-      "type": "REST",
-      "endpoint": "GET /api/classes",
-      "request": {
-        "path_params": [],
-        "query_params": [
-          {"name": "grade_id", "type": "number (optional)", "description": "按年级筛选"},
-          {"name": "name", "type": "string (optional)", "description": "按名称模糊搜索"},
-          {"name": "page", "type": "number (optional)", "description": "页码，默认 1"},
-          {"name": "page_size", "type": "number (optional)", "description": "每页条数，默认 20"}
-        ],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "total": "number",
-          "page": "number",
-          "page_size": "number",
-          "items": [
-            {
-              "id": "number",
-              "name": "string",
-              "grade_id": "number",
-              "grade_name": "string",
-              "student_count": "number",
-              "description": "string",
-              "created_at": "string (datetime)"
-            }
-          ]
-        }
-      },
-      "description": "按条件分页查询班级列表"
-    },
-    {
-      "interface": "班级详情查询",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
-      "type": "REST",
-      "endpoint": "GET /api/classes/{id}",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "班级 ID"}
-        ],
-        "query_params": [],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "number",
-          "name": "string",
-          "grade_id": "number",
-          "grade_name": "string",
-          "student_count": "number",
-          "description": "string",
-          "created_at": "string (datetime)",
-          "updated_at": "string (datetime)"
-        }
-      },
-      "description": "查询指定班级的详细信息"
-    },
-    {
-      "interface": "班级学生名单查询",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
-      "type": "REST",
-      "endpoint": "GET /api/classes/{id}/students",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "班级 ID"}
+          {"name": "id", "type": "string", "description": "部署记录ID（状态查询时必填）"}
         ],
         "query_params": [
-          {"name": "page", "type": "number (optional)", "description": "页码，默认 1"},
-          {"name": "page_size", "type": "number (optional)", "description": "每页条数，默认 20"}
+          {"name": "project_id", "type": "string", "description": "按项目筛选部署历史", "required": false},
+          {"name": "environment_id", "type": "string", "description": "按环境筛选部署历史", "required": false},
+          {"name": "page", "type": "int", "description": "页码", "required": false},
+          {"name": "size", "type": "int", "description": "每页条数", "required": false}
         ],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
         "body": {
-          "total": "number",
-          "page": "number",
-          "page_size": "number",
-          "items": [
-            {
-              "id": "number",
-              "name": "string",
-              "student_no": "string",
-              "contact_phone": "string",
-              "contact_email": "string"
-            }
-          ]
-        }
-      },
-      "description": "查询指定班级下的学生名单"
-    },
-    {
-      "interface": "年级创建",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
-      "type": "REST",
-      "endpoint": "POST /api/grades",
-      "request": {
-        "path_params": [],
-        "query_params": [],
-        "body": {
-          "name": "string",
-          "description": "string (optional)"
-        }
-      },
-      "response": {
-        "status": 201,
-        "body": {
-          "id": "number",
-          "name": "string",
-          "description": "string",
-          "created_at": "string (datetime)"
-        }
-      },
-      "description": "创建新的年级信息"
-    },
-    {
-      "interface": "年级更新",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
-      "type": "REST",
-      "endpoint": "PUT /api/grades/{id}",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "年级 ID"}
-        ],
-        "query_params": [],
-        "body": {
-          "name": "string (optional)",
-          "description": "string (optional)"
+          "type": "object",
+          "properties": {
+            "project_id": {"type": "string", "description": "目标项目ID"},
+            "environment_id": {"type": "string", "description": "目标环境ID"},
+            "version": {"type": "string", "description": "部署版本号"},
+            "artifact": {"type": "binary", "description": "可执行文件（二进制上传）"},
+            "description": {"type": "string", "description": "部署说明", "required": false}
+          }
         }
       },
       "response": {
         "status": 200,
         "body": {
-          "id": "number",
-          "name": "string",
-          "description": "string",
-          "updated_at": "string (datetime)"
+          "type": "object",
+          "properties": {
+            "id": {"type": "string", "description": "部署记录ID"},
+            "project_id": {"type": "string", "description": "项目ID"},
+            "environment_id": {"type": "string", "description": "环境ID"},
+            "version": {"type": "string", "description": "部署版本号"},
+            "status": {"type": "string", "description": "部署状态（pending/running/success/failed）"},
+            "progress": {"type": "int", "description": "部署进度百分比"},
+            "log": {"type": "string", "description": "部署日志"},
+            "created_at": {"type": "string", "description": "创建时间"},
+            "completed_at": {"type": "string", "description": "完成时间", "required": false}
+          }
         }
       },
-      "description": "更新指定年级的信息"
+      "description": "部署执行接口，POST触发一键部署（返回task_id用于后续状态轮询），GET查询部署状态和详情。支持按项目和环境筛选部署历史"
     },
     {
-      "interface": "年级列表查询",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
-      "type": "REST",
-      "endpoint": "GET /api/grades",
-      "request": {
-        "path_params": [],
-        "query_params": [
-          {"name": "page", "type": "number (optional)", "description": "页码，默认 1"},
-          {"name": "page_size", "type": "number (optional)", "description": "每页条数，默认 20"}
-        ],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "total": "number",
-          "page": "number",
-          "page_size": "number",
-          "items": [
-            {
-              "id": "number",
-              "name": "string",
-              "description": "string",
-              "class_count": "number",
-              "created_at": "string (datetime)"
-            }
-          ]
-        }
-      },
-      "description": "查询年级列表"
-    },
-    {
-      "interface": "年级详情查询",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
-      "type": "REST",
-      "endpoint": "GET /api/grades/{id}",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "年级 ID"}
-        ],
-        "query_params": [],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "number",
-          "name": "string",
-          "description": "string",
-          "class_count": "number",
-          "created_at": "string (datetime)",
-          "updated_at": "string (datetime)"
-        }
-      },
-      "description": "查询指定年级的详细信息"
-    },
-    {
-      "interface": "年级班级结构查询",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
-      "type": "REST",
-      "endpoint": "GET /api/grades/{id}/classes",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "年级 ID"}
-        ],
-        "query_params": [],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "grade_id": "number",
-          "grade_name": "string",
-          "classes": [
-            {
-              "id": "number",
-              "name": "string",
-              "student_count": "number",
-              "description": "string"
-            }
-          ]
-        }
-      },
-      "description": "查询指定年级下的班级结构列表"
-    },
-    {
-      "interface": "学习数据录入",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
-      "type": "REST",
-      "endpoint": "POST /api/statistics/records",
-      "request": {
-        "path_params": [],
-        "query_params": [],
-        "body": {
-          "student_id": "number",
-          "subject": "string",
-          "score": "number",
-          "record_date": "string (date)",
-          "remarks": "string (optional)"
-        }
-      },
-      "response": {
-        "status": 201,
-        "body": {
-          "id": "number",
-          "student_id": "number",
-          "subject": "string",
-          "score": "number",
-          "record_date": "string (date)",
-          "created_at": "string (datetime)"
-        }
-      },
-      "description": "录入学生的学习数据记录"
-    },
-    {
-      "interface": "学生统计查询",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
-      "type": "REST",
-      "endpoint": "GET /api/statistics/students/{id}",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "学生 ID"}
-        ],
-        "query_params": [
-          {"name": "start_date", "type": "string (date, optional)", "description": "统计开始日期"},
-          {"name": "end_date", "type": "string (date, optional)", "description": "统计结束日期"}
-        ],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "student_id": "number",
-          "student_name": "string",
-          "subjects": [
-            {
-              "subject": "string",
-              "total_scores": "number",
-              "average_score": "number",
-              "max_score": "number",
-              "min_score": "number",
-              "record_count": "number"
-            }
-          ],
-          "overall_average": "number"
-        }
-      },
-      "description": "查询指定学生的学习统计信息，按科目汇总"
-    },
-    {
-      "interface": "班级统计查询",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
-      "type": "REST",
-      "endpoint": "GET /api/statistics/classes/{id}",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "班级 ID"}
-        ],
-        "query_params": [
-          {"name": "subject", "type": "string (optional)", "description": "按科目筛选"},
-          {"name": "start_date", "type": "string (date, optional)", "description": "统计开始日期"},
-          {"name": "end_date", "type": "string (date, optional)", "description": "统计结束日期"}
-        ],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "class_id": "number",
-          "class_name": "string",
-          "student_count": "number",
-          "class_average": "number",
-          "subjects": [
-            {
-              "subject": "string",
-              "class_average": "number",
-              "highest_score": "number",
-              "lowest_score": "number",
-              "pass_rate": "number (百分比)"
-            }
-          ]
-        }
-      },
-      "description": "查询指定班级的统计汇总数据"
-    },
-    {
-      "interface": "年级统计查询",
-      "provider": "API Gateway",
-      "consumers": ["Web UI"],
-      "type": "REST",
-      "endpoint": "GET /api/statistics/grades/{id}",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "年级 ID"}
-        ],
-        "query_params": [
-          {"name": "subject", "type": "string (optional)", "description": "按科目筛选"},
-          {"name": "start_date", "type": "string (date, optional)", "description": "统计开始日期"},
-          {"name": "end_date", "type": "string (date, optional)", "description": "统计结束日期"}
-        ],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "grade_id": "number",
-          "grade_name": "string",
-          "class_count": "number",
-          "student_count": "number",
-          "grade_average": "number",
-          "classes": [
-            {
-              "class_id": "number",
-              "class_name": "string",
-              "class_average": "number",
-              "student_count": "number"
-            }
-          ]
-        }
-      },
-      "description": "查询指定年级的统计汇总数据"
-    },
-    {
-      "interface": "学生管理内部接口（创建）",
-      "provider": "Student Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "POST /internal/students",
-      "request": {
-        "path_params": [],
-        "query_params": [],
-        "body": {
-          "name": "string",
-          "student_no": "string",
-          "contact_phone": "string",
-          "contact_email": "string",
-          "class_id": "number (optional)"
-        }
-      },
-      "response": {
-        "status": 201,
-        "body": {
-          "id": "number",
-          "name": "string",
-          "student_no": "string",
-          "contact_phone": "string",
-          "contact_email": "string",
-          "class_id": "number",
-          "created_at": "string (datetime)"
-        }
-      },
-      "description": "API Gateway 调用，创建学生记录，含学号唯一性校验"
-    },
-    {
-      "interface": "学生管理内部接口（更新）",
-      "provider": "Student Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "PUT /internal/students/{id}",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "学生 ID"}
-        ],
-        "query_params": [],
-        "body": {
-          "name": "string (optional)",
-          "contact_phone": "string (optional)",
-          "contact_email": "string (optional)",
-          "class_id": "number (optional)"
-        }
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "number",
-          "name": "string",
-          "student_no": "string",
-          "contact_phone": "string",
-          "contact_email": "string",
-          "class_id": "number",
-          "updated_at": "string (datetime)"
-        }
-      },
-      "description": "API Gateway 调用，更新学生信息"
-    },
-    {
-      "interface": "学生管理内部接口（删除）",
-      "provider": "Student Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "DELETE /internal/students/{id}",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "学生 ID"}
-        ],
-        "query_params": [],
-        "body": {}
-      },
-      "response": {
-        "status": 204,
-        "body": {}
-      },
-      "description": "API Gateway 调用，删除学生记录"
-    },
-    {
-      "interface": "学生管理内部接口（查询列表）",
-      "provider": "Student Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "GET /internal/students",
-      "request": {
-        "path_params": [],
-        "query_params": [
-          {"name": "name", "type": "string (optional)", "description": "按姓名筛选"},
-          {"name": "student_no", "type": "string (optional)", "description": "按学号筛选"},
-          {"name": "class_id", "type": "number (optional)", "description": "按班级筛选"},
-          {"name": "page", "type": "number (optional)", "description": "页码，默认 1"},
-          {"name": "page_size", "type": "number (optional)", "description": "每页条数，默认 20"}
-        ],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "total": "number",
-          "page": "number",
-          "page_size": "number",
-          "items": [
-            {
-              "id": "number",
-              "name": "string",
-              "student_no": "string",
-              "contact_phone": "string",
-              "contact_email": "string",
-              "class_id": "number",
-              "created_at": "string (datetime)"
-            }
-          ]
-        }
-      },
-      "description": "API Gateway 调用，分页查询学生列表"
-    },
-    {
-      "interface": "学生管理内部接口（详情）",
-      "provider": "Student Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "GET /internal/students/{id}",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "学生 ID"}
-        ],
-        "query_params": [],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "number",
-          "name": "string",
-          "student_no": "string",
-          "contact_phone": "string",
-          "contact_email": "string",
-          "class_id": "number",
-          "created_at": "string (datetime)",
-          "updated_at": "string (datetime)"
-        }
-      },
-      "description": "API Gateway 调用，查询学生详情"
-    },
-    {
-      "interface": "班级管理内部接口（创建）",
-      "provider": "Class Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "POST /internal/classes",
-      "request": {
-        "path_params": [],
-        "query_params": [],
-        "body": {
-          "name": "string",
-          "grade_id": "number (optional)",
-          "description": "string (optional)"
-        }
-      },
-      "response": {
-        "status": 201,
-        "body": {
-          "id": "number",
-          "name": "string",
-          "grade_id": "number",
-          "description": "string",
-          "created_at": "string (datetime)"
-        }
-      },
-      "description": "API Gateway 调用，创建班级记录"
-    },
-    {
-      "interface": "班级管理内部接口（更新）",
-      "provider": "Class Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "PUT /internal/classes/{id}",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "班级 ID"}
-        ],
-        "query_params": [],
-        "body": {
-          "name": "string (optional)",
-          "grade_id": "number (optional)",
-          "description": "string (optional)"
-        }
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "number",
-          "name": "string",
-          "grade_id": "number",
-          "description": "string",
-          "updated_at": "string (datetime)"
-        }
-      },
-      "description": "API Gateway 调用，更新班级信息"
-    },
-    {
-      "interface": "班级管理内部接口（删除）",
-      "provider": "Class Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "DELETE /internal/classes/{id}",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "班级 ID"}
-        ],
-        "query_params": [],
-        "body": {}
-      },
-      "response": {
-        "status": 204,
-        "body": {}
-      },
-      "description": "API Gateway 调用，删除班级记录"
-    },
-    {
-      "interface": "班级管理内部接口（列表）",
-      "provider": "Class Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "GET /internal/classes",
-      "request": {
-        "path_params": [],
-        "query_params": [
-          {"name": "grade_id", "type": "number (optional)", "description": "按年级筛选"},
-          {"name": "name", "type": "string (optional)", "description": "按名称模糊搜索"},
-          {"name": "page", "type": "number (optional)", "description": "页码，默认 1"},
-          {"name": "page_size", "type": "number (optional)", "description": "每页条数，默认 20"}
-        ],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "total": "number",
-          "page": "number",
-          "page_size": "number",
-          "items": [
-            {
-              "id": "number",
-              "name": "string",
-              "grade_id": "number",
-              "student_count": "number",
-              "description": "string",
-              "created_at": "string (datetime)"
-            }
-          ]
-        }
-      },
-      "description": "API Gateway 调用，分页查询班级列表"
-    },
-    {
-      "interface": "班级管理内部接口（详情）",
-      "provider": "Class Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "GET /internal/classes/{id}",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "班级 ID"}
-        ],
-        "query_params": [],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "number",
-          "name": "string",
-          "grade_id": "number",
-          "student_count": "number",
-          "description": "string",
-          "created_at": "string (datetime)",
-          "updated_at": "string (datetime)"
-        }
-      },
-      "description": "API Gateway 调用，查询班级详情"
-    },
-    {
-      "interface": "班级管理内部接口（班级学生名单）",
-      "provider": "Class Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "GET /internal/classes/{id}/students",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "班级 ID"}
-        ],
-        "query_params": [
-          {"name": "page", "type": "number (optional)", "description": "页码，默认 1"},
-          {"name": "page_size", "type": "number (optional)", "description": "每页条数，默认 20"}
-        ],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "total": "number",
-          "page": "number",
-          "page_size": "number",
-          "items": [
-            {
-              "id": "number",
-              "name": "string",
-              "student_no": "string",
-              "contact_phone": "string",
-              "contact_email": "string"
-            }
-          ]
-        }
-      },
-      "description": "API Gateway 调用，查询班级下的学生名单"
-    },
-    {
-      "interface": "年级管理内部接口（创建）",
-      "provider": "Grade Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "POST /internal/grades",
-      "request": {
-        "path_params": [],
-        "query_params": [],
-        "body": {
-          "name": "string",
-          "description": "string (optional)"
-        }
-      },
-      "response": {
-        "status": 201,
-        "body": {
-          "id": "number",
-          "name": "string",
-          "description": "string",
-          "created_at": "string (datetime)"
-        }
-      },
-      "description": "API Gateway 调用，创建年级记录"
-    },
-    {
-      "interface": "年级管理内部接口（更新）",
-      "provider": "Grade Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "PUT /internal/grades/{id}",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "年级 ID"}
-        ],
-        "query_params": [],
-        "body": {
-          "name": "string (optional)",
-          "description": "string (optional)"
-        }
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "number",
-          "name": "string",
-          "description": "string",
-          "updated_at": "string (datetime)"
-        }
-      },
-      "description": "API Gateway 调用，更新年级信息"
-    },
-    {
-      "interface": "年级管理内部接口（列表）",
-      "provider": "Grade Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "GET /internal/grades",
-      "request": {
-        "path_params": [],
-        "query_params": [
-          {"name": "page", "type": "number (optional)", "description": "页码，默认 1"},
-          {"name": "page_size", "type": "number (optional)", "description": "每页条数，默认 20"}
-        ],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "total": "number",
-          "page": "number",
-          "page_size": "number",
-          "items": [
-            {
-              "id": "number",
-              "name": "string",
-              "description": "string",
-              "class_count": "number",
-              "created_at": "string (datetime)"
-            }
-          ]
-        }
-      },
-      "description": "API Gateway 调用，查询年级列表"
-    },
-    {
-      "interface": "年级管理内部接口（年级班级结构）",
-      "provider": "Grade Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "GET /internal/grades/{id}/classes",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "年级 ID"}
-        ],
-        "query_params": [],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "grade_id": "number",
-          "grade_name": "string",
-          "classes": [
-            {
-              "class_id": "number",
-              "class_name": "string",
-              "student_count": "number",
-              "description": "string"
-            }
-          ]
-        }
-      },
-      "description": "API Gateway 调用，查询年级下的班级结构"
-    },
-    {
-      "interface": "统计管理内部接口（学习数据录入）",
-      "provider": "Statistics Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "POST /internal/statistics/records",
-      "request": {
-        "path_params": [],
-        "query_params": [],
-        "body": {
-          "student_id": "number",
-          "subject": "string",
-          "score": "number",
-          "record_date": "string (date)",
-          "remarks": "string (optional)"
-        }
-      },
-      "response": {
-        "status": 201,
-        "body": {
-          "id": "number",
-          "student_id": "number",
-          "subject": "string",
-          "score": "number",
-          "record_date": "string (date)",
-          "created_at": "string (datetime)"
-        }
-      },
-      "description": "API Gateway 调用，录入学习数据记录"
-    },
-    {
-      "interface": "统计管理内部接口（学生统计）",
-      "provider": "Statistics Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "GET /internal/statistics/students/{id}",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "学生 ID"}
-        ],
-        "query_params": [
-          {"name": "start_date", "type": "string (date, optional)", "description": "统计开始日期"},
-          {"name": "end_date", "type": "string (date, optional)", "description": "统计结束日期"}
-        ],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "student_id": "number",
-          "student_name": "string",
-          "subjects": [
-            {
-              "subject": "string",
-              "total_scores": "number",
-              "average_score": "number",
-              "max_score": "number",
-              "min_score": "number",
-              "record_count": "number"
-            }
-          ],
-          "overall_average": "number"
-        }
-      },
-      "description": "API Gateway 调用，查询学生维度的统计信息"
-    },
-    {
-      "interface": "统计管理内部接口（班级统计）",
-      "provider": "Statistics Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "GET /internal/statistics/classes/{id}",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "班级 ID"}
-        ],
-        "query_params": [
-          {"name": "subject", "type": "string (optional)", "description": "按科目筛选"},
-          {"name": "start_date", "type": "string (date, optional)", "description": "统计开始日期"},
-          {"name": "end_date", "type": "string (date, optional)", "description": "统计结束日期"}
-        ],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "class_id": "number",
-          "class_name": "string",
-          "student_count": "number",
-          "class_average": "number",
-          "subjects": [
-            {
-              "subject": "string",
-              "class_average": "number",
-              "highest_score": "number",
-              "lowest_score": "number",
-              "pass_rate": "number (百分比)"
-            }
-          ]
-        }
-      },
-      "description": "API Gateway 调用，查询班级维度的统计汇总"
-    },
-    {
-      "interface": "统计管理内部接口（年级统计）",
-      "provider": "Statistics Service",
-      "consumers": ["API Gateway"],
-      "type": "REST",
-      "endpoint": "GET /internal/statistics/grades/{id}",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "年级 ID"}
-        ],
-        "query_params": [
-          {"name": "subject", "type": "string (optional)", "description": "按科目筛选"},
-          {"name": "start_date", "type": "string (date, optional)", "description": "统计开始日期"},
-          {"name": "end_date", "type": "string (date, optional)", "description": "统计结束日期"}
-        ],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "grade_id": "number",
-          "grade_name": "string",
-          "class_count": "number",
-          "student_count": "number",
-          "grade_average": "number",
-          "classes": [
-            {
-              "class_id": "number",
-              "class_name": "string",
-              "class_average": "number",
-              "student_count": "number"
-            }
-          ]
-        }
-      },
-      "description": "API Gateway 调用，查询年级维度的统计汇总"
-    },
-    {
-      "interface": "班级存在性校验",
-      "provider": "Class Service",
-      "consumers": ["Student Service"],
-      "type": "REST",
-      "endpoint": "GET /internal/classes/{id}/exists",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "班级 ID"}
-        ],
-        "query_params": [],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "exists": "boolean",
-          "id": "number",
-          "name": "string"
-        }
-      },
-      "description": "Student Service 在分配班级时调用，校验目标班级是否存在"
-    },
-    {
-      "interface": "年级存在性校验",
-      "provider": "Grade Service",
-      "consumers": ["Class Service"],
-      "type": "REST",
-      "endpoint": "GET /internal/grades/{id}/exists",
-      "request": {
-        "path_params": [
-          {"name": "id", "type": "number", "description": "年级 ID"}
-        ],
-        "query_params": [],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "exists": "boolean",
-          "id": "number",
-          "name": "string"
-        }
-      },
-      "description": "Class Service 在关联班级到年级时调用，校验目标年级是否存在"
-    },
-    {
-      "interface": "统计任务消息队列",
-      "provider": "Message Queue",
-      "consumers": ["Statistics Service"],
+      "interface": "Deployment Task Queue",
+      "provider": "Deployment Service",
+      "consumers": ["Message Queue"],
       "type": "MQ",
-      "endpoint": "topic: statistics.calculation",
+      "endpoint": "queue://deployment.task",
       "request": {
         "path_params": [],
         "query_params": [],
         "body": {
-          "task_type": "string (student|class|grade)",
-          "entity_id": "number",
-          "action": "string (recalculate|refresh)",
-          "triggered_at": "string (datetime)"
+          "type": "object",
+          "properties": {
+            "task_id": {"type": "string", "description": "部署任务唯一ID"},
+            "project_id": {"type": "string", "description": "项目ID"},
+            "environment_id": {"type": "string", "description": "环境ID"},
+            "server_host": {"type": "string", "description": "目标服务器地址"},
+            "server_port": {"type": "int", "description": "SSH端口"},
+            "server_user": {"type": "string", "description": "登录用户名"},
+            "encrypted_key": {"type": "string", "description": "加密后的SSH私钥"},
+            "deploy_path": {"type": "string", "description": "远程部署基础路径"},
+            "version": {"type": "string", "description": "部署版本号"},
+            "artifact_url": {"type": "string", "description": "可执行文件存储URL"},
+            "created_at": {"type": "string", "description": "任务创建时间"}
+          }
         }
       },
       "response": {
         "status": 200,
-        "body": {}
+        "body": {
+          "type": "object",
+          "properties": {
+            "accepted": {"type": "bool", "description": "消息是否成功入队"}
+          }
+        }
       },
-      "description": "业务操作触发统计任务时发送消息到队列，Statistics Service 异步消费并执行统计计算"
+      "description": "部署任务异步消息队列。Deployment Service将包含全部部署参数的详细任务消息发布到MQ，由worker异步消费执行，支持消息持久化和失败重试"
+    },
+    {
+      "interface": "Deployment Status Notification",
+      "provider": "Message Queue",
+      "consumers": ["Deployment Service"],
+      "type": "MQ",
+      "endpoint": "topic://deployment.status",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "type": "object",
+          "properties": {
+            "task_id": {"type": "string", "description": "部署任务ID"},
+            "status": {"type": "string", "description": "状态（running/success/failed）"},
+            "progress": {"type": "int", "description": "进度百分比"},
+            "log": {"type": "string", "description": "增量日志"},
+            "timestamp": {"type": "string", "description": "状态时间戳"}
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "object",
+          "properties": {
+            "received": {"type": "bool", "description": "是否成功接收"}
+          }
+        }
+      },
+      "description": "部署状态变更通知。Deployment Service在执行过程中将状态变更事件发布到MQ，Deployment Service自身或其他消费者订阅以实时更新部署状态"
     }
   ],
-  "topology": "系统整体采用分层拓扑结构。第一层（接入层）：Web UI 通过 HTTPS 与 API Gateway 通信；第二层（网关层）：API Gateway 负责统一入口、认证和路由，将请求分发到对应的后端服务；第三层（服务层）：四个微服务（Student Service、Class Service、Grade Service、Statistics Service）各自独立部署，通过同步 REST API 相互调用，并通过 MQ 客户端与消息队列交互；第四层（数据层）：所有服务共享 Relational Database 作为主存储，Cache（Redis）作为缓存加速层。Statistics Service 额外通过 Message Queue 消费异步统计任务。",
-  "data_flow": "主要数据流：1）CRUD 数据流：用户操作 → Web UI → HTTP 请求 → API Gateway（认证+路由）→ 对应微服务 → 查询/更新 Cache → 读写 Database → 响应返回；2）统计查询数据流：用户查看统计 → Web UI → API Gateway → Statistics Service → 查 Cache（有缓存则直接返回）/查 Database → 聚合计算 → 返回结果；3）异步统计数据流：业务操作触发统计 → 发送消息到 MQ → Statistics Service 消费消息 → 执行统计计算 → 结果写入 Database → 更新 Cache；4）跨服务关联数据流：学生分配到班级时，Student Service 通过 REST 调用 Class Service 验证班级存在性；班级关联到年级时，Class Service 通过 REST 调用 Grade Service 验证年级存在性。"
+  "topology": {
+    "description": "系统采用四层拓扑结构：接入层提供Web UI和API统一入口，服务层包含全部核心业务服务，中间件层通过消息队列实现异步通信解耦，数据层负责持久化存储和热点缓存。",
+    "layers": [
+      {
+        "name": "接入层",
+        "components": ["Web UI", "API Gateway"]
+      },
+      {
+        "name": "服务层",
+        "components": ["Project Service", "Environment Service", "Key Management Service", "Deployment Service"]
+      },
+      {
+        "name": "中间件层",
+        "components": ["Message Queue"]
+      },
+      {
+        "name": "数据层",
+        "components": ["Relational Database", "Cache"]
+      }
+    ],
+    "connections": [
+      {"protocol": "HTTPS/REST", "description": "接入层与服务层通过HTTPS RESTful API通信"},
+      {"protocol": "gRPC/REST", "description": "服务层内部服务间通过gRPC或REST同步调用"},
+      {"protocol": "MQ/AMQP", "description": "服务层与中间件层通过AMQP协议进行异步消息通信"},
+      {"protocol": "SQL/Redis", "description": "服务层与数据层通过SQL协议访问数据库，通过Redis协议访问缓存"}
+    ]
+  },
+  "data_flow": [
+    {
+      "name": "一键部署流程",
+      "steps": [
+        "用户在Web UI选择项目、环境和版本号，上传可执行文件",
+        "API Gateway接收请求并转发至Deployment Service",
+        "Deployment Service创建部署任务并返回task_id",
+        "Deployment Service将任务发送到Message Queue异步执行",
+        "Deployment Service从队列消费任务，通过SSH连接到远程服务器",
+        "在远程服务器按版本号创建独立部署目录",
+        "上传可执行文件到远程服务器",
+        "生成启动/停止/重启等执行脚本",
+        "通过Message Queue发送部署状态变更事件",
+        "Web UI实时更新部署进度和结果"
+      ]
+    },
+    {
+      "name": "环境配置流程",
+      "steps": [
+        "用户填写环境配置表单（服务器地址、端口、用户名等）",
+        "关联已上传的SSH密钥",
+        "Environment Service测试远程服务器连通性",
+        "配置信息保存到Relational Database",
+        "结果返回前端确认"
+      ]
+    },
+    {
+      "name": "密钥管理流程",
+      "steps": [
+        "用户在Web UI上传SSH密钥或选择更换密钥",
+        "API Gateway转发请求至Key Management Service",
+        "Key Management Service对密钥私钥内容进行加密存储",
+        "密钥元数据（非私钥原文）保存到Relational Database",
+        "加密后的密钥与对应环境关联",
+        "操作结果返回前端确认"
+      ]
+    }
+  ]
 }
