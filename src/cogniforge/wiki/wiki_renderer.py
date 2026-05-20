@@ -1134,59 +1134,199 @@ def _render_sad(d: dict) -> str:
 
 def _render_lld(d: dict) -> str:
     m = d.get("meta", {})
-    parts = [_page_start(
-        m.get("title", "LLD"), m.get("doc_id", ""), "详细设计文档",
-        m.get("created", ""), m.get("author", "design_agent"),
-    )]
-    parts.append(_section_header("📄", "概述", "rgba(124,111,247,0.12)"))
-    parts.append(f"<p>模块: {_esc(m.get('module', ''))}</p>")
-    parts.append(f"<p>{_esc(d.get('overview', ''))}</p>")
-    parts.append(_SECTION_FOOT)
+    title = m.get("title", "LLD")
+    doc_id = m.get("doc_id", "")
+    module = m.get("module", "")
     models = d.get("data_models", [])
-    parts.append(_section_header("🗄️", f"数据模型 ({len(models)})", "rgba(91,141,239,0.12)"))
-    for dm in models:
-        rows = ""
-        for f in dm.get("fields", []):
-            rows += (
-                f"<tr><td>{_esc(f.get('name',''))}</td>"
-                f"<td>{_esc(f.get('type',''))}</td>"
-                f"<td>{_esc(f.get('description',''))}</td></tr>"
-            )
-        parts.append(
-            f'<div class="model-item">\n'
-            f'  <h3>{_esc(dm.get("name", ""))}</h3>\n'
-            f'  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody>{rows}</tbody></table>\n'
-            f'</div>'
-        )
-    parts.append(_SECTION_FOOT)
     ifaces = d.get("interfaces", [])
-    parts.append(_section_header("🔌", f"接口定义 ({len(ifaces)})", "rgba(34,211,238,0.12)"))
-    for iface in ifaces:
-        params_rows = ""
-        for p in iface.get("parameters", []):
-            params_rows += (
-                f"<tr><td>{_esc(p.get('name',''))}</td>"
-                f"<td>{_esc(p.get('type',''))}</td>"
-                f"<td>{_esc(p.get('description',''))}</td></tr>"
-            )
-        resp = iface.get("response", {})
-        resp_body = resp.get("body", {}) if isinstance(resp, dict) else {}
-        resp_str = ", ".join(f"{k}: {v}" for k, v in resp_body.items()) if isinstance(resp_body, dict) else _esc(str(resp))
-        parts.append(
-            f'<div class="comp-item">\n'
-            f'  <h3>{_esc(iface.get("name",""))}</h3>\n'
-            f'  <div class="comp-type">{_esc(iface.get("endpoint",""))}</div>\n'
-            f'  <p>{_esc(iface.get("description",""))}</p>\n'
-            f'  {f"<p><strong>Response:</strong> {{{resp_str}}}</p>" if resp_str else ""}\n'
-            f'  {f"<table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody>{params_rows}</tbody></table>" if params_rows else ""}\n'
-            f'</div>'
-        )
-    parts.append(_SECTION_FOOT)
+
+    # Sidebar sections
+    sections = [
+        ("overview", "📄", "概述"),
+        ("models", "🗄️", f"数据模型 ({len(models)})"),
+    ]
+    if ifaces:
+        sections.append(("interfaces", "🔌", f"接口定义 ({len(ifaces)})"))
     if d.get("error_handling"):
-        parts.append(_section_header("⚠️", "错误处理", "rgba(251,191,36,0.12)"))
+        sections.append(("errors", "⚠️", "错误处理"))
+
+    parts = [_page_start_sidebar(
+        title, doc_id, "详细设计文档",
+        m.get("created", ""), m.get("author", "design_agent"),
+        sections,
+    )]
+
+    # ── 1. Overview ──
+    overview = d.get("overview", "")
+    parts.append(_section_header("📄", "概述", "rgba(124,111,247,0.12)", "overview"))
+    if isinstance(overview, dict):
+        desc = overview.get("description", "")
+        deps = overview.get("dependencies", [])
+        tech = overview.get("tech_stack", [])
+        if module:
+            parts.append(
+                f'<div class="arch-style-badge" style="margin-bottom:12px">'
+                f'模块: {_esc(module)}</div>'
+            )
+        if desc:
+            parts.append(f'<div class="arch-desc">{_esc(desc)}</div>')
+        if deps:
+            tags = "".join(
+                f'<span class="cc-consumer" style="margin:2px">{_esc(dep)}</span>'
+                for dep in deps
+            )
+            parts.append(f'<div style="margin-bottom:12px"><span style="font-size:0.82em;color:var(--c-muted)">依赖: </span>{tags}</div>')
+        if tech:
+            tags = "".join(
+                f'<span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>{_esc(t)}</span>'
+                for t in tech
+            )
+            parts.append(f'<div style="margin-bottom:8px">{tags}</div>')
+    else:
+        # String overview — plain text
+        ov_text = str(overview) if overview else ""
+        if module:
+            parts.append(
+                f'<div class="arch-style-badge" style="margin-bottom:12px">'
+                f'模块: {_esc(module)}</div>'
+            )
+        if ov_text:
+            parts.append(f"<p>{_esc(ov_text)}</p>")
+    parts.append(_SECTION_FOOT)
+
+    # ── 2. Data Models ──
+    parts.append(_section_header("🗄️", f"数据模型 ({len(models)})", "rgba(91,141,239,0.12)", "models"))
+    if models:
+        # Group by type
+        from collections import OrderedDict
+        type_labels = {
+            "table": "数据库表", "interface": "数据接口", "struct": "数据结构",
+            "store": "状态存储", "config": "配置定义",
+        }
+        type_icons = {
+            "table": "🗄️", "interface": "📋", "struct": "📦",
+            "store": "🗃️", "config": "⚙️",
+        }
+        grouped: dict[str, list] = OrderedDict()
+        for dm in models:
+            t = dm.get("type", "other")
+            grouped.setdefault(t, []).append(dm)
+
+        for t, items in grouped.items():
+            label = type_labels.get(t, t)
+            icon = type_icons.get(t, "📄")
+            cards = []
+            for dm in items:
+                rows = ""
+                for f in dm.get("fields", []):
+                    required = f.get("required", False)
+                    req_mark = ' <span style="color:var(--c-red);font-size:0.75em">*</span>' if required else ""
+                    rows += (
+                        f"<tr>"
+                        f"<td>{_esc(f.get('name',''))}{req_mark}</td>"
+                        f"<td class=\"field-type\">{_esc(f.get('type',''))}</td>"
+                        f"<td>{_esc(f.get('description',''))}</td>"
+                        f"</tr>"
+                    )
+                desc_html = f'<p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">{_esc(dm.get("description",""))}</p>' if dm.get("description") else ""
+                cards.append(
+                    f'<div class="contract-card" style="border-top:none">'
+                    f'<h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">{icon} {_esc(dm.get("name",""))}</h3>'
+                    f'{desc_html}'
+                    f'<div class="body-label">字段</div>'
+                    f'<table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody>{rows}</tbody></table>'
+                    f'</div>'
+                )
+            parts.append(
+                '<details class="contract-group" open>'
+                f'<summary>{_esc(label)} <span class="cg-count">{len(cards)}</span></summary>'
+                f'{"".join(cards)}'
+                '</details>'
+            )
+    parts.append(_SECTION_FOOT)
+
+    # ── 3. Interfaces ──
+    if ifaces:
+        parts.append(_section_header("🔌", f"接口定义 ({len(ifaces)})", "rgba(34,211,238,0.12)", "interfaces"))
+        for iface in ifaces:
+            endpoint = iface.get("endpoint", "")
+            method = iface.get("method", "")
+            # Auto-extract method from endpoint if not explicitly set
+            if not method:
+                ep_parts = endpoint.split(" ", 1)
+                if len(ep_parts) == 2 and ep_parts[0] in ("GET", "POST", "PUT", "DELETE", "PATCH"):
+                    method = ep_parts[0]
+                    endpoint = ep_parts[1]
+                elif endpoint == "INTERNAL":
+                    method = "INTERNAL"
+
+            method_cls = method.lower() if method else ""
+
+            # Parameters table
+            params_rows = ""
+            for p in iface.get("parameters", []):
+                params_rows += (
+                    f"<tr><td>{_esc(p.get('name',''))}</td>"
+                    f"<td class=\"field-type\">{_esc(p.get('type',''))}</td>"
+                    f"<td>{_esc(p.get('description',''))}</td></tr>"
+                )
+
+            # Response body table
+            resp = iface.get("response", {})
+            resp_html = ""
+            if isinstance(resp, dict):
+                status = resp.get("status", "")
+                body = resp.get("body", {})
+                if isinstance(body, dict) and body:
+                    rows = ""
+                    for k, v in body.items():
+                        rows += (
+                            f"<tr><td>{_esc(k)}</td>"
+                            f"<td class=\"field-type\">{_esc(v)}</td></tr>"
+                        )
+                    resp_html = (
+                        f'<div class="body-label">Response {_esc(str(status)) if status else ""}</div>'
+                        f'<table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody>{rows}</tbody></table>'
+                    )
+
+            # Error codes table
+            err_codes = iface.get("error_codes", [])
+            err_html = ""
+            if err_codes:
+                rows = ""
+                for e in err_codes:
+                    rows += (
+                        f"<tr><td>{_esc(str(e.get('code','')))}</td>"
+                        f"<td>{_esc(e.get('message',''))}</td></tr>"
+                    )
+                err_html = (
+                    '<div class="body-label">错误码</div>'
+                    '<table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead>'
+                    f'<tbody>{rows}</tbody></table>'
+                )
+
+            parts.append(
+                '<div class="contract-card">'
+                '<div class="cc-head">'
+                + (f'<span class="method-badge {method_cls}">{_esc(method)}</span>' if method else "")
+                + (f'<span class="cc-endpoint">{_esc(endpoint)}</span>' if endpoint else "")
+                + f'<span class="cc-name">{_esc(iface.get("name",""))}</span>'
+                '</div>'
+                f'<div class="cc-desc">{_esc(iface.get("description",""))}</div>'
+                + (f'<table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody>{params_rows}</tbody></table>' if params_rows else "")
+                + resp_html
+                + err_html
+                + '</div>'
+            )
+        parts.append(_SECTION_FOOT)
+
+    # ── 4. Error Handling ──
+    if d.get("error_handling"):
+        parts.append(_section_header("⚠️", "错误处理", "rgba(251,191,36,0.12)", "errors"))
         parts.append(f"<p>{_esc(d['error_handling'])}</p>")
         parts.append(_SECTION_FOOT)
-    parts.append(_PAGE_END)
+
+    parts.append(_PAGE_END_SIDEBAR)
     return "\n".join(parts)
 
 

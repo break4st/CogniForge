@@ -35,12 +35,18 @@ AGENT_SCHEMAS: dict[str, dict] = {
     },
     "lld": {
         "agent": "design",
-        "hint": "模块名、数据模型、接口定义、错误处理策略",
+        "hint": "模块名、概述、数据模型、接口定义、错误处理",
         "fields": (
-            "module（模块名）, title, overview, "
-            "data_models: [{name, type, fields: [{name, type, description}]}], "
-            "interfaces: [{name, endpoint, description, parameters: [{name, type, description}]}], "
-            "error_handling（错误处理策略）"
+            "module（模块名）, title, "
+            "overview: {description, dependencies: [string], tech_stack: [string]}, "
+            "data_models: [{name, type（table/interface/struct/store/config）, "
+            "description, fields: [{name, type, required（bool）, description}]}], "
+            "interfaces: [{name, method（GET/POST/PUT/DELETE/INTERNAL）, "
+            "endpoint（不含method前缀）, description, "
+            "parameters: [{name, type, description}], "
+            "response: {status, body: {字段名: 类型}}, "
+            "error_codes: [{code, message}]}], "
+            "error_handling"
         ),
     },
     "wbs": {
