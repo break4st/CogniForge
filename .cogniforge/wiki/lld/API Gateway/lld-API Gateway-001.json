@@ -5,166 +5,267 @@
     "module": "API Gateway",
     "title": "LLD - API Gateway",
     "author": "design_agent",
-    "created": "2026-05-20 11:23"
+    "created": "2026-05-20 13:39"
   },
-  "overview": "基于 Node.js/Express 的统一 API 网关层，部署于 Nginx 之后、业务服务之前。采用中间件链模式处理请求：全局中间件（CORS、请求日志、鉴权）→ 路由级中间件（参数校验）→ 业务模块路由分发。路由规则按 URL 前缀将请求转发至对应的内部业务 Service（Student/Class/Grade/Statistics）。认证模块基于 JWT，在网关层统一完成 token 签发、校验和续期，下层业务服务不再感知用户身份细节。限流采用令牌桶算法，按 IP 和用户维度分别限制。所有请求的出入时间、状态码和响应时长记录为审计日志。",
+  "overview": "系统的统一入口，负责请求路由、身份认证、权限校验、流量控制与请求日志记录。所有客户端请求必须经过 API Gateway 才能访问后端微服务。Gateway 对外暴露 AuthVerifyAPI（登录认证），其余请求按路由规则转发至 Student Service、Class Service、Grade Service、Statistics Service。采用过滤器链模式处理横切关注点：CORS → 请求日志 → 限流 → JWT 鉴权（除登录接口）→ 路由转发 → 响应封装。",
   "data_models": [
     {
       "name": "RouteRule",
       "type": "config",
       "fields": [
-        { "name": "prefix", "type": "string", "description": "URL 前缀，如 /api/students" },
-        { "name": "targetService", "type": "string", "description": "目标内部服务名称，如 StudentService" },
-        { "name": "methods", "type": "string[]", "description": "允许的 HTTP 方法，如 [\"GET\",\"POST\",\"PUT\",\"DELETE\"]" },
-        { "name": "authRequired", "type": "boolean", "description": "是否需要认证，默认 true" },
-        { "name": "rateLimit", "type": "RateLimitConfig", "description": "该路由的限流配置" }
-      ]
-    },
-    {
-      "name": "AuthPayload",
-      "type": "struct",
-      "fields": [
-        { "name": "userId", "type": "number", "description": "用户 ID" },
-        { "name": "role", "type": "string", "description": "用户角色：admin / teacher" },
-        { "name": "username", "type": "string", "description": "用户名" },
-        { "name": "iat", "type": "number", "description": "签发时间（Unix 时间戳）" },
-        { "name": "exp", "type": "number", "description": "过期时间（Unix 时间戳），默认 24h" }
+        {"name": "path_pattern", "type": "string", "description": "路由路径匹配模式，如 /api/v1/students/**"},
+        {"name": "method", "type": "string", "description": "HTTP 方法（GET/POST/PUT/DELETE），* 表示任意方法"},
+        {"name": "target_service", "type": "string", "description": "目标微服务名称（student-service/class-service/grade-service/statistics-service）"},
+        {"name": "target_path", "type": "string", "description": "转发至目标服务的实际路径，支持路径变量替换"},
+        {"name": "require_auth", "type": "boolean", "description": "是否要求 JWT 认证"},
+        {"name": "allowed_roles", "type": "array", "description": "允许访问的角色列表，为空则不限制"}
       ]
     },
     {
       "name": "RateLimitConfig",
       "type": "config",
       "fields": [
-        { "name": "windowMs", "type": "number", "description": "时间窗口（毫秒），默认 60000（1 分钟）" },
-        { "name": "maxRequests", "type": "number", "description": "时间窗口内允许的最大请求数" },
-        { "name": "scope", "type": "string", "description": "限流维度：ip / user，默认 ip" }
+        {"name": "key", "type": "string", "description": "限流键（如 client_ip、user_id、path）"},
+        {"name": "max_requests", "type": "integer", "description": "时间窗口内最大请求数"},
+        {"name": "window_seconds", "type": "integer", "description": "时间窗口大小（秒）"},
+        {"name": "burst", "type": "integer", "description": "突发允许的额外请求数"}
       ]
     },
     {
-      "name": "AuditLogEntry",
-      "type": "log",
+      "name": "JwtPayload",
+      "type": "runtime",
       "fields": [
-        { "name": "requestId", "type": "string", "description": "请求唯一标识 UUID" },
-        { "name": "timestamp", "type": "string", "description": "请求时间 ISO 8601" },
-        { "name": "method", "type": "string", "description": "HTTP 方法" },
-        { "name": "path", "type": "string", "description": "请求路径" },
-        { "name": "userId", "type": "number | null", "description": "认证用户 ID，未认证为 null" },
-        { "name": "ip", "type": "string", "description": "客户端 IP" },
-        { "name": "statusCode", "type": "number", "description": "HTTP 响应状态码" },
-        { "name": "durationMs", "type": "number", "description": "响应耗时（毫秒）" },
-        { "name": "userAgent", "type": "string", "description": "客户端 User-Agent" }
+        {"name": "user_id", "type": "integer", "description": "用户 ID"},
+        {"name": "username", "type": "string", "description": "用户名"},
+        {"name": "role", "type": "string", "description": "用户角色"},
+        {"name": "iat", "type": "integer", "description": "Token 签发时间戳"},
+        {"name": "exp", "type": "integer", "description": "Token 过期时间戳"}
       ]
     },
     {
-      "name": "RouteTable",
-      "type": "config",
+      "name": "AccessLog",
+      "type": "runtime",
       "fields": [
-        { "name": "routes", "type": "RouteRule[]", "description": "路由规则列表，启动时加载" },
-        { "name": "globalRateLimit", "type": "RateLimitConfig", "description": "全局默认限流配置" },
-        { "name": "jwtSecret", "type": "string", "description": "JWT 签名密钥（仅配置描述，不存储明文值）" },
-        { "name": "jwtExpiresIn", "type": "string", "description": "JWT 过期时间，默认 '24h'" }
+        {"name": "request_id", "type": "string", "description": "请求唯一标识（UUID）"},
+        {"name": "timestamp", "type": "string", "description": "请求到达时间"},
+        {"name": "method", "type": "string", "description": "HTTP 方法"},
+        {"name": "path", "type": "string", "description": "请求路径"},
+        {"name": "status_code", "type": "integer", "description": "响应状态码"},
+        {"name": "latency_ms", "type": "integer", "description": "请求处理耗时（毫秒）"},
+        {"name": "client_ip", "type": "string", "description": "客户端 IP"},
+        {"name": "user_id", "type": "integer", "description": "认证用户 ID，未认证为 null"},
+        {"name": "target_service", "type": "string", "description": "路由目标服务"},
+        {"name": "response_size", "type": "integer", "description": "响应体大小（字节）"}
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "用户登录",
-      "endpoint": "POST /api/auth/login",
-      "description": "用户身份认证，验证用户名密码后签发 JWT Token",
+      "name": "AuthVerifyAPI",
+      "endpoint": "POST /api/v1/auth/login",
+      "description": "（Provider）用户登录认证接口，由 API Gateway 直接处理。接收用户名与密码，校验通过后签发 JWT Token 并返回用户角色。该接口不经过 JWT 鉴权过滤器。",
       "parameters": [
-        { "name": "username", "type": "string", "description": "用户名" },
-        { "name": "password", "type": "string", "description": "密码" }
-      ]
+        {"name": "username", "type": "string", "description": "用户名，必填，Body 参数"},
+        {"name": "password", "type": "string", "description": "密码，必填，Body 参数"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {"token": "JWT Token", "role": "用户角色"}
+      }
     },
     {
-      "name": "用户登出",
-      "endpoint": "POST /api/auth/logout",
-      "description": "将当前 Token 加入黑名单使其失效",
+      "name": "StudentInfoAPI",
+      "endpoint": "GET /api/v1/students",
+      "description": "（路由转发 → Student Service）分页查询学生列表，支持按姓名、学号、年级、班级等多条件组合筛选",
       "parameters": [
-        { "name": "token", "type": "string", "description": "当前 JWT Token（也可从 Authorization header 获取）" }
-      ]
+        {"name": "name", "type": "string", "description": "学生姓名模糊搜索，Query 参数，选填"},
+        {"name": "student_no", "type": "string", "description": "学号精确匹配，Query 参数，选填"},
+        {"name": "grade_id", "type": "integer", "description": "年级 ID 过滤，Query 参数，选填"},
+        {"name": "class_id", "type": "integer", "description": "班级 ID 过滤，Query 参数，选填"},
+        {"name": "page", "type": "integer", "description": "页码，Query 参数，选填"},
+        {"name": "page_size", "type": "integer", "description": "每页条数，Query 参数，选填"}
+      ],
+      "route_to": "student-service",
+      "contract_ref": "StudentInfoAPI (provider: Student Service)"
     },
     {
-      "name": "Token 验证",
-      "endpoint": "GET /api/auth/verify",
-      "description": "验证当前 Token 是否有效，返回用户身份信息",
-      "parameters": []
-    },
-    {
-      "name": "Token 续期",
-      "endpoint": "POST /api/auth/refresh",
-      "description": "为未过期的 Token 签发新 Token，延长有效期",
+      "name": "StudentDetailAPI",
+      "endpoint": "GET /api/v1/students/{id}",
+      "description": "（路由转发 → Student Service）根据 ID 获取单个学生的完整详细信息",
       "parameters": [
-        { "name": "token", "type": "string", "description": "当前 JWT Token" }
-      ]
+        {"name": "id", "type": "integer", "description": "学生 ID，Path 参数，必填"}
+      ],
+      "route_to": "student-service",
+      "contract_ref": "StudentDetailAPI (provider: Student Service)"
     },
     {
-      "name": "健康检查",
-      "endpoint": "GET /api/health",
-      "description": "网关及各下游服务的存活检测，返回各服务状态",
-      "parameters": []
+      "name": "CreateStudentAPI",
+      "endpoint": "POST /api/v1/students",
+      "description": "（路由转发 → Student Service）创建新学生记录，学号必须唯一",
+      "parameters": [
+        {"name": "name", "type": "string", "description": "学生姓名，Body 参数，必填"},
+        {"name": "student_no", "type": "string", "description": "学号（系统唯一），Body 参数，必填"},
+        {"name": "gender", "type": "string", "description": "性别，Body 参数，必填"},
+        {"name": "birth_date", "type": "string", "description": "出生日期，Body 参数，必填"},
+        {"name": "phone", "type": "string", "description": "联系方式，Body 参数，选填"},
+        {"name": "address", "type": "string", "description": "家庭住址，Body 参数，选填"},
+        {"name": "grade_id", "type": "integer", "description": "所属年级 ID，Body 参数，必填"},
+        {"name": "class_id", "type": "integer", "description": "所属班级 ID，Body 参数，必填"}
+      ],
+      "route_to": "student-service",
+      "contract_ref": "CreateStudentAPI (provider: Student Service)"
     },
     {
-      "name": "路由: 学生管理",
-      "endpoint": "前缀 /api/students/* → StudentService",
-      "description": "学生相关请求路由至 StudentService，包括 CRUD 和搜索",
-      "parameters": []
+      "name": "UpdateStudentAPI",
+      "endpoint": "PUT /api/v1/students/{id}",
+      "description": "（路由转发 → Student Service）更新学生信息，支持部分字段更新",
+      "parameters": [
+        {"name": "id", "type": "integer", "description": "学生 ID，Path 参数，必填"},
+        {"name": "name", "type": "string", "description": "学生姓名，Body 参数，选填"},
+        {"name": "phone", "type": "string", "description": "联系方式，Body 参数，选填"},
+        {"name": "address", "type": "string", "description": "家庭住址，Body 参数，选填"},
+        {"name": "grade_id", "type": "integer", "description": "所属年级 ID，Body 参数，选填"},
+        {"name": "class_id", "type": "integer", "description": "所属班级 ID，Body 参数，选填"}
+      ],
+      "route_to": "student-service",
+      "contract_ref": "UpdateStudentAPI (provider: Student Service)"
     },
     {
-      "name": "路由: 班级管理",
-      "endpoint": "前缀 /api/classes/* → ClassService",
-      "description": "班级相关请求路由至 ClassService，包括成员管理",
-      "parameters": []
+      "name": "DeleteStudentAPI",
+      "endpoint": "DELETE /api/v1/students/{id}",
+      "description": "（路由转发 → Student Service）根据 ID 删除学生记录",
+      "parameters": [
+        {"name": "id", "type": "integer", "description": "学生 ID，Path 参数，必填"}
+      ],
+      "route_to": "student-service",
+      "contract_ref": "DeleteStudentAPI (provider: Student Service)"
     },
     {
-      "name": "路由: 年级管理",
-      "endpoint": "前缀 /api/grades/* → GradeService",
-      "description": "年级相关请求路由至 GradeService，包括班级归属",
-      "parameters": []
+      "name": "StudentImportAPI",
+      "endpoint": "POST /api/v1/students/import",
+      "description": "（路由转发 → Student Service）批量导入学生信息，支持 CSV/Excel 文件上传，Gateway 不做解包直接转发二进制流",
+      "parameters": [
+        {"name": "file", "type": "binary", "description": "学生信息导入文件（CSV/Excel），Body 参数，必填"}
+      ],
+      "route_to": "student-service",
+      "contract_ref": "StudentImportAPI (provider: Student Service)"
     },
     {
-      "name": "路由: 学习统计",
-      "endpoint": "前缀 /api/statistics/* → StatisticsService",
-      "description": "统计相关请求路由至 StatisticsService，包括各类汇总",
-      "parameters": []
+      "name": "StudentExportAPI",
+      "endpoint": "GET /api/v1/students/export",
+      "description": "（路由转发 → Student Service）导出学生信息为 CSV/Excel 文件",
+      "parameters": [
+        {"name": "grade_id", "type": "integer", "description": "按年级筛选导出，Query 参数，选填"},
+        {"name": "class_id", "type": "integer", "description": "按班级筛选导出，Query 参数，选填"}
+      ],
+      "route_to": "student-service",
+      "contract_ref": "StudentExportAPI (provider: Student Service)"
+    },
+    {
+      "name": "ClassInfoAPI",
+      "endpoint": "GET /api/v1/classes",
+      "description": "（路由转发 → Class Service）分页查询班级列表，支持按年级过滤",
+      "parameters": [
+        {"name": "grade_id", "type": "integer", "description": "按年级过滤班级，Query 参数，选填"},
+        {"name": "page", "type": "integer", "description": "页码，Query 参数，选填"},
+        {"name": "page_size", "type": "integer", "description": "每页条数，Query 参数，选填"}
+      ],
+      "route_to": "class-service",
+      "contract_ref": "ClassInfoAPI (provider: Class Service)"
+    },
+    {
+      "name": "ClassDetailAPI",
+      "endpoint": "GET /api/v1/classes/{id}",
+      "description": "（路由转发 → Class Service）根据 ID 获取班级详细信息，包括班主任和学生人数",
+      "parameters": [
+        {"name": "id", "type": "integer", "description": "班级 ID，Path 参数，必填"}
+      ],
+      "route_to": "class-service",
+      "contract_ref": "ClassDetailAPI (provider: Class Service)"
+    },
+    {
+      "name": "CreateClassAPI",
+      "endpoint": "POST /api/v1/classes",
+      "description": "（路由转发 → Class Service）创建新班级",
+      "parameters": [
+        {"name": "name", "type": "string", "description": "班级名称，Body 参数，必填"},
+        {"name": "grade_id", "type": "integer", "description": "所属年级 ID，Body 参数，必填"},
+        {"name": "head_teacher", "type": "string", "description": "班主任姓名，Body 参数，选填"},
+        {"name": "capacity", "type": "integer", "description": "班级容量上限，Body 参数，选填"}
+      ],
+      "route_to": "class-service",
+      "contract_ref": "CreateClassAPI (provider: Class Service)"
+    },
+    {
+      "name": "ClassStudentsAPI",
+      "endpoint": "GET /api/v1/classes/{id}/students",
+      "description": "（路由转发 → Class Service）查询指定班级的学生名单",
+      "parameters": [
+        {"name": "id", "type": "integer", "description": "班级 ID，Path 参数，必填"}
+      ],
+      "route_to": "class-service",
+      "contract_ref": "ClassStudentsAPI (provider: Class Service)"
+    },
+    {
+      "name": "GradeInfoAPI",
+      "endpoint": "GET /api/v1/grades",
+      "description": "（路由转发 → Grade Service）分页查询年级列表，支持按学年和学段过滤",
+      "parameters": [
+        {"name": "academic_year", "type": "string", "description": "按学年过滤，Query 参数，选填"},
+        {"name": "stage", "type": "string", "description": "按学段过滤（小学/初中/高中），Query 参数，选填"},
+        {"name": "page", "type": "integer", "description": "页码，Query 参数，选填"},
+        {"name": "page_size", "type": "integer", "description": "每页条数，Query 参数，选填"}
+      ],
+      "route_to": "grade-service",
+      "contract_ref": "GradeInfoAPI (provider: Grade Service)"
+    },
+    {
+      "name": "GradeDetailAPI",
+      "endpoint": "GET /api/v1/grades/{id}",
+      "description": "（路由转发 → Grade Service）根据 ID 获取年级详细信息",
+      "parameters": [
+        {"name": "id", "type": "integer", "description": "年级 ID，Path 参数，必填"}
+      ],
+      "route_to": "grade-service",
+      "contract_ref": "GradeDetailAPI (provider: Grade Service)"
+    },
+    {
+      "name": "CreateGradeAPI",
+      "endpoint": "POST /api/v1/grades",
+      "description": "（路由转发 → Grade Service）创建新年级",
+      "parameters": [
+        {"name": "name", "type": "string", "description": "年级名称，Body 参数，必填"},
+        {"name": "stage", "type": "string", "description": "学段（小学/初中/高中），Body 参数，必填"},
+        {"name": "academic_year", "type": "string", "description": "所属学年，Body 参数，必填"}
+      ],
+      "route_to": "grade-service",
+      "contract_ref": "CreateGradeAPI (provider: Grade Service)"
+    },
+    {
+      "name": "StatisticsAPI",
+      "endpoint": "GET /api/v1/statistics/overview",
+      "description": "（路由转发 → Statistics Service）获取统计概览数据，支持按学生/班级/年级维度查看",
+      "parameters": [
+        {"name": "scope", "type": "string", "description": "统计范围: student/class/grade，Query 参数，必填"},
+        {"name": "scope_id", "type": "integer", "description": "对应范围 ID，Query 参数，必填"},
+        {"name": "start_date", "type": "string", "description": "统计开始日期，Query 参数，选填"},
+        {"name": "end_date", "type": "string", "description": "统计结束日期，Query 参数，选填"}
+      ],
+      "route_to": "statistics-service",
+      "contract_ref": "StatisticsAPI (provider: Statistics Service)"
+    },
+    {
+      "name": "StatisticsExportAPI",
+      "endpoint": "GET /api/v1/statistics/export",
+      "description": "（路由转发 → Statistics Service）导出统计报表，支持 CSV/PDF 格式",
+      "parameters": [
+        {"name": "scope", "type": "string", "description": "统计范围，Query 参数，必填"},
+        {"name": "scope_id", "type": "integer", "description": "对应范围 ID，Query 参数，必填"},
+        {"name": "format", "type": "string", "description": "导出格式（csv/pdf），Query 参数，选填"}
+      ],
+      "route_to": "statistics-service",
+      "contract_ref": "StatisticsExportAPI (provider: Statistics Service)"
     }
   ],
-  "middlewares": [
-    {
-      "name": "CorsMiddleware",
-      "type": "global",
-      "description": "设置 CORS 头，允许前端跨域请求。白名单仅允许前端域名来源，生产环境不设置为通配符"
-    },
-    {
-      "name": "RequestLogMiddleware",
-      "type": "global",
-      "description": "记录每个请求的 AuditLogEntry：开始时间入 header（X-Request-Start），响应结束时计算耗时并异步写入日志存储"
-    },
-    {
-      "name": "AuthMiddleware",
-      "type": "global",
-      "description": "从 Authorization: Bearer <token> 中提取 JWT，校验签名和有效期。解析后的 AuthPayload 注入 request.user 供下游使用。对白名单路径（/api/auth/login, /api/health）跳过校验"
-    },
-    {
-      "name": "RateLimitMiddleware",
-      "type": "global",
-      "description": "基于令牌桶算法，从 Redis 中读取当前桶状态。按 user 维度限流（未认证则按 ip），超出限制返回 429 Too Many Requests"
-    },
-    {
-      "name": "ValidationMiddleware",
-      "type": "route",
-      "description": "按路由规则校验请求参数：query 参数类型校验、body 必填字段校验、路径参数格式校验。校验失败返回 400 Bad Request 并附带具体错误字段"
-    },
-    {
-      "name": "RouteDispatchMiddleware",
-      "type": "global",
-      "description": "根据 RouteTable 匹配请求前缀，将请求代理至对应的内部 Service（HTTP 转发）。无匹配路由时返回 404"
-    },
-    {
-      "name": "ErrorHandlerMiddleware",
-      "type": "global",
-      "description": "全局异常捕获中间件（放在链尾）。分类处理：ValidationError → 400, AuthError → 401/403, RateLimitError → 429, 其余 → 500。统一 JSON 响应格式 { code, message, details }"
-    }
-  ],
-  "error_handling": "全局统一在 ErrorHandlerMiddleware 捕获异常并返回标准 JSON 格式：{ code: number, message: string, details?: any }。4xx 错误直接返回后端校验提示（如用户名密码错误、Token 过期、参数不合法、请求频率过高），5xx 错误返回 '系统内部错误' 并记录完整错误栈到审计日志。认证失败细分：Token 缺失 → 401, Token 过期 → 401(带 'token_expired' 标识), Token 无效 → 401, 权限不足 → 403。限流触发时返回 429 并在 Response header 中附带 X-RateLimit-Remaining（剩余配额）和 X-RateLimit-Reset（重置时间）。对于下游业务服务返回的错误码（如 StudentService 的 404），网关透传不修改。请求超时默认设为 30s，超时返回 504。"
+  "error_handling": "API Gateway 采用过滤器链统一处理异常：1）JWT 校验失败或 Token 过期返回 401 Unauthorized，响应体包含错误码 'AUTH_TOKEN_INVALID'。2）权限不足（角色不匹配路由白名单）返回 403 Forbidden，错误码 'AUTH_FORBIDDEN'。3）请求超出限流阈值返回 429 Too Many Requests，响应头附加 Retry-After 指示重试等待秒数。4）后端服务熔断开启或连接超时（超时阈值 10 秒）返回 504 Gateway Timeout。5）后端服务返回 5xx 时 Gateway 透传状态码并记录错误日志，不修改下游响应体。6）请求体超过 10MB 返回 413 Payload Too Large。所有异常统一封装为 {\"code\": \"错误码\", \"message\": \"错误描述\"} 格式。每个请求生成唯一 request_id（UUID），贯穿请求链路，便于日志关联与问题追踪。"
 }

@@ -150,7 +150,7 @@
   <div><span class="badge accent">详细设计文档</span></div>
 </div>
 <h1><span>详细设计文档</span> LLD - API Gateway</h1>
-<div class="meta">2026-05-20 11:23 &middot; 作者: design_agent</div>
+<div class="meta">2026-05-20 13:39 &middot; 作者: design_agent</div>
 
 <div class="section">
   <div class="section-header">
@@ -160,36 +160,32 @@
   <div class="section-body">
 
 <p>模块: API Gateway</p>
-<p>基于 Node.js/Express 的统一 API 网关层，部署于 Nginx 之后、业务服务之前。采用中间件链模式处理请求：全局中间件（CORS、请求日志、鉴权）→ 路由级中间件（参数校验）→ 业务模块路由分发。路由规则按 URL 前缀将请求转发至对应的内部业务 Service（Student/Class/Grade/Statistics）。认证模块基于 JWT，在网关层统一完成 token 签发、校验和续期，下层业务服务不再感知用户身份细节。限流采用令牌桶算法，按 IP 和用户维度分别限制。所有请求的出入时间、状态码和响应时长记录为审计日志。</p>
+<p>系统的统一入口，负责请求路由、身份认证、权限校验、流量控制与请求日志记录。所有客户端请求必须经过 API Gateway 才能访问后端微服务。Gateway 对外暴露 AuthVerifyAPI（登录认证），其余请求按路由规则转发至 Student Service、Class Service、Grade Service、Statistics Service。采用过滤器链模式处理横切关注点：CORS → 请求日志 → 限流 → JWT 鉴权（除登录接口）→ 路由转发 → 响应封装。</p>
   </div>
 </div>
 
 <div class="section">
   <div class="section-header">
     <div class="icon" style="background:rgba(91,141,239,0.12)">🗄️</div>
-    <h2>数据模型 (5)</h2>
+    <h2>数据模型 (4)</h2>
   </div>
   <div class="section-body">
 
 <div class="model-item">
   <h3>RouteRule</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>prefix</td><td>string</td><td>URL 前缀，如 /api/students</td></tr><tr><td>targetService</td><td>string</td><td>目标内部服务名称，如 StudentService</td></tr><tr><td>methods</td><td>string[]</td><td>允许的 HTTP 方法，如 [&quot;GET&quot;,&quot;POST&quot;,&quot;PUT&quot;,&quot;DELETE&quot;]</td></tr><tr><td>authRequired</td><td>boolean</td><td>是否需要认证，默认 true</td></tr><tr><td>rateLimit</td><td>RateLimitConfig</td><td>该路由的限流配置</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>AuthPayload</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>userId</td><td>number</td><td>用户 ID</td></tr><tr><td>role</td><td>string</td><td>用户角色：admin / teacher</td></tr><tr><td>username</td><td>string</td><td>用户名</td></tr><tr><td>iat</td><td>number</td><td>签发时间（Unix 时间戳）</td></tr><tr><td>exp</td><td>number</td><td>过期时间（Unix 时间戳），默认 24h</td></tr></tbody></table>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>path_pattern</td><td>string</td><td>路由路径匹配模式，如 /api/v1/students/**</td></tr><tr><td>method</td><td>string</td><td>HTTP 方法（GET/POST/PUT/DELETE），* 表示任意方法</td></tr><tr><td>target_service</td><td>string</td><td>目标微服务名称（student-service/class-service/grade-service/statistics-service）</td></tr><tr><td>target_path</td><td>string</td><td>转发至目标服务的实际路径，支持路径变量替换</td></tr><tr><td>require_auth</td><td>boolean</td><td>是否要求 JWT 认证</td></tr><tr><td>allowed_roles</td><td>array</td><td>允许访问的角色列表，为空则不限制</td></tr></tbody></table>
 </div>
 <div class="model-item">
   <h3>RateLimitConfig</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>windowMs</td><td>number</td><td>时间窗口（毫秒），默认 60000（1 分钟）</td></tr><tr><td>maxRequests</td><td>number</td><td>时间窗口内允许的最大请求数</td></tr><tr><td>scope</td><td>string</td><td>限流维度：ip / user，默认 ip</td></tr></tbody></table>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>key</td><td>string</td><td>限流键（如 client_ip、user_id、path）</td></tr><tr><td>max_requests</td><td>integer</td><td>时间窗口内最大请求数</td></tr><tr><td>window_seconds</td><td>integer</td><td>时间窗口大小（秒）</td></tr><tr><td>burst</td><td>integer</td><td>突发允许的额外请求数</td></tr></tbody></table>
 </div>
 <div class="model-item">
-  <h3>AuditLogEntry</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>requestId</td><td>string</td><td>请求唯一标识 UUID</td></tr><tr><td>timestamp</td><td>string</td><td>请求时间 ISO 8601</td></tr><tr><td>method</td><td>string</td><td>HTTP 方法</td></tr><tr><td>path</td><td>string</td><td>请求路径</td></tr><tr><td>userId</td><td>number | null</td><td>认证用户 ID，未认证为 null</td></tr><tr><td>ip</td><td>string</td><td>客户端 IP</td></tr><tr><td>statusCode</td><td>number</td><td>HTTP 响应状态码</td></tr><tr><td>durationMs</td><td>number</td><td>响应耗时（毫秒）</td></tr><tr><td>userAgent</td><td>string</td><td>客户端 User-Agent</td></tr></tbody></table>
+  <h3>JwtPayload</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>user_id</td><td>integer</td><td>用户 ID</td></tr><tr><td>username</td><td>string</td><td>用户名</td></tr><tr><td>role</td><td>string</td><td>用户角色</td></tr><tr><td>iat</td><td>integer</td><td>Token 签发时间戳</td></tr><tr><td>exp</td><td>integer</td><td>Token 过期时间戳</td></tr></tbody></table>
 </div>
 <div class="model-item">
-  <h3>RouteTable</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>routes</td><td>RouteRule[]</td><td>路由规则列表，启动时加载</td></tr><tr><td>globalRateLimit</td><td>RateLimitConfig</td><td>全局默认限流配置</td></tr><tr><td>jwtSecret</td><td>string</td><td>JWT 签名密钥（仅配置描述，不存储明文值）</td></tr><tr><td>jwtExpiresIn</td><td>string</td><td>JWT 过期时间，默认 '24h'</td></tr></tbody></table>
+  <h3>AccessLog</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>request_id</td><td>string</td><td>请求唯一标识（UUID）</td></tr><tr><td>timestamp</td><td>string</td><td>请求到达时间</td></tr><tr><td>method</td><td>string</td><td>HTTP 方法</td></tr><tr><td>path</td><td>string</td><td>请求路径</td></tr><tr><td>status_code</td><td>integer</td><td>响应状态码</td></tr><tr><td>latency_ms</td><td>integer</td><td>请求处理耗时（毫秒）</td></tr><tr><td>client_ip</td><td>string</td><td>客户端 IP</td></tr><tr><td>user_id</td><td>integer</td><td>认证用户 ID，未认证为 null</td></tr><tr><td>target_service</td><td>string</td><td>路由目标服务</td></tr><tr><td>response_size</td><td>integer</td><td>响应体大小（字节）</td></tr></tbody></table>
 </div>
   </div>
 </div>
@@ -197,54 +193,94 @@
 <div class="section">
   <div class="section-header">
     <div class="icon" style="background:rgba(34,211,238,0.12)">🔌</div>
-    <h2>接口定义 (9)</h2>
+    <h2>接口定义 (17)</h2>
   </div>
   <div class="section-body">
 
 <div class="comp-item">
-  <h3>用户登录</h3>
-  <div class="comp-type">POST /api/auth/login</div>
-  <p>用户身份认证，验证用户名密码后签发 JWT Token</p>
+  <h3>AuthVerifyAPI</h3>
+  <div class="comp-type">POST /api/v1/auth/login</div>
+  <p>（Provider）用户登录认证接口，由 API Gateway 直接处理。接收用户名与密码，校验通过后签发 JWT Token 并返回用户角色。该接口不经过 JWT 鉴权过滤器。</p>
 </div>
 <div class="comp-item">
-  <h3>用户登出</h3>
-  <div class="comp-type">POST /api/auth/logout</div>
-  <p>将当前 Token 加入黑名单使其失效</p>
+  <h3>StudentInfoAPI</h3>
+  <div class="comp-type">GET /api/v1/students</div>
+  <p>（路由转发 → Student Service）分页查询学生列表，支持按姓名、学号、年级、班级等多条件组合筛选</p>
 </div>
 <div class="comp-item">
-  <h3>Token 验证</h3>
-  <div class="comp-type">GET /api/auth/verify</div>
-  <p>验证当前 Token 是否有效，返回用户身份信息</p>
+  <h3>StudentDetailAPI</h3>
+  <div class="comp-type">GET /api/v1/students/{id}</div>
+  <p>（路由转发 → Student Service）根据 ID 获取单个学生的完整详细信息</p>
 </div>
 <div class="comp-item">
-  <h3>Token 续期</h3>
-  <div class="comp-type">POST /api/auth/refresh</div>
-  <p>为未过期的 Token 签发新 Token，延长有效期</p>
+  <h3>CreateStudentAPI</h3>
+  <div class="comp-type">POST /api/v1/students</div>
+  <p>（路由转发 → Student Service）创建新学生记录，学号必须唯一</p>
 </div>
 <div class="comp-item">
-  <h3>健康检查</h3>
-  <div class="comp-type">GET /api/health</div>
-  <p>网关及各下游服务的存活检测，返回各服务状态</p>
+  <h3>UpdateStudentAPI</h3>
+  <div class="comp-type">PUT /api/v1/students/{id}</div>
+  <p>（路由转发 → Student Service）更新学生信息，支持部分字段更新</p>
 </div>
 <div class="comp-item">
-  <h3>路由: 学生管理</h3>
-  <div class="comp-type">前缀 /api/students/* → StudentService</div>
-  <p>学生相关请求路由至 StudentService，包括 CRUD 和搜索</p>
+  <h3>DeleteStudentAPI</h3>
+  <div class="comp-type">DELETE /api/v1/students/{id}</div>
+  <p>（路由转发 → Student Service）根据 ID 删除学生记录</p>
 </div>
 <div class="comp-item">
-  <h3>路由: 班级管理</h3>
-  <div class="comp-type">前缀 /api/classes/* → ClassService</div>
-  <p>班级相关请求路由至 ClassService，包括成员管理</p>
+  <h3>StudentImportAPI</h3>
+  <div class="comp-type">POST /api/v1/students/import</div>
+  <p>（路由转发 → Student Service）批量导入学生信息，支持 CSV/Excel 文件上传，Gateway 不做解包直接转发二进制流</p>
 </div>
 <div class="comp-item">
-  <h3>路由: 年级管理</h3>
-  <div class="comp-type">前缀 /api/grades/* → GradeService</div>
-  <p>年级相关请求路由至 GradeService，包括班级归属</p>
+  <h3>StudentExportAPI</h3>
+  <div class="comp-type">GET /api/v1/students/export</div>
+  <p>（路由转发 → Student Service）导出学生信息为 CSV/Excel 文件</p>
 </div>
 <div class="comp-item">
-  <h3>路由: 学习统计</h3>
-  <div class="comp-type">前缀 /api/statistics/* → StatisticsService</div>
-  <p>统计相关请求路由至 StatisticsService，包括各类汇总</p>
+  <h3>ClassInfoAPI</h3>
+  <div class="comp-type">GET /api/v1/classes</div>
+  <p>（路由转发 → Class Service）分页查询班级列表，支持按年级过滤</p>
+</div>
+<div class="comp-item">
+  <h3>ClassDetailAPI</h3>
+  <div class="comp-type">GET /api/v1/classes/{id}</div>
+  <p>（路由转发 → Class Service）根据 ID 获取班级详细信息，包括班主任和学生人数</p>
+</div>
+<div class="comp-item">
+  <h3>CreateClassAPI</h3>
+  <div class="comp-type">POST /api/v1/classes</div>
+  <p>（路由转发 → Class Service）创建新班级</p>
+</div>
+<div class="comp-item">
+  <h3>ClassStudentsAPI</h3>
+  <div class="comp-type">GET /api/v1/classes/{id}/students</div>
+  <p>（路由转发 → Class Service）查询指定班级的学生名单</p>
+</div>
+<div class="comp-item">
+  <h3>GradeInfoAPI</h3>
+  <div class="comp-type">GET /api/v1/grades</div>
+  <p>（路由转发 → Grade Service）分页查询年级列表，支持按学年和学段过滤</p>
+</div>
+<div class="comp-item">
+  <h3>GradeDetailAPI</h3>
+  <div class="comp-type">GET /api/v1/grades/{id}</div>
+  <p>（路由转发 → Grade Service）根据 ID 获取年级详细信息</p>
+</div>
+<div class="comp-item">
+  <h3>CreateGradeAPI</h3>
+  <div class="comp-type">POST /api/v1/grades</div>
+  <p>（路由转发 → Grade Service）创建新年级</p>
+</div>
+<div class="comp-item">
+  <h3>StatisticsAPI</h3>
+  <div class="comp-type">GET /api/v1/statistics/overview</div>
+  <p>（路由转发 → Statistics Service）获取统计概览数据，支持按学生/班级/年级维度查看</p>
+</div>
+<div class="comp-item">
+  <h3>StatisticsExportAPI</h3>
+  <div class="comp-type">GET /api/v1/statistics/export</div>
+  <p>（路由转发 → Statistics Service）导出统计报表，支持 CSV/PDF 格式</p>
 </div>
   </div>
 </div>
@@ -256,7 +292,7 @@
   </div>
   <div class="section-body">
 
-<p>全局统一在 ErrorHandlerMiddleware 捕获异常并返回标准 JSON 格式：{ code: number, message: string, details?: any }。4xx 错误直接返回后端校验提示（如用户名密码错误、Token 过期、参数不合法、请求频率过高），5xx 错误返回 '系统内部错误' 并记录完整错误栈到审计日志。认证失败细分：Token 缺失 → 401, Token 过期 → 401(带 'token_expired' 标识), Token 无效 → 401, 权限不足 → 403。限流触发时返回 429 并在 Response header 中附带 X-RateLimit-Remaining（剩余配额）和 X-RateLimit-Reset（重置时间）。对于下游业务服务返回的错误码（如 StudentService 的 404），网关透传不修改。请求超时默认设为 30s，超时返回 504。</p>
+<p>API Gateway 采用过滤器链统一处理异常：1）JWT 校验失败或 Token 过期返回 401 Unauthorized，响应体包含错误码 'AUTH_TOKEN_INVALID'。2）权限不足（角色不匹配路由白名单）返回 403 Forbidden，错误码 'AUTH_FORBIDDEN'。3）请求超出限流阈值返回 429 Too Many Requests，响应头附加 Retry-After 指示重试等待秒数。4）后端服务熔断开启或连接超时（超时阈值 10 秒）返回 504 Gateway Timeout。5）后端服务返回 5xx 时 Gateway 透传状态码并记录错误日志，不修改下游响应体。6）请求体超过 10MB 返回 413 Payload Too Large。所有异常统一封装为 {&quot;code&quot;: &quot;错误码&quot;, &quot;message&quot;: &quot;错误描述&quot;} 格式。每个请求生成唯一 request_id（UUID），贯穿请求链路，便于日志关联与问题追踪。</p>
   </div>
 </div>
 
