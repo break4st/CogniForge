@@ -1,0 +1,115 @@
+{
+  "meta": {
+    "doc_id": "sad-001",
+    "type": "sad",
+    "title": "学生管理系统架构方案",
+    "author": "architect_agent",
+    "created": "2026-05-20 11:20"
+  },
+  "system_overview": "学生管理系统是一套面向教务管理员和教师的 Web 应用，提供学生档案管理、班级管理、年级管理及学习统计等核心功能。系统采用前后端分离的模块化单体架构，以关系型数据库作为核心存储，结合缓存层提升查询性能，并通过异步任务处理统计数据的生成与缓存预热。系统旨在帮助教务管理员和教师高效维护学校组织架构并掌握学生学习情况。",
+  "architecture": "系统采用前后端分离的模块化单体架构（Modular Monolith）。后端按业务领域划分为四个核心模块：学生管理、班级管理、年级管理和学习统计，各模块通过明确的接口边界进行交互，共享同一个数据库实例但遵循按领域分表的 schema 设计原则。前端通过 RESTful API 与后端通信，API 层统一处理认证鉴权、请求路由和参数校验。缓存层（Redis）用于加速热点数据的读取（如班级成员列表、年级结构树），消息队列用于异步触发统计数据的计算与缓存更新，避免同步计算阻塞 API 响应。",
+  "components": [
+    {
+      "name": "Web UI",
+      "type": "service",
+      "description": "基于 Vue.js 的单页应用，提供学生管理、班级管理、年级管理和学习统计的可视化操作界面",
+      "responsibilities": [
+        "渲染用户界面并与用户交互",
+        "调用后端 API 进行数据操作",
+        "图表展示学习统计数据",
+        "路由管理和状态管理"
+      ]
+    },
+    {
+      "name": "API Gateway",
+      "type": "service",
+      "description": "统一 API 入口，负责请求路由、认证鉴权、参数校验和限流",
+      "responsibilities": [
+        "统一接收前端请求并路由至对应业务模块",
+        "用户身份认证与权限校验",
+        "请求参数合法性校验",
+        "API 限流与日志记录"
+      ]
+    },
+    {
+      "name": "Student Service",
+      "type": "service",
+      "description": "学生信息管理模块，负责学生档案的增删改查及搜索",
+      "responsibilities": [
+        "学生基本信息的创建、查询、更新和删除",
+        "按学号或姓名搜索学生",
+        "学生信息的校验与去重",
+        "提供学生数据给其他模块调用"
+      ]
+    },
+    {
+      "name": "Class Service",
+      "type": "service",
+      "description": "班级信息管理模块，负责班级的增删改查以及学生与班级的归属关系维护",
+      "responsibilities": [
+        "班级信息的创建、查询、更新和删除",
+        "学生分配到指定班级",
+        "查看班级成员列表",
+        "维护班级与年级的归属关系"
+      ]
+    },
+    {
+      "name": "Grade Service",
+      "type": "service",
+      "description": "年级信息管理模块，负责年级的增删改查以及年级下班级的组织关系",
+      "responsibilities": [
+        "年级信息的创建、查询、更新和删除",
+        "将班级归属到对应年级",
+        "查看年级下的班级列表",
+        "维护年级-班级的层级树结构"
+      ]
+    },
+    {
+      "name": "Statistics Service",
+      "type": "service",
+      "description": "学习统计模块，负责数据的聚合计算与统计分析",
+      "responsibilities": [
+        "按学生维度统计学习数据",
+        "按班级/年级维度汇总统计",
+        "统计结果的格式化输出",
+        "异步处理统计任务并缓存结果"
+      ]
+    },
+    {
+      "name": "Relational Database",
+      "type": "db",
+      "description": "主数据库（MySQL/PostgreSQL），存储所有业务数据的持久化信息",
+      "responsibilities": [
+        "存储学生、班级、年级等基础数据",
+        "存储学生-班级归属关系",
+        "存储班级-年级归属关系",
+        "存储学习统计数据",
+        "保证数据 ACID 特性与完整性"
+      ]
+    },
+    {
+      "name": "Cache",
+      "type": "cache",
+      "description": "Redis 缓存层，缓存热点数据以提升查询性能",
+      "responsibilities": [
+        "缓存班级成员列表等热点查询结果",
+        "缓存年级结构树",
+        "缓存统计计算结果",
+        "降低数据库查询压力"
+      ]
+    },
+    {
+      "name": "Message Queue",
+      "type": "mq",
+      "description": "消息队列，用于异步处理统计任务等耗时操作",
+      "responsibilities": [
+        "接收统计计算请求并异步处理",
+        "解耦业务操作与统计计算",
+        "缓存失效后的异步重建",
+        "削峰填谷，避免突发请求压垮数据库"
+      ]
+    }
+  ],
+  "topology": "系统部署为三层拓扑：第一层为 Nginx 反向代理，负责 SSL 终止和静态资源服务；第二层为 API Gateway 集群和 Web UI 静态资源分发；第三层为核心业务服务（Student/Class/Grade/Statistics Service）共享部署在同一应用服务器集群中。数据库采用主从架构，Redis 独立部署，消息队列独立部署。前端通过 HTTPS 访问 Nginx，Nginx 将 API 请求反向代理至 API Gateway，API Gateway 根据请求路径将请求分发至对应业务模块。业务模块之间通过内部接口调用，不经过外部网络。",
+  "data_flow": "核心数据流：用户通过 Web UI 发起操作请求 → Nginx 反向代理 → API Gateway 认证鉴权 → 对应业务 Service 处理请求 → 业务 Service 读写数据库/缓存 → 返回结果给前端。统计数据流：用户请求统计 → API Gateway → Statistics Service → Statistics Service 检查缓存，命中则直接返回，未命中则投递消息到 Message Queue → 异步 Worker 消费消息执行聚合计算 → 结果写入 DB 和 Cache，前端轮询或通过 WebSocket 获取结果。"
+}
