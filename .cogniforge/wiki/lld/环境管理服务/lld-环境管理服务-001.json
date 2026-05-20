@@ -1,0 +1,193 @@
+{
+  "meta": {
+    "doc_id": "lld-环境管理服务-001",
+    "type": "lld",
+    "module": "环境管理服务",
+    "title": "LLD - 环境管理服务",
+    "author": "design_agent",
+    "created": "2026-05-20 16:08"
+  },
+  "overview": "环境管理服务负责管理部署环境的全生命周期配置信息。提供环境的创建、查询、编辑、删除等CRUD能力，并支持SSH密钥的安全加密存储与配置管理。环境与项目为一对多关联关系，每个项目可包含多个部署环境（如测试线、金丝雀线、生产环境），环境记录中维护远程服务器的连接参数（地址、端口、用户名）。SSH私钥采用AES-256-GCM加密后持久化至数据库，密钥明文不落盘、不返回。服务采用RESTful接口对外暴露能力，数据持久化于MySQL，与项目管理服务共享同一数据库实例。",
+  "data_models": [
+    {
+      "name": "environments",
+      "type": "table",
+      "description": "环境配置主表，存储每个部署环境的连接参数。每条记录对应一个部署环境，与项目表通过 project_id 建立一对多关联。使用逻辑删除（deleted_at 字段）避免误删导致部署编排服务中引用该环境的历史记录失效。",
+      "fields": [
+        { "name": "id", "type": "BIGINT", "description": "环境唯一标识，自增主键" },
+        { "name": "project_id", "type": "BIGINT", "description": "所属项目ID，外键关联 projects.id，不可为空" },
+        { "name": "name", "type": "VARCHAR(255)", "description": "环境名称，如 测试线、预发布线，同一项目下唯一" },
+        { "name": "tag", "type": "VARCHAR(50)", "description": "环境标签，枚举值：test / canary / production，用于部署策略判断" },
+        { "name": "server_host", "type": "VARCHAR(255)", "description": "远程服务器IP地址或域名" },
+        { "name": "server_port", "type": "INT", "description": "SSH连接端口号，默认 22，范围 1-65535" },
+        { "name": "username", "type": "VARCHAR(255)", "description": "SSH登录用户名" },
+        { "name": "has_ssh_key", "type": "TINYINT(1)", "description": "是否已配置SSH密钥，0-未配置 1-已配置，用于快速过滤" },
+        { "name": "key_fingerprint", "type": "VARCHAR(255)", "description": "已配置密钥的SHA256指纹，未配置时为 NULL" },
+        { "name": "created_by", "type": "VARCHAR(255)", "description": "创建者标识" },
+        { "name": "created_at", "type": "DATETIME", "description": "创建时间，默认 CURRENT_TIMESTAMP" },
+        { "name": "updated_at", "type": "DATETIME", "description": "最后更新时间，ON UPDATE CURRENT_TIMESTAMP" },
+        { "name": "deleted_at", "type": "DATETIME", "description": "逻辑删除时间，NULL 表示未删除" }
+      ]
+    },
+    {
+      "name": "environment_ssh_keys",
+      "type": "table",
+      "description": "SSH私钥安全存储表，与 environments 表一对一关联。私钥内容使用 AES-256-GCM 加密后存入 encrypted_private_key 字段，密钥明文在任何接口响应中均不返回。加密密钥由系统密钥管理模块派生，不硬编码在代码中。删除环境时级联删除对应的密钥记录。",
+      "fields": [
+        { "name": "id", "type": "BIGINT", "description": "记录唯一标识，自增主键" },
+        { "name": "environment_id", "type": "BIGINT", "description": "环境ID，外键关联 environments.id，唯一约束，级联删除" },
+        { "name": "encrypted_private_key", "type": "TEXT", "description": "AES-256-GCM 加密后的SSH私钥密文，包含 IV 和认证标签" },
+        { "name": "encrypted_passphrase", "type": "TEXT", "description": "AES-256-GCM 加密后的密钥口令密文，无口令时为 NULL" },
+        { "name": "fingerprint", "type": "VARCHAR(255)", "description": "密钥的SHA256指纹，用于客户端验证" },
+        { "name": "cipher_algorithm", "type": "VARCHAR(50)", "description": "加密算法标识，固定值 AES-256-GCM" },
+        { "name": "created_at", "type": "DATETIME", "description": "创建时间，默认 CURRENT_TIMESTAMP" },
+        { "name": "updated_at", "type": "DATETIME", "description": "最后更新时间，ON UPDATE CURRENT_TIMESTAMP" }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "CreateEnvironment",
+      "endpoint": "POST /api/projects/{projectId}/environments",
+      "description": "为指定项目创建新的部署环境。校验 projectId 对应的项目存在且未删除，校验同一项目下环境名称唯一性。tag 必须在 test/canary/production 枚举范围内。创建成功后返回环境完整信息，状态码 201。",
+      "parameters": [
+        { "name": "path:projectId", "type": "integer", "description": "所属项目ID，路径参数" },
+        { "name": "body:name", "type": "string", "description": "环境名称，如 测试线，必填，同一项目下唯一" },
+        { "name": "body:tag", "type": "string", "description": "环境标签，枚举值 test/canary/production，必填" },
+        { "name": "body:server_host", "type": "string", "description": "远程服务器IP或域名，必填" },
+        { "name": "body:server_port", "type": "integer", "description": "SSH端口号，默认22，范围1-65535，必填" },
+        { "name": "body:username", "type": "string", "description": "SSH登录用户名，必填" }
+      ],
+      "response": {
+        "status": 201,
+        "body": {
+          "id": { "type": "integer", "description": "环境ID" },
+          "name": { "type": "string", "description": "环境名称" },
+          "tag": { "type": "string", "description": "环境标签" },
+          "server_host": { "type": "string", "description": "服务器地址" },
+          "server_port": { "type": "integer", "description": "SSH端口" },
+          "username": { "type": "string", "description": "SSH用户名" },
+          "created_at": { "type": "datetime", "description": "创建时间" }
+        }
+      }
+    },
+    {
+      "name": "ConfigureSSHKey",
+      "endpoint": "PUT /api/projects/{projectId}/environments/{envId}/key",
+      "description": "为指定环境的远程服务器配置SSH密钥认证。接收客户端传输的SSH私钥内容，服务端使用AES-256-GCM加密后存储至 environment_ssh_keys 表。若该环境已存在密钥记录则覆盖更新。存储前校验私钥格式有效性（校验PEM格式头尾标记），计算SHA256指纹写入 environments 表。成功返回状态码200及指纹信息。",
+      "parameters": [
+        { "name": "path:projectId", "type": "integer", "description": "项目ID，路径参数" },
+        { "name": "path:envId", "type": "integer", "description": "环境ID，路径参数" },
+        { "name": "body:private_key", "type": "string", "description": "SSH私钥内容（传输时要求HTTPS加密），必填" },
+        { "name": "body:passphrase", "type": "string", "description": "密钥口令，选填，有口令时一起加密存储" }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "status": { "type": "string", "description": "配置结果，success/failure" },
+          "fingerprint": { "type": "string", "description": "密钥SHA256指纹" }
+        }
+      }
+    },
+    {
+      "name": "ListEnvironments",
+      "endpoint": "GET /api/projects/{projectId}/environments",
+      "description": "查询指定项目下所有未删除的环境列表。返回结果包含环境基本连接参数及密钥配置状态（has_ssh_key），按创建时间倒序排列。不返回SSH私钥内容。",
+      "parameters": [
+        { "name": "path:projectId", "type": "integer", "description": "项目ID，路径参数" }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "items": { "type": "array", "item_type": "object", "description": "环境对象数组，每个对象包含 id/name/tag/server_host/server_port/username/has_ssh_key/key_fingerprint/created_at" }
+        }
+      }
+    },
+    {
+      "name": "GetEnvironment",
+      "endpoint": "GET /api/projects/{projectId}/environments/{envId}",
+      "description": "查询单个环境的详细信息。返回环境完整配置参数及密钥状态标识。环境不存在或已逻辑删除时返回404。",
+      "parameters": [
+        { "name": "path:projectId", "type": "integer", "description": "项目ID，路径参数" },
+        { "name": "path:envId", "type": "integer", "description": "环境ID，路径参数" }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": { "type": "integer", "description": "环境ID" },
+          "project_id": { "type": "integer", "description": "所属项目ID" },
+          "name": { "type": "string", "description": "环境名称" },
+          "tag": { "type": "string", "description": "环境标签" },
+          "server_host": { "type": "string", "description": "服务器地址" },
+          "server_port": { "type": "integer", "description": "SSH端口" },
+          "username": { "type": "string", "description": "SSH用户名" },
+          "has_ssh_key": { "type": "boolean", "description": "是否已配置SSH密钥" },
+          "key_fingerprint": { "type": "string", "description": "密钥指纹，未配置时为 null" },
+          "created_by": { "type": "string", "description": "创建者" },
+          "created_at": { "type": "datetime", "description": "创建时间" },
+          "updated_at": { "type": "datetime", "description": "最后更新时间" }
+        }
+      }
+    },
+    {
+      "name": "UpdateEnvironment",
+      "endpoint": "PUT /api/projects/{projectId}/environments/{envId}",
+      "description": "编辑环境的连接参数。可修改 name/tag/server_host/server_port/username，不允许修改 project_id。修改 name 时校验同一项目下唯一性。仅更新传入的字段，未传字段保持原值。环境不存在或已逻辑删除时返回404。",
+      "parameters": [
+        { "name": "path:projectId", "type": "integer", "description": "项目ID，路径参数" },
+        { "name": "path:envId", "type": "integer", "description": "环境ID，路径参数" },
+        { "name": "body:name", "type": "string", "description": "环境名称，选填，修改时校验同一项目下唯一性" },
+        { "name": "body:tag", "type": "string", "description": "环境标签，选填，枚举值 test/canary/production" },
+        { "name": "body:server_host", "type": "string", "description": "服务器地址，选填" },
+        { "name": "body:server_port", "type": "integer", "description": "SSH端口，选填" },
+        { "name": "body:username", "type": "string", "description": "SSH用户名，选填" }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": { "type": "integer", "description": "环境ID" },
+          "name": { "type": "string", "description": "环境名称" },
+          "tag": { "type": "string", "description": "环境标签" },
+          "server_host": { "type": "string", "description": "服务器地址" },
+          "server_port": { "type": "integer", "description": "SSH端口" },
+          "username": { "type": "string", "description": "SSH用户名" },
+          "updated_at": { "type": "datetime", "description": "最后更新时间" }
+        }
+      }
+    },
+    {
+      "name": "DeleteEnvironment",
+      "endpoint": "DELETE /api/projects/{projectId}/environments/{envId}",
+      "description": "逻辑删除指定环境。将 deleted_at 字段置为当前时间，同时环境关联的SSH密钥记录级联物理删除（environment_ssh_keys 表中对应记录物理删除）。删除前不校验是否存在部署记录，仅标记为已删除以保留历史部署日志的可追溯性。环境不存在或已逻辑删除时返回404。",
+      "parameters": [
+        { "name": "path:projectId", "type": "integer", "description": "项目ID，路径参数" },
+        { "name": "path:envId", "type": "integer", "description": "环境ID，路径参数" }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "status": { "type": "string", "description": "删除结果，success" }
+        }
+      }
+    },
+    {
+      "name": "GetSSHKeyInfo",
+      "endpoint": "GET /api/projects/{projectId}/environments/{envId}/key",
+      "description": "查询指定环境SSH密钥的元数据信息。返回密钥指纹、加密算法、配置时间。不返回私钥内容。环境未配置密钥时返回空数据结构（fingerprint 为 null）。",
+      "parameters": [
+        { "name": "path:projectId", "type": "integer", "description": "项目ID，路径参数" },
+        { "name": "path:envId", "type": "integer", "description": "环境ID，路径参数" }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "has_key": { "type": "boolean", "description": "是否已配置密钥" },
+          "fingerprint": { "type": "string", "description": "密钥SHA256指纹，未配置时为 null" },
+          "cipher_algorithm": { "type": "string", "description": "加密算法，AES-256-GCM" },
+          "configured_at": { "type": "datetime", "description": "密钥配置时间" }
+        }
+      }
+    }
+  ],
+  "error_handling": "统一错误处理策略：\n1. 输入校验错误：name 为空或超过 255 字符时返回 400，错误码 INVALID_ENV_NAME；tag 非 test/canary/production 枚举值时返回 400，错误码 INVALID_ENV_TAG；server_host 为空或格式非法时返回 400，错误码 INVALID_SERVER_HOST；server_port 不在 1-65535 范围时返回 400，错误码 INVALID_SERVER_PORT；username 为空时返回 400，错误码 INVALID_USERNAME。\n2. 唯一性冲突：同一 project_id 下创建或更新时 name 与已有环境（含逻辑删除的）重复，返回 409，错误码 DUPLICATE_ENV_NAME。\n3. 关联项目不存在：CreateEnvironment/ListEnvironments 时 projectId 对应的项目不存在或已逻辑删除，返回 404，错误码 PROJECT_NOT_FOUND。\n4. 资源不存在：GetEnvironment/UpdateEnvironment/DeleteEnvironment/ConfigureSSHKey/GetSSHKeyInfo 时 envId 对应环境不存在或已逻辑删除，返回 404，错误码 ENVIRONMENT_NOT_FOUND。\n5. SSH密钥格式错误：ConfigureSSHKey 时 private_key 内容不是合法的 PEM 格式（缺少 -----BEGIN ... PRIVATE KEY----- 头尾标记），返回 400，错误码 INVALID_PRIVATE_KEY。\n6. SSH密钥解析失败：ConfigureSSHKey 时私钥内容无法通过格式校验（如 Base64 解码失败），返回 400，错误码 KEY_PARSE_FAILED。\n7. 加密异常：ConfigureSSHKey 时 AES-256-GCM 加密过程抛出异常，返回 500，错误码 ENCRYPTION_ERROR，同时记录错误日志人工介入排查。\n8. 权限拒绝：非项目创建者或无权限的用户请求修改/删除操作时返回 403，错误码 PERMISSION_DENIED。\n9. 数据库异常：MySQL 连接超时或写入失败时捕获异常，返回 500，错误码 DB_ERROR，同时记录错误日志用于排查。\n10. 并发控制：UpdateEnvironment/DeleteEnvironment/ConfigureSSHKey 使用乐观锁（WHERE updated_at = 上次读取值），更新条数为 0 时返回 409，错误码 CONFLICT，提示客户端重新获取最新数据。\n11. 超时控制：数据库查询超时设为 5s，加密操作超时设为 3s，超时后返回 504，错误码 GATEWAY_TIMEOUT，避免请求长时间挂起。"
+}
