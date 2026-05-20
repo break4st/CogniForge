@@ -1,0 +1,160 @@
+{
+  "meta": {
+    "doc_id": "lld-Grade Service-001",
+    "type": "lld",
+    "module": "Grade Service",
+    "title": "LLD - Grade Service",
+    "author": "design_agent",
+    "created": "2026-05-20 11:26"
+  },
+  "overview": "基于 RESTful 架构的年级信息管理服务，对外提供年级的增删改查、年级下班级列表查询及年级-班级层级树结构维护能力。采用分层设计：Controller 层处理 HTTP 请求与参数校验 → Service 层实现业务逻辑（年级名称唯一性校验、年级层级排序、删除年级前的约束检查） → Repository 层封装数据库访问。数据库使用 MySQL/PostgreSQL，核心表为 grade（年级信息），通过 class 表的 grade_id 外键间接维护年级-班级一对多关系。年级删除前需校验该年级下是否仍有班级（防止数据孤儿），排序字段（sort_order）控制年级在列表/树中的显示顺序。年级结构树查询需联动 Class Service 获取各班信息，并缓存年级树结构到 Redis。",
+  "data_models": [
+    {
+      "name": "grade",
+      "type": "table",
+      "fields": [
+        { "name": "id", "type": "bigint", "description": "年级 ID，自增主键，唯一标识" },
+        { "name": "name", "type": "varchar(128)", "description": "年级名称，如'三年级'，全局唯一，建立唯一索引" },
+        { "name": "description", "type": "varchar(256)", "description": "年级描述/备注，可选" },
+        { "name": "sort_order", "type": "int", "description": "排序序号，数值越小越靠前，用于控制年级列表和树结构的展示顺序" },
+        { "name": "created_at", "type": "datetime", "description": "创建时间，自动填充当前时间" },
+        { "name": "updated_at", "type": "datetime", "description": "更新时间，记录变更时间戳" },
+        { "name": "deleted_at", "type": "datetime", "description": "删除时间，逻辑删除标记，非 null 表示已删除" }
+      ]
+    },
+    {
+      "name": "GradeCreateRequest",
+      "type": "struct",
+      "fields": [
+        { "name": "name", "type": "string", "description": "年级名称，必填，最长 128 字符，全局唯一" },
+        { "name": "description", "type": "string", "description": "年级描述，可选，最长 256 字符" },
+        { "name": "sortOrder", "type": "number", "description": "排序序号，可选，默认 0，数值越小越靠前" }
+      ]
+    },
+    {
+      "name": "GradeUpdateRequest",
+      "type": "struct",
+      "fields": [
+        { "name": "name", "type": "string", "description": "年级名称，最长 128 字符，变更时需校验全局唯一性（排除自身）" },
+        { "name": "description", "type": "string", "description": "年级描述" },
+        { "name": "sortOrder", "type": "number", "description": "排序序号" }
+      ]
+    },
+    {
+      "name": "GradeResponse",
+      "type": "struct",
+      "fields": [
+        { "name": "id", "type": "number", "description": "年级 ID" },
+        { "name": "name", "type": "string", "description": "年级名称" },
+        { "name": "description", "type": "string", "description": "年级描述" },
+        { "name": "sortOrder", "type": "number", "description": "排序序号" },
+        { "name": "classCount", "type": "number", "description": "该年级下的班级数量（从 class 表统计 WHERE grade_id = ? AND deleted_at IS NULL）" },
+        { "name": "createdAt", "type": "string", "description": "创建时间 ISO 8601" }
+      ]
+    },
+    {
+      "name": "GradeTreeResponse",
+      "type": "struct",
+      "fields": [
+        { "name": "id", "type": "number", "description": "年级 ID" },
+        { "name": "name", "type": "string", "description": "年级名称" },
+        { "name": "sortOrder", "type": "number", "description": "排序序号" },
+        { "name": "classes", "type": "object[]", "description": "该年级下的班级列表，按 sort_order 或 id 升序排列，每项包含 classId、className、studentCount" }
+      ]
+    },
+    {
+      "name": "PaginatedResult",
+      "type": "struct",
+      "fields": [
+        { "name": "items", "type": "object[]", "description": "当前页数据列表" },
+        { "name": "page", "type": "number", "description": "当前页码" },
+        { "name": "pageSize", "type": "number", "description": "每页条数" },
+        { "name": "total", "type": "number", "description": "总记录数" },
+        { "name": "totalPages", "type": "number", "description": "总页数" }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "年级列表查询",
+      "endpoint": "GET /api/grades",
+      "description": "分页查询年级列表，支持按关键词搜索名称。结果按 sort_order 升序排列，sort_order 相同时按 id 升序排列",
+      "parameters": [
+        { "name": "page", "type": "number", "description": "页码，从 1 开始，默认 1" },
+        { "name": "pageSize", "type": "number", "description": "每页条数，默认 20，最大 100" },
+        { "name": "keyword", "type": "string", "description": "搜索关键词，在 name 字段上做 LIKE '%keyword%' 模糊匹配，可选" }
+      ]
+    },
+    {
+      "name": "年级详情查询",
+      "endpoint": "GET /api/grades/:id",
+      "description": "根据 ID 获取单个年级的详细信息，包含该年级下的班级数量。返回 404 当年级不存在",
+      "parameters": [
+        { "name": "id", "type": "number", "description": "年级 ID（路径参数）" }
+      ]
+    },
+    {
+      "name": "创建年级",
+      "endpoint": "POST /api/grades",
+      "description": "新增一条年级记录。校验名称全局唯一性（重复返回 409）。创建成功后清除年级树缓存",
+      "parameters": [
+        { "name": "name", "type": "string", "description": "年级名称，必填" },
+        { "name": "description", "type": "string", "description": "年级描述，可选" },
+        { "name": "sortOrder", "type": "number", "description": "排序序号，可选，默认 0" }
+      ]
+    },
+    {
+      "name": "更新年级",
+      "endpoint": "PUT /api/grades/:id",
+      "description": "更新指定年级的基本信息。名称变更时校验全局唯一性（排除自身，重复返回 409）。更新成功后清除年级树缓存",
+      "parameters": [
+        { "name": "id", "type": "number", "description": "年级 ID（路径参数）" },
+        { "name": "name", "type": "string", "description": "年级名称" },
+        { "name": "description", "type": "string", "description": "年级描述" },
+        { "name": "sortOrder", "type": "number", "description": "排序序号" }
+      ]
+    },
+    {
+      "name": "删除年级",
+      "endpoint": "DELETE /api/grades/:id",
+      "description": "逻辑删除指定年级（设置 deleted_at 时间戳），不物理删除。删除前校验该年级下是否仍有班级（class 表中 grade_id = ? AND deleted_at IS NULL 的记录），若有班级则拒绝删除返回 409。删除成功后清除年级树缓存",
+      "parameters": [
+        { "name": "id", "type": "number", "description": "年级 ID（路径参数）" }
+      ]
+    },
+    {
+      "name": "年级下班级列表查询",
+      "endpoint": "GET /api/grades/:id/classes",
+      "description": "查询指定年级下的班级列表（分页），关联 class 表获取班级信息。如果年级不存在返回 404。结果按 class.sort_order 或 id 升序排列",
+      "parameters": [
+        { "name": "id", "type": "number", "description": "年级 ID（路径参数）" },
+        { "name": "page", "type": "number", "description": "页码，从 1 开始，默认 1" },
+        { "name": "pageSize", "type": "number", "description": "每页条数，默认 20，最大 100" }
+      ]
+    },
+    {
+      "name": "年级-班级层级树查询",
+      "endpoint": "GET /api/grades/tree",
+      "description": "获取全量年级-班级层级树结构，用于前端导航或组织架构展示。按 sort_order 升序排列年级，各年级下按班级 sort_order 升序列出班级。优先从 Redis 缓存中读取，缓存键为 'grade:tree'，缓存 TTL 3600 秒。缓存未命中则查询 DB 并回填缓存。年级/班级的变更操作（增删改）需要使该缓存失效",
+      "parameters": []
+    },
+    {
+      "name": "搜索年级",
+      "endpoint": "GET /api/grades/search",
+      "description": "精简版搜索接口，不返回分页元信息，适用于下拉选择器等组件快速查找。keyword 为空时返回空列表。结果按 sort_order 升序排列",
+      "parameters": [
+        { "name": "keyword", "type": "string", "description": "搜索关键词，在名称上做 LIKE 模糊匹配，必填" },
+        { "name": "limit", "type": "number", "description": "返回条数上限，默认 10，最大 50" }
+      ]
+    },
+    {
+      "name": "校验年级有效性",
+      "endpoint": "GET /api/grades/:id/validate",
+      "description": "内部接口，供 Class Service 等模块调用，校验指定年级 ID 是否存在且未删除。返回 { valid: boolean }，同时携带年级名称便于调用方使用。不返回 404，始终返回 200",
+      "parameters": [
+        { "name": "id", "type": "number", "description": "年级 ID（路径参数）" }
+      ]
+    }
+  ],
+  "error_handling": "全局统一返回标准 JSON 格式：{ code: number, message: string, details?: any }。4xx 错误携带具体校验提示：年级不存在返回 404（message: '年级不存在'），年级名称重复返回 409（message: '该年级名称已存在'），年级下仍有班级时拒绝删除返回 409（message: '该年级下仍有班级，请先移除所有班级后再删除'），参数格式错误返回 400（message: '参数错误' 并 details 标明具体字段）。5xx 错误统一返回 500（message: '系统内部错误'），完整错误栈记录到服务日志。逻辑删除的记录在列表查询和详情查询中均被过滤（WHERE deleted_at IS NULL）。缓存操作（Redis）失败时降级为直接查询数据库，不阻塞正常业务流程。年级树缓存键为 'grade:tree'，TTL 3600 秒，在年级和班级的增删改操作中均需要使该缓存失效。同一事务内的缓存失效操作如失败需记录告警日志但不影响主流程事务提交。"
+}
