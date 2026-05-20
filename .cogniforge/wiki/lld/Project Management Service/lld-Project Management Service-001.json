@@ -1,0 +1,181 @@
+{
+  "meta": {
+    "doc_id": "lld-Project Management Service-001",
+    "type": "lld",
+    "module": "Project Management Service",
+    "title": "LLD - Project Management Service",
+    "author": "design_agent",
+    "created": "2026-05-20 17:07"
+  },
+  "overview": {
+    "description": "项目管理服务，负责部署项目的全生命周期管理，包括项目的创建、查询、编辑、删除，项目下关联环境的管理，以及项目维度的权限控制。作为部署系统的核心业务入口，为上层 API Gateway 提供项目 CRUD 接口，所有写操作同步调用 Audit Service 记录审计日志。",
+    "dependencies": ["Audit Service"],
+    "tech_stack": ["Go", "Gin / Go-Zero", "PostgreSQL 15+", "Redis 7+"]
+  },
+  "data_models": [
+    {
+      "name": "projects",
+      "type": "table",
+      "description": "项目主表，存储部署项目的核心信息",
+      "fields": [
+        {"name": "id", "type": "UUID", "required": true, "description": "项目唯一标识，主键，默认 gen_random_uuid() 自动生成"},
+        {"name": "name", "type": "VARCHAR(255)", "required": true, "description": "项目名称，唯一约束"},
+        {"name": "description", "type": "TEXT", "required": false, "description": "项目描述"},
+        {"name": "status", "type": "VARCHAR(32)", "required": true, "description": "项目状态：active（活跃）/ archived（归档）/ disabled（禁用），默认 active"},
+        {"name": "created_by", "type": "VARCHAR(255)", "required": true, "description": "创建者用户标识"},
+        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "创建时间，默认 NOW()"},
+        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": true, "description": "最后更新时间，默认 NOW()"}
+      ]
+    },
+    {
+      "name": "project_members",
+      "type": "table",
+      "description": "项目成员关联表，实现项目维度的权限控制",
+      "fields": [
+        {"name": "id", "type": "UUID", "required": true, "description": "记录唯一标识，主键，默认 gen_random_uuid()"},
+        {"name": "project_id", "type": "UUID", "required": true, "description": "关联项目 ID，外键约束引用 projects.id，级联删除"},
+        {"name": "user_id", "type": "VARCHAR(255)", "required": true, "description": "用户标识"},
+        {"name": "role", "type": "VARCHAR(32)", "required": true, "description": "项目角色：admin（管理员）/ operator（操作员）/ viewer（只读者）"},
+        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "关联创建时间，默认 NOW()"}
+      ]
+    },
+    {
+      "name": "project_env_bindings",
+      "type": "table",
+      "description": "项目与环境关联表，记录项目下关联的部署环境，由 Project Management Service 管理关联关系，环境本身由 Environment Management Service 管理",
+      "fields": [
+        {"name": "id", "type": "UUID", "required": true, "description": "记录唯一标识，主键，默认 gen_random_uuid()"},
+        {"name": "project_id", "type": "UUID", "required": true, "description": "关联项目 ID，外键约束引用 projects.id，级联删除"},
+        {"name": "env_id", "type": "UUID", "required": true, "description": "关联环境 ID，外键约束引用 environments.id"},
+        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "关联创建时间，默认 NOW()"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "Create Project",
+      "method": "POST",
+      "endpoint": "/api/projects",
+      "description": "创建新项目，校验参数后写入数据库并同步记录审计日志",
+      "parameters": [
+        {"name": "name", "type": "string", "description": "项目名称，必填，长度 1-255"},
+        {"name": "description", "type": "string", "description": "项目描述，选填"}
+      ],
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string",
+          "name": "string",
+          "description": "string",
+          "status": "string",
+          "created_by": "string",
+          "created_at": "datetime",
+          "updated_at": "datetime"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数校验失败，如项目名称为空或超长"},
+        {"code": 409, "message": "项目名称已存在，不允许重复创建"},
+        {"code": 500, "message": "服务内部错误，数据库写入失败或审计日志写入失败"}
+      ]
+    },
+    {
+      "name": "Delete Project",
+      "method": "DELETE",
+      "endpoint": "/api/projects/:id",
+      "description": "删除指定项目，将项目状态标记为 archived 实现软删除，存在活跃环境的项目不允许删除",
+      "parameters": [
+        {"name": "id", "type": "string", "description": "项目 UUID，路径参数"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "message": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "指定 ID 的项目不存在"},
+        {"code": 409, "message": "项目下存在关联环境，不允许删除"},
+        {"code": 500, "message": "服务内部错误"}
+      ]
+    },
+    {
+      "name": "Update Project",
+      "method": "PUT",
+      "endpoint": "/api/projects/:id",
+      "description": "编辑项目信息，支持部分字段更新",
+      "parameters": [
+        {"name": "id", "type": "string", "description": "项目 UUID，路径参数"},
+        {"name": "name", "type": "string", "description": "项目名称，选填"},
+        {"name": "description", "type": "string", "description": "项目描述，选填"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string",
+          "name": "string",
+          "description": "string",
+          "status": "string",
+          "created_by": "string",
+          "created_at": "datetime",
+          "updated_at": "datetime"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数校验失败"},
+        {"code": 404, "message": "指定 ID 的项目不存在"},
+        {"code": 409, "message": "修改后的项目名称与其他项目冲突"},
+        {"code": 500, "message": "服务内部错误"}
+      ]
+    },
+    {
+      "name": "List Projects",
+      "method": "GET",
+      "endpoint": "/api/projects",
+      "description": "查询项目列表，支持分页、按状态筛选和按关键词模糊搜索，结果按更新时间降序排列",
+      "parameters": [
+        {"name": "page", "type": "int", "description": "页码，从 1 开始，默认 1"},
+        {"name": "page_size", "type": "int", "description": "每页条数，默认 20，最大 100"},
+        {"name": "status", "type": "string", "description": "项目状态筛选：active / archived / disabled，选填，不传则查询全部状态"},
+        {"name": "keyword", "type": "string", "description": "项目名称关键词模糊搜索，选填"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "total": "int",
+          "items": "array"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "分页参数越界（page 小于 1 或 page_size 超过最大值）"},
+        {"code": 500, "message": "服务内部错误"}
+      ]
+    },
+    {
+      "name": "Get Project Detail",
+      "method": "GET",
+      "endpoint": "/api/projects/:id",
+      "description": "获取单个项目的详细信息，包含关联的环境列表和项目成员",
+      "parameters": [
+        {"name": "id", "type": "string", "description": "项目 UUID，路径参数"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string",
+          "name": "string",
+          "description": "string",
+          "status": "string",
+          "created_by": "string",
+          "created_at": "datetime",
+          "updated_at": "datetime"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "指定 ID 的项目不存在"},
+        {"code": 500, "message": "服务内部错误"}
+      ]
+    }
+  ],
+  "error_handling": "所有接口统一返回 JSON 格式错误：{ code: int, message: string }。400 参数校验失败、404 资源不存在、409 资源冲突、500 服务内部错误。所有写操作（创建/删除/编辑）在业务事务内同步调用 Audit Service 的 POST /api/audit/logs 记录审计日志（action 区分 create/delete/update，resource_type 固定为 project），若审计日志写入失败则回滚业务事务并返回 500，确保业务操作与审计记录的原子一致性。分页参数在接口层校验，越界时直接返回 400 而非截断处理。数据库写操作统一使用事务，任一 SQL 步骤失败即回滚。Redis 缓存用于项目列表查询加速，缓存键格式 projects:list:{status}:{keyword_hash}:{page}:{page_size}，写操作后采用 Write-Through 策略主动失效或刷新相关缓存条目。"
+}
