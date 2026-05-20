@@ -757,6 +757,7 @@ def repl(ctx: Context):
         agents=ctx.agents,
         task_engine=ctx.task_engine,
         agent=adapter,
+        wiki_system=ctx.wiki_system,
     )
     repl_runner.run()
 

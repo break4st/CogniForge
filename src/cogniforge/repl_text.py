@@ -128,6 +128,11 @@ LLD_CHOICE_AUTO = "让 Agent 基于 SAD 自主设计模块详情"
 LLD_CHOICE_MANUAL = "我自己描述模块设计"
 LLD_AUTO_PROMPT = "基于已批准的 PRD 和 SAD 文档，自动设计模块详细方案，包括数据模型、接口定义和错误处理策略。不需要反问用户。"
 
+# Multi-module LLD
+LLD_MODULES_FOUND = "  SAD 定义了 {count} 个模块: {modules}"
+LLD_AUTO_ALL_CHOICE = "让 Agent 自动生成全部 {count} 个模块的 LLD"
+LLD_PROGRESS = "正在生成 LLD: {module}"
+
 # Mapping: step -> (title, auto_label, manual_label, auto_prompt)
 DESIGN_STEP_CHOICES: dict[str, tuple[str, str, str, str]] = {
     "sad": (SAD_CHOICE_TITLE, SAD_CHOICE_AUTO, SAD_CHOICE_MANUAL, SAD_AUTO_PROMPT),

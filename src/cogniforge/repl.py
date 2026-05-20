@@ -19,6 +19,7 @@ from typing import Optional
 import click
 
 from cogniforge.core.constants import TaskStatus
+from cogniforge.interface_checker import check as check_interfaces, format_report
 from cogniforge.llm.base import BaseLLMAdapter
 from cogniforge.models.task import Task
 from cogniforge.orchestration.workflow import Workflow
@@ -71,6 +72,9 @@ from cogniforge.repl_text import (
     AGENT_NO_ROLE,
     AGENT_EXEC_ERROR,
     DESIGN_STEP_CHOICES,
+    LLD_MODULES_FOUND,
+    LLD_AUTO_ALL_CHOICE,
+    LLD_PROGRESS,
 )
 
 # ---------------------------------------------------------------------------
@@ -315,13 +319,91 @@ class Repl:
         agents: dict[str, object],
         task_engine: TaskEngine,
         agent: BaseLLMAdapter,
+        wiki_system=None,
     ) -> None:
         self.workflow = workflow
         self.agents = agents
         self.task_engine = task_engine
         self.agent = agent
+        self.wiki_system = wiki_system
         self._last_printed_step: Optional[str] = None
         self._last_prd_input: dict = {}  # stored for retry modification
+
+    # ---- module discovery ------------------------------------------------
+
+    def _get_sad_modules(self) -> list[dict]:
+        """Read the latest SAD JSON and extract the component list."""
+        import glob as _glob
+        from pathlib import Path as _Path
+
+        pattern = str(_Path.cwd() / ".cogniforge/wiki/sad/*.json")
+        files = sorted(_glob.glob(pattern))
+        if not files:
+            return []
+        try:
+            with open(files[-1], "r") as f:
+                data = json.load(f)
+            return data.get("components", [])
+        except Exception:
+            return []
+
+    def _exec_lld_auto_all(self, modules: list[dict]) -> str:
+        """Generate LLD for all modules sequentially, then show approval menu."""
+        total = len(modules)
+        results = []
+        agent = self.agents.get("design")
+        for i, comp in enumerate(modules, 1):
+            mod_name = comp.get("name", "unknown")
+            click.echo(
+                f"\n  [{C_AMBER}{i}/{total}{C_RESET}] "
+                + LLD_PROGRESS.format(module=mod_name)
+            )
+
+            input_data = {
+                "module": mod_name,
+                "title": f"LLD - {mod_name}",
+                "overview": comp.get("description", ""),
+            }
+
+            spinner = Spinner(SPINNER_RUNNING.format(agent="design"))
+            spinner.start()
+            try:
+                result = agent.run(input_data)
+            finally:
+                spinner.stop()
+
+            results.append(result)
+            status_icon = (
+                f"{C_GREEN}✓{C_RESET}"
+                if result.get("status") == "success"
+                else f"{C_RED}✗{C_RESET}"
+            )
+            click.echo(f"  [{status_icon}] {result.get('message', '')}")
+            for a in result.get("artifacts", []):
+                if a.endswith(".html"):
+                    abs_path = (Path.cwd() / a).resolve()
+                    link = (
+                        f"\033]8;;file://{abs_path}\033\\{a}\033]8;;\033\\"
+                    )
+                    click.echo(f"       {link}")
+
+        # Summary
+        success_count = sum(1 for r in results if r.get("status") == "success")
+        click.echo(
+            f"\n  {C_GREEN}{success_count}/{total} 模块 LLD 生成成功{C_RESET}"
+        )
+
+        # Post-agent menu (approve/reject for the whole LLD step)
+        step = self.workflow.current_step
+        if step:
+            action_choice = self._post_agent_menu(step)
+            if action_choice == "approve":
+                return self._exec_approve({"comment": ""})
+            elif action_choice == "reject":
+                reason = click.prompt(REJECT_PROMPT, default=REJECT_DEFAULT)
+                return self._exec_reject({"comment": reason})
+
+        return ""
 
     # ---- main loop -------------------------------------------------------
 
@@ -357,24 +439,71 @@ class Repl:
 
                 # Auto-skip review steps — no user input needed
                 if step and step.value in REVIEW_STEPS:
+                    # For design_review: run interface consistency check
+                    if step.value == "design_review":
+                        result = check_interfaces(Path.cwd())
+                        click.echo(format_report(result))
+                        if result["status"] == "conflict":
+                            click.echo(
+                                f"\n  {C_AMBER}检测到接口契约冲突，请修复后再审批。{C_RESET}"
+                            )
+                            # Don't auto-approve — let user review violations
+                            self.workflow.reject("interface consistency check failed")
+                            continue
                     click.echo(self._exec_approve({"comment": ""}))
                     continue
 
                 # Design steps (SAD/LLD): let user choose between manual and auto-design
                 if step and step.value in DESIGN_STEP_CHOICES:
                     _, label_auto, label_manual, auto_prompt = DESIGN_STEP_CHOICES[step.value]
-                    choice = _select(
-                        [
-                            ("auto", label_auto),
-                            ("manual", label_manual),
-                        ],
-                        default=0,
-                    )
-                    if choice == "auto":
-                        user_input = auto_prompt
+
+                    # For LLD: check for multi-module support
+                    modules = self._get_sad_modules() if step.value == "lld" else []
+
+                    if step.value == "lld" and len(modules) > 1:
+                        # Multi-module: offer "generate all" option
+                        module_names = ", ".join(
+                            c.get("name", "?") for c in modules
+                        )
+                        click.echo(
+                            LLD_MODULES_FOUND.format(
+                                count=len(modules), modules=module_names
+                            )
+                        )
+                        choice = _select(
+                            [
+                                (
+                                    "auto_all",
+                                    LLD_AUTO_ALL_CHOICE.format(count=len(modules)),
+                                ),
+                                ("auto", label_auto),
+                                ("manual", label_manual),
+                            ],
+                            default=0,
+                        )
+                        if choice == "auto_all":
+                            result_text = self._exec_lld_auto_all(modules)
+                            click.echo(result_text)
+                            continue
+                        elif choice == "auto":
+                            user_input = auto_prompt
+                        else:
+                            click.echo()
+                            user_input = input("cogniforge []: ").strip()
                     else:
-                        click.echo()
-                        user_input = input("cogniforge []: ").strip()
+                        # Single module or SAD: existing two-option menu unchanged
+                        choice = _select(
+                            [
+                                ("auto", label_auto),
+                                ("manual", label_manual),
+                            ],
+                            default=0,
+                        )
+                        if choice == "auto":
+                            user_input = auto_prompt
+                        else:
+                            click.echo()
+                            user_input = input("cogniforge []: ").strip()
                 else:
                     user_input = input("cogniforge []: ").strip()
 

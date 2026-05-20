@@ -373,6 +373,30 @@ def _render_sad(d: dict) -> str:
                 f'</div>'
             )
     parts.append(_SECTION_FOOT)
+    contracts = d.get("contracts", [])
+    if contracts:
+        parts.append(_section_header("🔗", f"接口契约 ({len(contracts)})", "rgba(52,211,153,0.12)"))
+        for c in contracts:
+            provider = _esc(c.get("provider", ""))
+            consumers = ", ".join(_esc(x) for x in c.get("consumers", []))
+            endpoint = _esc(c.get("endpoint", ""))
+            desc = _esc(c.get("description", ""))
+            req_body = c.get("request", {}).get("body", {})
+            resp_body = c.get("response", {}).get("body", {})
+            req_fields = ", ".join(f"{k}: {v}" for k, v in req_body.items()) if isinstance(req_body, dict) else ""
+            resp_fields = ", ".join(f"{k}: {v}" for k, v in resp_body.items()) if isinstance(resp_body, dict) else ""
+            parts.append(
+                f'<div class="comp-item">\n'
+                f'  <h3>{_esc(c.get("interface",""))} <span class="comp-type">{_esc(c.get("type","REST"))}</span></h3>\n'
+                f'  <p><strong>Provider:</strong> {provider}</p>\n'
+                f'  <p><strong>Consumers:</strong> {consumers}</p>\n'
+                f'  <p><strong>Endpoint:</strong> <code>{endpoint}</code></p>\n'
+                f'  <p>{desc}</p>\n'
+                f'  {f"<p><strong>Request body:</strong> {{{req_fields}}}</p>" if req_fields else ""}\n'
+                f'  {f"<p><strong>Response body:</strong> {{{resp_fields}}}</p>" if resp_fields else ""}\n'
+                f'</div>'
+            )
+        parts.append(_SECTION_FOOT)
     if d.get("topology"):
         parts.append(_section_header("🔗", "拓扑结构", "rgba(52,211,153,0.12)"))
         parts.append(f"<p>{_esc(d['topology'])}</p>")
@@ -415,11 +439,23 @@ def _render_lld(d: dict) -> str:
     ifaces = d.get("interfaces", [])
     parts.append(_section_header("🔌", f"接口定义 ({len(ifaces)})", "rgba(34,211,238,0.12)"))
     for iface in ifaces:
+        params_rows = ""
+        for p in iface.get("parameters", []):
+            params_rows += (
+                f"<tr><td>{_esc(p.get('name',''))}</td>"
+                f"<td>{_esc(p.get('type',''))}</td>"
+                f"<td>{_esc(p.get('description',''))}</td></tr>"
+            )
+        resp = iface.get("response", {})
+        resp_body = resp.get("body", {}) if isinstance(resp, dict) else {}
+        resp_str = ", ".join(f"{k}: {v}" for k, v in resp_body.items()) if isinstance(resp_body, dict) else _esc(str(resp))
         parts.append(
             f'<div class="comp-item">\n'
             f'  <h3>{_esc(iface.get("name",""))}</h3>\n'
             f'  <div class="comp-type">{_esc(iface.get("endpoint",""))}</div>\n'
             f'  <p>{_esc(iface.get("description",""))}</p>\n'
+            f'  {f"<p><strong>Response:</strong> {{{resp_str}}}</p>" if resp_str else ""}\n'
+            f'  {f"<table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody>{params_rows}</tbody></table>" if params_rows else ""}\n'
             f'</div>'
         )
     parts.append(_SECTION_FOOT)
