@@ -78,7 +78,8 @@ class DesignAgent(BaseAgent):
                 f"- interfaces[].method 与 endpoint 分开填写，method 为 HTTP 方法或 INTERNAL\n"
                 f"- interfaces[].response.body 的字段名与类型与 SAD 契约严格一致，不可修改\n"
                 f"- data_models[].type 使用 table（数据库表）/interface（TS 接口）/struct（Go 结构体）/store（前端状态）/config（配置）\n"
-                f"- 前端模块的 interfaces 使用 frontend 作为 method 值，endpoint 填写路由路径\n\n"
+                f"- 前端模块的 interfaces 使用 frontend 作为 method 值，endpoint 填写路由路径\n"
+                f"- overview.tech_stack 必须从 SAD tech_stack 中选取本模块相关的技术子集，不可引入未声明的技术\n\n"
                 f"输入数据:\n"
                 f"module: {module}\n"
                 f"overview: {overview}\n"
@@ -219,6 +220,15 @@ class DesignAgent(BaseAgent):
                         flow_lines.append(f"  {i + 1}. {name}: {steps}")
                     parts.append("数据流:")
                     parts.extend(flow_lines)
+                parts.append("")
+
+        # ── 6. Global tech stack from SAD ──
+        if sad_data:
+            tech_stack = sad_data.get("tech_stack", {})
+            if tech_stack:
+                parts.append("=== 全局技术选型 (SAD tech_stack) ===")
+                parts.append("以下为系统全局技术栈，各模块 LLD 的 overview.tech_stack 必须从中选取本模块相关的子集，不可使用未在此声明的技术：")
+                parts.append(json.dumps(tech_stack, ensure_ascii=False, indent=2))
                 parts.append("")
 
         return "\n".join(parts) if parts else ""

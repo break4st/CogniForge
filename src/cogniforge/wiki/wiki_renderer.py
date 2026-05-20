@@ -811,6 +811,41 @@ def _render_architecture_section(data, components: list) -> str:
     return "\n".join(parts)
 
 
+def _render_techstack_section(data) -> str:
+    """Render tech_stack as a structured table grouped by category."""
+    if not isinstance(data, dict) or not data:
+        return "<p>暂无技术选型</p>"
+
+    rows = []
+    for category, value in data.items():
+        if isinstance(value, dict):
+            tags = "".join(
+                f'<span class="arch-feature-tag" style="margin:2px">'
+                f'<span class="dot" style="background:var(--c-accent)"></span>'
+                f'{_esc(f"{k}: {v}")}</span>'
+                for k, v in value.items()
+            )
+        else:
+            tags = (
+                f'<span class="arch-feature-tag" style="margin:2px">'
+                f'<span class="dot" style="background:var(--c-accent)"></span>'
+                f'{_esc(str(value))}</span>'
+            )
+        rows.append(
+            f'<tr>'
+            f'<td style="font-weight:600;color:var(--c-heading);width:160px">'
+            f'{_esc(category)}</td>'
+            f'<td>{tags}</td>'
+            f'</tr>'
+        )
+
+    return (
+        '<table style="width:100%;border-collapse:collapse;margin-top:8px">'
+        f'{"".join(rows)}'
+        '</table>'
+    )
+
+
 def _render_dataflow_section(data) -> str:
     if not isinstance(data, list) or not data:
         return "<p>暂无数据流描述</p>"
@@ -1030,8 +1065,10 @@ def _render_sad(d: dict) -> str:
     sections = [
         ("overview", "📄", "系统概述"),
         ("architecture", "🏗️", "架构设计"),
-        ("components", "🧩", f"组件设计 ({len(comps)})"),
     ]
+    if d.get("tech_stack"):
+        sections.append(("techstack", "🛠️", "技术选型"))
+    sections.append(("components", "🧩", f"组件设计 ({len(comps)})"))
     if contracts:
         sections.append(("contracts", "🔗", f"接口契约 ({len(contracts)})"))
     if d.get("data_flow"):
@@ -1052,6 +1089,12 @@ def _render_sad(d: dict) -> str:
     parts.append(_section_header("🏗️", "架构设计", "rgba(91,141,239,0.12)", "architecture"))
     parts.append(_render_architecture_section(arch_data, comps))
     parts.append(_SECTION_FOOT)
+
+    # Tech Stack
+    if d.get("tech_stack"):
+        parts.append(_section_header("🛠️", "技术选型", "rgba(52,211,153,0.12)", "techstack"))
+        parts.append(_render_techstack_section(d["tech_stack"]))
+        parts.append(_SECTION_FOOT)
 
     # Components → grouped by architecture layers
     parts.append(_section_header("🧩", f"组件设计 ({len(comps)})", "rgba(34,211,238,0.12)", "components"))
