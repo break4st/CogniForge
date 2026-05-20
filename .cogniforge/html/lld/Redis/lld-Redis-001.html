@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLD - Redis — lld-Redis-001</title>
+<style>
+  :root {
+    --c-bg: #0b0f19; --c-surface: #131926; --c-card: #191e2e;
+    --c-border: #252b3d; --c-text: #c8d2e0; --c-heading: #e2e8f4;
+    --c-muted: #6b7394; --c-accent: #5b8def; --c-accent2: #7c6ff7;
+    --c-green: #34d399; --c-amber: #fbbf24; --c-red: #f87171;
+    --c-cyan: #22d3ee; --radius: 10px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+    background: var(--c-bg); color: var(--c-text);
+    line-height: 1.75; font-size: 15px;
+    max-width: 860px; margin: 0 auto; padding: 48px 40px 80px;
+  }
+  body:has(.page-layout) { max-width: none; margin: 0; padding: 0; }
+  .top-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 40px; padding-bottom: 24px;
+    border-bottom: 1px solid var(--c-border);
+  }
+  .doc-id { font-size: 0.8em; color: var(--c-muted); font-family: monospace; }
+  .badge {
+    display: inline-flex; padding: 5px 14px; border-radius: 20px;
+    font-size: 0.78em; font-weight: 500;
+    background: rgba(255,255,255,0.04); border: 1px solid var(--c-border);
+    color: var(--c-muted);
+  }
+  .badge.accent { border-color: rgba(91,141,239,0.3); color: var(--c-accent); }
+  .badge.green  { border-color: rgba(52,211,153,0.3); color: var(--c-green); }
+  h1 {
+    font-size: 2.4em; font-weight: 800; color: #fff;
+    letter-spacing: -1px; line-height: 1.2; margin-bottom: 6px;
+  }
+  h1 span {
+    background: linear-gradient(135deg, var(--c-accent), var(--c-cyan));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .meta { font-size: 0.85em; color: var(--c-muted); margin-bottom: 4px; }
+  .section { margin-bottom: 36px; }
+  .section-header {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 18px;
+  }
+  .section-header .icon {
+    width: 40px; height: 40px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.2em; flex-shrink: 0;
+  }
+  .section-header h2 {
+    font-size: 1.25em; font-weight: 700; color: var(--c-heading);
+  }
+  .section-body {
+    background: var(--c-card); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 28px 32px;
+  }
+  .section-body p { margin-bottom: 12px; }
+  .section-body p:last-child { margin-bottom: 0; }
+  .req-item {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .req-item:last-child { margin-bottom: 0; }
+  .req-item h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); margin-bottom: 6px; }
+  .req-desc { font-size: 0.9em; color: var(--c-muted); margin-bottom: 10px; }
+  .ac-list { list-style: none; padding: 0; margin: 0; }
+  .ac-list li {
+    padding: 4px 0 4px 18px; position: relative;
+    font-size: 0.88em; color: var(--c-text);
+  }
+  .ac-list li::before {
+    content: ""; position: absolute; left: 0; top: 12px;
+    width: 6px; height: 6px; border-radius: 50%; background: var(--c-green);
+  }
+  .ac-label {
+    font-size: 0.75em; font-weight: 600; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .story-item {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 14px 18px; border-radius: 8px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    margin-bottom: 8px;
+  }
+  .story-item:last-child { margin-bottom: 0; }
+  .story-role {
+    font-size: 0.8em; font-weight: 600; color: var(--c-accent);
+    background: rgba(91,141,239,0.1); padding: 2px 10px;
+    border-radius: 12px; white-space: nowrap; flex-shrink: 0;
+  }
+  .story-text { font-size: 0.92em; }
+  .story-text .goal { color: var(--c-muted); font-size: 0.88em; }
+  .priority-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .priority-tag {
+    display: inline-flex; padding: 6px 14px; border-radius: 6px;
+    font-size: 0.85em; font-weight: 500;
+  }
+  .priority-tag.high   { background: rgba(248,113,113,0.1);  color: #fca5a5; }
+  .priority-tag.medium { background: rgba(251,191,36,0.1);  color: #fcd34d; }
+  .priority-tag.low    { background: rgba(107,115,148,0.15); color: #9ca3af; }
+  .comp-item {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .comp-item h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); }
+  .comp-type {
+    font-size: 0.78em; color: var(--c-accent); margin-bottom: 8px;
+  }
+  .comp-resp { margin-top: 8px; font-size: 0.88em; }
+  .comp-resp li { margin: 2px 0; }
+
+  /* ── Contract Groups ── */
+  .contract-group {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); margin-bottom: 12px; overflow: hidden;
+  }
+  .contract-group[open] { border-color: rgba(91,141,239,0.25); }
+  .contract-group summary {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 20px; cursor: pointer; user-select: none;
+    font-weight: 600; font-size: 0.95em; color: var(--c-heading);
+    background: rgba(255,255,255,0.015);
+  }
+  .contract-group summary:hover { background: rgba(255,255,255,0.03); }
+  .contract-group summary::-webkit-details-marker { display: none; }
+  .contract-group summary::before {
+    content: "›"; display: inline-block; font-size: 1.3em; font-weight: 400;
+    width: 16px; color: var(--c-muted); transition: transform 0.2s;
+  }
+  .contract-group[open] summary::before { transform: rotate(90deg); }
+  .cg-count {
+    font-size: 0.78em; font-weight: 500; color: var(--c-muted);
+    background: rgba(255,255,255,0.04); padding: 2px 10px; border-radius: 10px;
+  }
+  .contract-card {
+    padding: 16px 20px; border-top: 1px solid var(--c-border);
+  }
+  .contract-card:first-of-type { border-top: 1px solid var(--c-border); }
+  .cc-head {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .cc-head .cc-name { font-weight: 600; font-size: 0.93em; color: var(--c-heading); }
+  .method-badge {
+    font-family: monospace; font-size: 0.75em; font-weight: 700;
+    padding: 3px 8px; border-radius: 5px; white-space: nowrap;
+  }
+  .method-badge.get    { background: rgba(52,211,153,0.15);  color: var(--c-green); }
+  .method-badge.post   { background: rgba(91,141,239,0.15);  color: var(--c-accent); }
+  .method-badge.put    { background: rgba(251,191,36,0.12);  color: var(--c-amber); }
+  .method-badge.delete { background: rgba(248,113,113,0.12); color: var(--c-red); }
+  .method-badge.mq     { background: rgba(124,111,247,0.13); color: var(--c-accent2); }
+  .cc-endpoint {
+    font-family: monospace; font-size: 0.82em; color: var(--c-text);
+    background: rgba(255,255,255,0.03); padding: 2px 8px; border-radius: 4px;
+  }
+  .cc-type-tag {
+    font-size: 0.72em; font-weight: 600; padding: 3px 8px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    background: rgba(91,141,239,0.1); color: var(--c-accent);
+  }
+  .cc-meta {
+    font-size: 0.82em; color: var(--c-muted); margin-bottom: 6px;
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .cc-meta .cc-consumer {
+    font-size: 0.85em; color: var(--c-accent2);
+    background: rgba(124,111,247,0.08); padding: 1px 8px; border-radius: 4px;
+  }
+  .cc-desc { font-size: 0.85em; color: var(--c-muted); margin-bottom: 10px; }
+  .body-table {
+    width: 100%; border-collapse: collapse; font-size: 0.8em; margin: 6px 0 4px;
+  }
+  .body-table th {
+    text-align: left; padding: 5px 10px; font-weight: 600;
+    color: var(--c-muted); font-size: 0.85em; text-transform: uppercase;
+    letter-spacing: 0.4px; border-bottom: 2px solid var(--c-border);
+    background: rgba(255,255,255,0.015);
+  }
+  .body-table td {
+    padding: 4px 10px; border-bottom: 1px solid rgba(255,255,255,0.04);
+    color: var(--c-text);
+  }
+  .body-table .field-type { color: var(--c-accent); font-family: monospace; font-size: 0.9em; }
+  .body-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 2px;
+  }
+  .model-item {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .model-item h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); }
+  table {
+    width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9em;
+  }
+  th {
+    text-align: left; padding: 10px 14px; font-weight: 600;
+    color: var(--c-muted); font-size: 0.8em; text-transform: uppercase;
+    letter-spacing: 0.5px; border-bottom: 2px solid var(--c-border);
+  }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--c-border); }
+  tr:hover td { background: rgba(255,255,255,0.015); }
+  .footer {
+    margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--c-border);
+    text-align: center; color: var(--c-muted); font-size: 0.8em;
+  }
+  /* ── System Overview ── */
+  .overview-hero {
+    background: linear-gradient(135deg, rgba(124,111,247,0.08), rgba(91,141,239,0.05));
+    border: 1px solid rgba(124,111,247,0.18); border-radius: var(--radius);
+    padding: 24px 28px; margin-bottom: 24px;
+  }
+  .overview-hero .hero-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-accent2);
+    text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 10px;
+  }
+  .overview-hero p { font-size: 1.02em; line-height: 1.85; color: var(--c-text); }
+  .role-cards {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
+  }
+  .role-card {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 22px 20px; text-align: center;
+  }
+  .role-card .role-icon {
+    width: 48px; height: 48px; border-radius: 50%; margin: 0 auto 12px;
+    display: flex; align-items: center; justify-content: center; font-size: 1.3em;
+  }
+  .role-card .role-name {
+    font-size: 1em; font-weight: 700; color: var(--c-heading); margin-bottom: 10px;
+  }
+  .role-card .role-perms {
+    font-size: 0.84em; color: var(--c-muted); line-height: 1.7;
+    list-style: none; padding: 0;
+  }
+  .role-card .role-perms li { padding: 1px 0; }
+
+  /* ── Architecture Diagram ── */
+  .arch-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 24px 20px 20px; margin-bottom: 22px;
+  }
+  .arch-tier {
+    display: flex; align-items: center; margin-bottom: 4px;
+  }
+  .arch-tier-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0;
+    width: 52px; text-align: right; padding-right: 16px;
+  }
+  .arch-tier-boxes { display: flex; gap: 8px; flex: 1; flex-wrap: wrap; }
+  .arch-box {
+    border-radius: 8px; padding: 12px 16px; text-align: center;
+    font-weight: 600; font-size: 0.85em; flex: 1; min-width: 80px;
+  }
+  .arch-box.frontend {
+    background: rgba(34,211,238,0.12); border: 1px solid rgba(34,211,238,0.28);
+    color: var(--c-cyan);
+  }
+  .arch-box.gateway {
+    background: rgba(124,111,247,0.13); border: 1px solid rgba(124,111,247,0.3);
+    color: var(--c-accent2);
+  }
+  .arch-box.service {
+    background: rgba(91,141,239,0.1); border: 1px solid rgba(91,141,239,0.22);
+    color: var(--c-accent);
+  }
+  .arch-box.db {
+    background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.22);
+    color: var(--c-green);
+  }
+  .arch-box.cache {
+    background: rgba(251,191,36,0.09); border: 1px solid rgba(251,191,36,0.22);
+    color: var(--c-amber);
+  }
+  .arch-box.mq {
+    background: rgba(248,113,113,0.07); border: 1px solid rgba(248,113,113,0.18);
+    color: var(--c-red);
+  }
+  .arch-overview {
+    display: flex; align-items: center; gap: 0; margin-bottom: 20px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 8px; overflow: hidden;
+  }
+  .arch-ov-item {
+    flex: 1; text-align: center; padding: 16px 12px; position: relative;
+  }
+  .arch-ov-item .ov-count {
+    font-size: 1.8em; font-weight: 800; line-height: 1.1;
+  }
+  .arch-ov-item .ov-label {
+    font-size: 0.75em; color: var(--c-muted); margin-top: 4px;
+  }
+  .arch-ov-arrow {
+    font-size: 1.1em; color: var(--c-muted); flex-shrink: 0;
+    padding: 0 2px;
+  }
+  .arch-style-badge {
+    display: inline-flex; padding: 6px 16px; border-radius: 20px;
+    font-size: 0.85em; font-weight: 700; margin-bottom: 16px;
+    background: linear-gradient(135deg, rgba(124,111,247,0.15), rgba(91,141,239,0.1));
+    border: 1px solid rgba(124,111,247,0.25); color: var(--c-accent2);
+  }
+  .arch-features {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px;
+    padding-top: 16px; border-top: 1px solid var(--c-border);
+  }
+  .arch-feature-tag {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 14px; border-radius: 18px; font-size: 0.82em; font-weight: 500;
+    background: rgba(255,255,255,0.03); border: 1px solid var(--c-border);
+    color: var(--c-text);
+  }
+  .arch-feature-tag .dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  }
+  .arch-desc { margin-bottom: 18px; color: var(--c-text); line-height: 1.8; }
+
+  /* ── Topology ── */
+  .topo-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 24px 20px 20px; margin-bottom: 22px;
+  }
+  .topo-tier {
+    display: flex; align-items: stretch; margin-bottom: 2px;
+  }
+  .topo-tier-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0;
+    width: 52px; text-align: right; padding-right: 16px; padding-top: 12px;
+  }
+  .topo-tier-content { flex: 1; display: flex; flex-wrap: wrap; gap: 8px; }
+  .topo-node {
+    border-radius: 8px; padding: 10px 15px; text-align: center;
+    font-weight: 600; font-size: 0.83em; flex: 1; min-width: 80px;
+  }
+  .topo-node.frontend {
+    background: rgba(34,211,238,0.12); border: 1px solid rgba(34,211,238,0.28);
+    color: var(--c-cyan);
+  }
+  .topo-node.gateway {
+    background: rgba(124,111,247,0.13); border: 1px solid rgba(124,111,247,0.3);
+    color: var(--c-accent2);
+  }
+  .topo-node.service {
+    background: rgba(91,141,239,0.1); border: 1px solid rgba(91,141,239,0.22);
+    color: var(--c-accent);
+  }
+  .topo-node.db {
+    background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.22);
+    color: var(--c-green);
+  }
+  .topo-node.cache {
+    background: rgba(251,191,36,0.09); border: 1px solid rgba(251,191,36,0.22);
+    color: var(--c-amber);
+  }
+  .topo-node.mq {
+    background: rgba(248,113,113,0.07); border: 1px solid rgba(248,113,113,0.18);
+    color: var(--c-red);
+  }
+  .topo-connector {
+    display: flex; align-items: center; padding: 2px 0 2px 52px;
+    gap: 10px; flex-wrap: wrap;
+  }
+  .topo-connector-line {
+    flex: 1; min-width: 60px; display: flex; align-items: center; gap: 6px;
+    color: var(--c-muted); font-size: 0.75em; font-weight: 500;
+  }
+  .topo-connector-line::before {
+    content: ""; display: inline-block; width: 12px; height: 1px;
+    background: var(--c-border); flex-shrink: 0;
+  }
+  .topo-connector-line .proto {
+    color: var(--c-accent2); font-family: monospace; font-size: 0.9em;
+    background: rgba(124,111,247,0.08); padding: 1px 6px; border-radius: 4px;
+  }
+
+  /* ── Data Flow ── */
+  .flow-cards { display: flex; flex-direction: column; gap: 16px; }
+  .flow-card {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 20px 22px;
+  }
+  .flow-card-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+  }
+  .flow-card-header .flow-num {
+    width: 28px; height: 28px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.8em; font-weight: 700; flex-shrink: 0;
+  }
+  .flow-card-header .flow-name {
+    font-weight: 700; font-size: 0.95em; color: var(--c-heading);
+  }
+  .flow-steps {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+  }
+  .flow-step {
+    font-size: 0.82em; padding: 5px 10px; border-radius: 6px;
+    background: rgba(255,255,255,0.03); border: 1px solid var(--c-border);
+    color: var(--c-text); white-space: nowrap;
+  }
+  .flow-step.start  { border-color: rgba(52,211,153,0.3);  color: var(--c-green); }
+  .flow-step.mid    { border-color: rgba(91,141,239,0.25);  color: var(--c-accent); }
+  .flow-step.end    { border-color: rgba(124,111,247,0.3);  color: var(--c-accent2); }
+  .flow-arrow { color: var(--c-muted); font-size: 0.85em; flex-shrink: 0; }
+
+  @media (max-width: 700px) {
+    body { padding: 24px 16px 48px; }
+    h1 { font-size: 1.6em; }
+    .section-body { padding: 20px 16px; }
+    .role-cards { grid-template-columns: 1fr; }
+    .arch-overview { flex-wrap: wrap; }
+    .arch-ov-arrow { display: none; }
+    .arch-tier { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .arch-tier-label { width: auto; text-align: left; padding-right: 0; }
+    .arch-arrows { padding-left: 0; justify-content: flex-start; }
+    .arch-tier-boxes { width: 100%; }
+    .topo-tier { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .topo-tier-label { width: auto; text-align: left; padding-right: 0; padding-top: 0; }
+    .topo-connector { padding-left: 0; }
+    .flow-steps { flex-direction: column; align-items: flex-start; }
+    .flow-arrow { display: none; }
+    .cc-head { flex-direction: column; align-items: flex-start; gap: 6px; }
+    .cc-meta { flex-direction: column; align-items: flex-start; }
+    .page-layout { flex-direction: column; }
+    .sidebar { display: none; }
+    .sidebar.mobile-open { display: flex; }
+    .sidebar-toggle { display: flex; }
+  }
+
+  /* ── Sidebar Layout ── */
+  .page-layout {
+    display: flex; min-height: 100vh;
+  }
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0;
+    width: 230px; overflow-y: auto;
+    background: var(--c-surface); border-right: 1px solid var(--c-border);
+    display: flex; flex-direction: column; padding: 24px 0;
+    z-index: 100;
+  }
+  .sidebar-header {
+    padding: 0 20px 20px; border-bottom: 1px solid var(--c-border); margin-bottom: 12px;
+  }
+  .sidebar-header .sid {
+    font-size: 0.72em; font-weight: 600; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .sidebar-header .stitle {
+    font-size: 0.95em; font-weight: 700; color: var(--c-heading);
+    margin-top: 4px; line-height: 1.3;
+  }
+  .sidebar-nav { flex: 1; padding: 0 12px; }
+  .sidebar-link {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; border-radius: 7px;
+    font-size: 0.86em; color: var(--c-muted); text-decoration: none;
+    margin-bottom: 2px; transition: all 0.15s;
+  }
+  .sidebar-link:hover { color: var(--c-text); background: rgba(255,255,255,0.03); }
+  .sidebar-link.active {
+    color: var(--c-accent); background: rgba(91,141,239,0.1);
+    font-weight: 600;
+  }
+  .sidebar-link .sl-icon { font-size: 1.05em; width: 20px; text-align: center; flex-shrink: 0; }
+  .sidebar-toggle {
+    display: none; position: fixed; top: 12px; left: 12px; z-index: 200;
+    width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--c-border);
+    background: var(--c-surface); color: var(--c-text); font-size: 1.2em;
+    cursor: pointer; align-items: center; justify-content: center;
+  }
+  .main-content {
+    margin-left: 230px; flex: 1; min-width: 0;
+    max-width: 860px; padding: 48px 40px 80px;
+  }
+  html { scroll-behavior: smooth; }
+  @media print {
+    body { background: #fff; color: #222; }
+    .section-body, .req-item, .story-item { background: #fff; border: 1px solid #ddd; }
+    h1 { color: #111; }
+  }
+</style>
+</head>
+<body>
+<div class="top-bar">
+  <div class="doc-id">lld-Redis-001</div>
+  <div><span class="badge accent">详细设计文档</span></div>
+</div>
+<h1><span>详细设计文档</span> LLD - Redis</h1>
+<div class="meta">2026-05-20 16:13 &middot; 作者: design_agent</div>
+
+<div class="section">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(124,111,247,0.12)">📄</div>
+    <h2>概述</h2>
+  </div>
+  <div class="section-body">
+
+<p>模块: Redis</p>
+<p>Redis 作为系统内存缓存与发布订阅中间件，位于数据层。核心职责包括：缓存部署实时状态供 WebSocket 推送消费、管理 WebSocket 连接会话、缓存热点环境配置数据以减少 MySQL 读压力、通过发布订阅模式实现部署状态变更的实时通知。Redis 部署采用主从架构保证高可用，所有缓存键使用统一命名空间前缀，按业务模块分层设计 TTL 策略，避免内存无限增长。Redis 不可用时各服务降级为直读 MySQL，保证系统核心功能不中断。</p>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(91,141,239,0.12)">🗄️</div>
+    <h2>数据模型 (6)</h2>
+  </div>
+  <div class="section-body">
+
+<div class="model-item">
+  <h3>deployment_status_cache</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>key_pattern</td><td>string</td><td>deploy:status:{deployment_id} — 示例: deploy:status:42</td></tr><tr><td>value</td><td>JSON string</td><td>序列化 JSON，包含 status/step/progress/error_message 字段</td></tr><tr><td>ttl</td><td>integer</td><td>TTL 策略：部署运行时无 TTL（持久化），部署终态（success/failed/cancelled）后设置 TTL 3600 秒（1 小时）自动清理</td></tr></tbody></table>
+</div>
+<div class="model-item">
+  <h3>deployment_log_buffer</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>key_pattern</td><td>string</td><td>deploy:log:{deployment_id} — 示例: deploy:log:42</td></tr><tr><td>element</td><td>JSON string</td><td>单条日志行，包含 sequence/level/message/timestamp</td></tr><tr><td>max_length</td><td>integer</td><td>List 最大长度 10000 行，超过时自动裁剪旧行（LTRIM），避免单个 key 内存膨胀</td></tr><tr><td>ttl</td><td>integer</td><td>部署运行时无 TTL；部署终态且日志已持久化至 MySQL 后设置 TTL 3600 秒</td></tr></tbody></table>
+</div>
+<div class="model-item">
+  <h3>ws_session</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>key_pattern</td><td>string</td><td>ws:session:{session_id} — 示例: ws:session:abc123</td></tr><tr><td>fields</td><td>hash</td><td>Hash 结构，存储会话的关联信息</td></tr><tr><td>ttl</td><td>integer</td><td>TTL 3600 秒（1 小时），会话活跃时刷新 TTL；用户主动断开或连接超时后自然过期</td></tr></tbody></table>
+</div>
+<div class="model-item">
+  <h3>env_config_cache</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>key_pattern</td><td>string</td><td>config:env:{env_id} — 示例: config:env:5</td></tr><tr><td>fields</td><td>hash</td><td>Hash 结构，字段与环境配置表字段一一对应</td></tr><tr><td>ttl</td><td>integer</td><td>TTL 300 秒（5 分钟），读写时刷新 TTL；支持主动删除缓存触发重新加载</td></tr></tbody></table>
+</div>
+<div class="model-item">
+  <h3>deployment_pubsub</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>channel_pattern</td><td>string</td><td>channel:deploy:status — 部署状态变更通道</td></tr><tr><td>message</td><td>JSON string</td><td>状态变更消息，包含 deployment_id/status/timestamp 等字段</td></tr></tbody></table>
+</div>
+<div class="model-item">
+  <h3>rate_limiter</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>key_pattern</td><td>string</td><td>ratelimit:{endpoint_hash}:{ip} — 示例: ratelimit:deploy_create:192.168.1.1</td></tr><tr><td>value</td><td>integer</td><td>当前窗口内的请求计数值（INCR 原子自增）</td></tr><tr><td>ttl</td><td>integer</td><td>TTL 1 秒（滑动窗口精度），窗口内首次请求时通过 MULTI/EXEC 执行 INCR + EXPIRE 1</td></tr></tbody></table>
+</div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(34,211,238,0.12)">🔌</div>
+    <h2>接口定义 (6)</h2>
+  </div>
+  <div class="section-body">
+
+<div class="comp-item">
+  <h3>DeploymentCache</h3>
+  <div class="comp-type">Redis::DeployStatus</div>
+  <p>部署实时状态缓存接口。部署编排服务写入和读取部署状态，SSH 执行代理回写进度。前端通过 WebSocket 间接读取。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>SetStatus</td><td>SET</td><td>SET deploy:status:{deployment_id} '{json}' — 写入部署状态，终态时 NX + EXPIRE 3600</td></tr><tr><td>GetStatus</td><td>GET</td><td>GET deploy:status:{deployment_id} — 读取部署状态，返回 JSON 字符串</td></tr><tr><td>UpdateStatus</td><td>GETSET</td><td>GET deploy:status:{deployment_id} → 反序列化修改字段 → SET — 读取后更新指定字段（乐观方式）；或使用 SET 整体覆盖</td></tr><tr><td>DeleteStatus</td><td>DEL</td><td>DEL deploy:status:{deployment_id} — 部署记录归档后手动清理缓存</td></tr></tbody></table>
+</div>
+<div class="comp-item">
+  <h3>DeploymentLogBuffer</h3>
+  <div class="comp-type">Redis::DeployLog</div>
+  <p>部署日志行实时缓冲区接口。SSH 执行代理实时追加日志行，部署编排服务 WebSocket 推送模块从中读取增量行转发至前端。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>AppendLog</td><td>RPUSH</td><td>RPUSH deploy:log:{deployment_id} '{json_log_line}' — 追加一行日志到列表尾部</td></tr><tr><td>TrimLog</td><td>LTRIM</td><td>LTRIM deploy:log:{deployment_id} -10000 -1 — 每写入 100 行执行一次，保留最新 10000 行</td></tr><tr><td>ReadLogs</td><td>LRANGE</td><td>LRANGE deploy:log:{deployment_id} {offset} {offset+count-1} — 按偏移量读取增量日志行</td></tr><tr><td>GetLogLength</td><td>LLEN</td><td>LLEN deploy:log:{deployment_id} — 获取当前日志总行数，用于计算偏移</td></tr><tr><td>ClearLog</td><td>DEL</td><td>DEL deploy:log:{deployment_id} — 日志全部持久化至 MySQL 后清理缓冲区</td></tr><tr><td>GetLogRangeByTime</td><td>LRANGE</td><td>读取指定范围日志（配合前端 offset 参数），需应用层解析 sequence 过滤</td></tr></tbody></table>
+</div>
+<div class="comp-item">
+  <h3>WsSessionManager</h3>
+  <div class="comp-type">Redis::WsSession</div>
+  <p>WebSocket 连接会话管理器接口。部署编排服务在建立 WebSocket 连接时创建会话，断开时清理。用于鉴权、心跳和推送目标识别。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>CreateSession</td><td>HSET</td><td>HSET ws:session:{session_id} field1 val1 field2 val2 ... — 创建 WebSocket 会话记录</td></tr><tr><td>SetSessionTTL</td><td>EXPIRE</td><td>EXPIRE ws:session:{session_id} 3600 — 设置会话 TTL，每次心跳时刷新</td></tr><tr><td>GetSession</td><td>HGETALL</td><td>HGETALL ws:session:{session_id} — 获取会话全部字段（用户身份、关联部署等）</td></tr><tr><td>UpdateHeartbeat</td><td>HSET</td><td>HSET ws:session:{session_id} last_heartbeat '{now}' — 更新心跳时间</td></tr><tr><td>DestroySession</td><td>DEL</td><td>DEL ws:session:{session_id} — 用户主动断开时清理会话</td></tr><tr><td>RefreshTTL</td><td>EXPIRE</td><td>EXPIRE ws:session:{session_id} 3600 — 活跃连接刷新 TTL</td></tr></tbody></table>
+</div>
+<div class="comp-item">
+  <h3>ConfigCache</h3>
+  <div class="comp-type">Redis::ConfigCache</div>
+  <p>环境配置热点缓存接口。部署编排服务在触发部署前读取缓存的连接配置；环境管理服务在配置更新后主动淘汰缓存。采用 Cache-Aside 模式：读时 MISS 则回源 MySQL 并回填缓存，写时主动删除缓存。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>SetEnvConfig</td><td>HMSET</td><td>HMSET config:env:{env_id} field1 val1 field2 val2 ... — 写入环境配置到缓存</td></tr><tr><td>GetEnvConfig</td><td>HGETALL</td><td>HGETALL config:env:{env_id} — 读取环境配置全部字段</td></tr><tr><td>GetEnvConfigField</td><td>HGET</td><td>HGET config:env:{env_id} {field} — 读取环境配置的单个字段</td></tr><tr><td>EvictEnvConfig</td><td>DEL</td><td>DEL config:env:{env_id} — 环境配置更新后淘汰缓存，触发下次读取回源</td></tr><tr><td>SetWithTTL</td><td>EXPIRE</td><td>EXPIRE config:env:{env_id} 300 — 写入缓存后设置过期时间</td></tr></tbody></table>
+</div>
+<div class="comp-item">
+  <h3>StatusPubSub</h3>
+  <div class="comp-type">Redis::PubSub</div>
+  <p>部署状态变更发布订阅接口。部署编排服务在状态变更时 PUBLISH 消息到指定通道；WebSocket 推送模块通过 SUBSCRIBE 接收消息并触发推送。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>PublishStatus</td><td>PUBLISH</td><td>PUBLISH channel:deploy:status '{json_message}' — 发布部署状态变更通知</td></tr><tr><td>SubscribeStatus</td><td>SUBSCRIBE</td><td>SUBSCRIBE channel:deploy:status — 订阅部署状态变更通道（长连接，在独立 goroutine/thread 中执行）</td></tr><tr><td>Unsubscribe</td><td>UNSUBSCRIBE</td><td>UNSUBSCRIBE channel:deploy:status — 取消订阅（服务关闭时清理）</td></tr></tbody></table>
+</div>
+<div class="comp-item">
+  <h3>RateLimiter</h3>
+  <div class="comp-type">Redis::RateLimit</div>
+  <p>API 网关请求速率限制接口。基于 INCR + EXPIRE 实现滑动窗口计数器。以 endpoint_hash:ip 为 key 统计每秒请求量，超过阈值（可配置，默认 100/秒/IP）时返回 429。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>IncrAndCheck</td><td>INCR</td><td>INCR ratelimit:{endpoint_hash}:{ip} — 递增计数器，返回递增后的值</td></tr><tr><td>SetWindowExpiry</td><td>EXPIRE</td><td>EXPIRE ratelimit:{endpoint_hash}:{ip} 1 — 首次 INCR 后设置 1 秒过期（需在 MULTI/EXEC 事务中与 INCR 原子执行）</td></tr><tr><td>CheckThreshold</td><td>GET</td><td>GET ratelimit:{endpoint_hash}:{ip} — 读取当前计数器值（纯读取场景，无需 INCR）</td></tr><tr><td>ResetCounter</td><td>DEL</td><td>DEL ratelimit:{endpoint_hash}:{ip} — 手动重置限流计数器</td></tr></tbody></table>
+</div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(251,191,36,0.12)">⚠️</div>
+    <h2>错误处理</h2>
+  </div>
+  <div class="section-body">
+
+<p>Redis 错误处理策略：
+1. 连接异常：Redis 连接超时或断开时，各服务使用连接池自动重连。连接池配置 max_idle=10、max_active=50、dial_timeout=3s。连接失败时服务降级为直读 MySQL（Cache-Aside 模式），保证核心部署流程不受影响。降级期间记录 WARN 日志。
+2. 读写超时：所有的 Redis 命令设置 read_timeout=3s、write_timeout=3s。超时发生时记录错误日志并降级至 MySQL 读取，不阻塞主业务流程。
+3. 主从切换：Redis Sentinel 或 Cluster 模式下发生主从切换时，连接池中的旧主连接失效。客户端驱动自动发现新主节点，期间短暂不可用（通常 &lt; 1s），应用程序层重试 1 次即可恢复。
+4. 内存淘汰策略：Redis 配置 maxmemory 和 allkeys-lru 淘汰策略。缓存键需要正确设置 TTL，确保热点数据在内存中、冷数据被自动淘汰。deployment_log_buffer 使用 LTRIM 限制单个 key 的 List 长度，防止单个部署日志过多耗尽内存。
+5. 键冲突处理：统一命名空间前缀（deploy:/ws:/config:/ratelimit:）隔离不同业务模块的键，避免命名冲突。连接不同 Redis 数据库（db0=业务缓存/db1=会话/db2=限流）进一步隔离。
+6. 数据丢失补救：Redis 纯内存非持久化模式（不开启 RDB/AOF，接受缓存丢失），缓存丢失时通过 Cache-Aside 模式的回源机制从 MySQL 重新加载数据。日志数据在部署终态后由 SSH 执行代理写入 MySQL 持久化，Redis 中的日志缓冲区视为临时副本，丢失不影响最终一致性。
+7. 并发竞争：部署状态更新可能多端并发写入（SSH 执行代理回写 + 部署编排服务更新）。使用 Redis 的 GETSET/INCR 原子操作处理计数器类场景；非原子操作的字段更新在应用层获取锁（SET NX 实现分布式锁，lock_key=deploy:lock:{deployment_id}，TTL=10s）或接受最终一致性（部署状态最终以 MySQL 为准）。
+8. Pub/Sub 可靠性：Redis Pub/Sub 为即发即忘模式，订阅者离线时消息丢失。因此关键状态变更使用双写策略：同时发布到 Pub/Sub（实时推送）和写入 deployment_status_cache（前端轮询兜底）。WebSocket 推送模块启动时重新连接订阅，确保不会错过后续消息。
+9. 限流精度：滑动窗口基于每秒粒度，INCR + EXPIRE 1 实现。对精度要求不高的场景可容忍 ±1 秒的窗口漂移。需要更高精度时改用 Redis Sorted Set（ZADD + ZREMRANGEBYSCORE）实现毫秒级滑动窗口。
+10. 连接池耗尽：Redis 连接池全部被占用时新请求等待 pool_timeout=1s，超过后降级至 MySQL，返回降级响应的同时记录告警日志，通知运维检查 Redis 负载或扩容。</p>
+  </div>
+</div>
+
+
+<div class="footer">CogniForge 文档驱动系统</div>
+</body>
+</html>

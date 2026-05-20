@@ -1,0 +1,191 @@
+{
+  "meta": {
+    "doc_id": "lld-Redis-001",
+    "type": "lld",
+    "module": "Redis",
+    "title": "LLD - Redis",
+    "author": "design_agent",
+    "created": "2026-05-20 16:13"
+  },
+  "overview": "Redis 作为系统内存缓存与发布订阅中间件，位于数据层。核心职责包括：缓存部署实时状态供 WebSocket 推送消费、管理 WebSocket 连接会话、缓存热点环境配置数据以减少 MySQL 读压力、通过发布订阅模式实现部署状态变更的实时通知。Redis 部署采用主从架构保证高可用，所有缓存键使用统一命名空间前缀，按业务模块分层设计 TTL 策略，避免内存无限增长。Redis 不可用时各服务降级为直读 MySQL，保证系统核心功能不中断。",
+  "data_models": [
+    {
+      "name": "deployment_status_cache",
+      "type": "key",
+      "structure": "string",
+      "description": "部署实时状态缓存，部署编排服务和 SSH 执行代理通过此键快速读写部署进度状态。前端 WebSocket 推送也从该键获取当前状态快照。部署完成后保留 1 小时作为缓冲期后自动过期。",
+      "fields": [
+        { "name": "key_pattern", "type": "string", "description": "deploy:status:{deployment_id} — 示例: deploy:status:42" },
+        { "name": "value", "type": "JSON string", "description": "序列化 JSON，包含 status/step/progress/error_message 字段" },
+        { "name": "ttl", "type": "integer", "description": "TTL 策略：部署运行时无 TTL（持久化），部署终态（success/failed/cancelled）后设置 TTL 3600 秒（1 小时）自动清理" }
+      ],
+      "value_schema": {
+        "status": { "type": "string", "enum": ["pending", "running", "success", "failed", "cancelled"], "description": "当前部署状态" },
+        "step": { "type": "string", "description": "当前执行步骤，如 connecting/uploading/starting/finished" },
+        "progress": { "type": "integer", "min": 0, "max": 100, "description": "执行进度百分比" },
+        "error_message": { "type": "string", "description": "失败时的错误信息，非失败状态为 null" },
+        "started_at": { "type": "string", "format": "datetime", "description": "部署开始时间" },
+        "updated_at": { "type": "string", "format": "datetime", "description": "最后更新时间" }
+      }
+    },
+    {
+      "name": "deployment_log_buffer",
+      "type": "key",
+      "structure": "list",
+      "description": "部署日志行实时缓冲区，SSH 执行代理在部署过程中实时回写日志行到此列表。部署编排服务 WebSocket 推送从此列表读取增量日志推送至前端。部署终态后写入 MySQL 持久化，再将此列表 TTL 设为 3600 秒等待自动回收。",
+      "fields": [
+        { "name": "key_pattern", "type": "string", "description": "deploy:log:{deployment_id} — 示例: deploy:log:42" },
+        { "name": "element", "type": "JSON string", "description": "单条日志行，包含 sequence/level/message/timestamp" },
+        { "name": "max_length", "type": "integer", "description": "List 最大长度 10000 行，超过时自动裁剪旧行（LTRIM），避免单个 key 内存膨胀" },
+        { "name": "ttl", "type": "integer", "description": "部署运行时无 TTL；部署终态且日志已持久化至 MySQL 后设置 TTL 3600 秒" }
+      ],
+      "value_schema": {
+        "sequence": { "type": "integer", "description": "日志行序号，递增" },
+        "level": { "type": "string", "enum": ["info", "warn", "error", "debug"], "description": "日志级别" },
+        "message": { "type": "string", "description": "日志内容" },
+        "timestamp": { "type": "string", "format": "datetime", "description": "日志产生时间" }
+      }
+    },
+    {
+      "name": "ws_session",
+      "type": "key",
+      "structure": "hash",
+      "description": "WebSocket 连接会话管理，记录前端与部署编排服务之间的 WebSocket 连接元数据。每个连接分配唯一 session_id，用于推送鉴权和连接追踪。用户断开连接或部署结束后清理会话。",
+      "fields": [
+        { "name": "key_pattern", "type": "string", "description": "ws:session:{session_id} — 示例: ws:session:abc123" },
+        { "name": "fields", "type": "hash", "description": "Hash 结构，存储会话的关联信息" },
+        { "name": "ttl", "type": "integer", "description": "TTL 3600 秒（1 小时），会话活跃时刷新 TTL；用户主动断开或连接超时后自然过期" }
+      ],
+      "value_schema": {
+        "user_id": { "type": "integer", "description": "关联的用户 ID" },
+        "deployment_id": { "type": "integer", "description": "当前关注的部署记录 ID" },
+        "project_id": { "type": "integer", "description": "当前项目 ID" },
+        "connected_at": { "type": "string", "format": "datetime", "description": "连接建立时间" },
+        "last_heartbeat": { "type": "string", "format": "datetime", "description": "最后一次心跳时间" },
+        "client_ip": { "type": "string", "description": "客户端 IP 地址" }
+      }
+    },
+    {
+      "name": "env_config_cache",
+      "type": "key",
+      "structure": "hash",
+      "description": "环境配置热点缓存，部署编排服务在部署前读取环境配置（服务器地址、端口、认证方式等），避免每次部署都查询 MySQL。环境配置发生变化时，由环境管理服务主动删除缓存键，触发下次读取时重新加载。",
+      "fields": [
+        { "name": "key_pattern", "type": "string", "description": "config:env:{env_id} — 示例: config:env:5" },
+        { "name": "fields", "type": "hash", "description": "Hash 结构，字段与环境配置表字段一一对应" },
+        { "name": "ttl", "type": "integer", "description": "TTL 300 秒（5 分钟），读写时刷新 TTL；支持主动删除缓存触发重新加载" }
+      ],
+      "value_schema": {
+        "id": { "type": "integer", "description": "环境 ID" },
+        "project_id": { "type": "integer", "description": "所属项目 ID" },
+        "name": { "type": "string", "description": "环境名称" },
+        "host": { "type": "string", "description": "服务器地址" },
+        "port": { "type": "integer", "description": "SSH 端口" },
+        "auth_user": { "type": "string", "description": "SSH 登录用户名" },
+        "auth_type": { "type": "string", "enum": ["password", "key"], "description": "认证方式" }
+      }
+    },
+    {
+      "name": "deployment_pubsub",
+      "type": "channel",
+      "structure": "pubsub",
+      "description": "部署状态变更发布订阅通道。部署编排服务在部署状态变更时（pending→running→success/failed）发布消息到该通道。其他进程（如 WebSocket 推送管理器）订阅该通道以触发实时通知推送至前端。",
+      "fields": [
+        { "name": "channel_pattern", "type": "string", "description": "channel:deploy:status — 部署状态变更通道" },
+        { "name": "message", "type": "JSON string", "description": "状态变更消息，包含 deployment_id/status/timestamp 等字段" }
+      ],
+      "value_schema": {
+        "deployment_id": { "type": "integer", "description": "部署记录 ID" },
+        "project_id": { "type": "integer", "description": "项目 ID" },
+        "environment_id": { "type": "integer", "description": "环境 ID" },
+        "old_status": { "type": "string", "description": "变更前状态" },
+        "new_status": { "type": "string", "description": "变更后状态" },
+        "timestamp": { "type": "string", "format": "datetime", "description": "状态变更时间" }
+      }
+    },
+    {
+      "name": "rate_limiter",
+      "type": "key",
+      "structure": "string",
+      "description": "API 网关请求速率限制计数器，使用 INCR + EXPIRE 实现滑动窗口。以 endpoint + IP 为粒度统计请求次数，超过阈值时返回 429 限流响应。",
+      "fields": [
+        { "name": "key_pattern", "type": "string", "description": "ratelimit:{endpoint_hash}:{ip} — 示例: ratelimit:deploy_create:192.168.1.1" },
+        { "name": "value", "type": "integer", "description": "当前窗口内的请求计数值（INCR 原子自增）" },
+        { "name": "ttl", "type": "integer", "description": "TTL 1 秒（滑动窗口精度），窗口内首次请求时通过 MULTI/EXEC 执行 INCR + EXPIRE 1" }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "DeploymentCache",
+      "endpoint": "Redis::DeployStatus",
+      "description": "部署实时状态缓存接口。部署编排服务写入和读取部署状态，SSH 执行代理回写进度。前端通过 WebSocket 间接读取。",
+      "parameters": [
+        { "name": "SetStatus", "type": "SET", "description": "SET deploy:status:{deployment_id} '{json}' — 写入部署状态，终态时 NX + EXPIRE 3600" },
+        { "name": "GetStatus", "type": "GET", "description": "GET deploy:status:{deployment_id} — 读取部署状态，返回 JSON 字符串" },
+        { "name": "UpdateStatus", "type": "GETSET", "description": "GET deploy:status:{deployment_id} → 反序列化修改字段 → SET — 读取后更新指定字段（乐观方式）；或使用 SET 整体覆盖" },
+        { "name": "DeleteStatus", "type": "DEL", "description": "DEL deploy:status:{deployment_id} — 部署记录归档后手动清理缓存" }
+      ]
+    },
+    {
+      "name": "DeploymentLogBuffer",
+      "endpoint": "Redis::DeployLog",
+      "description": "部署日志行实时缓冲区接口。SSH 执行代理实时追加日志行，部署编排服务 WebSocket 推送模块从中读取增量行转发至前端。",
+      "parameters": [
+        { "name": "AppendLog", "type": "RPUSH", "description": "RPUSH deploy:log:{deployment_id} '{json_log_line}' — 追加一行日志到列表尾部" },
+        { "name": "TrimLog", "type": "LTRIM", "description": "LTRIM deploy:log:{deployment_id} -10000 -1 — 每写入 100 行执行一次，保留最新 10000 行" },
+        { "name": "ReadLogs", "type": "LRANGE", "description": "LRANGE deploy:log:{deployment_id} {offset} {offset+count-1} — 按偏移量读取增量日志行" },
+        { "name": "GetLogLength", "type": "LLEN", "description": "LLEN deploy:log:{deployment_id} — 获取当前日志总行数，用于计算偏移" },
+        { "name": "ClearLog", "type": "DEL", "description": "DEL deploy:log:{deployment_id} — 日志全部持久化至 MySQL 后清理缓冲区" },
+        { "name": "GetLogRangeByTime", "type": "LRANGE", "description": "读取指定范围日志（配合前端 offset 参数），需应用层解析 sequence 过滤" }
+      ]
+    },
+    {
+      "name": "WsSessionManager",
+      "endpoint": "Redis::WsSession",
+      "description": "WebSocket 连接会话管理器接口。部署编排服务在建立 WebSocket 连接时创建会话，断开时清理。用于鉴权、心跳和推送目标识别。",
+      "parameters": [
+        { "name": "CreateSession", "type": "HSET", "description": "HSET ws:session:{session_id} field1 val1 field2 val2 ... — 创建 WebSocket 会话记录" },
+        { "name": "SetSessionTTL", "type": "EXPIRE", "description": "EXPIRE ws:session:{session_id} 3600 — 设置会话 TTL，每次心跳时刷新" },
+        { "name": "GetSession", "type": "HGETALL", "description": "HGETALL ws:session:{session_id} — 获取会话全部字段（用户身份、关联部署等）" },
+        { "name": "UpdateHeartbeat", "type": "HSET", "description": "HSET ws:session:{session_id} last_heartbeat '{now}' — 更新心跳时间" },
+        { "name": "DestroySession", "type": "DEL", "description": "DEL ws:session:{session_id} — 用户主动断开时清理会话" },
+        { "name": "RefreshTTL", "type": "EXPIRE", "description": "EXPIRE ws:session:{session_id} 3600 — 活跃连接刷新 TTL" }
+      ]
+    },
+    {
+      "name": "ConfigCache",
+      "endpoint": "Redis::ConfigCache",
+      "description": "环境配置热点缓存接口。部署编排服务在触发部署前读取缓存的连接配置；环境管理服务在配置更新后主动淘汰缓存。采用 Cache-Aside 模式：读时 MISS 则回源 MySQL 并回填缓存，写时主动删除缓存。",
+      "parameters": [
+        { "name": "SetEnvConfig", "type": "HMSET", "description": "HMSET config:env:{env_id} field1 val1 field2 val2 ... — 写入环境配置到缓存" },
+        { "name": "GetEnvConfig", "type": "HGETALL", "description": "HGETALL config:env:{env_id} — 读取环境配置全部字段" },
+        { "name": "GetEnvConfigField", "type": "HGET", "description": "HGET config:env:{env_id} {field} — 读取环境配置的单个字段" },
+        { "name": "EvictEnvConfig", "type": "DEL", "description": "DEL config:env:{env_id} — 环境配置更新后淘汰缓存，触发下次读取回源" },
+        { "name": "SetWithTTL", "type": "EXPIRE", "description": "EXPIRE config:env:{env_id} 300 — 写入缓存后设置过期时间" }
+      ]
+    },
+    {
+      "name": "StatusPubSub",
+      "endpoint": "Redis::PubSub",
+      "description": "部署状态变更发布订阅接口。部署编排服务在状态变更时 PUBLISH 消息到指定通道；WebSocket 推送模块通过 SUBSCRIBE 接收消息并触发推送。",
+      "parameters": [
+        { "name": "PublishStatus", "type": "PUBLISH", "description": "PUBLISH channel:deploy:status '{json_message}' — 发布部署状态变更通知" },
+        { "name": "SubscribeStatus", "type": "SUBSCRIBE", "description": "SUBSCRIBE channel:deploy:status — 订阅部署状态变更通道（长连接，在独立 goroutine/thread 中执行）" },
+        { "name": "Unsubscribe", "type": "UNSUBSCRIBE", "description": "UNSUBSCRIBE channel:deploy:status — 取消订阅（服务关闭时清理）" }
+      ]
+    },
+    {
+      "name": "RateLimiter",
+      "endpoint": "Redis::RateLimit",
+      "description": "API 网关请求速率限制接口。基于 INCR + EXPIRE 实现滑动窗口计数器。以 endpoint_hash:ip 为 key 统计每秒请求量，超过阈值（可配置，默认 100/秒/IP）时返回 429。",
+      "parameters": [
+        { "name": "IncrAndCheck", "type": "INCR", "description": "INCR ratelimit:{endpoint_hash}:{ip} — 递增计数器，返回递增后的值" },
+        { "name": "SetWindowExpiry", "type": "EXPIRE", "description": "EXPIRE ratelimit:{endpoint_hash}:{ip} 1 — 首次 INCR 后设置 1 秒过期（需在 MULTI/EXEC 事务中与 INCR 原子执行）" },
+        { "name": "CheckThreshold", "type": "GET", "description": "GET ratelimit:{endpoint_hash}:{ip} — 读取当前计数器值（纯读取场景，无需 INCR）" },
+        { "name": "ResetCounter", "type": "DEL", "description": "DEL ratelimit:{endpoint_hash}:{ip} — 手动重置限流计数器" }
+      ]
+    }
+  ],
+  "error_handling": "Redis 错误处理策略：\n1. 连接异常：Redis 连接超时或断开时，各服务使用连接池自动重连。连接池配置 max_idle=10、max_active=50、dial_timeout=3s。连接失败时服务降级为直读 MySQL（Cache-Aside 模式），保证核心部署流程不受影响。降级期间记录 WARN 日志。\n2. 读写超时：所有的 Redis 命令设置 read_timeout=3s、write_timeout=3s。超时发生时记录错误日志并降级至 MySQL 读取，不阻塞主业务流程。\n3. 主从切换：Redis Sentinel 或 Cluster 模式下发生主从切换时，连接池中的旧主连接失效。客户端驱动自动发现新主节点，期间短暂不可用（通常 < 1s），应用程序层重试 1 次即可恢复。\n4. 内存淘汰策略：Redis 配置 maxmemory 和 allkeys-lru 淘汰策略。缓存键需要正确设置 TTL，确保热点数据在内存中、冷数据被自动淘汰。deployment_log_buffer 使用 LTRIM 限制单个 key 的 List 长度，防止单个部署日志过多耗尽内存。\n5. 键冲突处理：统一命名空间前缀（deploy:/ws:/config:/ratelimit:）隔离不同业务模块的键，避免命名冲突。连接不同 Redis 数据库（db0=业务缓存/db1=会话/db2=限流）进一步隔离。\n6. 数据丢失补救：Redis 纯内存非持久化模式（不开启 RDB/AOF，接受缓存丢失），缓存丢失时通过 Cache-Aside 模式的回源机制从 MySQL 重新加载数据。日志数据在部署终态后由 SSH 执行代理写入 MySQL 持久化，Redis 中的日志缓冲区视为临时副本，丢失不影响最终一致性。\n7. 并发竞争：部署状态更新可能多端并发写入（SSH 执行代理回写 + 部署编排服务更新）。使用 Redis 的 GETSET/INCR 原子操作处理计数器类场景；非原子操作的字段更新在应用层获取锁（SET NX 实现分布式锁，lock_key=deploy:lock:{deployment_id}，TTL=10s）或接受最终一致性（部署状态最终以 MySQL 为准）。\n8. Pub/Sub 可靠性：Redis Pub/Sub 为即发即忘模式，订阅者离线时消息丢失。因此关键状态变更使用双写策略：同时发布到 Pub/Sub（实时推送）和写入 deployment_status_cache（前端轮询兜底）。WebSocket 推送模块启动时重新连接订阅，确保不会错过后续消息。\n9. 限流精度：滑动窗口基于每秒粒度，INCR + EXPIRE 1 实现。对精度要求不高的场景可容忍 ±1 秒的窗口漂移。需要更高精度时改用 Redis Sorted Set（ZADD + ZREMRANGEBYSCORE）实现毫秒级滑动窗口。\n10. 连接池耗尽：Redis 连接池全部被占用时新请求等待 pool_timeout=1s，超过后降级至 MySQL，返回降级响应的同时记录告警日志，通知运维检查 Redis 负载或扩容。"
+}
