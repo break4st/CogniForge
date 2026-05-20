@@ -55,11 +55,11 @@ class DesignAgent(BaseAgent):
                 f"error_handling: {error_handling}\n\n"
                 f"{contract_context}\n"
                 f"要求:\n"
-                f"1. 先阅读 PRD 和 SAD 了解全局上下文\n"
-                f"2. 如 SAD 定义了本模块的接口契约（见上方），必须严格按契约定义接口\n"
-                f"   - provider 契约: 你必须实现这些接口，不得修改签名\n"
-                f"   - consumer 契约: 你的依赖接口签名已确定，请使用契约中的确切字段名\n"
-                f"3. 如有其他模块的 LLD 已生成，请阅读它们以确认接口对齐\n"
+                f"1. 以上 prompt 已包含本模块 SAD 定义、接口契约、邻模块接口签名，无需额外读取\n"
+                f"2. 如需更完整背景（PRD 全文、其他模块完整 LLD），可选择性 Read 相关文件\n"
+                f"3. 接口契约约束:\n"
+                f"   - provider 契约: 你必须实现这些接口，response body 字段名与类型不可修改\n"
+                f"   - consumer 契约: 引用这些接口的确切 endpoint 与字段，不要自造变体\n"
                 f"4. 使用中文、只写 JSON 不写 HTML、完成后回复确认"
             )
 
@@ -70,47 +70,105 @@ class DesignAgent(BaseAgent):
             return self.format_result(status="failed", message=str(e))
 
     def _build_contract_context(self, module: str) -> str:
-        """Read SAD contracts and existing LLDs to build cross-module constraint context."""
-        parts: list[str] = []
+        """Assemble self-contained context from SAD + existing LLDs.
 
-        # Read SAD contracts relevant to this module
+        The MDE agent receives everything it needs inline — no mandatory
+        file reads.  The LLM CAN still open files for extra detail but the
+        prompt already contains the binding constraints.
+        """
+        parts: list[str] = []
+        sad_data = None
+        all_llds = self.wiki_system.list_documents(DocumentType.LLD)
+        lld_index = _lld_index_by_module(all_llds)
+
+        # ── 1. Read SAD ──
         sad_docs = self.wiki_system.list_documents(DocumentType.SAD)
         if sad_docs:
             sad_data = self.wiki_system.read_json(DocumentType.SAD, doc_id=sad_docs[-1].doc_id)
-            if sad_data:
-                contracts = sad_data.get("contracts", [])
-                provides = [c for c in contracts if c.get("provider") == module]
-                consumes = [c for c in contracts if module in c.get("consumers", [])]
 
-                if provides:
-                    parts.append("=== 你必须实现的接口契约 (provider) ===")
-                    for c in provides:
-                        parts.append(json.dumps(c, ensure_ascii=False, indent=2))
-                    parts.append("以上接口签名不可修改，consumer 模块将严格按此契约调用。\n")
+        # ── 2. Module self-definition from SAD ──
+        if sad_data:
+            components = sad_data.get("components", [])
+            my_comp = next((c for c in components if c.get("name") == module), None)
+            if my_comp:
+                parts.append("=== 本模块 SAD 定义 ===")
+                parts.append(f"模块: {module}")
+                parts.append(f"类型: {my_comp.get('type', 'unknown')}")
+                parts.append(f"描述: {my_comp.get('description', '')}")
+                resps = my_comp.get("responsibilities", [])
+                if resps:
+                    parts.append(f"职责: {', '.join(resps)}")
+                parts.append("")
 
-                if consumes:
-                    parts.append("=== 你依赖的接口契约 (consumer) ===")
-                    for c in consumes:
-                        parts.append(json.dumps(c, ensure_ascii=False, indent=2))
-                    parts.append("请在你的 LLD 中引用这些接口的确切签名，不要自造变体。\n")
+        # ── 3. Contracts filtered for this module ──
+        contracts = sad_data.get("contracts", []) if sad_data else []
+        provides = [c for c in contracts if c.get("provider") == module]
+        consumes = [c for c in contracts if module in c.get("consumers", [])]
 
-        # List existing LLDs from other modules for cross-reference
-        all_llds = self.wiki_system.list_documents(DocumentType.LLD)
+        if provides:
+            parts.append("=== 你必须实现的接口契约 (provider) ===")
+            parts.append("以下接口由 SAD 定义，签名不可修改。consumer 将严格按此调用：")
+            parts.append("")
+            for c in provides:
+                parts.append(json.dumps(c, ensure_ascii=False, indent=2))
+            parts.append("")
+
+        if consumes:
+            parts.append("=== 你依赖的接口契约 (consumer) ===")
+            parts.append("以下接口由其他模块提供。你的 LLD 必须引用确切签名：")
+            parts.append("")
+            for c in consumes:
+                parts.append(json.dumps(c, ensure_ascii=False, indent=2))
+                # Extract the actual interface from the provider's LLD if available
+                provider = c.get("provider", "")
+                endpoint = c.get("endpoint", "")
+                if provider in lld_index and endpoint:
+                    prov_lld = _read_lld_json(lld_index[provider])
+                    if prov_lld:
+                        matched = _find_iface_by_endpoint(
+                            prov_lld.get("interfaces", []), endpoint
+                        )
+                        if matched:
+                            parts.append(
+                                f"  ← {provider} 的 LLD 实际定义为:\n"
+                                f"     {json.dumps(matched, ensure_ascii=False)}"
+                            )
+            parts.append("")
+
+        # ── 4. Neighbor LLDs with already-defined interfaces ──
         other_llds = [
             d for d in all_llds
-            if d.path.split("/")[3] != module  # lld/{module}/...
+            if d.path.split("/")[3] != module
         ]
         if other_llds:
-            modules_with_lld = sorted(set(
-                d.path.split("/")[3] for d in other_llds
-            ))
-            parts.append(
-                "=== 已有 LLD 的其他模块（请阅读以对齐接口） ==="
-            )
-            for m in modules_with_lld:
-                m_llds = [d for d in other_llds if d.path.split("/")[3] == m]
-                for d in m_llds:
-                    parts.append(f"  {d.path}")
+            parts.append("=== 其他模块已生成的接口（供交叉参考） ===")
+            for d in other_llds:
+                mod_name = d.path.split("/")[3]
+                lld_data = _read_lld_json(d.path)
+                if not lld_data:
+                    continue
+                for iface in lld_data.get("interfaces", []):
+                    # Only show interfaces that are part of a SAD contract
+                    ep = iface.get("endpoint", "")
+                    if ep and _endpoint_in_contracts(ep, contracts):
+                        parts.append(f"[{mod_name}] {iface.get('endpoint','')}")
+                        parts.append(f"  response body: {json.dumps(iface.get('response',{}), ensure_ascii=False)}")
+                        params = iface.get("parameters", [])
+                        if params:
+                            parts.append(f"  parameters: {json.dumps(params, ensure_ascii=False)}")
+            parts.append("")
+
+        # ── 5. System topology (brief) ──
+        if sad_data:
+            topo = sad_data.get("topology", "")
+            flow = sad_data.get("data_flow", "")
+            if topo or flow:
+                parts.append("=== 系统全局拓扑 ===")
+                if topo:
+                    parts.append(f"拓扑: {topo.strip()}")
+                if flow:
+                    parts.append(f"数据流: {flow.strip()}")
+                parts.append("")
 
         return "\n".join(parts) if parts else ""
 
@@ -141,3 +199,45 @@ class DesignAgent(BaseAgent):
             artifacts=artifacts,
             reasoning=reasoning,
         )
+
+
+# ------------------------------------------------------------------ helpers
+
+def _lld_index_by_module(lld_docs: list) -> dict[str, str]:
+    """Return {module_name: absolute_disk_path} for the latest LLD per module."""
+    index: dict[str, str] = {}
+    for d in lld_docs:
+        mod = d.path.split("/")[3] if len(d.path.split("/")) > 3 else ""
+        if mod:
+            index[mod] = d.path  # last-wins (sorted by doc_id)
+    return index
+
+
+def _read_lld_json(rel_path: str) -> dict | None:
+    """Read and parse an LLD JSON file from its repo-relative path."""
+    from pathlib import Path as _Path
+    abs_path = _Path.cwd() / rel_path
+    if not abs_path.exists():
+        return None
+    try:
+        return json.loads(abs_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _find_iface_by_endpoint(interfaces: list[dict], endpoint: str) -> dict | None:
+    """Find an interface dict whose endpoint matches the given contract endpoint."""
+    target = endpoint.strip().lower()
+    for iface in interfaces:
+        if target in iface.get("endpoint", "").strip().lower():
+            return iface
+    return None
+
+
+def _endpoint_in_contracts(endpoint: str, contracts: list[dict]) -> bool:
+    """Check whether an endpoint string appears in any SAD contract."""
+    target = endpoint.strip().lower()
+    for c in contracts:
+        if target in c.get("endpoint", "").strip().lower():
+            return True
+    return False
