@@ -1,0 +1,226 @@
+{
+  "meta": {
+    "doc_id": "lld-Web Console-001",
+    "type": "lld",
+    "module": "Web Console",
+    "title": "LLD - Web Console",
+    "author": "design_agent",
+    "created": "2026-05-20 17:04"
+  },
+  "overview": {
+    "description": "基于Web的管理控制台，提供项目、环境、部署等功能的操作界面",
+    "dependencies": ["API Gateway"],
+    "tech_stack": ["Vue 3", "Element Plus"]
+  },
+  "data_models": [
+    {
+      "name": "projectStore",
+      "type": "store",
+      "description": "项目管理状态，维护项目列表和当前选中项目的 Pinia store",
+      "fields": [
+        {"name": "projects", "type": "Project[]", "required": true, "description": "项目列表数据"},
+        {"name": "currentProject", "type": "Project | null", "required": false, "description": "当前选中的项目详情"},
+        {"name": "loading", "type": "boolean", "required": true, "description": "列表加载状态"},
+        {"name": "pagination", "type": "Pagination", "required": true, "description": "分页参数：page, pageSize, total"}
+      ]
+    },
+    {
+      "name": "environmentStore",
+      "type": "store",
+      "description": "环境管理状态，维护当前项目下的环境列表的 Pinia store",
+      "fields": [
+        {"name": "environments", "type": "Environment[]", "required": true, "description": "环境列表数据"},
+        {"name": "loading", "type": "boolean", "required": true, "description": "列表加载状态"},
+        {"name": "testingId", "type": "string | null", "required": false, "description": "正在测试连接的环境ID"}
+      ]
+    },
+    {
+      "name": "keyStore",
+      "type": "store",
+      "description": "SSH密钥管理状态，维护密钥列表的 Pinia store",
+      "fields": [
+        {"name": "keys", "type": "SSHKey[]", "required": true, "description": "SSH密钥列表数据"},
+        {"name": "loading", "type": "boolean", "required": true, "description": "列表加载状态"}
+      ]
+    },
+    {
+      "name": "deploymentStore",
+      "type": "store",
+      "description": "部署任务状态，维护当前部署状态和历史记录的 Pinia store",
+      "fields": [
+        {"name": "currentDeployment", "type": "Deployment | null", "required": false, "description": "当前部署任务状态"},
+        {"name": "history", "type": "DeploymentRecord[]", "required": true, "description": "部署历史记录"},
+        {"name": "loading", "type": "boolean", "required": true, "description": "加载状态"},
+        {"name": "pagination", "type": "Pagination", "required": true, "description": "分页参数：page, pageSize, total"}
+      ]
+    },
+    {
+      "name": "deploymentLogStore",
+      "type": "store",
+      "description": "部署日志状态，维护 WebSocket 实时日志的 Pinia store",
+      "fields": [
+        {"name": "logs", "type": "LogEntry[]", "required": true, "description": "实时日志条目列表"},
+        {"name": "connected", "type": "boolean", "required": true, "description": "WebSocket 连接状态"},
+        {"name": "deploymentId", "type": "string | null", "required": false, "description": "当前连接的部署任务ID"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "项目列表页面",
+      "method": "frontend",
+      "endpoint": "/projects",
+      "description": "展示所有部署项目列表，支持分页查询，提供创建项目和进入项目详情的入口",
+      "parameters": [
+        {"name": "page", "type": "number", "description": "当前页码，query参数"},
+        {"name": "pageSize", "type": "number", "description": "每页条数，query参数"},
+        {"name": "search", "type": "string", "description": "项目名称搜索关键字，query参数"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "projects": "Project[]",
+          "total": "number"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "未登录或 token 已过期"},
+        {"code": 403, "message": "无权限访问"}
+      ]
+    },
+    {
+      "name": "创建项目页面",
+      "method": "frontend",
+      "endpoint": "/projects/create",
+      "description": "表单页面，填写项目名称和描述后提交创建项目。调用 API Gateway 路由的 POST /api/projects",
+      "parameters": [
+        {"name": "name", "type": "string", "description": "项目名称"},
+        {"name": "description", "type": "string", "description": "项目描述"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "project_id": "string",
+          "name": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数校验失败（项目名称为空或超长）"},
+        {"code": 409, "message": "项目名称已存在"}
+      ]
+    },
+    {
+      "name": "项目详情页面",
+      "method": "frontend",
+      "endpoint": "/projects/:id",
+      "description": "项目概览页，展示项目基本信息、关联的环境列表、部署历史记录。聚合调用 GET /api/projects/:id（项目详情）、GET /api/projects/:pid/environments（环境列表）、GET /api/projects/:pid/deployments（部署历史）",
+      "parameters": [
+        {"name": "id", "type": "string", "description": "项目ID，路径参数"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "project": "Project",
+          "environments": "Environment[]",
+          "deployments": "DeploymentRecord[]"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "项目不存在"}
+      ]
+    },
+    {
+      "name": "创建环境页面",
+      "method": "frontend",
+      "endpoint": "/projects/:pid/environments/create",
+      "description": "表单页面，为指定项目添加部署环境，填写环境名称、SSH连接参数并关联密钥。提交后调用 POST /api/projects/:pid/environments，提交前可选执行 POST /api/environments/:id/test 进行连接测试",
+      "parameters": [
+        {"name": "pid", "type": "string", "description": "所属项目ID，路径参数"},
+        {"name": "name", "type": "string", "description": "环境名称"},
+        {"name": "host", "type": "string", "description": "远程服务器IP/域名"},
+        {"name": "port", "type": "number", "description": "SSH端口"},
+        {"name": "username", "type": "string", "description": "SSH登录用户名"},
+        {"name": "keyId", "type": "string", "description": "关联的SSH密钥ID"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "environment_id": "string",
+          "name": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数校验失败"},
+        {"code": 404, "message": "项目或密钥不存在"},
+        {"code": 502, "message": "SSH连接测试失败"}
+      ]
+    },
+    {
+      "name": "触发部署页面",
+      "method": "frontend",
+      "endpoint": "/projects/:pid/deployments/create",
+      "description": "一键部署触发页，选择目标环境和版本号，上传可执行文件后触发部署。提交后调用 POST /api/deployments，API Gateway 路由到 Deployment Orchestrator，返回 202 Accepted 及 deployment_id",
+      "parameters": [
+        {"name": "pid", "type": "string", "description": "项目ID，路径参数"},
+        {"name": "project_id", "type": "string", "description": "关联项目ID"},
+        {"name": "environment_id", "type": "string", "description": "目标环境ID"},
+        {"name": "version", "type": "string", "description": "部署版本号"},
+        {"name": "file_path", "type": "string", "description": "可执行文件路径"}
+      ],
+      "response": {
+        "status": 202,
+        "body": {
+          "deployment_id": "string",
+          "status": "string",
+          "message": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数校验失败"},
+        {"code": 404, "message": "项目或环境不存在"},
+        {"code": 503, "message": "部署服务暂不可用"}
+      ]
+    },
+    {
+      "name": "部署详情页面",
+      "method": "frontend",
+      "endpoint": "/deployments/:id",
+      "description": "部署任务详情页，展示部署状态、进度、实时日志。通过 GET /api/deployments/:id 轮询部署状态，通过 WebSocket /ws/deployments/:id/logs 建立长连接接收实时日志推送",
+      "parameters": [
+        {"name": "id", "type": "string", "description": "部署任务ID，路径参数"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "deployment_id": "string",
+          "status": "string",
+          "progress": "integer",
+          "started_at": "datetime",
+          "completed_at": "datetime",
+          "log_summary": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "部署任务不存在"}
+      ]
+    },
+    {
+      "name": "SSH密钥管理页面",
+      "method": "frontend",
+      "endpoint": "/settings/keys",
+      "description": "SSH密钥管理页，展示所有已导入密钥列表，支持导入已有密钥或生成新密钥对。调用 GET /api/keys 获取列表，提交 POST /api/keys 导入或生成",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "keys": "SSHKey[]"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "密钥格式不正确或参数校验失败"},
+        {"code": 409, "message": "密钥名称已存在"}
+      ]
+    }
+  ],
+  "error_handling": "全局 HTTP 请求拦截器统一处理 API 错误响应，401 跳转登录页，其余错误通过 Element Plus ElMessage 组件展示提示消息。WebSocket 连接中断时自动重连，重连间隔指数退避（1s/2s/4s/8s，上限30s），断连期间日志暂存于 deploymentLogStore 缓冲区，重连后自动续传缺失日志。表单提交前进行前端校验（必填项、格式合法性），校验不通过禁用提交按钮并展示字段级错误提示。路由守卫检查登录状态，未登录时重定向至登录页。所有列表页面展示加载骨架屏（ElSkeleton）以提升加载体验。"
+}
