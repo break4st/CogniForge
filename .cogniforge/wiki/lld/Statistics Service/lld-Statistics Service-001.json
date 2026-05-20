@@ -1,0 +1,350 @@
+{
+  "meta": {
+    "doc_id": "lld-Statistics Service-001",
+    "type": "lld",
+    "module": "Statistics Service",
+    "title": "LLD - Statistics Service",
+    "author": "design_agent",
+    "created": "2026-05-20 11:27"
+  },
+  "overview": "学习统计模块，负责数据的聚合计算与统计分析。采用 异步计算 + 缓存加速 架构：用户请求统计时优先查缓存（Redis），缓存命中直接返回；未命中则投递消息到消息队列（Message Queue），由异步 Worker 消费消息执行聚合计算，结果写入数据库（MySQL/PostgreSQL）和缓存，前端通过轮询或 WebSocket 获取计算结果。缓存键策略采用 'stats:{type}:{dimensionId}' 格式，TTL 1800 秒。聚合计算支持按学生、班级、年级三个维度进行汇总，包括学生人数统计、性别分布、趋势分析等。分层设计：Controller 层处理 HTTP 请求与参数校验 → Service 层实现统计业务逻辑（缓存读取/写入、异步任务投递、聚合计算编排） → Repository 层封装数据库访问。",
+  "data_models": [
+    {
+      "name": "student_statistics",
+      "type": "table",
+      "fields": [
+        { "name": "id", "type": "bigint", "description": "统计记录 ID，自增主键" },
+        { "name": "student_id", "type": "bigint", "description": "学生 ID，关联 student 表，建立唯一索引" },
+        { "name": "total_courses", "type": "int", "description": "该学生参与课程总数，默认 0" },
+        { "name": "attendance_rate", "type": "decimal(5,2)", "description": "出勤率百分比（0.00-100.00），统计周期内实际出勤次数/应出勤次数" },
+        { "name": "homework_completion_rate", "type": "decimal(5,2)", "description": "作业提交完成率百分比（0.00-100.00），已提交作业数/应提交作业数" },
+        { "name": "avg_score", "type": "decimal(5,2)", "description": "平均成绩，各科成绩的算术平均值，取值 0-100" },
+        { "name": "rank_in_class", "type": "int", "description": "班级内排名，按 avg_score 降序排列后的名次，默认 0 表示未计算" },
+        { "name": "stat_period", "type": "varchar(32)", "description": "统计周期标识，如 '2026-SEM1'（2026年第一学期）、'2026-MONTH-05'（2026年5月），用于区分不同周期的统计结果" },
+        { "name": "calculated_at", "type": "datetime", "description": "本次统计计算时间戳" },
+        { "name": "created_at", "type": "datetime", "description": "记录创建时间，自动填充" },
+        { "name": "updated_at", "type": "datetime", "description": "记录更新时间，自动更新" }
+      ]
+    },
+    {
+      "name": "class_statistics",
+      "type": "table",
+      "fields": [
+        { "name": "id", "type": "bigint", "description": "统计记录 ID，自增主键" },
+        { "name": "class_id", "type": "bigint", "description": "班级 ID，关联 class 表，建立唯一索引" },
+        { "name": "student_count", "type": "int", "description": "班级学生总人数（该班 active 状态学生数量）" },
+        { "name": "male_count", "type": "int", "description": "男生人数" },
+        { "name": "female_count", "type": "int", "description": "女生人数" },
+        { "name": "avg_attendance_rate", "type": "decimal(5,2)", "description": "班级平均出勤率，全班学生出勤率的算术平均" },
+        { "name": "avg_homework_completion_rate", "type": "decimal(5,2)", "description": "班级平均作业提交完成率" },
+        { "name": "avg_score", "type": "decimal(5,2)", "description": "班级平均成绩，全班学生 avg_score 的算术平均" },
+        { "name": "top_student_id", "type": "bigint", "description": "班级第一名学生 ID（avg_score 最高者，并列取 student_id 最小者）" },
+        { "name": "pass_count", "type": "int", "description": "及格人数（avg_score >= 60 的学生数）" },
+        { "name": "pass_rate", "type": "decimal(5,2)", "description": "及格率百分比，pass_count / student_count * 100" },
+        { "name": "excellent_count", "type": "int", "description": "优秀人数（avg_score >= 90 的学生数）" },
+        { "name": "excellent_rate", "type": "decimal(5,2)", "description": "优秀率百分比，excellent_count / student_count * 100" },
+        { "name": "stat_period", "type": "varchar(32)", "description": "统计周期标识，同 student_statistics.stat_period" },
+        { "name": "calculated_at", "type": "datetime", "description": "本次统计计算时间戳" },
+        { "name": "created_at", "type": "datetime", "description": "记录创建时间" },
+        { "name": "updated_at", "type": "datetime", "description": "记录更新时间" }
+      ]
+    },
+    {
+      "name": "grade_statistics",
+      "type": "table",
+      "fields": [
+        { "name": "id", "type": "bigint", "description": "统计记录 ID，自增主键" },
+        { "name": "grade_id", "type": "bigint", "description": "年级 ID，关联 grade 表，建立唯一索引" },
+        { "name": "class_count", "type": "int", "description": "年级下班级总数" },
+        { "name": "student_count", "type": "int", "description": "年级学生总人数" },
+        { "name": "male_count", "type": "int", "description": "男生总人数" },
+        { "name": "female_count", "type": "int", "description": "女生总人数" },
+        { "name": "avg_attendance_rate", "type": "decimal(5,2)", "description": "年级平均出勤率" },
+        { "name": "avg_homework_completion_rate", "type": "decimal(5,2)", "description": "年级平均作业提交完成率" },
+        { "name": "avg_score", "type": "decimal(5,2)", "description": "年级平均成绩" },
+        { "name": "pass_rate", "type": "decimal(5,2)", "description": "年级总体及格率" },
+        { "name": "excellent_rate", "type": "decimal(5,2)", "description": "年级总体优秀率" },
+        { "name": "stat_period", "type": "varchar(32)", "description": "统计周期标识" },
+        { "name": "calculated_at", "type": "datetime", "description": "本次统计计算时间戳" },
+        { "name": "created_at", "type": "datetime", "description": "记录创建时间" },
+        { "name": "updated_at", "type": "datetime", "description": "记录更新时间" }
+      ]
+    },
+    {
+      "name": "statistics_task",
+      "type": "table",
+      "fields": [
+        { "name": "id", "type": "varchar(36)", "description": "任务 ID，UUID v4 格式，全局唯一" },
+        { "name": "type", "type": "varchar(32)", "description": "任务类型枚举：'student'/'class'/'grade'/'all'，表示重新计算哪个维度的统计" },
+        { "name": "dimension_id", "type": "bigint", "description": "维度 ID，当 type=student/class/grade 时指定具体业务 ID，type=all 时为 null" },
+        { "name": "status", "type": "varchar(16)", "description": "任务状态枚举：'pending'/'processing'/'completed'/'failed'，默认 'pending'" },
+        { "name": "progress", "type": "int", "description": "计算进度百分比（0-100），默认 0" },
+        { "name": "result_summary", "type": "varchar(512)", "description": "计算结果摘要描述，如 '统计完成：共处理 5 个班级 120 名学生'，status=completed 时填充" },
+        { "name": "error_message", "type": "varchar(512)", "description": "错误信息，status=failed 时填充错误原因，以便排查" },
+        { "name": "stat_period", "type": "varchar(32)", "description": "统计周期标识" },
+        { "name": "created_at", "type": "datetime", "description": "任务创建时间" },
+        { "name": "started_at", "type": "datetime", "description": "任务开始处理时间，status 变为 processing 时填充" },
+        { "name": "completed_at", "type": "datetime", "description": "任务完成时间，status 变为 completed/failed 时填充" }
+      ]
+    },
+    {
+      "name": "StudentStatsRequest",
+      "type": "struct",
+      "fields": [
+        { "name": "studentId", "type": "number", "description": "学生 ID，必填，路径参数" },
+        { "name": "period", "type": "string", "description": "统计周期，可选，默认取最近一个周期，如 '2026-SEM1'" }
+      ]
+    },
+    {
+      "name": "StudentStatsResponse",
+      "type": "struct",
+      "fields": [
+        { "name": "studentId", "type": "number", "description": "学生 ID" },
+        { "name": "studentName", "type": "string", "description": "学生姓名，从 student 表关联获取" },
+        { "name": "className", "type": "string", "description": "所在班级名称" },
+        { "name": "totalCourses", "type": "number", "description": "参与课程总数" },
+        { "name": "attendanceRate", "type": "number", "description": "出勤率百分比" },
+        { "name": "homeworkCompletionRate", "type": "number", "description": "作业提交完成率百分比" },
+        { "name": "avgScore", "type": "number", "description": "平均成绩" },
+        { "name": "rankInClass", "type": "number", "description": "班级内排名" },
+        { "name": "statPeriod", "type": "string", "description": "统计周期" },
+        { "name": "calculatedAt", "type": "string", "description": "计算时间 ISO 8601" }
+      ]
+    },
+    {
+      "name": "ClassStatsResponse",
+      "type": "struct",
+      "fields": [
+        { "name": "classId", "type": "number", "description": "班级 ID" },
+        { "name": "className", "type": "string", "description": "班级名称，从 class 表关联获取" },
+        { "name": "gradeName", "type": "string", "description": "所属年级名称" },
+        { "name": "studentCount", "type": "number", "description": "学生总人数" },
+        { "name": "maleCount", "type": "number", "description": "男生人数" },
+        { "name": "femaleCount", "type": "number", "description": "女生人数" },
+        { "name": "avgAttendanceRate", "type": "number", "description": "班级平均出勤率" },
+        { "name": "avgHomeworkCompletionRate", "type": "number", "description": "班级平均作业提交完成率" },
+        { "name": "avgScore", "type": "number", "description": "班级平均成绩" },
+        { "name": "passRate", "type": "number", "description": "及格率百分比" },
+        { "name": "excellentRate", "type": "number", "description": "优秀率百分比" },
+        { "name": "topStudentName", "type": "string", "description": "班级第一名学生姓名" },
+        { "name": "statPeriod", "type": "string", "description": "统计周期" },
+        { "name": "calculatedAt", "type": "string", "description": "计算时间 ISO 8601" }
+      ]
+    },
+    {
+      "name": "GradeStatsResponse",
+      "type": "struct",
+      "fields": [
+        { "name": "gradeId", "type": "number", "description": "年级 ID" },
+        { "name": "gradeName", "type": "string", "description": "年级名称" },
+        { "name": "classCount", "type": "number", "description": "班级总数" },
+        { "name": "studentCount", "type": "number", "description": "学生总人数" },
+        { "name": "maleCount", "type": "number", "description": "男生总人数" },
+        { "name": "femaleCount", "type": "number", "description": "女生总人数" },
+        { "name": "avgAttendanceRate", "type": "number", "description": "年级平均出勤率" },
+        { "name": "avgHomeworkCompletionRate", "type": "number", "description": "年级平均作业提交完成率" },
+        { "name": "avgScore", "type": "number", "description": "年级平均成绩" },
+        { "name": "passRate", "type": "number", "description": "年级总体及格率" },
+        { "name": "excellentRate", "type": "number", "description": "年级总体优秀率" },
+        { "name": "statPeriod", "type": "string", "description": "统计周期" },
+        { "name": "calculatedAt", "type": "string", "description": "计算时间 ISO 8601" }
+      ]
+    },
+    {
+      "name": "DashboardSummaryResponse",
+      "type": "struct",
+      "fields": [
+        { "name": "totalStudents", "type": "number", "description": "全校学生总数" },
+        { "name": "totalClasses", "type": "number", "description": "全校班级总数" },
+        { "name": "totalGrades", "type": "number", "description": "年级总数" },
+        { "name": "genderDistribution", "type": "object", "description": "性别分布，{ male: number, female: number }" },
+        { "name": "overallAvgScore", "type": "number", "description": "全校平均成绩" },
+        { "name": "overallPassRate", "type": "number", "description": "全校及格率" },
+        { "name": "overallExcellentRate", "type": "number", "description": "全校优秀率" },
+        { "name": "gradeStats", "type": "object[]", "description": "各年级简要统计，每项含 gradeId、gradeName、studentCount、avgScore" },
+        { "name": "statPeriod", "type": "string", "description": "统计周期" },
+        { "name": "calculatedAt", "type": "string", "description": "计算时间 ISO 8601" }
+      ]
+    },
+    {
+      "name": "StatPeriodItem",
+      "type": "struct",
+      "fields": [
+        { "name": "period", "type": "string", "description": "统计周期标识，如 '2026-SEM1'" },
+        { "name": "label", "type": "string", "description": "显示标签，如 '2026年第一学期'" },
+        { "name": "isCurrent", "type": "boolean", "description": "是否为当前活跃周期" }
+      ]
+    },
+    {
+      "name": "RefreshTaskResponse",
+      "type": "struct",
+      "fields": [
+        { "name": "taskId", "type": "string", "description": "任务 ID，UUID 格式" },
+        { "name": "type", "type": "string", "description": "任务类型" },
+        { "name": "status", "type": "string", "description": "任务状态，初始为 'pending'" },
+        { "name": "createdAt", "type": "string", "description": "创建时间 ISO 8601" }
+      ]
+    },
+    {
+      "name": "ScoreDistributionItem",
+      "type": "struct",
+      "fields": [
+        { "name": "range", "type": "string", "description": "分数段标签，如 '90-100'、'80-89'、'70-79'、'60-69'、'0-59'" },
+        { "name": "count", "type": "number", "description": "该分数段的学生人数" },
+        { "name": "percentage", "type": "number", "description": "占统计总人数的百分比" }
+      ]
+    },
+    {
+      "name": "ScoreDistributionResponse",
+      "type": "struct",
+      "fields": [
+        { "name": "dimension", "type": "string", "description": "统计维度，'class' 或 'grade'" },
+        { "name": "dimensionId", "type": "number", "description": "维度 ID" },
+        { "name": "dimensionName", "type": "string", "description": "维度名称（班级名或年级名）" },
+        { "name": "distribution", "type": "object[]", "description": "分数段分布列表，按分数段从高到低排列，每项为 ScoreDistributionItem" },
+        { "name": "statPeriod", "type": "string", "description": "统计周期" }
+      ]
+    },
+    {
+      "name": "TrendItem",
+      "type": "struct",
+      "fields": [
+        { "name": "period", "type": "string", "description": "周期标识" },
+        { "name": "label", "type": "string", "description": "显示标签" },
+        { "name": "avgScore", "type": "number", "description": "该周期平均成绩" },
+        { "name": "passRate", "type": "number", "description": "该周期及格率" },
+        { "name": "excellentRate", "type": "number", "description": "该周期优秀率" },
+        { "name": "studentCount", "type": "number", "description": "该周期统计人数" }
+      ]
+    },
+    {
+      "name": "TrendResponse",
+      "type": "struct",
+      "fields": [
+        { "name": "dimension", "type": "string", "description": "统计维度" },
+        { "name": "dimensionId", "type": "number", "description": "维度 ID" },
+        { "name": "dimensionName", "type": "string", "description": "维度名称" },
+        { "name": "trends", "type": "object[]", "description": "各周期趋势数据，按 period 升序排列，每项为 TrendItem" }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "仪表盘概况查询",
+      "endpoint": "GET /api/statistics/dashboard",
+      "description": "获取全校统计概况数据，用于首页仪表盘展示，包括学生总数、班级总数、性别分布、全校平均成绩、及格率、优秀率和各年级简要统计。优先查缓存，缓存键 'stats:dashboard:{period}'，TTL 1800 秒。未命中时聚合计算（遍历各年级统计数据求和）后回填缓存。如果所有统计数据均未计算（DB 中无统计记录），返回默认零值而非报错",
+      "parameters": [
+        { "name": "period", "type": "string", "description": "统计周期，可选，默认取最近一个周期" }
+      ]
+    },
+    {
+      "name": "学生统计查询",
+      "endpoint": "GET /api/statistics/students/:studentId",
+      "description": "查询单个学生的学习统计数据，包含各项指标及班级内排名。优先查缓存，缓存键 'stats:student:{studentId}:{period}'，TTL 1800 秒。未命中时查 DB 返回，若 DB 中也无数据（从未计算过）则返回 404 并提示'该学生统计数据尚未生成，请触发刷新'。关联 student 表和 class 表获取学生姓名和班级名称",
+      "parameters": [
+        { "name": "studentId", "type": "number", "description": "学生 ID（路径参数）" },
+        { "name": "period", "type": "string", "description": "统计周期，可选，默认取最近一个周期" }
+      ]
+    },
+    {
+      "name": "班级统计查询",
+      "endpoint": "GET /api/statistics/classes/:classId",
+      "description": "查询指定班级的聚合统计数据，包含班级学生总数、性别分布、平均成绩、及格率、优秀率、班级第一名等信息。优先查缓存，缓存键 'stats:class:{classId}:{period}'，TTL 1800 秒。未命中时查 DB。关联 class 表和 grade 表获取班级名称和所属年级名称。班级不存在返回 404（'班级不存在'）",
+      "parameters": [
+        { "name": "classId", "type": "number", "description": "班级 ID（路径参数）" },
+        { "name": "period", "type": "string", "description": "统计周期，可选，默认取最近一个周期" }
+      ]
+    },
+    {
+      "name": "年级统计查询",
+      "endpoint": "GET /api/statistics/grades/:gradeId",
+      "description": "查询指定年级的聚合统计数据，包含年级下班级总数、学生总人数、性别分布、平均成绩、及格率、优秀率等。优先查缓存，缓存键 'stats:grade:{gradeId}:{period}'，TTL 1800 秒。未命中时查 DB。年级不存在返回 404",
+      "parameters": [
+        { "name": "gradeId", "type": "number", "description": "年级 ID（路径参数）" },
+        { "name": "period", "type": "string", "description": "统计周期，可选，默认取最近一个周期" }
+      ]
+    },
+    {
+      "name": "成绩分数段分布查询",
+      "endpoint": "GET /api/statistics/classes/:classId/score-distribution",
+      "description": "查询指定班级的成绩分数段分布，按 '90-100'、'80-89'、'70-79'、'60-69'、'0-59' 五个分数段统计学生人数和占比。优先查缓存，缓存键 'stats:class:{classId}:distribution:{period}'。适用于前端图表展示（柱状图/饼图）。班级不存在返回 404。该接口不存储在 DB 中，每次从 student_statistics 表实时聚合计算",
+      "parameters": [
+        { "name": "classId", "type": "number", "description": "班级 ID（路径参数）" },
+        { "name": "period", "type": "string", "description": "统计周期，可选" }
+      ]
+    },
+    {
+      "name": "年级分数段分布查询",
+      "endpoint": "GET /api/statistics/grades/:gradeId/score-distribution",
+      "description": "查询指定年级的成绩分数段分布，逻辑同上，聚合该年级下所有学生数据。缓存键 'stats:grade:{gradeId}:distribution:{period}'",
+      "parameters": [
+        { "name": "gradeId", "type": "number", "description": "年级 ID（路径参数）" },
+        { "name": "period", "type": "string", "description": "统计周期，可选" }
+      ]
+    },
+    {
+      "name": "班级趋势查询",
+      "endpoint": "GET /api/statistics/classes/:classId/trend",
+      "description": "查询指定班级的跨周期趋势数据，返回多个周期的 avgScore、passRate、excellentRate 等指标，用于前端折线图趋势展示。从 class_statistics 表按 class_id 和多个 stat_period 查询。默认返回最近 6 个周期的数据。班级不存在返回 404。缓存键 'stats:class:{classId}:trend'，TTL 3600 秒（趋势数据变更频率低，缓存时间相对更长）",
+      "parameters": [
+        { "name": "classId", "type": "number", "description": "班级 ID（路径参数）" },
+        { "name": "limit", "type": "number", "description": "返回周期数，可选，默认 6，最大 20" }
+      ]
+    },
+    {
+      "name": "年级趋势查询",
+      "endpoint": "GET /api/statistics/grades/:gradeId/trend",
+      "description": "查询指定年级的跨周期趋势数据，逻辑同班级趋势。从 grade_statistics 表查询。缓存键 'stats:grade:{gradeId}:trend'，TTL 3600 秒",
+      "parameters": [
+        { "name": "gradeId", "type": "number", "description": "年级 ID（路径参数）" },
+        { "name": "limit", "type": "number", "description": "返回周期数，可选，默认 6，最大 20" }
+      ]
+    },
+    {
+      "name": "全局趋势查询",
+      "endpoint": "GET /api/statistics/trends/overall",
+      "description": "查询全校总体趋势数据，聚合所有年级的统计结果。缓存键 'stats:overall:trend'，TTL 3600 秒。无参数，返回最近 6 个周期的全校级趋势",
+      "parameters": [
+        { "name": "limit", "type": "number", "description": "返回周期数，可选，默认 6，最大 20" }
+      ]
+    },
+    {
+      "name": "统计计算刷新（触发异步任务）",
+      "endpoint": "POST /api/statistics/refresh",
+      "description": "触发统计数据异步重新计算。在 statistics_task 表创建一条任务记录（status='pending'），投递消息到消息队列后立即返回 taskId。前端可轮询任务状态接口获取计算结果。同一个 dimension 不允许并发：如果该 dimension 已有 status='pending' 或 'processing' 的任务，返回 409（'该维度已有正在执行的统计任务'）。type='all' 时刷新全量统计（无需校验并发），但 type='all' 的频率限制为每 5 分钟最多触发一次（使用 Redis 分布式锁，锁键 'stats:refresh:lock'，TTL 300 秒）",
+      "parameters": [
+        { "name": "type", "type": "string", "description": "刷新类型：'student'/'class'/'grade'/'all'，必填" },
+        { "name": "dimensionId", "type": "number", "description": "维度 ID，type=student/class/grade 时必填，type=all 时忽略" },
+        { "name": "period", "type": "string", "description": "统计周期，可选，不传则统计全部已有周期" }
+      ]
+    },
+    {
+      "name": "统计任务状态查询",
+      "endpoint": "GET /api/statistics/tasks/:taskId",
+      "description": "查询统计刷新任务的当前状态和进度。用于前端轮询获取异步任务结果。任务不存在返回 404。任务状态为 'completed' 时返回 resultSummary 摘要；'failed' 时返回 errorMessage 供排查",
+      "parameters": [
+        { "name": "taskId", "type": "string", "description": "任务 ID（路径参数），UUID 格式" }
+      ]
+    },
+    {
+      "name": "统计周期列表查询",
+      "endpoint": "GET /api/statistics/periods",
+      "description": "获取所有可用的统计周期列表，用于前端下拉选择器切换统计周期。从 student_statistics 表 DISTINCT stat_period 获取。按周期标识降序排列（最近的在最前）。无参数。缓存键 'stats:periods'，TTL 3600 秒",
+      "parameters": []
+    },
+    {
+      "name": "班级统计列表查询",
+      "endpoint": "GET /api/statistics/classes",
+      "description": "分页查询所有班级的统计数据概览，每项包含班级基本信息+核心统计指标（学生数、平均分、及格率等）。该接口不查缓存，直接从 class_statistics 表分页查询，支持按 gradeId 过滤。适用于班级统计概览页面",
+      "parameters": [
+        { "name": "page", "type": "number", "description": "页码，从 1 开始，默认 1" },
+        { "name": "pageSize", "type": "number", "description": "每页条数，默认 20，最大 100" },
+        { "name": "gradeId", "type": "number", "description": "年级 ID 过滤，可选，仅返回该年级下的班级统计" },
+        { "name": "period", "type": "string", "description": "统计周期，可选，默认取最近一个周期" },
+        { "name": "sortBy", "type": "string", "description": "排序字段，可选：'avgScore'/'passRate'/'studentCount'，默认 'avgScore'" },
+        { "name": "sortOrder", "type": "string", "description": "排序方向，可选：'asc'/'desc'，默认 'desc'" }
+      ]
+    }
+  ],
+  "error_handling": "全局统一返回标准 JSON 格式：{ code: number, message: string, details?: any }。4xx 错误：统计数据未生成返回 404（message: '统计数据尚未生成，请触发刷新'），班级/年级不存在返回 404，同一维度并发刷新返回 409（message: '该维度已有正在执行的统计任务'），全量刷新频率超限返回 429（message: '全量刷新过于频繁，请 5 分钟后再试'），type 值非法返回 400（message: '参数错误' 并 details 指明 type 取值范围）。5xx 错误统一返回 500（message: '系统内部错误'），完整错误栈记录到服务日志。缓存操作（Redis）失败时降级为直接查询 DB，不阻塞正常业务流程。缓存键采用统一前缀 'stats:' 命名空间，便于管理和批量失效。统计数据变更后（刷新完成）需主动失效对应缓存：student 级别失效 'stats:student:{id}:*' 和关联的班级/年级/仪表盘缓存；class 级别失效 'stats:class:{id}:*' 和关联的年级/仪表盘缓存；grade 级别失效 'stats:grade:{id}:*' 和仪表盘缓存；type=all 时批量失效所有 stats: 前缀的缓存。消息队列投递失败时任务记录保留在 DB（status='pending'），通过定时任务（cron 每 5 分钟扫描超过 10 分钟仍为 pending 的任务）重新投递。异步 Worker 执行统计计算时遇到数据异常（如除零、空数据集）记录警告日志并返回零值而非中断流程。statistics_task 表中的任务记录保留最近 30 天，超过 30 天的由定时清理任务（每日凌晨 3:00 执行）物理删除。"
+}
