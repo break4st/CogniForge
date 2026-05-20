@@ -490,130 +490,98 @@
 </style>
 </head>
 <body>
+<div class="page-layout">
+<nav class="sidebar" id="sidebar"><div class="sidebar-header"><div class="sid">lld-API网关-001</div><div class="stitle">LLD - API网关</div></div><div class="sidebar-nav"><a href="#overview" class="sidebar-link"><span class="sl-icon">📄</span>概述</a><a href="#models" class="sidebar-link"><span class="sl-icon">🗄️</span>数据模型 (4)</a><a href="#interfaces" class="sidebar-link"><span class="sl-icon">🔌</span>接口定义 (10)</a><a href="#errors" class="sidebar-link"><span class="sl-icon">⚠️</span>错误处理</a></div></nav><button id="sidebar-toggle" class="sidebar-toggle" aria-label="菜单">☰</button>
+<div class="main-content">
 <div class="top-bar">
   <div class="doc-id">lld-API网关-001</div>
   <div><span class="badge accent">详细设计文档</span></div>
 </div>
 <h1><span>详细设计文档</span> LLD - API网关</h1>
-<div class="meta">2026-05-20 16:06 &middot; 作者: design_agent</div>
+<div class="meta">2026-05-20 16:28 &middot; 作者: design_agent</div>
 
-<div class="section">
+<div class="section" id="overview">
   <div class="section-header">
     <div class="icon" style="background:rgba(124,111,247,0.12)">📄</div>
     <h2>概述</h2>
   </div>
   <div class="section-body">
 
-<p>模块: API网关</p>
-<p>API网关作为系统的统一入口层，基于Fastify网关框架实现，位于Web管理控制台与后端服务之间。职责涵盖：HTTP请求路由转发（将前端请求分发至项目管理服务、环境管理服务、部署编排服务）、JWT令牌认证与RBAC访问控制、基于令牌桶算法的请求速率限制、CORS跨域策略管理、全量请求/响应审计日志记录。网关不包含业务逻辑，仅做协议转换与横切关注点处理。</p>
+<div class="arch-style-badge" style="margin-bottom:12px">模块: API网关</div>
+<div class="arch-desc">API网关是CogniForge系统的统一入口层，部署于Web管理控制台与后端业务服务之间，负责处理所有外部HTTP请求。核心功能包括：用户身份认证（JWT令牌颁发与校验）、接口级权限校验、请求路由和负载均衡、流量控制（滑动窗口限流）、操作日志记录。作为系统边界守卫，API网关对前端屏蔽后端服务拓扑细节，提供统一的认证鉴权和请求入口。</div>
+<div style="margin-bottom:12px"><span style="font-size:0.82em;color:var(--c-muted)">依赖: </span><span class="cc-consumer" style="margin:2px">项目管理服务</span><span class="cc-consumer" style="margin:2px">环境管理服务</span><span class="cc-consumer" style="margin:2px">部署编排服务</span></div>
+<div style="margin-bottom:8px"><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Go</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Gin/Go HTTP Router</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>JWT</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Redis（令牌黑名单/限流计数器）</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>MySQL（用户/日志）</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Prometheus（请求指标）</span></div>
   </div>
 </div>
 
-<div class="section">
+<div class="section" id="models">
   <div class="section-header">
     <div class="icon" style="background:rgba(91,141,239,0.12)">🗄️</div>
     <h2>数据模型 (4)</h2>
   </div>
   <div class="section-body">
 
-<div class="model-item">
-  <h3>RouteRule</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>string</td><td>路由规则唯一标识</td></tr><tr><td>method</td><td>string</td><td>HTTP方法，GET/POST/PUT/DELETE</td></tr><tr><td>path</td><td>string</td><td>匹配的请求路径模式，如 /api/projects/:projectId/environments</td></tr><tr><td>target_service</td><td>string</td><td>目标服务名称，如 project-service / environment-service / deployment-service</td></tr><tr><td>target_endpoint</td><td>string</td><td>目标服务内部端点路径，支持路径参数模板替换</td></tr><tr><td>require_auth</td><td>boolean</td><td>是否需要认证，默认 true</td></tr><tr><td>required_roles</td><td>array</td><td>允许访问的角色列表，空数组表示无需角色检查</td></tr><tr><td>rate_limit_scope</td><td>string</td><td>限流范围标识，关联 RateLimitPolicy</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>RateLimitPolicy</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>scope</td><td>string</td><td>策略范围标识，如 global / user / endpoint:/api/projects</td></tr><tr><td>tokens_per_second</td><td>integer</td><td>每秒令牌补充速率</td></tr><tr><td>burst_capacity</td><td>integer</td><td>令牌桶最大容量，允许突发流量</td></tr><tr><td>enabled</td><td>boolean</td><td>是否启用限流</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>CorsSettings</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>allowed_origins</td><td>array</td><td>允许的源列表，如 [https://console.example.com]</td></tr><tr><td>allowed_methods</td><td>array</td><td>允许的HTTP方法，默认 GET,POST,PUT,DELETE,OPTIONS</td></tr><tr><td>allowed_headers</td><td>array</td><td>允许的请求头，包含 Authorization, Content-Type 等</td></tr><tr><td>exposed_headers</td><td>array</td><td>暴露给客户端的响应头</td></tr><tr><td>max_age</td><td>integer</td><td>预检请求缓存时间（秒），默认 86400</td></tr><tr><td>allow_credentials</td><td>boolean</td><td>是否允许携带凭证，默认 true</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>AuditLogEntry</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>log_id</td><td>string</td><td>日志唯一ID，UUID 格式</td></tr><tr><td>timestamp</td><td>datetime</td><td>请求到达时间</td></tr><tr><td>client_ip</td><td>string</td><td>客户端来源IP</td></tr><tr><td>method</td><td>string</td><td>HTTP请求方法</td></tr><tr><td>path</td><td>string</td><td>请求路径</td></tr><tr><td>user_id</td><td>integer</td><td>认证用户ID（未认证时为 null）</td></tr><tr><td>status_code</td><td>integer</td><td>响应状态码</td></tr><tr><td>latency_ms</td><td>integer</td><td>请求处理耗时（毫秒）</td></tr><tr><td>target_service</td><td>string</td><td>路由目标服务名称</td></tr><tr><td>error_info</td><td>string</td><td>错误信息（请求正常时为空）</td></tr></tbody></table>
-</div>
+<details class="contract-group" open><summary>数据库表 <span class="cg-count">2</span></summary><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗄️ sys_user</h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">系统用户账号表，存储用户认证信息和角色</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>主键，自增用户ID</td></tr><tr><td>username <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>用户名，唯一索引</td></tr><tr><td>password_hash <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>密码哈希值（bcrypt）</td></tr><tr><td>role <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>用户角色：admin/developer/viewer</td></tr><tr><td>status <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>用户状态：active/disabled</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">datetime</td><td>创建时间</td></tr><tr><td>updated_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">datetime</td><td>更新时间</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗄️ access_log</h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">API访问日志表，记录所有经过网关的请求信息</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>主键，自增日志ID</td></tr><tr><td>user_id</td><td class="field-type">int</td><td>操作用户ID（未认证请求为null）</td></tr><tr><td>path <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>请求路径</td></tr><tr><td>method <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>HTTP方法</td></tr><tr><td>ip <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>客户端IP地址</td></tr><tr><td>status_code <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>响应状态码</td></tr><tr><td>latency_ms <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>请求处理耗时（毫秒）</td></tr><tr><td>request_time <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">datetime</td><td>请求时间</td></tr><tr><td>user_agent</td><td class="field-type">string</td><td>客户端User-Agent</td></tr></tbody></table></div></details>
+<details class="contract-group" open><summary>配置定义 <span class="cg-count">2</span></summary><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">⚙️ api_route_config</h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">API路由配置表，定义请求到后端服务的映射规则</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>route_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>路由规则ID</td></tr><tr><td>path <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>请求路径模式（支持{param}占位符）</td></tr><tr><td>method <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>HTTP方法：GET/POST/PUT/DELETE</td></tr><tr><td>target_service <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>目标后端服务名称</td></tr><tr><td>target_path <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>目标后端服务路径</td></tr><tr><td>auth_required <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">bool</td><td>是否需要认证</td></tr><tr><td>rate_limit <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>限流阈值（次/分钟）</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">⚙️ rate_limit_config</h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">流量控制规则配置，基于Redis滑动窗口计数器实现限流</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>rule_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>限流规则ID</td></tr><tr><td>route_pattern <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>匹配的路由路径模式</td></tr><tr><td>max_requests <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>时间窗口内最大请求数</td></tr><tr><td>window_seconds <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>时间窗口大小（秒）</td></tr><tr><td>enabled <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">bool</td><td>规则是否启用</td></tr></tbody></table></div></details>
   </div>
 </div>
 
-<div class="section">
+<div class="section" id="interfaces">
   <div class="section-header">
     <div class="icon" style="background:rgba(34,211,238,0.12)">🔌</div>
-    <h2>接口定义 (7)</h2>
+    <h2>接口定义 (10)</h2>
   </div>
   <div class="section-body">
 
-<div class="comp-item">
-  <h3>Login</h3>
-  <div class="comp-type">POST /api/auth/login</div>
-  <p>用户登录认证，校验用户名密码后签发 JWT 访问令牌。网关自身提供的认证入口，不依赖后端服务</p>
-  <p><strong>Response:</strong> {token: {'type': 'string', 'description': 'JWT 访问令牌'}, expires_in: {'type': 'integer', 'description': '令牌过期时间（秒）'}, user_id: {'type': 'integer', 'description': '用户 ID'}, roles: {'type': 'array', 'item_type': 'string', 'description': '用户角色列表'}}</p>
-  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>body:username</td><td>string</td><td>用户名</td></tr><tr><td>body:password</td><td>string</td><td>密码（传输过程中要求 HTTPS 加密）</td></tr></tbody></table>
-</div>
-<div class="comp-item">
-  <h3>CreateProject</h3>
-  <div class="comp-type">POST /api/projects</div>
-  <p>代理创建项目请求。网关鉴权通过后路由至项目管理服务（CreateProject），请求体透传</p>
-  <p><strong>Response:</strong> {id: {'type': 'integer', 'description': '项目ID'}, name: {'type': 'string', 'description': '项目名称'}, description: {'type': 'string', 'description': '项目描述'}, created_at: {'type': 'datetime', 'description': '创建时间'}}</p>
-  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>header:Authorization</td><td>string</td><td>Bearer JWT 令牌，必需</td></tr><tr><td>body:name</td><td>string</td><td>项目名称，必需</td></tr><tr><td>body:description</td><td>string</td><td>项目描述，可选</td></tr></tbody></table>
-</div>
-<div class="comp-item">
-  <h3>ListProjects</h3>
-  <div class="comp-type">GET /api/projects</div>
-  <p>代理获取项目列表请求。网关鉴权后路由至项目管理服务（ListProjects），支持分页参数</p>
-  <p><strong>Response:</strong> {total: {'type': 'integer', 'description': '项目总数'}, items: {'type': 'array', 'item_type': 'object', 'description': '项目列表'}}</p>
-  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>header:Authorization</td><td>string</td><td>Bearer JWT 令牌，必需</td></tr><tr><td>query:page</td><td>integer</td><td>页码，默认 1</td></tr><tr><td>query:page_size</td><td>integer</td><td>每页条数，默认 20</td></tr></tbody></table>
-</div>
-<div class="comp-item">
-  <h3>CreateEnvironment</h3>
-  <div class="comp-type">POST /api/projects/{projectId}/environments</div>
-  <p>代理创建部署环境请求。网关鉴权后路由至环境管理服务（CreateEnvironment），路径参数与请求体透传</p>
-  <p><strong>Response:</strong> {id: {'type': 'integer', 'description': '环境ID'}, name: {'type': 'string', 'description': '环境名称'}, tag: {'type': 'string', 'description': '环境标签'}, server_host: {'type': 'string', 'description': '服务器地址'}, server_port: {'type': 'integer', 'description': 'SSH端口'}, username: {'type': 'string', 'description': 'SSH用户名'}, created_at: {'type': 'datetime', 'description': '创建时间'}}</p>
-  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>header:Authorization</td><td>string</td><td>Bearer JWT 令牌，必需</td></tr><tr><td>path:projectId</td><td>integer</td><td>所属项目 ID</td></tr><tr><td>body:name</td><td>string</td><td>环境名称，如 测试线，必需</td></tr><tr><td>body:tag</td><td>string</td><td>环境标签，如 test/canary/production，必需</td></tr><tr><td>body:server_host</td><td>string</td><td>远程服务器 IP 或域名，必需</td></tr><tr><td>body:server_port</td><td>integer</td><td>SSH 端口，默认 22，必需</td></tr><tr><td>body:username</td><td>string</td><td>SSH 登录用户名，必需</td></tr></tbody></table>
-</div>
-<div class="comp-item">
-  <h3>ConfigureSSHKey</h3>
-  <div class="comp-type">PUT /api/projects/{projectId}/environments/{envId}/key</div>
-  <p>代理配置 SSH 密钥请求。网关鉴权后路由至环境管理服务（ConfigureSSHKey），路径参数与请求体透传</p>
-  <p><strong>Response:</strong> {status: {'type': 'string', 'description': '配置结果，success/failure'}, fingerprint: {'type': 'string', 'description': '密钥指纹'}}</p>
-  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>header:Authorization</td><td>string</td><td>Bearer JWT 令牌，必需</td></tr><tr><td>path:projectId</td><td>integer</td><td>项目 ID</td></tr><tr><td>path:envId</td><td>integer</td><td>环境 ID</td></tr><tr><td>body:private_key</td><td>string</td><td>SSH 私钥内容（传输时加密），必需</td></tr><tr><td>body:passphrase</td><td>string</td><td>密钥口令，可选</td></tr></tbody></table>
-</div>
-<div class="comp-item">
-  <h3>TriggerDeployment</h3>
-  <div class="comp-type">POST /api/projects/{projectId}/deployments</div>
-  <p>代理触发部署请求。网关鉴权后路由至部署编排服务（TriggerDeployment），路径参数与请求体透传</p>
-  <p><strong>Response:</strong> {deployment_id: {'type': 'integer', 'description': '部署记录ID'}, status: {'type': 'string', 'description': '初始状态，pending'}, created_at: {'type': 'datetime', 'description': '创建时间'}}</p>
-  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>header:Authorization</td><td>string</td><td>Bearer JWT 令牌，必需</td></tr><tr><td>path:projectId</td><td>integer</td><td>项目 ID</td></tr><tr><td>body:environment_id</td><td>integer</td><td>目标环境 ID，必需</td></tr><tr><td>body:artifact_path</td><td>string</td><td>可执行文件路径，必需</td></tr><tr><td>body:version</td><td>string</td><td>版本号，用于创建版本文件夹，必需</td></tr></tbody></table>
-</div>
-<div class="comp-item">
-  <h3>HealthCheck</h3>
-  <div class="comp-type">GET /api/health</div>
-  <p>网关健康检查端点，返回网关自身及各后端服务的连通性状态，无需认证</p>
-  <p><strong>Response:</strong> {status: {'type': 'string', 'description': '网关自身状态，ok / degraded / down'}, services: {'type': 'object', 'description': '各后端服务连通性状态映射，如 { "project-service": "ok", "environment-service": "ok" }'}, timestamp: {'type': 'datetime', 'description': '检查时间'}}</p>
-  
-</div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge post">POST</span><span class="cc-endpoint">/api/auth/login</span><span class="cc-name">用户登录</span></div><div class="cc-desc">用户登录认证，验证用户名和密码，认证成功返回JWT访问令牌</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>username</td><td class="field-type">string</td><td>用户名</td></tr><tr><td>password</td><td class="field-type">string</td><td>密码</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>token</td><td class="field-type">string（JWT令牌）</td></tr><tr><td>user</td><td class="field-type">object（{id:int, username:string, role:string}）</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>请求参数缺失（用户名或密码为空）</td></tr><tr><td>401</td><td>用户名或密码错误</td></tr><tr><td>429</td><td>登录频率过高，请稍后重试</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge post">POST</span><span class="cc-endpoint">/api/auth/logout</span><span class="cc-name">用户登出</span></div><div class="cc-desc">用户登出，将当前JWT令牌加入Redis黑名单使其立即失效</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>Authorization</td><td class="field-type">string（Header）</td><td>Bearer令牌，格式：Bearer &lt;token&gt;</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>message</td><td class="field-type">string（登出成功提示）</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>401</td><td>未提供有效的认证令牌</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/auth/current-user</span><span class="cc-name">获取当前用户信息</span></div><div class="cc-desc">获取当前登录用户的基本信息和角色</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>Authorization</td><td class="field-type">string（Header）</td><td>Bearer令牌</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">int</td></tr><tr><td>username</td><td class="field-type">string</td></tr><tr><td>role</td><td class="field-type">string</td></tr><tr><td>status</td><td class="field-type">string</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>401</td><td>未认证或令牌已过期</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/health</span><span class="cc-name">健康检查</span></div><div class="cc-desc">网关及后端服务健康状态检查，返回各依赖服务的连通性</div><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>status</td><td class="field-type">string（ok/degraded/down）</td></tr><tr><td>services</td><td class="field-type">object（{service_name: status}）</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>503</td><td>网关或后端服务不可用</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge post">POST</span><span class="cc-endpoint">/api/projects</span><span class="cc-name">创建项目</span></div><div class="cc-desc">创建新项目（路由至项目管理服务），需认证且具有developer及以上权限</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>Authorization</td><td class="field-type">string（Header）</td><td>Bearer令牌</td></tr><tr><td>name</td><td class="field-type">string</td><td>项目名称</td></tr><tr><td>description</td><td class="field-type">string</td><td>项目描述</td></tr></tbody></table><div class="body-label">Response 201</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">int</td></tr><tr><td>name</td><td class="field-type">string</td></tr><tr><td>description</td><td class="field-type">string</td></tr><tr><td>created_at</td><td class="field-type">datetime</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>请求参数校验失败</td></tr><tr><td>401</td><td>未认证</td></tr><tr><td>403</td><td>权限不足，需要developer及以上角色</td></tr><tr><td>502</td><td>后端服务不可达</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/projects</span><span class="cc-name">查询项目列表</span></div><div class="cc-desc">分页查询项目列表（路由至项目管理服务），需认证</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>Authorization</td><td class="field-type">string（Header）</td><td>Bearer令牌</td></tr><tr><td>page</td><td class="field-type">int</td><td>页码，从1开始</td></tr><tr><td>page_size</td><td class="field-type">int</td><td>每页条数</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>items</td><td class="field-type">array&lt;object&gt;</td></tr><tr><td>total</td><td class="field-type">int</td></tr><tr><td>page</td><td class="field-type">int</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>分页参数不合法</td></tr><tr><td>401</td><td>未认证</td></tr><tr><td>502</td><td>后端服务不可达</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge post">POST</span><span class="cc-endpoint">/api/environments</span><span class="cc-name">创建部署环境</span></div><div class="cc-desc">创建部署环境并配置SSH连接信息（路由至环境管理服务），需认证且具有developer及以上权限</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>Authorization</td><td class="field-type">string（Header）</td><td>Bearer令牌</td></tr><tr><td>project_id</td><td class="field-type">int</td><td>所属项目ID</td></tr><tr><td>name</td><td class="field-type">string</td><td>环境名称</td></tr><tr><td>type</td><td class="field-type">string（test/staging/production）</td><td>环境类型</td></tr><tr><td>host</td><td class="field-type">string</td><td>服务器主机地址</td></tr><tr><td>port</td><td class="field-type">int</td><td>SSH端口号</td></tr><tr><td>ssh_key</td><td class="field-type">string（加密传输）</td><td>SSH私钥内容</td></tr><tr><td>username</td><td class="field-type">string</td><td>SSH登录用户名</td></tr></tbody></table><div class="body-label">Response 201</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">int</td></tr><tr><td>name</td><td class="field-type">string</td></tr><tr><td>type</td><td class="field-type">string</td></tr><tr><td>host</td><td class="field-type">string</td></tr><tr><td>port</td><td class="field-type">int</td></tr><tr><td>status</td><td class="field-type">string</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>请求参数校验失败或环境类型不合法</td></tr><tr><td>401</td><td>未认证</td></tr><tr><td>403</td><td>权限不足</td></tr><tr><td>502</td><td>后端服务不可达</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge post">POST</span><span class="cc-endpoint">/api/deployments</span><span class="cc-name">触发部署</span></div><div class="cc-desc">触发一键部署任务（路由至部署编排服务），需认证且具有developer及以上权限</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>Authorization</td><td class="field-type">string（Header）</td><td>Bearer令牌</td></tr><tr><td>project_id</td><td class="field-type">int</td><td>项目ID</td></tr><tr><td>environment_id</td><td class="field-type">int</td><td>目标环境ID</td></tr><tr><td>version</td><td class="field-type">string</td><td>部署版本号</td></tr><tr><td>file_url</td><td class="field-type">string</td><td>部署文件下载地址</td></tr><tr><td>deploy_script</td><td class="field-type">string</td><td>部署执行脚本内容</td></tr></tbody></table><div class="body-label">Response 202</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>deployment_id</td><td class="field-type">int</td></tr><tr><td>status</td><td class="field-type">string（pending）</td></tr><tr><td>created_at</td><td class="field-type">datetime</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>请求参数校验失败</td></tr><tr><td>401</td><td>未认证</td></tr><tr><td>403</td><td>权限不足</td></tr><tr><td>502</td><td>后端服务不可达</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/deployments/{id}/status</span><span class="cc-name">查询部署状态</span></div><div class="cc-desc">查询指定部署任务的当前状态和进度（路由至部署编排服务），需认证</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>Authorization</td><td class="field-type">string（Header）</td><td>Bearer令牌</td></tr><tr><td>id</td><td class="field-type">int（路径参数）</td><td>部署任务ID</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>deployment_id</td><td class="field-type">int</td></tr><tr><td>status</td><td class="field-type">string（running/success/failed）</td></tr><tr><td>progress</td><td class="field-type">int（0-100）</td></tr><tr><td>current_step</td><td class="field-type">string</td></tr><tr><td>logs</td><td class="field-type">array&lt;string&gt;</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>401</td><td>未认证</td></tr><tr><td>404</td><td>部署任务不存在</td></tr><tr><td>502</td><td>后端服务不可达</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/deployments/history</span><span class="cc-name">查询部署历史</span></div><div class="cc-desc">按项目分页查询部署历史记录列表（路由至部署编排服务），需认证</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>Authorization</td><td class="field-type">string（Header）</td><td>Bearer令牌</td></tr><tr><td>project_id</td><td class="field-type">int</td><td>项目ID</td></tr><tr><td>environment_id</td><td class="field-type">int（可选）</td><td>环境ID过滤条件</td></tr><tr><td>page</td><td class="field-type">int</td><td>页码</td></tr><tr><td>page_size</td><td class="field-type">int</td><td>每页条数</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>items</td><td class="field-type">array&lt;object&gt;</td></tr><tr><td>total</td><td class="field-type">int</td></tr><tr><td>page</td><td class="field-type">int</td></tr><tr><td>page_size</td><td class="field-type">int</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>分页参数不合法</td></tr><tr><td>401</td><td>未认证</td></tr><tr><td>502</td><td>后端服务不可达</td></tr></tbody></table></div>
   </div>
 </div>
 
-<div class="section">
+<div class="section" id="errors">
   <div class="section-header">
     <div class="icon" style="background:rgba(251,191,36,0.12)">⚠️</div>
     <h2>错误处理</h2>
   </div>
   <div class="section-body">
 
-<p>网关层统一捕获所有异常并返回标准化 JSON 错误响应，格式为 { &quot;error&quot;: { &quot;code&quot;: &quot;...&quot;, &quot;message&quot;: &quot;...&quot;, &quot;request_id&quot;: &quot;...&quot; } }。各场景处理策略：
-1. 401 未认证：JWT 缺失、过期或签名无效时返回，前端应跳转至登录页。
-2. 403 无权限：JWT 有效但当前用户角色不满足 required_roles 时返回。
-3. 429 限流触发：令牌桶取令牌失败时返回，响应头附加 X-RateLimit-Remaining: 0 和 Retry-After 秒数。
-4. 502 后端不可达：路由目标服务连接超时或拒绝连接时返回，触发自动重试机制（最多 1 次，间隔 500ms），重试仍失败则降级返回。
-5. 504 后端超时：后端服务处理超过 30s 阈值时返回，同时记录超时审计日志以便排查。
-6. 404 未知路由：无匹配 RouteRule 时返回。
-7. CORS 预检：OPTIONS 请求直接返回 204 并写入 CORS 头后结束，不经过认证与路由。
-8. 请求体校验：Content-Type 非 application/json 时返回 415，必填字段缺失时返回 422 并指明缺失字段名。</p>
+<p>API网关采用分层错误处理策略：1）请求校验层——校验请求参数合法性、HTTP方法匹配和Content-Type，校验失败返回400 Bad Request，响应体包含error_code和message字段；2）认证鉴权层——JWT令牌校验（签名验证+过期检查+Redis黑名单检查）失败返回401 Unauthorized，权限不足返回403 Forbidden；3）限流层——基于Redis滑动窗口计数器实现，超过阈值返回429 Too Many Requests，响应头携带Retry-After字段指示重试时间；4）路由转发层——后端服务连接超时（5秒）或连接拒绝时返回502 Bad Gateway，响应体携带后端服务名称便于排查；5）全局异常捕获——所有未捕获异常统一返回500 Internal Server Error，日志记录完整堆栈但不将内部细节暴露给客户端。所有错误响应统一格式：{&quot;error&quot;: {&quot;code&quot;: &quot;string错误码&quot;, &quot;message&quot;: &quot;string错误描述&quot;, &quot;request_id&quot;: &quot;string请求追踪ID&quot;}}，其中request_id与access_log中的日志ID对应，便于问题追溯。</p>
   </div>
 </div>
 
-
 <div class="footer">CogniForge 文档驱动系统</div>
+</div>
+</div>
+
+<script>
+(function() {
+  var links = document.querySelectorAll('.sidebar-link');
+  var sections = [];
+  links.forEach(function(l) { var s = document.getElementById(l.getAttribute('href').slice(1)); if (s) sections.push([s, l]); });
+  function update() {
+    var top = window.scrollY + 80;
+    var active = null;
+    sections.forEach(function(p) { if (p[0].offsetTop <= top) active = p[1]; });
+    links.forEach(function(l) { l.classList.remove('active'); });
+    if (active) active.classList.add('active');
+  }
+  window.addEventListener('scroll', update, {passive: true});
+  update();
+
+  var toggle = document.getElementById('sidebar-toggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function() { sidebar.classList.toggle('mobile-open'); });
+  }
+})();
+</script>
 </body>
 </html>
