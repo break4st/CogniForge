@@ -5,279 +5,274 @@
     "module": "Relational Database",
     "title": "LLD - Relational Database",
     "author": "design_agent",
-    "created": "2026-05-20 11:29"
+    "created": "2026-05-20 13:53"
   },
-  "overview": "基于 MySQL/PostgreSQL 的关系型数据库层，作为系统的核心持久化存储，承载所有业务数据的存储与访问。采用按业务领域分表的 schema 设计原则，包含 5 组业务模块共 10 张核心业务表：学生(student)、班级(class)、班级-学生关系(class_student)、年级(grade)、学生统计(student_statistics)、班级统计(class_statistics)、年级统计(grade_statistics)、统计任务(statistics_task)，以及基础设施表：用户(user)、审计日志(audit_log)、schema 迁移记录(schema_migrations)。全部采用逻辑删除（deleted_at 标记）保证数据可追溯。外键约束在业务层通过 Service 调用校验（Student/Class/Grade/Statistics Service 各自负责所属表的写入），数据库中不设物理外键以降低耦合和提升写入性能。所有表使用 InnoDB 引擎（MySQL）并统一使用 utf8mb4 字符集；时间字段统一使用 datetime 类型，创建/更新时间由数据库自动填充。核心查询字段建立索引以覆盖各 Service 的查询模式（学号唯一索引、年级下同级班级名称联合唯一索引、外键关联索引等）。",
+  "overview": "关系型数据库作为系统的主存储，持久化所有业务数据。在微服务共享数据库架构下，所有服务（Student Service、Class Service、Grade Service、Statistics Service、API Gateway）共同访问同一关系型数据库实例。数据库包含五张核心业务表：users（用户认证）、students（学生信息）、classes（班级信息）、grades（年级信息）和 study_records（学习记录）。数据库层面不设跨表外键约束，各表之间的引用完整性由应用层（微服务）通过 REST 调用校验保证，以保持服务间的松耦合。索引策略覆盖所有高频查询和筛选场景，包括唯一索引（学号、年级名称、用户名）、单列索引（班级 ID、名称、科目、日期）和联合索引（学生+科目+日期）。系统采用连接池管理数据库连接，所有写操作均在事务中执行，读操作支持读写分离以提升查询性能。SQL 聚合查询（COUNT、SUM、AVG、MAX、MIN）用于实时统计数据计算，不采用预聚合持久化策略，保证数据源始终为最新。",
   "data_models": [
     {
-      "name": "student",
+      "name": "users",
       "type": "table",
-      "description": "学生档案主表，存储学生基本身份信息。每行对应一个学生，学号全局唯一。class_id 不设物理外键，由 Student Service 业务层调用 Class Service 校验。逻辑删除，查询条件统一附带 WHERE deleted_at IS NULL",
+      "description": "用户认证信息表，存储系统所有用户的登录凭据和角色信息。API Gateway 在处理登录请求时校验此表。password 字段存储加密后的密码哈希值（非明文），role 字段控制用户权限范围。username 建立唯一索引确保用户名不重复。",
       "fields": [
-        { "name": "id", "type": "bigint", "description": "学生 ID，自增主键，唯一标识" },
-        { "name": "student_no", "type": "varchar(32)", "description": "学号，全局唯一，建立唯一索引 idx_student_no" },
-        { "name": "name", "type": "varchar(64)", "description": "学生姓名，列表查询支持 LIKE 模糊搜索，建立普通索引 idx_name" },
-        { "name": "gender", "type": "varchar(8)", "description": "性别枚举：male / female，长度限制 8 字符" },
-        { "name": "phone", "type": "varchar(20)", "description": "联系方式，手机号或座机号，允许为空" },
-        { "name": "class_id", "type": "bigint", "description": "所属班级 ID，业务外键关联 class 表 id 字段，可为 null（未分配班级），建立索引 idx_class_id 用于班级成员列表联表查询" },
-        { "name": "created_at", "type": "datetime", "description": "创建时间，默认 CURRENT_TIMESTAMP" },
-        { "name": "updated_at", "type": "datetime", "description": "更新时间，ON UPDATE CURRENT_TIMESTAMP 自动更新" },
-        { "name": "deleted_at", "type": "datetime", "description": "逻辑删除时间戳，null 表示未删除，非 null 表示已删除。所有业务查询均附加 WHERE deleted_at IS NULL 过滤条件" }
+        { "name": "id", "type": "BIGINT", "description": "主键，自增，用户唯一标识" },
+        { "name": "username", "type": "VARCHAR(100)", "description": "用户名，必填，全局唯一，建立 UNIQUE INDEX" },
+        { "name": "password", "type": "VARCHAR(255)", "description": "密码哈希值（BCrypt 加密），非明文存储" },
+        { "name": "role", "type": "VARCHAR(20)", "description": "角色枚举: admin|teacher|student，控制权限范围" },
+        { "name": "name", "type": "VARCHAR(100)", "description": "用户显示姓名" },
+        { "name": "created_at", "type": "DATETIME", "description": "记录创建时间，默认 CURRENT_TIMESTAMP" },
+        { "name": "updated_at", "type": "DATETIME", "description": "记录更新时间，默认 CURRENT_TIMESTAMP，ON UPDATE CURRENT_TIMESTAMP" }
       ]
     },
     {
-      "name": "class",
+      "name": "students",
       "type": "table",
-      "description": "班级信息主表，存储班级基本配置和所属年级关系。同一年级下班级名称不可重复（联合唯一索引）。grade_id 不设物理外键，由 Class Service 业务层调用 Grade Service 校验。逻辑删除",
+      "description": "学生基本信息主表，存储所有学生的核心属性。class_id 为关联班级的逻辑外键，通过应用层调用 Class Service 校验班级存在性，数据库层面不设外键约束。student_no 列建立唯一索引确保学号全局不可重复。配合 idx_class_id 索引加速按班级筛选查询，idx_name 索引加速按姓名模糊匹配。",
       "fields": [
-        { "name": "id", "type": "bigint", "description": "班级 ID，自增主键，唯一标识" },
-        { "name": "name", "type": "varchar(128)", "description": "班级名称（如'三年级一班'），在所属年级内唯一，与 grade_id 组成联合唯一索引 uk_grade_name" },
-        { "name": "grade_id", "type": "bigint", "description": "所属年级 ID，业务外键关联 grade 表 id，不可为空，建立索引 idx_grade_id 用于年级维度查询" },
-        { "name": "head_teacher", "type": "varchar(64)", "description": "班主任姓名，允许为空" },
-        { "name": "max_students", "type": "int", "description": "班级最大学生人数上限，默认 50，添加成员时业务层校验不可超过此值" },
-        { "name": "description", "type": "varchar(256)", "description": "班级描述/备注，允许为空" },
-        { "name": "created_at", "type": "datetime", "description": "创建时间，默认 CURRENT_TIMESTAMP" },
-        { "name": "updated_at", "type": "datetime", "description": "更新时间，ON UPDATE CURRENT_TIMESTAMP" },
-        { "name": "deleted_at", "type": "datetime", "description": "逻辑删除时间戳，删除年级时需先校验该年级下无班级" }
+        { "name": "id", "type": "BIGINT", "description": "主键，自增，学生唯一标识" },
+        { "name": "name", "type": "VARCHAR(100)", "description": "学生姓名，不可为空" },
+        { "name": "student_no", "type": "VARCHAR(50)", "description": "学号，全局唯一，建立 UNIQUE INDEX" },
+        { "name": "contact_phone", "type": "VARCHAR(20)", "description": "联系电话，不可为空" },
+        { "name": "contact_email", "type": "VARCHAR(100)", "description": "联系邮箱，不可为空" },
+        { "name": "class_id", "type": "BIGINT", "description": "所属班级 ID，可为 null，引用 Class Service 的班级数据" },
+        { "name": "created_at", "type": "DATETIME", "description": "记录创建时间，默认 CURRENT_TIMESTAMP" },
+        { "name": "updated_at", "type": "DATETIME", "description": "记录更新时间，默认 CURRENT_TIMESTAMP，ON UPDATE CURRENT_TIMESTAMP" }
       ]
     },
     {
-      "name": "class_student",
+      "name": "classes",
       "type": "table",
-      "description": "班级-学生归属关系表，多对多语义但业务层保证一个学生同一时间只属于一个班级（将旧关系的 deleted_at 设为当前时间后再插入新关系）。支持一个班级多个学生，支持逻辑移除。class_id 和 student_id 不设物理外键",
+      "description": "班级基本信息主表，存储所有班级的核心属性。grade_id 为关联年级的逻辑外键，通过应用层调用 Grade Service 校验年级存在性，数据库层面不设外键约束。student_count 不作为持久化字段，查询时通过 COUNT 聚合 students 表按 class_id 分组实时计算。配合 idx_grade_id 索引加速按年级筛选，idx_name 索引加速按名称模糊搜索。",
       "fields": [
-        { "name": "id", "type": "bigint", "description": "关系记录 ID，自增主键" },
-        { "name": "class_id", "type": "bigint", "description": "班级 ID，业务外键关联 class 表 id，建立索引 idx_class_student_class 用于查询班级成员列表" },
-        { "name": "student_id", "type": "bigint", "description": "学生 ID，业务外键关联 student 表 id，建立索引 idx_class_student_student 用于查询学生所在班级" },
-        { "name": "joined_at", "type": "datetime", "description": "加入班级的时间，默认 CURRENT_TIMESTAMP" },
-        { "name": "deleted_at", "type": "datetime", "description": "逻辑删除时间戳，移除班级成员时设置此字段。查询活跃成员统一 WHERE deleted_at IS NULL。联合索引 idx_active_class_student ON (class_id, student_id) WHERE deleted_at IS NULL，加速成员存在性校验" }
+        { "name": "id", "type": "BIGINT", "description": "主键，自增，班级唯一标识" },
+        { "name": "name", "type": "VARCHAR(100)", "description": "班级名称，不可为空" },
+        { "name": "grade_id", "type": "BIGINT", "description": "所属年级 ID，可为 null，引用 Grade Service 的年级数据" },
+        { "name": "description", "type": "VARCHAR(500)", "description": "班级描述，可为 null" },
+        { "name": "created_at", "type": "DATETIME", "description": "记录创建时间，默认 CURRENT_TIMESTAMP" },
+        { "name": "updated_at", "type": "DATETIME", "description": "记录更新时间，默认 CURRENT_TIMESTAMP，ON UPDATE CURRENT_TIMESTAMP" }
       ]
     },
     {
-      "name": "grade",
+      "name": "grades",
       "type": "table",
-      "description": "年级信息表，存储年级配置和排序信息。年级名称全局唯一。sort_order 控制年级在前端列表/树结构的展示顺序。逻辑删除",
+      "description": "年级基本信息主表，存储所有年级的核心属性。年级与班级为一对多层级关系，通过 classes 表的 grade_id 字段关联。class_count 不作为持久化字段，查询时通过 COUNT 聚合 classes 表按 grade_id 分组实时计算。name 列建立唯一索引确保年级名称不重复。",
       "fields": [
-        { "name": "id", "type": "bigint", "description": "年级 ID，自增主键，唯一标识" },
-        { "name": "name", "type": "varchar(128)", "description": "年级名称（如'三年级'），全局唯一，建立唯一索引 idx_grade_name" },
-        { "name": "description", "type": "varchar(256)", "description": "年级描述/备注，允许为空" },
-        { "name": "sort_order", "type": "int", "description": "排序序号，数值越小越靠前，默认 0。列表查询和树结构查询以此为排序依据" },
-        { "name": "created_at", "type": "datetime", "description": "创建时间，默认 CURRENT_TIMESTAMP" },
-        { "name": "updated_at", "type": "datetime", "description": "更新时间，ON UPDATE CURRENT_TIMESTAMP" },
-        { "name": "deleted_at", "type": "datetime", "description": "逻辑删除时间戳，删除前需校验该年级下无班级" }
+        { "name": "id", "type": "BIGINT", "description": "主键，自增，年级唯一标识" },
+        { "name": "name", "type": "VARCHAR(100)", "description": "年级名称，如'一年级'、'二年级'，全局唯一，建立 UNIQUE INDEX" },
+        { "name": "description", "type": "VARCHAR(500)", "description": "年级描述，可为 null" },
+        { "name": "created_at", "type": "DATETIME", "description": "记录创建时间，默认 CURRENT_TIMESTAMP" },
+        { "name": "updated_at", "type": "DATETIME", "description": "记录更新时间，默认 CURRENT_TIMESTAMP，ON UPDATE CURRENT_TIMESTAMP" }
       ]
     },
     {
-      "name": "user",
+      "name": "study_records",
       "type": "table",
-      "description": "用户账号表，存储系统登录用户信息，供 API Gateway 认证鉴权使用。密码不存明文，存储 bcrypt 哈希值。逻辑删除",
+      "description": "学习数据记录主表，存储每名学生各科目的成绩记录。每条记录代表一次考试成绩或学习评测结果。统计数据不在此表预聚合，而是通过 SQL 聚合查询（SUM、AVG、MAX、MIN、COUNT）实时计算。联合索引 idx_student_subject_date 覆盖学生统计查询场景，idx_record_date 和 idx_subject 分别加速时间范围和科目维度的过滤。student_id 为关联学生的逻辑外键，通过应用层校验引用完整性。",
       "fields": [
-        { "name": "id", "type": "bigint", "description": "用户 ID，自增主键" },
-        { "name": "username", "type": "varchar(64)", "description": "用户名，登录唯一标识，建立唯一索引 idx_username" },
-        { "name": "password_hash", "type": "varchar(255)", "description": "密码的 bcrypt 哈希值，不存储明文密码" },
-        { "name": "role", "type": "varchar(16)", "description": "用户角色枚举：admin（教务管理员）/ teacher（教师），用于权限控制" },
-        { "name": "name", "type": "varchar(64)", "description": "用户显示姓名" },
-        { "name": "email", "type": "varchar(128)", "description": "电子邮箱，允许为空" },
-        { "name": "created_at", "type": "datetime", "description": "创建时间，默认 CURRENT_TIMESTAMP" },
-        { "name": "updated_at", "type": "datetime", "description": "更新时间，ON UPDATE CURRENT_TIMESTAMP" },
-        { "name": "deleted_at", "type": "datetime", "description": "逻辑删除时间戳" }
+        { "name": "id", "type": "BIGINT", "description": "主键，自增，学习记录唯一标识" },
+        { "name": "student_id", "type": "BIGINT", "description": "学生 ID，关联 students 表，不可为空" },
+        { "name": "subject", "type": "VARCHAR(100)", "description": "科目名称，如'数学'、'语文'、'英语'，不可为空" },
+        { "name": "score", "type": "DECIMAL(5,1)", "description": "分数，取值范围 0-100，保留一位小数" },
+        { "name": "record_date", "type": "DATE", "description": "记录日期，标识成绩所属的评测日期，不可为空" },
+        { "name": "remarks", "type": "VARCHAR(500)", "description": "备注说明，可为 null，用于补充考试类型或特殊说明" },
+        { "name": "created_at", "type": "DATETIME", "description": "记录创建时间，默认 CURRENT_TIMESTAMP" }
       ]
     },
     {
-      "name": "student_statistics",
-      "type": "table",
-      "description": "学生维度学习统计数据表，按统计周期存储每个学生的聚合指标。每个学生每个周期一条记录，由 student_id + stat_period 唯一确定。异步 Worker 计算并写入",
+      "name": "idx_users_username",
+      "type": "index",
+      "description": "用户名唯一索引，确保登录用户名不重复",
       "fields": [
-        { "name": "id", "type": "bigint", "description": "统计记录 ID，自增主键" },
-        { "name": "student_id", "type": "bigint", "description": "学生 ID，业务外键关联 student 表 id，建立索引 idx_stats_student" },
-        { "name": "total_courses", "type": "int", "description": "该学生参与课程总数，默认 0" },
-        { "name": "attendance_rate", "type": "decimal(5,2)", "description": "出勤率百分比（0.00-100.00），实际出勤次数/应出勤次数 × 100" },
-        { "name": "homework_completion_rate", "type": "decimal(5,2)", "description": "作业提交完成率百分比（0.00-100.00），已提交/应提交 × 100" },
-        { "name": "avg_score", "type": "decimal(5,2)", "description": "平均成绩（0.00-100.00），各科成绩算术平均" },
-        { "name": "rank_in_class", "type": "int", "description": "班级内排名，按 avg_score 降序排列，0 表示未计算" },
-        { "name": "stat_period", "type": "varchar(32)", "description": "统计周期标识（如 '2026-SEM1'），与 student_id 组成联合唯一索引 uk_student_period，建立索引 idx_stats_period 用于周期维度的查询" },
-        { "name": "calculated_at", "type": "datetime", "description": "本次统计计算完成时间戳" },
-        { "name": "created_at", "type": "datetime", "description": "记录创建时间，默认 CURRENT_TIMESTAMP" },
-        { "name": "updated_at", "type": "datetime", "description": "记录更新时间，ON UPDATE CURRENT_TIMESTAMP" }
+        { "name": "username", "type": "UNIQUE INDEX", "description": "用户名唯一索引" }
       ]
     },
     {
-      "name": "class_statistics",
-      "type": "table",
-      "description": "班级维度聚合统计表，按统计周期存储每个班级的汇总指标。每个班级每个周期一条记录，由 class_id + stat_period 唯一确定",
+      "name": "idx_student_no",
+      "type": "index",
+      "description": "学号唯一索引，用于学号去重校验，保证 student_no 全局唯一",
       "fields": [
-        { "name": "id", "type": "bigint", "description": "统计记录 ID，自增主键" },
-        { "name": "class_id", "type": "bigint", "description": "班级 ID，业务外键关联 class 表 id，建立索引 idx_stats_class" },
-        { "name": "student_count", "type": "int", "description": "班级在班学生总人数（active 状态）" },
-        { "name": "male_count", "type": "int", "description": "男生人数" },
-        { "name": "female_count", "type": "int", "description": "女生人数" },
-        { "name": "avg_attendance_rate", "type": "decimal(5,2)", "description": "班级平均出勤率，全班学生出勤率的算术平均" },
-        { "name": "avg_homework_completion_rate", "type": "decimal(5,2)", "description": "班级平均作业提交完成率" },
-        { "name": "avg_score", "type": "decimal(5,2)", "description": "班级平均成绩（0.00-100.00），全班学生 avg_score 的算术平均" },
-        { "name": "top_student_id", "type": "bigint", "description": "班级第一名学生 ID（avg_score 最高者，并列取 student_id 最小者），业务外键关联 student" },
-        { "name": "pass_count", "type": "int", "description": "及格人数（avg_score >= 60 的学生数）" },
-        { "name": "pass_rate", "type": "decimal(5,2)", "description": "及格率百分比，pass_count / student_count × 100" },
-        { "name": "excellent_count", "type": "int", "description": "优秀人数（avg_score >= 90 的学生数）" },
-        { "name": "excellent_rate", "type": "decimal(5,2)", "description": "优秀率百分比，excellent_count / student_count × 100" },
-        { "name": "stat_period", "type": "varchar(32)", "description": "统计周期标识，与 class_id 组成联合唯一索引 uk_class_period" },
-        { "name": "calculated_at", "type": "datetime", "description": "本次统计计算完成时间戳" },
-        { "name": "created_at", "type": "datetime", "description": "记录创建时间，默认 CURRENT_TIMESTAMP" },
-        { "name": "updated_at", "type": "datetime", "description": "记录更新时间，ON UPDATE CURRENT_TIMESTAMP" }
+        { "name": "student_no", "type": "UNIQUE INDEX", "description": "学号唯一索引" }
       ]
     },
     {
-      "name": "grade_statistics",
-      "type": "table",
-      "description": "年级维度聚合统计表，按统计周期存储每个年级的汇总指标。每个年级每个周期一条记录，由 grade_id + stat_period 唯一确定",
+      "name": "idx_students_class_id",
+      "type": "index",
+      "description": "学生表班级 ID 索引，用于按班级筛选学生时加速查询",
       "fields": [
-        { "name": "id", "type": "bigint", "description": "统计记录 ID，自增主键" },
-        { "name": "grade_id", "type": "bigint", "description": "年级 ID，业务外键关联 grade 表 id，建立索引 idx_stats_grade" },
-        { "name": "class_count", "type": "int", "description": "该年级下班级总数（active 班级）" },
-        { "name": "student_count", "type": "int", "description": "该年级学生总人数" },
-        { "name": "male_count", "type": "int", "description": "男生总人数" },
-        { "name": "female_count", "type": "int", "description": "女生总人数" },
-        { "name": "avg_attendance_rate", "type": "decimal(5,2)", "description": "年级平均出勤率" },
-        { "name": "avg_homework_completion_rate", "type": "decimal(5,2)", "description": "年级平均作业提交完成率" },
-        { "name": "avg_score", "type": "decimal(5,2)", "description": "年级平均成绩" },
-        { "name": "pass_rate", "type": "decimal(5,2)", "description": "年级总体及格率百分比" },
-        { "name": "excellent_rate", "type": "decimal(5,2)", "description": "年级总体优秀率百分比" },
-        { "name": "stat_period", "type": "varchar(32)", "description": "统计周期标识，与 grade_id 组成联合唯一索引 uk_grade_period" },
-        { "name": "calculated_at", "type": "datetime", "description": "本次统计计算完成时间戳" },
-        { "name": "created_at", "type": "datetime", "description": "记录创建时间，默认 CURRENT_TIMESTAMP" },
-        { "name": "updated_at", "type": "datetime", "description": "记录更新时间，ON UPDATE CURRENT_TIMESTAMP" }
+        { "name": "class_id", "type": "INDEX", "description": "班级 ID 索引" }
       ]
     },
     {
-      "name": "statistics_task",
-      "type": "table",
-      "description": "统计计算任务表，记录每次异步统计刷新请求的执行状态。任务由消息队列 Worker 消费并更新状态。超过 30 天的已完成/失败记录由每日定时任务物理清理",
+      "name": "idx_students_name",
+      "type": "index",
+      "description": "学生表姓名索引，用于按姓名模糊匹配时加速查询",
       "fields": [
-        { "name": "id", "type": "varchar(36)", "description": "任务 ID，UUID v4 格式字符串，作为主键" },
-        { "name": "type", "type": "varchar(32)", "description": "任务类型枚举：'student' / 'class' / 'grade' / 'all'，表示重新计算哪个维度的统计" },
-        { "name": "dimension_id", "type": "bigint", "description": "维度 ID，type=student/class/grade 时指定具体业务 ID，type=all 时为 null。建立索引 idx_task_dimension 用于查询同一维度的并发状态" },
-        { "name": "status", "type": "varchar(16)", "description": "任务状态枚举：'pending' / 'processing' / 'completed' / 'failed'，默认 'pending'。建立索引 idx_task_status 用于定时扫描 pending 超时任务" },
-        { "name": "progress", "type": "int", "description": "计算进度百分比（0-100），默认 0" },
-        { "name": "result_summary", "type": "varchar(512)", "description": "计算结果摘要描述（如'统计完成：共处理 5 个班级 120 名学生'），status=completed 时填充" },
-        { "name": "error_message", "type": "varchar(512)", "description": "错误信息，status=failed 时填充，便于排查失败原因" },
-        { "name": "stat_period", "type": "varchar(32)", "description": "统计周期标识，允许为空（不限制周期时）" },
-        { "name": "created_at", "type": "datetime", "description": "任务创建时间，默认 CURRENT_TIMESTAMP" },
-        { "name": "started_at", "type": "datetime", "description": "任务开始处理时间，status 变为 processing 时填充" },
-        { "name": "completed_at", "type": "datetime", "description": "任务完成时间，status 变为 completed/failed 时填充" }
+        { "name": "name", "type": "INDEX", "description": "学生姓名索引" }
       ]
     },
     {
-      "name": "audit_log",
-      "type": "table",
-      "description": "API 请求审计日志表，记录所有经过 API Gateway 的请求信息，用于操作追溯和安全审计。仅记录非查询类操作（POST/PUT/DELETE）以确保日志量可控。异步写入，不阻塞请求主流程",
+      "name": "idx_classes_grade_id",
+      "type": "index",
+      "description": "班级表年级 ID 索引，用于按年级筛选班级时加速查询",
       "fields": [
-        { "name": "id", "type": "bigint", "description": "日志 ID，自增主键" },
-        { "name": "request_id", "type": "varchar(36)", "description": "请求唯一标识 UUID，建立唯一索引 idx_request_id" },
-        { "name": "timestamp", "type": "datetime", "description": "请求时间，默认 CURRENT_TIMESTAMP，建立索引 idx_timestamp 用于按时间范围查询" },
-        { "name": "method", "type": "varchar(8)", "description": "HTTP 方法：GET / POST / PUT / DELETE" },
-        { "name": "path", "type": "varchar(256)", "description": "请求路径，如 /api/students/123" },
-        { "name": "user_id", "type": "bigint", "description": "认证用户 ID，未认证请求为 null，建立索引 idx_user_id 用于按用户追溯操作记录" },
-        { "name": "ip", "type": "varchar(45)", "description": "客户端 IP 地址，支持 IPv4 和 IPv6（最长 45 字符）" },
-        { "name": "status_code", "type": "int", "description": "HTTP 响应状态码" },
-        { "name": "duration_ms", "type": "int", "description": "请求响应耗时（毫秒）" },
-        { "name": "user_agent", "type": "varchar(256)", "description": "客户端 User-Agent 标识" }
+        { "name": "grade_id", "type": "INDEX", "description": "年级 ID 索引" }
       ]
     },
     {
-      "name": "schema_migrations",
-      "type": "table",
-      "description": "数据库 schema 版本迁移记录表，记录每次 DDL 变更的版本号和描述，用于团队协作时的 schema 版本管理和自动迁移工具（如 Flyway / Liquibase）的状态追踪",
+      "name": "idx_classes_name",
+      "type": "index",
+      "description": "班级表名称索引，用于按名称模糊搜索时加速查询",
       "fields": [
-        { "name": "version", "type": "varchar(32)", "description": "迁移版本号（如 '001'、'002'），主键，按版本号递增" },
-        { "name": "description", "type": "varchar(256)", "description": "迁移描述（如 'create student table'）" },
-        { "name": "checksum", "type": "varchar(64)", "description": "迁移文件的 SHA-256 校验和，防止已应用的迁移被篡改" },
-        { "name": "applied_by", "type": "varchar(64)", "description": "执行迁移的操作用户名" },
-        { "name": "applied_at", "type": "datetime", "description": "迁移执行时间，默认 CURRENT_TIMESTAMP" },
-        { "name": "execution_time_ms", "type": "int", "description": "迁移执行耗时（毫秒）" }
+        { "name": "name", "type": "INDEX", "description": "班级名称索引" }
       ]
     },
     {
-      "name": "DatabaseConfig",
-      "type": "config",
-      "description": "数据库全局配置说明，包含连接池、字符集、事务隔离级别等参数设定，各 Service 通过配置中心读取",
+      "name": "idx_grades_name",
+      "type": "index",
+      "description": "年级名称唯一索引，确保年级名称不重复",
       "fields": [
-        { "name": "engine", "type": "string", "description": "数据库引擎，MySQL InnoDB / PostgreSQL" },
-        { "name": "charset", "type": "string", "description": "字符集，统一使用 utf8mb4（MySQL）或 UTF8（PostgreSQL），支持完整 Unicode 包括 emoji" },
-        { "name": "collation", "type": "string", "description": "排序规则，utf8mb4_unicode_ci（MySQL）或 en_US.UTF8（PostgreSQL）" },
-        { "name": "isolation_level", "type": "string", "description": "事务隔离级别，READ COMMITTED，在保证数据一致性的同时兼顾并发性能" },
-        { "name": "max_connections", "type": "number", "description": "最大连接数，默认 100，各 Service 共享连接池" },
-        { "name": "connection_pool_size", "type": "number", "description": "各 Service 连接池大小，默认 10，避免单服务耗尽连接" },
-        { "name": "connection_timeout_ms", "type": "number", "description": "连接超时毫秒数，默认 5000" },
-        { "name": "statement_timeout_ms", "type": "number", "description": "SQL 语句执行超时毫秒数，默认 30000，防止慢查询阻塞连接池" }
+        { "name": "name", "type": "UNIQUE INDEX", "description": "年级名称唯一索引" }
+      ]
+    },
+    {
+      "name": "idx_student_subject_date",
+      "type": "index",
+      "description": "学生+科目+日期联合索引，用于按学生维度查询各科目成绩时加速，覆盖学生统计查询场景",
+      "fields": [
+        { "name": "student_id", "type": "INDEX", "description": "学生 ID" },
+        { "name": "subject", "type": "INDEX", "description": "科目名称" },
+        { "name": "record_date", "type": "INDEX", "description": "记录日期" }
+      ]
+    },
+    {
+      "name": "idx_record_date",
+      "type": "index",
+      "description": "记录日期索引，用于按日期范围筛选成绩记录时加速，支撑班级/年级统计中的时间维度过滤",
+      "fields": [
+        { "name": "record_date", "type": "INDEX", "description": "记录日期索引" }
+      ]
+    },
+    {
+      "name": "idx_subject",
+      "type": "index",
+      "description": "科目索引，用于按科目筛选成绩记录时加速，支撑班级/年级统计中的科目维度过滤",
+      "fields": [
+        { "name": "subject", "type": "INDEX", "description": "科目索引" }
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "数据库连接初始化",
-      "endpoint": "内部接口 - 各 Service 启动时调用",
-      "description": "各业务 Service 在启动时通过配置中心读取数据库连接参数（host、port、database、user、password），建立连接池。连接池采用 HikariCP（Java）/ pg-pool（Node.js）等成熟实现，支持健康检查和自动重连",
+      "name": "数据库连接池",
+      "endpoint": "datasource: jdbc:mysql://<host>:<port>/cogniforge",
+      "description": "系统使用 HikariCP 连接池管理数据库连接。连接池配置：初始连接数 10，最小空闲连接数 5，最大连接数 50，连接超时 30 秒，空闲超时 10 分钟，最大生命周期 30 分钟。所有服务共享同一数据源配置。连接池提供读/写分离能力——写操作路由到主库，聚合查询（如统计计算）可路由到只读从库以分摊读压力。连接有效性检测使用心跳 SQL（SELECT 1），间隔 60 秒。",
       "parameters": [
-        { "name": "host", "type": "string", "description": "数据库主机地址" },
-        { "name": "port", "type": "number", "description": "数据库端口，MySQL 默认 3306，PostgreSQL 默认 5432" },
-        { "name": "database", "type": "string", "description": "数据库名，统一为 'cogniforge'" },
-        { "name": "user", "type": "string", "description": "数据库用户名" },
-        { "name": "password", "type": "string", "description": "数据库密码（仅配置描述，不存储明文值）" },
-        { "name": "poolSize", "type": "number", "description": "连接池大小，默认 10" },
-        { "name": "connectionTimeoutMs", "type": "number", "description": "连接超时毫秒，默认 5000" }
-      ]
+        { "name": "jdbc_url", "type": "string", "description": "JDBC 连接 URL，包含主机、端口、数据库名及连接参数（useSSL=true&characterEncoding=utf8mb4&serverTimezone=Asia/Shanghai）" },
+        { "name": "pool_name", "type": "string", "description": "连接池名称，用于监控区分" },
+        { "name": "maximum_pool_size", "type": "number", "description": "最大连接数，默认 50" },
+        { "name": "connection_timeout", "type": "number", "description": "连接超时时间（毫秒），默认 30000" }
+      ],
+      "contract_ref": "SAD contracts - Relational Database (shared datastore for all services)"
     },
     {
-      "name": "健康检查 - 数据库连通性",
-      "endpoint": "各 Service 内部健康检查",
-      "description": "各 Service 定期执行 SELECT 1（MySQL）或 SELECT 1（PostgreSQL）探测数据库连通性，响应超时（>3s）触发告警并尝试重连",
-      "parameters": []
+      "name": "事务管理",
+      "endpoint": "transaction: TX_REQUIRED",
+      "description": "所有写操作（INSERT、UPDATE、DELETE）均在事务中执行。事务传播行为采用 REQUIRED（支持当前事务，不存在则创建新事务）。隔离级别采用 READ_COMMITTED（读已提交），避免脏读同时保持较好的并发性能。事务超时默认 10 秒。Service 层的 @Transactional 注解管理事务边界，确保一组数据库操作要么全部成功提交，要么全部回滚。跨服务的分布式事务由应用层通过最终一致性保证，不采用 XA 分布式事务。",
+      "parameters": [
+        { "name": "propagation", "type": "string", "description": "事务传播行为: REQUIRED" },
+        { "name": "isolation", "type": "string", "description": "事务隔离级别: READ_COMMITTED" },
+        { "name": "timeout", "type": "number", "description": "事务超时时间（秒），默认 10" },
+        { "name": "rollback_for", "type": "string", "description": "触发回滚的异常类型: Exception.class" }
+      ],
+      "contract_ref": "SAD components - Relational Database (data consistency and transaction integrity)"
     },
     {
-      "name": "Schema 迁移执行",
-      "endpoint": "内部接口 - 应用部署时执行",
-      "description": "应用部署时自动执行 schema_migrations 表中未应用的迁移脚本。迁移脚本文件按编号顺序存放在 db/migrations/ 目录，幂等执行（每个版本只执行一次）。迁移失败时回滚当前版本并中止部署，人工介入排查",
+      "name": "学生信息 CRUD 操作",
+      "endpoint": "sql: students CRUD",
+      "description": "Student Service 对 students 表执行的标准 CRUD 操作集。INSERT 操作包含学号唯一性校验（捕获唯一索引冲突异常转化为 409 响应）。UPDATE 操作按 id 定位，仅更新非空字段。DELETE 操作为物理删除。SELECT 支持按 name（LIKE 模糊匹配）、student_no（精确匹配）、class_id（精确匹配）组合条件，配合分页（LIMIT + OFFSET）和 COUNT 查询总数。",
       "parameters": [
-        { "name": "version", "type": "string", "description": "迁移版本号，如 '001'" },
-        { "name": "scriptPath", "type": "string", "description": "迁移脚本文件路径" }
-      ]
+        { "name": "INSERT", "type": "sql", "description": "INSERT INTO students (name, student_no, contact_phone, contact_email, class_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())" },
+        { "name": "UPDATE", "type": "sql", "description": "UPDATE students SET name=?, contact_phone=?, contact_email=?, class_id=?, updated_at=NOW() WHERE id=?" },
+        { "name": "DELETE", "type": "sql", "description": "DELETE FROM students WHERE id=?" },
+        { "name": "SELECT_BY_ID", "type": "sql", "description": "SELECT id, name, student_no, contact_phone, contact_email, class_id, created_at, updated_at FROM students WHERE id=?" },
+        { "name": "SELECT_LIST", "type": "sql", "description": "SELECT id, name, student_no, contact_phone, contact_email, class_id, created_at FROM students WHERE 1=1 AND name LIKE ? AND student_no=? AND class_id=? ORDER BY id DESC LIMIT ? OFFSET ?" },
+        { "name": "SELECT_COUNT", "type": "sql", "description": "SELECT COUNT(*) FROM students WHERE 1=1 AND name LIKE ? AND student_no=? AND class_id=?" },
+        { "name": "SELECT_BY_CLASS_ID", "type": "sql", "description": "SELECT id, name, student_no, contact_phone, contact_email FROM students WHERE class_id=? ORDER BY id DESC LIMIT ? OFFSET ?" },
+        { "name": "SELECT_COUNT_BY_CLASS_ID", "type": "sql", "description": "SELECT COUNT(*) FROM students WHERE class_id=?" }
+      ],
+      "contract_ref": "lld-Student Service-001 - students table"
     },
     {
-      "name": "事务模板",
-      "endpoint": "各 Service Repository 层通用模式",
-      "description": "所有写操作（INSERT/UPDATE/DELETE）必须在事务内执行，事务边界由 Service 层控制。默认隔离级别 READ COMMITTED。事务内操作顺序要求：先查后写避免死锁，多个行更新按主键 ID 升序锁定。事务超时默认 10 秒，超过自动回滚",
+      "name": "班级信息 CRUD 操作",
+      "endpoint": "sql: classes CRUD",
+      "description": "Class Service 对 classes 表执行的标准 CRUD 操作集。student_count 在列表查询和详情查询时通过子查询或关联查询实时计算，不持久化。DELETE 操作为物理删除。SELECT 支持按 name（LIKE 模糊匹配）和 grade_id（精确匹配）筛选，配合分页。",
       "parameters": [
-        { "name": "timeout", "type": "number", "description": "事务超时秒数，默认 10" },
-        { "name": "isolationLevel", "type": "string", "description": "隔离级别，默认为 READ COMMITTED" },
-        { "name": "readOnly", "type": "boolean", "description": "是否只读事务，查询操作建议标记 readOnly=true 以利用数据库优化" }
-      ]
+        { "name": "INSERT", "type": "sql", "description": "INSERT INTO classes (name, grade_id, description, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW())" },
+        { "name": "UPDATE", "type": "sql", "description": "UPDATE classes SET name=?, grade_id=?, description=?, updated_at=NOW() WHERE id=?" },
+        { "name": "DELETE", "type": "sql", "description": "DELETE FROM classes WHERE id=?" },
+        { "name": "SELECT_BY_ID", "type": "sql", "description": "SELECT c.id, c.name, c.grade_id, c.description, c.created_at, c.updated_at, (SELECT COUNT(*) FROM students s WHERE s.class_id=c.id) AS student_count FROM classes c WHERE c.id=?" },
+        { "name": "SELECT_LIST", "type": "sql", "description": "SELECT c.id, c.name, c.grade_id, c.description, c.created_at, (SELECT COUNT(*) FROM students s WHERE s.class_id=c.id) AS student_count FROM classes c WHERE 1=1 AND c.name LIKE ? AND c.grade_id=? ORDER BY c.id DESC LIMIT ? OFFSET ?" },
+        { "name": "SELECT_COUNT", "type": "sql", "description": "SELECT COUNT(*) FROM classes WHERE 1=1 AND name LIKE ? AND grade_id=?" },
+        { "name": "SELECT_BY_GRADE_ID", "type": "sql", "description": "SELECT c.id AS class_id, c.name AS class_name, c.description, (SELECT COUNT(*) FROM students s WHERE s.class_id=c.id) AS student_count FROM classes c WHERE c.grade_id=?" },
+        { "name": "EXISTS_BY_ID", "type": "sql", "description": "SELECT id, name FROM classes WHERE id=?" }
+      ],
+      "contract_ref": "lld-Class Service-001 - classes table"
     },
     {
-      "name": "数据库主从读写分离",
-      "endpoint": "内部架构模式",
-      "description": "数据库采用主从复制架构（MySQL Replication / PostgreSQL Streaming Replication）。写操作（INSERT/UPDATE/DELETE）路由到主库（Master），读操作（SELECT）根据场景路由：实时性要求高的查询（如写入后立即查询详情）走主库，允许秒级延迟的报表/统计查询走从库（Slave）。主从延迟监控阈值为 5 秒，超过触发告警并自动将查询切回主库",
+      "name": "年级信息 CRUD 操作",
+      "endpoint": "sql: grades CRUD",
+      "description": "Grade Service 对 grades 表执行的标准 CRUD 操作集。class_count 在列表查询时通过关联聚合查询实时计算。INSERT 操作包含名称唯一性校验（捕获唯一索引冲突异常转化为 409 响应）。DELETE 操作为物理删除。",
       "parameters": [
-        { "name": "queryType", "type": "string", "description": "查询类型：'write' 强制路由主库，'read' 优先路由从库，'read_master' 强制路由主库读" },
-        { "name": "consistencyLevel", "type": "string", "description": "一致性级别：'strong' 走主库，'eventual' 走从库" }
-      ]
+        { "name": "INSERT", "type": "sql", "description": "INSERT INTO grades (name, description, created_at, updated_at) VALUES (?, ?, NOW(), NOW())" },
+        { "name": "UPDATE", "type": "sql", "description": "UPDATE grades SET name=?, description=?, updated_at=NOW() WHERE id=?" },
+        { "name": "SELECT_BY_ID", "type": "sql", "description": "SELECT g.id, g.name, g.description, g.created_at, g.updated_at, (SELECT COUNT(*) FROM classes c WHERE c.grade_id=g.id) AS class_count FROM grades g WHERE g.id=?" },
+        { "name": "SELECT_LIST", "type": "sql", "description": "SELECT g.id, g.name, g.description, g.created_at, (SELECT COUNT(*) FROM classes c WHERE c.grade_id=g.id) AS class_count FROM grades g ORDER BY g.id DESC LIMIT ? OFFSET ?" },
+        { "name": "SELECT_COUNT", "type": "sql", "description": "SELECT COUNT(*) FROM grades" },
+        { "name": "EXISTS_BY_ID", "type": "sql", "description": "SELECT id, name FROM grades WHERE id=?" }
+      ],
+      "contract_ref": "lld-Grade Service-001 - grades table"
     },
     {
-      "name": "慢查询日志",
-      "endpoint": "数据库监控配置",
-      "description": "启用数据库慢查询日志，记录执行时间超过 200ms 的 SQL。慢查询日志输出到文件或集成监控系统（如 Prometheus + Grafana），用于 DBA 和开发团队优化索引和查询性能。定期（每周）审查慢查询并进行索引优化",
+      "name": "学习记录 CRUD + 聚合查询操作",
+      "endpoint": "sql: study_records CRUD + aggregation",
+      "description": "Statistics Service 对 study_records 表的操作集，包括学习记录的写入和多种维度的聚合统计查询。所有统计通过 SQL 聚合函数实时计算：学生维度（AVG、SUM、MAX、MIN、COUNT 按 subject 分组）、班级维度（通过关联 students 表获取班级下所有学生的成绩记录后进行聚合）、年级维度（通过关联 classes 和 students 表获取年级下所有学生的成绩记录后聚合）。支持可选的日期范围过滤和科目筛选。",
       "parameters": [
-        { "name": "slowQueryThresholdMs", "type": "number", "description": "慢查询阈值（毫秒），默认 200" },
-        { "name": "logQueriesNotUsingIndexes", "type": "boolean", "description": "是否记录未使用索引的查询，默认 true" }
-      ]
+        { "name": "INSERT", "type": "sql", "description": "INSERT INTO study_records (student_id, subject, score, record_date, remarks, created_at) VALUES (?, ?, ?, ?, ?, NOW())" },
+        { "name": "SELECT_STUDENT_STATS", "type": "sql", "description": "SELECT subject, SUM(score) AS total_scores, AVG(score) AS average_score, MAX(score) AS max_score, MIN(score) AS min_score, COUNT(*) AS record_count FROM study_records WHERE student_id=? AND record_date BETWEEN ? AND ? GROUP BY subject" },
+        { "name": "SELECT_STUDENT_OVERALL_AVG", "type": "sql", "description": "SELECT AVG(score) AS overall_average FROM study_records WHERE student_id=? AND record_date BETWEEN ? AND ?" },
+        { "name": "SELECT_CLASS_STUDENT_IDS", "type": "sql", "description": "SELECT id FROM students WHERE class_id=?" },
+        { "name": "SELECT_CLASS_STATS", "type": "sql", "description": "SELECT subject, AVG(score) AS class_average, MAX(score) AS highest_score, MIN(score) AS lowest_score, SUM(CASE WHEN score >= 60 THEN 1 ELSE 0 END) / COUNT(*) * 100 AS pass_rate FROM study_records WHERE student_id IN (SELECT id FROM students WHERE class_id=?) AND subject=? AND record_date BETWEEN ? AND ? GROUP BY subject" },
+        { "name": "SELECT_CLASS_OVERALL_AVG", "type": "sql", "description": "SELECT AVG(score) AS class_average FROM study_records WHERE student_id IN (SELECT id FROM students WHERE class_id=?) AND record_date BETWEEN ? AND ?" },
+        { "name": "SELECT_GRADE_CLASS_IDS", "type": "sql", "description": "SELECT id, name FROM classes WHERE grade_id=?" },
+        { "name": "SELECT_GRADE_STATS", "type": "sql", "description": "SELECT c.id AS class_id, c.name AS class_name, AVG(sr.score) AS class_average, COUNT(DISTINCT s.id) AS student_count FROM classes c LEFT JOIN students s ON s.class_id=c.id LEFT JOIN study_records sr ON sr.student_id=s.id WHERE c.grade_id=? GROUP BY c.id, c.name" },
+        { "name": "SELECT_GRADE_OVERALL_AVG", "type": "sql", "description": "SELECT AVG(score) FROM study_records WHERE student_id IN (SELECT s.id FROM students s JOIN classes c ON s.class_id=c.id WHERE c.grade_id=?) AND record_date BETWEEN ? AND ?" },
+        { "name": "SELECT_CLASS_AVG_BY_GRADE", "type": "sql", "description": "SELECT c.id AS class_id, c.name AS class_name, AVG(sr.score) AS class_average, COUNT(DISTINCT s.id) AS student_count FROM classes c JOIN students s ON s.class_id=c.id JOIN study_records sr ON sr.student_id=s.id WHERE c.grade_id=? AND sr.subject=? AND sr.record_date BETWEEN ? AND ? GROUP BY c.id, c.name" }
+      ],
+      "contract_ref": "lld-Statistics Service-001 - study_records table"
     },
     {
-      "name": "数据备份恢复",
-      "endpoint": "运维操作",
-      "description": "数据库全量备份每日凌晨 02:00 执行（mysqldump / pg_dump），保留最近 7 天备份。增量 Binlog 日志保留 72 小时。备份文件加密存储至远程对象存储。灾难恢复 RTO 目标 30 分钟，RPO 目标 1 小时",
+      "name": "用户认证操作",
+      "endpoint": "sql: users authentication",
+      "description": "API Gateway 在登录认证时对 users 表执行的查询操作。按 username 精确查找用户记录，获取密码哈希进行比对。username 唯一索引保证查询效率。",
       "parameters": [
-        { "name": "backupType", "type": "string", "description": "备份类型：'full' 全量 / 'incremental' 增量" },
-        { "name": "retentionDays", "type": "number", "description": "备份保留天数，全量默认 7 天" }
-      ]
+        { "name": "SELECT_BY_USERNAME", "type": "sql", "description": "SELECT id, username, password, role, name FROM users WHERE username=?" },
+        { "name": "SELECT_BY_ID", "type": "sql", "description": "SELECT id, username, role, name FROM users WHERE id=?" }
+      ],
+      "contract_ref": "lld-API Gateway-001 - user authentication"
+    },
+    {
+      "name": "数据库 DDL 初始化",
+      "endpoint": "sql: DDL schema initialization",
+      "description": "系统首次启动时通过 DDL 脚本初始化数据库 schema，创建所有业务表和索引。使用 IF NOT EXISTS 保证幂等性。所有表使用 InnoDB 引擎，字符集 utf8mb4，排序规则 utf8mb4_unicode_ci。初始化脚本在应用启动时自动执行（通过 Flyway 或 Liquibase 管理版本化迁移）。",
+      "parameters": [
+        { "name": "CREATE_USERS", "type": "sql", "description": "CREATE TABLE IF NOT EXISTS users (id BIGINT AUTO_INCREMENT PRIMARY KEY, username VARCHAR(100) NOT NULL, password VARCHAR(255) NOT NULL, role VARCHAR(20) NOT NULL, name VARCHAR(100) NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" },
+        { "name": "CREATE_STUDENTS", "type": "sql", "description": "CREATE TABLE IF NOT EXISTS students (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100) NOT NULL, student_no VARCHAR(50) NOT NULL, contact_phone VARCHAR(20) NOT NULL, contact_email VARCHAR(100) NOT NULL, class_id BIGINT DEFAULT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" },
+        { "name": "CREATE_CLASSES", "type": "sql", "description": "CREATE TABLE IF NOT EXISTS classes (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100) NOT NULL, grade_id BIGINT DEFAULT NULL, description VARCHAR(500) DEFAULT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" },
+        { "name": "CREATE_GRADES", "type": "sql", "description": "CREATE TABLE IF NOT EXISTS grades (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100) NOT NULL, description VARCHAR(500) DEFAULT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" },
+        { "name": "CREATE_STUDY_RECORDS", "type": "sql", "description": "CREATE TABLE IF NOT EXISTS study_records (id BIGINT AUTO_INCREMENT PRIMARY KEY, student_id BIGINT NOT NULL, subject VARCHAR(100) NOT NULL, score DECIMAL(5,1) NOT NULL, record_date DATE NOT NULL, remarks VARCHAR(500) DEFAULT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" },
+        { "name": "CREATE_UNIQUE_INDEXES", "type": "sql", "description": "CREATE UNIQUE INDEX idx_users_username ON users(username); CREATE UNIQUE INDEX idx_student_no ON students(student_no); CREATE UNIQUE INDEX idx_grades_name ON grades(name); CREATE INDEX idx_students_class_id ON students(class_id); CREATE INDEX idx_students_name ON students(name); CREATE INDEX idx_classes_grade_id ON classes(grade_id); CREATE INDEX idx_classes_name ON classes(name); CREATE INDEX idx_student_subject_date ON study_records(student_id, subject, record_date); CREATE INDEX idx_record_date ON study_records(record_date); CREATE INDEX idx_subject ON study_records(subject)" }
+      ],
+      "contract_ref": "SAD components - Relational Database (primary storage)"
     }
   ],
-  "error_handling": "数据库层错误统一在各 Service 的 Repository 层捕获并转换为业务异常向上抛出，不外泄原始数据库错误信息到 API 响应。分类处理：连接超时（ECONNREFUSED / 08001）→ 重试最多 3 次（指数退避，间隔 100ms/500ms/2s），重试耗尽后抛出 ServiceUnavailableError；死锁检测（1213 / 40001）→ 自动回滚当前事务后重试最多 2 次，重试耗尽后抛出 ConcurrencyConflictError；唯一键冲突（1062 / 23505）→ 转换为 ConflictError(message: '记录已存在') 携带具体字段名；外键约束违反（1451 / 23503）→ 转换为 BadRequestError(message: '关联数据不存在')；查询超时（statement_timeout）→ 记录慢查询日志并抛出 TimeoutError(message: '查询执行超时')。事务回滚后连接归还连接池，不影响后续请求。批量写入（如统计数据入库）中单条失败不影响整体，跳过失败记录并记录告警日志。数据迁移失败时回滚当前版本并中止后续版本执行。所有数据库操作必须有对应的 Prepared Statement 参数化查询防止 SQL 注入；禁止在业务代码中拼接 SQL 字符串。逻辑删除字段（deleted_at）必须由 Repository 层统一在基础查询方法中附加 WHERE 条件（软删除过滤器），各业务 Service 的 Repository 继承该过滤器以确保不遗漏。"
+  "error_handling": "Relational Database 按以下规则处理异常：1）连接失败——应用启动时数据库不可达或运行中连接中断时，连接池抛出异常，应用应重试连接并记录 ERROR 级日志，重试间隔 5 秒，最多重试 3 次后触发服务启动失败告警；2）唯一约束冲突——INSERT 或 UPDATE 操作违反 UNIQUE INDEX（学号重复、年级名称重复、用户名重复）时，数据库抛出 DuplicateKeyException 或 IntegrityConstraintViolationException，由各 Service 层捕获后转化为 409 Conflict HTTP 响应返回给调用方；3）死锁——并发写入产生死锁时（DeadlockLoserDataAccessException），数据库自动选择牺牲一个事务并回滚，应用层检测到死锁异常后自动重试当前事务最多 3 次，每次重试前随机等待 100-500ms 以降低再次冲突概率；4）查询超时——复杂聚合查询（如年级统计跨多表关联）超过配置的查询超时阈值（默认 10 秒）时抛出 QueryTimeoutException，由 Service 层捕获后记录 WARN 日志，返回 504 Gateway Timeout 响应并考虑添加索引优化或拆分查询；5）事务回滚——任何 RuntimeException 在事务方法内抛出时触发事务回滚（rollbackFor = Exception.class），保证数据一致性，回滚后不需要重试的分支返回 500 Internal Server Error 给调用方；6）连接池耗尽——所有连接被占用且等待超过 connectionTimeout（30 秒）时，连接池抛出 SQLException，由 Service 层捕获后返回 503 Service Unavailable 响应体为 {\"error\": \"service_unavailable\", \"message\": \"数据库连接池已满，请稍后重试\"}；7）数据截断——写入的字段长度超过表定义（如 VARCHAR(100) 写入超过 100 字符）时抛出 DataTruncation 异常，由 Service 层捕获后转化为 422 响应并提示具体字段超长；8）SQL 注入防御——所有 SQL 操作必须使用参数化查询（PreparedStatement / MyBatis #{param}）或 ORM 框架（MyBatis/Spring Data JPA），禁止字符串拼接 SQL。所有数据库操作记录慢查询日志，执行时间超过 1 秒的 SQL 输出 WARN 级日志，包含 SQL 文本、参数值和执行耗时，供后续 DBA 优化参考。"
 }

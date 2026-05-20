@@ -150,7 +150,7 @@
   <div><span class="badge accent">详细设计文档</span></div>
 </div>
 <h1><span>详细设计文档</span> LLD - Relational Database</h1>
-<div class="meta">2026-05-20 11:29 &middot; 作者: design_agent</div>
+<div class="meta">2026-05-20 13:53 &middot; 作者: design_agent</div>
 
 <div class="section">
   <div class="section-header">
@@ -160,64 +160,76 @@
   <div class="section-body">
 
 <p>模块: Relational Database</p>
-<p>基于 MySQL/PostgreSQL 的关系型数据库层，作为系统的核心持久化存储，承载所有业务数据的存储与访问。采用按业务领域分表的 schema 设计原则，包含 5 组业务模块共 10 张核心业务表：学生(student)、班级(class)、班级-学生关系(class_student)、年级(grade)、学生统计(student_statistics)、班级统计(class_statistics)、年级统计(grade_statistics)、统计任务(statistics_task)，以及基础设施表：用户(user)、审计日志(audit_log)、schema 迁移记录(schema_migrations)。全部采用逻辑删除（deleted_at 标记）保证数据可追溯。外键约束在业务层通过 Service 调用校验（Student/Class/Grade/Statistics Service 各自负责所属表的写入），数据库中不设物理外键以降低耦合和提升写入性能。所有表使用 InnoDB 引擎（MySQL）并统一使用 utf8mb4 字符集；时间字段统一使用 datetime 类型，创建/更新时间由数据库自动填充。核心查询字段建立索引以覆盖各 Service 的查询模式（学号唯一索引、年级下同级班级名称联合唯一索引、外键关联索引等）。</p>
+<p>关系型数据库作为系统的主存储，持久化所有业务数据。在微服务共享数据库架构下，所有服务（Student Service、Class Service、Grade Service、Statistics Service、API Gateway）共同访问同一关系型数据库实例。数据库包含五张核心业务表：users（用户认证）、students（学生信息）、classes（班级信息）、grades（年级信息）和 study_records（学习记录）。数据库层面不设跨表外键约束，各表之间的引用完整性由应用层（微服务）通过 REST 调用校验保证，以保持服务间的松耦合。索引策略覆盖所有高频查询和筛选场景，包括唯一索引（学号、年级名称、用户名）、单列索引（班级 ID、名称、科目、日期）和联合索引（学生+科目+日期）。系统采用连接池管理数据库连接，所有写操作均在事务中执行，读操作支持读写分离以提升查询性能。SQL 聚合查询（COUNT、SUM、AVG、MAX、MIN）用于实时统计数据计算，不采用预聚合持久化策略，保证数据源始终为最新。</p>
   </div>
 </div>
 
 <div class="section">
   <div class="section-header">
     <div class="icon" style="background:rgba(91,141,239,0.12)">🗄️</div>
-    <h2>数据模型 (12)</h2>
+    <h2>数据模型 (15)</h2>
   </div>
   <div class="section-body">
 
 <div class="model-item">
-  <h3>student</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>bigint</td><td>学生 ID，自增主键，唯一标识</td></tr><tr><td>student_no</td><td>varchar(32)</td><td>学号，全局唯一，建立唯一索引 idx_student_no</td></tr><tr><td>name</td><td>varchar(64)</td><td>学生姓名，列表查询支持 LIKE 模糊搜索，建立普通索引 idx_name</td></tr><tr><td>gender</td><td>varchar(8)</td><td>性别枚举：male / female，长度限制 8 字符</td></tr><tr><td>phone</td><td>varchar(20)</td><td>联系方式，手机号或座机号，允许为空</td></tr><tr><td>class_id</td><td>bigint</td><td>所属班级 ID，业务外键关联 class 表 id 字段，可为 null（未分配班级），建立索引 idx_class_id 用于班级成员列表联表查询</td></tr><tr><td>created_at</td><td>datetime</td><td>创建时间，默认 CURRENT_TIMESTAMP</td></tr><tr><td>updated_at</td><td>datetime</td><td>更新时间，ON UPDATE CURRENT_TIMESTAMP 自动更新</td></tr><tr><td>deleted_at</td><td>datetime</td><td>逻辑删除时间戳，null 表示未删除，非 null 表示已删除。所有业务查询均附加 WHERE deleted_at IS NULL 过滤条件</td></tr></tbody></table>
+  <h3>users</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>BIGINT</td><td>主键，自增，用户唯一标识</td></tr><tr><td>username</td><td>VARCHAR(100)</td><td>用户名，必填，全局唯一，建立 UNIQUE INDEX</td></tr><tr><td>password</td><td>VARCHAR(255)</td><td>密码哈希值（BCrypt 加密），非明文存储</td></tr><tr><td>role</td><td>VARCHAR(20)</td><td>角色枚举: admin|teacher|student，控制权限范围</td></tr><tr><td>name</td><td>VARCHAR(100)</td><td>用户显示姓名</td></tr><tr><td>created_at</td><td>DATETIME</td><td>记录创建时间，默认 CURRENT_TIMESTAMP</td></tr><tr><td>updated_at</td><td>DATETIME</td><td>记录更新时间，默认 CURRENT_TIMESTAMP，ON UPDATE CURRENT_TIMESTAMP</td></tr></tbody></table>
 </div>
 <div class="model-item">
-  <h3>class</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>bigint</td><td>班级 ID，自增主键，唯一标识</td></tr><tr><td>name</td><td>varchar(128)</td><td>班级名称（如'三年级一班'），在所属年级内唯一，与 grade_id 组成联合唯一索引 uk_grade_name</td></tr><tr><td>grade_id</td><td>bigint</td><td>所属年级 ID，业务外键关联 grade 表 id，不可为空，建立索引 idx_grade_id 用于年级维度查询</td></tr><tr><td>head_teacher</td><td>varchar(64)</td><td>班主任姓名，允许为空</td></tr><tr><td>max_students</td><td>int</td><td>班级最大学生人数上限，默认 50，添加成员时业务层校验不可超过此值</td></tr><tr><td>description</td><td>varchar(256)</td><td>班级描述/备注，允许为空</td></tr><tr><td>created_at</td><td>datetime</td><td>创建时间，默认 CURRENT_TIMESTAMP</td></tr><tr><td>updated_at</td><td>datetime</td><td>更新时间，ON UPDATE CURRENT_TIMESTAMP</td></tr><tr><td>deleted_at</td><td>datetime</td><td>逻辑删除时间戳，删除年级时需先校验该年级下无班级</td></tr></tbody></table>
+  <h3>students</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>BIGINT</td><td>主键，自增，学生唯一标识</td></tr><tr><td>name</td><td>VARCHAR(100)</td><td>学生姓名，不可为空</td></tr><tr><td>student_no</td><td>VARCHAR(50)</td><td>学号，全局唯一，建立 UNIQUE INDEX</td></tr><tr><td>contact_phone</td><td>VARCHAR(20)</td><td>联系电话，不可为空</td></tr><tr><td>contact_email</td><td>VARCHAR(100)</td><td>联系邮箱，不可为空</td></tr><tr><td>class_id</td><td>BIGINT</td><td>所属班级 ID，可为 null，引用 Class Service 的班级数据</td></tr><tr><td>created_at</td><td>DATETIME</td><td>记录创建时间，默认 CURRENT_TIMESTAMP</td></tr><tr><td>updated_at</td><td>DATETIME</td><td>记录更新时间，默认 CURRENT_TIMESTAMP，ON UPDATE CURRENT_TIMESTAMP</td></tr></tbody></table>
 </div>
 <div class="model-item">
-  <h3>class_student</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>bigint</td><td>关系记录 ID，自增主键</td></tr><tr><td>class_id</td><td>bigint</td><td>班级 ID，业务外键关联 class 表 id，建立索引 idx_class_student_class 用于查询班级成员列表</td></tr><tr><td>student_id</td><td>bigint</td><td>学生 ID，业务外键关联 student 表 id，建立索引 idx_class_student_student 用于查询学生所在班级</td></tr><tr><td>joined_at</td><td>datetime</td><td>加入班级的时间，默认 CURRENT_TIMESTAMP</td></tr><tr><td>deleted_at</td><td>datetime</td><td>逻辑删除时间戳，移除班级成员时设置此字段。查询活跃成员统一 WHERE deleted_at IS NULL。联合索引 idx_active_class_student ON (class_id, student_id) WHERE deleted_at IS NULL，加速成员存在性校验</td></tr></tbody></table>
+  <h3>classes</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>BIGINT</td><td>主键，自增，班级唯一标识</td></tr><tr><td>name</td><td>VARCHAR(100)</td><td>班级名称，不可为空</td></tr><tr><td>grade_id</td><td>BIGINT</td><td>所属年级 ID，可为 null，引用 Grade Service 的年级数据</td></tr><tr><td>description</td><td>VARCHAR(500)</td><td>班级描述，可为 null</td></tr><tr><td>created_at</td><td>DATETIME</td><td>记录创建时间，默认 CURRENT_TIMESTAMP</td></tr><tr><td>updated_at</td><td>DATETIME</td><td>记录更新时间，默认 CURRENT_TIMESTAMP，ON UPDATE CURRENT_TIMESTAMP</td></tr></tbody></table>
 </div>
 <div class="model-item">
-  <h3>grade</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>bigint</td><td>年级 ID，自增主键，唯一标识</td></tr><tr><td>name</td><td>varchar(128)</td><td>年级名称（如'三年级'），全局唯一，建立唯一索引 idx_grade_name</td></tr><tr><td>description</td><td>varchar(256)</td><td>年级描述/备注，允许为空</td></tr><tr><td>sort_order</td><td>int</td><td>排序序号，数值越小越靠前，默认 0。列表查询和树结构查询以此为排序依据</td></tr><tr><td>created_at</td><td>datetime</td><td>创建时间，默认 CURRENT_TIMESTAMP</td></tr><tr><td>updated_at</td><td>datetime</td><td>更新时间，ON UPDATE CURRENT_TIMESTAMP</td></tr><tr><td>deleted_at</td><td>datetime</td><td>逻辑删除时间戳，删除前需校验该年级下无班级</td></tr></tbody></table>
+  <h3>grades</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>BIGINT</td><td>主键，自增，年级唯一标识</td></tr><tr><td>name</td><td>VARCHAR(100)</td><td>年级名称，如'一年级'、'二年级'，全局唯一，建立 UNIQUE INDEX</td></tr><tr><td>description</td><td>VARCHAR(500)</td><td>年级描述，可为 null</td></tr><tr><td>created_at</td><td>DATETIME</td><td>记录创建时间，默认 CURRENT_TIMESTAMP</td></tr><tr><td>updated_at</td><td>DATETIME</td><td>记录更新时间，默认 CURRENT_TIMESTAMP，ON UPDATE CURRENT_TIMESTAMP</td></tr></tbody></table>
 </div>
 <div class="model-item">
-  <h3>user</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>bigint</td><td>用户 ID，自增主键</td></tr><tr><td>username</td><td>varchar(64)</td><td>用户名，登录唯一标识，建立唯一索引 idx_username</td></tr><tr><td>password_hash</td><td>varchar(255)</td><td>密码的 bcrypt 哈希值，不存储明文密码</td></tr><tr><td>role</td><td>varchar(16)</td><td>用户角色枚举：admin（教务管理员）/ teacher（教师），用于权限控制</td></tr><tr><td>name</td><td>varchar(64)</td><td>用户显示姓名</td></tr><tr><td>email</td><td>varchar(128)</td><td>电子邮箱，允许为空</td></tr><tr><td>created_at</td><td>datetime</td><td>创建时间，默认 CURRENT_TIMESTAMP</td></tr><tr><td>updated_at</td><td>datetime</td><td>更新时间，ON UPDATE CURRENT_TIMESTAMP</td></tr><tr><td>deleted_at</td><td>datetime</td><td>逻辑删除时间戳</td></tr></tbody></table>
+  <h3>study_records</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>BIGINT</td><td>主键，自增，学习记录唯一标识</td></tr><tr><td>student_id</td><td>BIGINT</td><td>学生 ID，关联 students 表，不可为空</td></tr><tr><td>subject</td><td>VARCHAR(100)</td><td>科目名称，如'数学'、'语文'、'英语'，不可为空</td></tr><tr><td>score</td><td>DECIMAL(5,1)</td><td>分数，取值范围 0-100，保留一位小数</td></tr><tr><td>record_date</td><td>DATE</td><td>记录日期，标识成绩所属的评测日期，不可为空</td></tr><tr><td>remarks</td><td>VARCHAR(500)</td><td>备注说明，可为 null，用于补充考试类型或特殊说明</td></tr><tr><td>created_at</td><td>DATETIME</td><td>记录创建时间，默认 CURRENT_TIMESTAMP</td></tr></tbody></table>
 </div>
 <div class="model-item">
-  <h3>student_statistics</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>bigint</td><td>统计记录 ID，自增主键</td></tr><tr><td>student_id</td><td>bigint</td><td>学生 ID，业务外键关联 student 表 id，建立索引 idx_stats_student</td></tr><tr><td>total_courses</td><td>int</td><td>该学生参与课程总数，默认 0</td></tr><tr><td>attendance_rate</td><td>decimal(5,2)</td><td>出勤率百分比（0.00-100.00），实际出勤次数/应出勤次数 × 100</td></tr><tr><td>homework_completion_rate</td><td>decimal(5,2)</td><td>作业提交完成率百分比（0.00-100.00），已提交/应提交 × 100</td></tr><tr><td>avg_score</td><td>decimal(5,2)</td><td>平均成绩（0.00-100.00），各科成绩算术平均</td></tr><tr><td>rank_in_class</td><td>int</td><td>班级内排名，按 avg_score 降序排列，0 表示未计算</td></tr><tr><td>stat_period</td><td>varchar(32)</td><td>统计周期标识（如 '2026-SEM1'），与 student_id 组成联合唯一索引 uk_student_period，建立索引 idx_stats_period 用于周期维度的查询</td></tr><tr><td>calculated_at</td><td>datetime</td><td>本次统计计算完成时间戳</td></tr><tr><td>created_at</td><td>datetime</td><td>记录创建时间，默认 CURRENT_TIMESTAMP</td></tr><tr><td>updated_at</td><td>datetime</td><td>记录更新时间，ON UPDATE CURRENT_TIMESTAMP</td></tr></tbody></table>
+  <h3>idx_users_username</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>username</td><td>UNIQUE INDEX</td><td>用户名唯一索引</td></tr></tbody></table>
 </div>
 <div class="model-item">
-  <h3>class_statistics</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>bigint</td><td>统计记录 ID，自增主键</td></tr><tr><td>class_id</td><td>bigint</td><td>班级 ID，业务外键关联 class 表 id，建立索引 idx_stats_class</td></tr><tr><td>student_count</td><td>int</td><td>班级在班学生总人数（active 状态）</td></tr><tr><td>male_count</td><td>int</td><td>男生人数</td></tr><tr><td>female_count</td><td>int</td><td>女生人数</td></tr><tr><td>avg_attendance_rate</td><td>decimal(5,2)</td><td>班级平均出勤率，全班学生出勤率的算术平均</td></tr><tr><td>avg_homework_completion_rate</td><td>decimal(5,2)</td><td>班级平均作业提交完成率</td></tr><tr><td>avg_score</td><td>decimal(5,2)</td><td>班级平均成绩（0.00-100.00），全班学生 avg_score 的算术平均</td></tr><tr><td>top_student_id</td><td>bigint</td><td>班级第一名学生 ID（avg_score 最高者，并列取 student_id 最小者），业务外键关联 student</td></tr><tr><td>pass_count</td><td>int</td><td>及格人数（avg_score &gt;= 60 的学生数）</td></tr><tr><td>pass_rate</td><td>decimal(5,2)</td><td>及格率百分比，pass_count / student_count × 100</td></tr><tr><td>excellent_count</td><td>int</td><td>优秀人数（avg_score &gt;= 90 的学生数）</td></tr><tr><td>excellent_rate</td><td>decimal(5,2)</td><td>优秀率百分比，excellent_count / student_count × 100</td></tr><tr><td>stat_period</td><td>varchar(32)</td><td>统计周期标识，与 class_id 组成联合唯一索引 uk_class_period</td></tr><tr><td>calculated_at</td><td>datetime</td><td>本次统计计算完成时间戳</td></tr><tr><td>created_at</td><td>datetime</td><td>记录创建时间，默认 CURRENT_TIMESTAMP</td></tr><tr><td>updated_at</td><td>datetime</td><td>记录更新时间，ON UPDATE CURRENT_TIMESTAMP</td></tr></tbody></table>
+  <h3>idx_student_no</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>student_no</td><td>UNIQUE INDEX</td><td>学号唯一索引</td></tr></tbody></table>
 </div>
 <div class="model-item">
-  <h3>grade_statistics</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>bigint</td><td>统计记录 ID，自增主键</td></tr><tr><td>grade_id</td><td>bigint</td><td>年级 ID，业务外键关联 grade 表 id，建立索引 idx_stats_grade</td></tr><tr><td>class_count</td><td>int</td><td>该年级下班级总数（active 班级）</td></tr><tr><td>student_count</td><td>int</td><td>该年级学生总人数</td></tr><tr><td>male_count</td><td>int</td><td>男生总人数</td></tr><tr><td>female_count</td><td>int</td><td>女生总人数</td></tr><tr><td>avg_attendance_rate</td><td>decimal(5,2)</td><td>年级平均出勤率</td></tr><tr><td>avg_homework_completion_rate</td><td>decimal(5,2)</td><td>年级平均作业提交完成率</td></tr><tr><td>avg_score</td><td>decimal(5,2)</td><td>年级平均成绩</td></tr><tr><td>pass_rate</td><td>decimal(5,2)</td><td>年级总体及格率百分比</td></tr><tr><td>excellent_rate</td><td>decimal(5,2)</td><td>年级总体优秀率百分比</td></tr><tr><td>stat_period</td><td>varchar(32)</td><td>统计周期标识，与 grade_id 组成联合唯一索引 uk_grade_period</td></tr><tr><td>calculated_at</td><td>datetime</td><td>本次统计计算完成时间戳</td></tr><tr><td>created_at</td><td>datetime</td><td>记录创建时间，默认 CURRENT_TIMESTAMP</td></tr><tr><td>updated_at</td><td>datetime</td><td>记录更新时间，ON UPDATE CURRENT_TIMESTAMP</td></tr></tbody></table>
+  <h3>idx_students_class_id</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>class_id</td><td>INDEX</td><td>班级 ID 索引</td></tr></tbody></table>
 </div>
 <div class="model-item">
-  <h3>statistics_task</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>varchar(36)</td><td>任务 ID，UUID v4 格式字符串，作为主键</td></tr><tr><td>type</td><td>varchar(32)</td><td>任务类型枚举：'student' / 'class' / 'grade' / 'all'，表示重新计算哪个维度的统计</td></tr><tr><td>dimension_id</td><td>bigint</td><td>维度 ID，type=student/class/grade 时指定具体业务 ID，type=all 时为 null。建立索引 idx_task_dimension 用于查询同一维度的并发状态</td></tr><tr><td>status</td><td>varchar(16)</td><td>任务状态枚举：'pending' / 'processing' / 'completed' / 'failed'，默认 'pending'。建立索引 idx_task_status 用于定时扫描 pending 超时任务</td></tr><tr><td>progress</td><td>int</td><td>计算进度百分比（0-100），默认 0</td></tr><tr><td>result_summary</td><td>varchar(512)</td><td>计算结果摘要描述（如'统计完成：共处理 5 个班级 120 名学生'），status=completed 时填充</td></tr><tr><td>error_message</td><td>varchar(512)</td><td>错误信息，status=failed 时填充，便于排查失败原因</td></tr><tr><td>stat_period</td><td>varchar(32)</td><td>统计周期标识，允许为空（不限制周期时）</td></tr><tr><td>created_at</td><td>datetime</td><td>任务创建时间，默认 CURRENT_TIMESTAMP</td></tr><tr><td>started_at</td><td>datetime</td><td>任务开始处理时间，status 变为 processing 时填充</td></tr><tr><td>completed_at</td><td>datetime</td><td>任务完成时间，status 变为 completed/failed 时填充</td></tr></tbody></table>
+  <h3>idx_students_name</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>name</td><td>INDEX</td><td>学生姓名索引</td></tr></tbody></table>
 </div>
 <div class="model-item">
-  <h3>audit_log</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>bigint</td><td>日志 ID，自增主键</td></tr><tr><td>request_id</td><td>varchar(36)</td><td>请求唯一标识 UUID，建立唯一索引 idx_request_id</td></tr><tr><td>timestamp</td><td>datetime</td><td>请求时间，默认 CURRENT_TIMESTAMP，建立索引 idx_timestamp 用于按时间范围查询</td></tr><tr><td>method</td><td>varchar(8)</td><td>HTTP 方法：GET / POST / PUT / DELETE</td></tr><tr><td>path</td><td>varchar(256)</td><td>请求路径，如 /api/students/123</td></tr><tr><td>user_id</td><td>bigint</td><td>认证用户 ID，未认证请求为 null，建立索引 idx_user_id 用于按用户追溯操作记录</td></tr><tr><td>ip</td><td>varchar(45)</td><td>客户端 IP 地址，支持 IPv4 和 IPv6（最长 45 字符）</td></tr><tr><td>status_code</td><td>int</td><td>HTTP 响应状态码</td></tr><tr><td>duration_ms</td><td>int</td><td>请求响应耗时（毫秒）</td></tr><tr><td>user_agent</td><td>varchar(256)</td><td>客户端 User-Agent 标识</td></tr></tbody></table>
+  <h3>idx_classes_grade_id</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>grade_id</td><td>INDEX</td><td>年级 ID 索引</td></tr></tbody></table>
 </div>
 <div class="model-item">
-  <h3>schema_migrations</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>version</td><td>varchar(32)</td><td>迁移版本号（如 '001'、'002'），主键，按版本号递增</td></tr><tr><td>description</td><td>varchar(256)</td><td>迁移描述（如 'create student table'）</td></tr><tr><td>checksum</td><td>varchar(64)</td><td>迁移文件的 SHA-256 校验和，防止已应用的迁移被篡改</td></tr><tr><td>applied_by</td><td>varchar(64)</td><td>执行迁移的操作用户名</td></tr><tr><td>applied_at</td><td>datetime</td><td>迁移执行时间，默认 CURRENT_TIMESTAMP</td></tr><tr><td>execution_time_ms</td><td>int</td><td>迁移执行耗时（毫秒）</td></tr></tbody></table>
+  <h3>idx_classes_name</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>name</td><td>INDEX</td><td>班级名称索引</td></tr></tbody></table>
 </div>
 <div class="model-item">
-  <h3>DatabaseConfig</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>engine</td><td>string</td><td>数据库引擎，MySQL InnoDB / PostgreSQL</td></tr><tr><td>charset</td><td>string</td><td>字符集，统一使用 utf8mb4（MySQL）或 UTF8（PostgreSQL），支持完整 Unicode 包括 emoji</td></tr><tr><td>collation</td><td>string</td><td>排序规则，utf8mb4_unicode_ci（MySQL）或 en_US.UTF8（PostgreSQL）</td></tr><tr><td>isolation_level</td><td>string</td><td>事务隔离级别，READ COMMITTED，在保证数据一致性的同时兼顾并发性能</td></tr><tr><td>max_connections</td><td>number</td><td>最大连接数，默认 100，各 Service 共享连接池</td></tr><tr><td>connection_pool_size</td><td>number</td><td>各 Service 连接池大小，默认 10，避免单服务耗尽连接</td></tr><tr><td>connection_timeout_ms</td><td>number</td><td>连接超时毫秒数，默认 5000</td></tr><tr><td>statement_timeout_ms</td><td>number</td><td>SQL 语句执行超时毫秒数，默认 30000，防止慢查询阻塞连接池</td></tr></tbody></table>
+  <h3>idx_grades_name</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>name</td><td>UNIQUE INDEX</td><td>年级名称唯一索引</td></tr></tbody></table>
+</div>
+<div class="model-item">
+  <h3>idx_student_subject_date</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>student_id</td><td>INDEX</td><td>学生 ID</td></tr><tr><td>subject</td><td>INDEX</td><td>科目名称</td></tr><tr><td>record_date</td><td>INDEX</td><td>记录日期</td></tr></tbody></table>
+</div>
+<div class="model-item">
+  <h3>idx_record_date</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>record_date</td><td>INDEX</td><td>记录日期索引</td></tr></tbody></table>
+</div>
+<div class="model-item">
+  <h3>idx_subject</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>subject</td><td>INDEX</td><td>科目索引</td></tr></tbody></table>
 </div>
   </div>
 </div>
@@ -225,44 +237,65 @@
 <div class="section">
   <div class="section-header">
     <div class="icon" style="background:rgba(34,211,238,0.12)">🔌</div>
-    <h2>接口定义 (7)</h2>
+    <h2>接口定义 (8)</h2>
   </div>
   <div class="section-body">
 
 <div class="comp-item">
-  <h3>数据库连接初始化</h3>
-  <div class="comp-type">内部接口 - 各 Service 启动时调用</div>
-  <p>各业务 Service 在启动时通过配置中心读取数据库连接参数（host、port、database、user、password），建立连接池。连接池采用 HikariCP（Java）/ pg-pool（Node.js）等成熟实现，支持健康检查和自动重连</p>
+  <h3>数据库连接池</h3>
+  <div class="comp-type">datasource: jdbc:mysql://&lt;host&gt;:&lt;port&gt;/cogniforge</div>
+  <p>系统使用 HikariCP 连接池管理数据库连接。连接池配置：初始连接数 10，最小空闲连接数 5，最大连接数 50，连接超时 30 秒，空闲超时 10 分钟，最大生命周期 30 分钟。所有服务共享同一数据源配置。连接池提供读/写分离能力——写操作路由到主库，聚合查询（如统计计算）可路由到只读从库以分摊读压力。连接有效性检测使用心跳 SQL（SELECT 1），间隔 60 秒。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>jdbc_url</td><td>string</td><td>JDBC 连接 URL，包含主机、端口、数据库名及连接参数（useSSL=true&amp;characterEncoding=utf8mb4&amp;serverTimezone=Asia/Shanghai）</td></tr><tr><td>pool_name</td><td>string</td><td>连接池名称，用于监控区分</td></tr><tr><td>maximum_pool_size</td><td>number</td><td>最大连接数，默认 50</td></tr><tr><td>connection_timeout</td><td>number</td><td>连接超时时间（毫秒），默认 30000</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>健康检查 - 数据库连通性</h3>
-  <div class="comp-type">各 Service 内部健康检查</div>
-  <p>各 Service 定期执行 SELECT 1（MySQL）或 SELECT 1（PostgreSQL）探测数据库连通性，响应超时（&gt;3s）触发告警并尝试重连</p>
+  <h3>事务管理</h3>
+  <div class="comp-type">transaction: TX_REQUIRED</div>
+  <p>所有写操作（INSERT、UPDATE、DELETE）均在事务中执行。事务传播行为采用 REQUIRED（支持当前事务，不存在则创建新事务）。隔离级别采用 READ_COMMITTED（读已提交），避免脏读同时保持较好的并发性能。事务超时默认 10 秒。Service 层的 @Transactional 注解管理事务边界，确保一组数据库操作要么全部成功提交，要么全部回滚。跨服务的分布式事务由应用层通过最终一致性保证，不采用 XA 分布式事务。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>propagation</td><td>string</td><td>事务传播行为: REQUIRED</td></tr><tr><td>isolation</td><td>string</td><td>事务隔离级别: READ_COMMITTED</td></tr><tr><td>timeout</td><td>number</td><td>事务超时时间（秒），默认 10</td></tr><tr><td>rollback_for</td><td>string</td><td>触发回滚的异常类型: Exception.class</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>Schema 迁移执行</h3>
-  <div class="comp-type">内部接口 - 应用部署时执行</div>
-  <p>应用部署时自动执行 schema_migrations 表中未应用的迁移脚本。迁移脚本文件按编号顺序存放在 db/migrations/ 目录，幂等执行（每个版本只执行一次）。迁移失败时回滚当前版本并中止部署，人工介入排查</p>
+  <h3>学生信息 CRUD 操作</h3>
+  <div class="comp-type">sql: students CRUD</div>
+  <p>Student Service 对 students 表执行的标准 CRUD 操作集。INSERT 操作包含学号唯一性校验（捕获唯一索引冲突异常转化为 409 响应）。UPDATE 操作按 id 定位，仅更新非空字段。DELETE 操作为物理删除。SELECT 支持按 name（LIKE 模糊匹配）、student_no（精确匹配）、class_id（精确匹配）组合条件，配合分页（LIMIT + OFFSET）和 COUNT 查询总数。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>INSERT</td><td>sql</td><td>INSERT INTO students (name, student_no, contact_phone, contact_email, class_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())</td></tr><tr><td>UPDATE</td><td>sql</td><td>UPDATE students SET name=?, contact_phone=?, contact_email=?, class_id=?, updated_at=NOW() WHERE id=?</td></tr><tr><td>DELETE</td><td>sql</td><td>DELETE FROM students WHERE id=?</td></tr><tr><td>SELECT_BY_ID</td><td>sql</td><td>SELECT id, name, student_no, contact_phone, contact_email, class_id, created_at, updated_at FROM students WHERE id=?</td></tr><tr><td>SELECT_LIST</td><td>sql</td><td>SELECT id, name, student_no, contact_phone, contact_email, class_id, created_at FROM students WHERE 1=1 AND name LIKE ? AND student_no=? AND class_id=? ORDER BY id DESC LIMIT ? OFFSET ?</td></tr><tr><td>SELECT_COUNT</td><td>sql</td><td>SELECT COUNT(*) FROM students WHERE 1=1 AND name LIKE ? AND student_no=? AND class_id=?</td></tr><tr><td>SELECT_BY_CLASS_ID</td><td>sql</td><td>SELECT id, name, student_no, contact_phone, contact_email FROM students WHERE class_id=? ORDER BY id DESC LIMIT ? OFFSET ?</td></tr><tr><td>SELECT_COUNT_BY_CLASS_ID</td><td>sql</td><td>SELECT COUNT(*) FROM students WHERE class_id=?</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>事务模板</h3>
-  <div class="comp-type">各 Service Repository 层通用模式</div>
-  <p>所有写操作（INSERT/UPDATE/DELETE）必须在事务内执行，事务边界由 Service 层控制。默认隔离级别 READ COMMITTED。事务内操作顺序要求：先查后写避免死锁，多个行更新按主键 ID 升序锁定。事务超时默认 10 秒，超过自动回滚</p>
+  <h3>班级信息 CRUD 操作</h3>
+  <div class="comp-type">sql: classes CRUD</div>
+  <p>Class Service 对 classes 表执行的标准 CRUD 操作集。student_count 在列表查询和详情查询时通过子查询或关联查询实时计算，不持久化。DELETE 操作为物理删除。SELECT 支持按 name（LIKE 模糊匹配）和 grade_id（精确匹配）筛选，配合分页。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>INSERT</td><td>sql</td><td>INSERT INTO classes (name, grade_id, description, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW())</td></tr><tr><td>UPDATE</td><td>sql</td><td>UPDATE classes SET name=?, grade_id=?, description=?, updated_at=NOW() WHERE id=?</td></tr><tr><td>DELETE</td><td>sql</td><td>DELETE FROM classes WHERE id=?</td></tr><tr><td>SELECT_BY_ID</td><td>sql</td><td>SELECT c.id, c.name, c.grade_id, c.description, c.created_at, c.updated_at, (SELECT COUNT(*) FROM students s WHERE s.class_id=c.id) AS student_count FROM classes c WHERE c.id=?</td></tr><tr><td>SELECT_LIST</td><td>sql</td><td>SELECT c.id, c.name, c.grade_id, c.description, c.created_at, (SELECT COUNT(*) FROM students s WHERE s.class_id=c.id) AS student_count FROM classes c WHERE 1=1 AND c.name LIKE ? AND c.grade_id=? ORDER BY c.id DESC LIMIT ? OFFSET ?</td></tr><tr><td>SELECT_COUNT</td><td>sql</td><td>SELECT COUNT(*) FROM classes WHERE 1=1 AND name LIKE ? AND grade_id=?</td></tr><tr><td>SELECT_BY_GRADE_ID</td><td>sql</td><td>SELECT c.id AS class_id, c.name AS class_name, c.description, (SELECT COUNT(*) FROM students s WHERE s.class_id=c.id) AS student_count FROM classes c WHERE c.grade_id=?</td></tr><tr><td>EXISTS_BY_ID</td><td>sql</td><td>SELECT id, name FROM classes WHERE id=?</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>数据库主从读写分离</h3>
-  <div class="comp-type">内部架构模式</div>
-  <p>数据库采用主从复制架构（MySQL Replication / PostgreSQL Streaming Replication）。写操作（INSERT/UPDATE/DELETE）路由到主库（Master），读操作（SELECT）根据场景路由：实时性要求高的查询（如写入后立即查询详情）走主库，允许秒级延迟的报表/统计查询走从库（Slave）。主从延迟监控阈值为 5 秒，超过触发告警并自动将查询切回主库</p>
+  <h3>年级信息 CRUD 操作</h3>
+  <div class="comp-type">sql: grades CRUD</div>
+  <p>Grade Service 对 grades 表执行的标准 CRUD 操作集。class_count 在列表查询时通过关联聚合查询实时计算。INSERT 操作包含名称唯一性校验（捕获唯一索引冲突异常转化为 409 响应）。DELETE 操作为物理删除。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>INSERT</td><td>sql</td><td>INSERT INTO grades (name, description, created_at, updated_at) VALUES (?, ?, NOW(), NOW())</td></tr><tr><td>UPDATE</td><td>sql</td><td>UPDATE grades SET name=?, description=?, updated_at=NOW() WHERE id=?</td></tr><tr><td>SELECT_BY_ID</td><td>sql</td><td>SELECT g.id, g.name, g.description, g.created_at, g.updated_at, (SELECT COUNT(*) FROM classes c WHERE c.grade_id=g.id) AS class_count FROM grades g WHERE g.id=?</td></tr><tr><td>SELECT_LIST</td><td>sql</td><td>SELECT g.id, g.name, g.description, g.created_at, (SELECT COUNT(*) FROM classes c WHERE c.grade_id=g.id) AS class_count FROM grades g ORDER BY g.id DESC LIMIT ? OFFSET ?</td></tr><tr><td>SELECT_COUNT</td><td>sql</td><td>SELECT COUNT(*) FROM grades</td></tr><tr><td>EXISTS_BY_ID</td><td>sql</td><td>SELECT id, name FROM grades WHERE id=?</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>慢查询日志</h3>
-  <div class="comp-type">数据库监控配置</div>
-  <p>启用数据库慢查询日志，记录执行时间超过 200ms 的 SQL。慢查询日志输出到文件或集成监控系统（如 Prometheus + Grafana），用于 DBA 和开发团队优化索引和查询性能。定期（每周）审查慢查询并进行索引优化</p>
+  <h3>学习记录 CRUD + 聚合查询操作</h3>
+  <div class="comp-type">sql: study_records CRUD + aggregation</div>
+  <p>Statistics Service 对 study_records 表的操作集，包括学习记录的写入和多种维度的聚合统计查询。所有统计通过 SQL 聚合函数实时计算：学生维度（AVG、SUM、MAX、MIN、COUNT 按 subject 分组）、班级维度（通过关联 students 表获取班级下所有学生的成绩记录后进行聚合）、年级维度（通过关联 classes 和 students 表获取年级下所有学生的成绩记录后聚合）。支持可选的日期范围过滤和科目筛选。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>INSERT</td><td>sql</td><td>INSERT INTO study_records (student_id, subject, score, record_date, remarks, created_at) VALUES (?, ?, ?, ?, ?, NOW())</td></tr><tr><td>SELECT_STUDENT_STATS</td><td>sql</td><td>SELECT subject, SUM(score) AS total_scores, AVG(score) AS average_score, MAX(score) AS max_score, MIN(score) AS min_score, COUNT(*) AS record_count FROM study_records WHERE student_id=? AND record_date BETWEEN ? AND ? GROUP BY subject</td></tr><tr><td>SELECT_STUDENT_OVERALL_AVG</td><td>sql</td><td>SELECT AVG(score) AS overall_average FROM study_records WHERE student_id=? AND record_date BETWEEN ? AND ?</td></tr><tr><td>SELECT_CLASS_STUDENT_IDS</td><td>sql</td><td>SELECT id FROM students WHERE class_id=?</td></tr><tr><td>SELECT_CLASS_STATS</td><td>sql</td><td>SELECT subject, AVG(score) AS class_average, MAX(score) AS highest_score, MIN(score) AS lowest_score, SUM(CASE WHEN score &gt;= 60 THEN 1 ELSE 0 END) / COUNT(*) * 100 AS pass_rate FROM study_records WHERE student_id IN (SELECT id FROM students WHERE class_id=?) AND subject=? AND record_date BETWEEN ? AND ? GROUP BY subject</td></tr><tr><td>SELECT_CLASS_OVERALL_AVG</td><td>sql</td><td>SELECT AVG(score) AS class_average FROM study_records WHERE student_id IN (SELECT id FROM students WHERE class_id=?) AND record_date BETWEEN ? AND ?</td></tr><tr><td>SELECT_GRADE_CLASS_IDS</td><td>sql</td><td>SELECT id, name FROM classes WHERE grade_id=?</td></tr><tr><td>SELECT_GRADE_STATS</td><td>sql</td><td>SELECT c.id AS class_id, c.name AS class_name, AVG(sr.score) AS class_average, COUNT(DISTINCT s.id) AS student_count FROM classes c LEFT JOIN students s ON s.class_id=c.id LEFT JOIN study_records sr ON sr.student_id=s.id WHERE c.grade_id=? GROUP BY c.id, c.name</td></tr><tr><td>SELECT_GRADE_OVERALL_AVG</td><td>sql</td><td>SELECT AVG(score) FROM study_records WHERE student_id IN (SELECT s.id FROM students s JOIN classes c ON s.class_id=c.id WHERE c.grade_id=?) AND record_date BETWEEN ? AND ?</td></tr><tr><td>SELECT_CLASS_AVG_BY_GRADE</td><td>sql</td><td>SELECT c.id AS class_id, c.name AS class_name, AVG(sr.score) AS class_average, COUNT(DISTINCT s.id) AS student_count FROM classes c JOIN students s ON s.class_id=c.id JOIN study_records sr ON sr.student_id=s.id WHERE c.grade_id=? AND sr.subject=? AND sr.record_date BETWEEN ? AND ? GROUP BY c.id, c.name</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>数据备份恢复</h3>
-  <div class="comp-type">运维操作</div>
-  <p>数据库全量备份每日凌晨 02:00 执行（mysqldump / pg_dump），保留最近 7 天备份。增量 Binlog 日志保留 72 小时。备份文件加密存储至远程对象存储。灾难恢复 RTO 目标 30 分钟，RPO 目标 1 小时</p>
+  <h3>用户认证操作</h3>
+  <div class="comp-type">sql: users authentication</div>
+  <p>API Gateway 在登录认证时对 users 表执行的查询操作。按 username 精确查找用户记录，获取密码哈希进行比对。username 唯一索引保证查询效率。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>SELECT_BY_USERNAME</td><td>sql</td><td>SELECT id, username, password, role, name FROM users WHERE username=?</td></tr><tr><td>SELECT_BY_ID</td><td>sql</td><td>SELECT id, username, role, name FROM users WHERE id=?</td></tr></tbody></table>
+</div>
+<div class="comp-item">
+  <h3>数据库 DDL 初始化</h3>
+  <div class="comp-type">sql: DDL schema initialization</div>
+  <p>系统首次启动时通过 DDL 脚本初始化数据库 schema，创建所有业务表和索引。使用 IF NOT EXISTS 保证幂等性。所有表使用 InnoDB 引擎，字符集 utf8mb4，排序规则 utf8mb4_unicode_ci。初始化脚本在应用启动时自动执行（通过 Flyway 或 Liquibase 管理版本化迁移）。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>CREATE_USERS</td><td>sql</td><td>CREATE TABLE IF NOT EXISTS users (id BIGINT AUTO_INCREMENT PRIMARY KEY, username VARCHAR(100) NOT NULL, password VARCHAR(255) NOT NULL, role VARCHAR(20) NOT NULL, name VARCHAR(100) NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci</td></tr><tr><td>CREATE_STUDENTS</td><td>sql</td><td>CREATE TABLE IF NOT EXISTS students (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100) NOT NULL, student_no VARCHAR(50) NOT NULL, contact_phone VARCHAR(20) NOT NULL, contact_email VARCHAR(100) NOT NULL, class_id BIGINT DEFAULT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci</td></tr><tr><td>CREATE_CLASSES</td><td>sql</td><td>CREATE TABLE IF NOT EXISTS classes (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100) NOT NULL, grade_id BIGINT DEFAULT NULL, description VARCHAR(500) DEFAULT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci</td></tr><tr><td>CREATE_GRADES</td><td>sql</td><td>CREATE TABLE IF NOT EXISTS grades (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100) NOT NULL, description VARCHAR(500) DEFAULT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci</td></tr><tr><td>CREATE_STUDY_RECORDS</td><td>sql</td><td>CREATE TABLE IF NOT EXISTS study_records (id BIGINT AUTO_INCREMENT PRIMARY KEY, student_id BIGINT NOT NULL, subject VARCHAR(100) NOT NULL, score DECIMAL(5,1) NOT NULL, record_date DATE NOT NULL, remarks VARCHAR(500) DEFAULT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci</td></tr><tr><td>CREATE_UNIQUE_INDEXES</td><td>sql</td><td>CREATE UNIQUE INDEX idx_users_username ON users(username); CREATE UNIQUE INDEX idx_student_no ON students(student_no); CREATE UNIQUE INDEX idx_grades_name ON grades(name); CREATE INDEX idx_students_class_id ON students(class_id); CREATE INDEX idx_students_name ON students(name); CREATE INDEX idx_classes_grade_id ON classes(grade_id); CREATE INDEX idx_classes_name ON classes(name); CREATE INDEX idx_student_subject_date ON study_records(student_id, subject, record_date); CREATE INDEX idx_record_date ON study_records(record_date); CREATE INDEX idx_subject ON study_records(subject)</td></tr></tbody></table>
 </div>
   </div>
 </div>
@@ -274,7 +307,7 @@
   </div>
   <div class="section-body">
 
-<p>数据库层错误统一在各 Service 的 Repository 层捕获并转换为业务异常向上抛出，不外泄原始数据库错误信息到 API 响应。分类处理：连接超时（ECONNREFUSED / 08001）→ 重试最多 3 次（指数退避，间隔 100ms/500ms/2s），重试耗尽后抛出 ServiceUnavailableError；死锁检测（1213 / 40001）→ 自动回滚当前事务后重试最多 2 次，重试耗尽后抛出 ConcurrencyConflictError；唯一键冲突（1062 / 23505）→ 转换为 ConflictError(message: '记录已存在') 携带具体字段名；外键约束违反（1451 / 23503）→ 转换为 BadRequestError(message: '关联数据不存在')；查询超时（statement_timeout）→ 记录慢查询日志并抛出 TimeoutError(message: '查询执行超时')。事务回滚后连接归还连接池，不影响后续请求。批量写入（如统计数据入库）中单条失败不影响整体，跳过失败记录并记录告警日志。数据迁移失败时回滚当前版本并中止后续版本执行。所有数据库操作必须有对应的 Prepared Statement 参数化查询防止 SQL 注入；禁止在业务代码中拼接 SQL 字符串。逻辑删除字段（deleted_at）必须由 Repository 层统一在基础查询方法中附加 WHERE 条件（软删除过滤器），各业务 Service 的 Repository 继承该过滤器以确保不遗漏。</p>
+<p>Relational Database 按以下规则处理异常：1）连接失败——应用启动时数据库不可达或运行中连接中断时，连接池抛出异常，应用应重试连接并记录 ERROR 级日志，重试间隔 5 秒，最多重试 3 次后触发服务启动失败告警；2）唯一约束冲突——INSERT 或 UPDATE 操作违反 UNIQUE INDEX（学号重复、年级名称重复、用户名重复）时，数据库抛出 DuplicateKeyException 或 IntegrityConstraintViolationException，由各 Service 层捕获后转化为 409 Conflict HTTP 响应返回给调用方；3）死锁——并发写入产生死锁时（DeadlockLoserDataAccessException），数据库自动选择牺牲一个事务并回滚，应用层检测到死锁异常后自动重试当前事务最多 3 次，每次重试前随机等待 100-500ms 以降低再次冲突概率；4）查询超时——复杂聚合查询（如年级统计跨多表关联）超过配置的查询超时阈值（默认 10 秒）时抛出 QueryTimeoutException，由 Service 层捕获后记录 WARN 日志，返回 504 Gateway Timeout 响应并考虑添加索引优化或拆分查询；5）事务回滚——任何 RuntimeException 在事务方法内抛出时触发事务回滚（rollbackFor = Exception.class），保证数据一致性，回滚后不需要重试的分支返回 500 Internal Server Error 给调用方；6）连接池耗尽——所有连接被占用且等待超过 connectionTimeout（30 秒）时，连接池抛出 SQLException，由 Service 层捕获后返回 503 Service Unavailable 响应体为 {&quot;error&quot;: &quot;service_unavailable&quot;, &quot;message&quot;: &quot;数据库连接池已满，请稍后重试&quot;}；7）数据截断——写入的字段长度超过表定义（如 VARCHAR(100) 写入超过 100 字符）时抛出 DataTruncation 异常，由 Service 层捕获后转化为 422 响应并提示具体字段超长；8）SQL 注入防御——所有 SQL 操作必须使用参数化查询（PreparedStatement / MyBatis #{param}）或 ORM 框架（MyBatis/Spring Data JPA），禁止字符串拼接 SQL。所有数据库操作记录慢查询日志，执行时间超过 1 秒的 SQL 输出 WARN 级日志，包含 SQL 文本、参数值和执行耗时，供后续 DBA 优化参考。</p>
   </div>
 </div>
 
