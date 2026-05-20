@@ -9,6 +9,8 @@ from typing import Optional
 
 
 def _esc(text: str) -> str:
+    if not isinstance(text, str):
+        text = str(text)
     return (
         text.replace("&", "&amp;").replace("<", "&lt;")
         .replace(">", "&gt;").replace('"', "&quot;")
@@ -291,7 +293,11 @@ def render_file(json_path: Path, wiki_root: Path | None = None) -> Optional[Path
 
     meta = data.get("meta", {})
     doc_type = meta.get("type", "prd")
-    html = render_to_html(doc_type, data)
+
+    try:
+        html = render_to_html(doc_type, data)
+    except Exception:
+        return None
 
     # Map .cogniforge/wiki/{type}[/{module}]/file.json → .cogniforge/html/{type}[/{module}]/file.html
     path_str = str(json_path)
