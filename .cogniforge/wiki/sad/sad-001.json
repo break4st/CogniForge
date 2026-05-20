@@ -2,114 +2,631 @@
   "meta": {
     "doc_id": "sad-001",
     "type": "sad",
-    "title": "学生管理系统架构方案",
+    "title": "学生管理系统架构设计",
     "author": "architect_agent",
-    "created": "2026-05-20 11:20"
+    "created": "2026-05-20 13:35"
   },
-  "system_overview": "学生管理系统是一套面向教务管理员和教师的 Web 应用，提供学生档案管理、班级管理、年级管理及学习统计等核心功能。系统采用前后端分离的模块化单体架构，以关系型数据库作为核心存储，结合缓存层提升查询性能，并通过异步任务处理统计数据的生成与缓存预热。系统旨在帮助教务管理员和教师高效维护学校组织架构并掌握学生学习情况。",
-  "architecture": "系统采用前后端分离的模块化单体架构（Modular Monolith）。后端按业务领域划分为四个核心模块：学生管理、班级管理、年级管理和学习统计，各模块通过明确的接口边界进行交互，共享同一个数据库实例但遵循按领域分表的 schema 设计原则。前端通过 RESTful API 与后端通信，API 层统一处理认证鉴权、请求路由和参数校验。缓存层（Redis）用于加速热点数据的读取（如班级成员列表、年级结构树），消息队列用于异步触发统计数据的计算与缓存更新，避免同步计算阻塞 API 响应。",
+  "system_overview": "学生管理系统是一套面向 K12 学校的综合管理平台，覆盖学生信息、班级、年级的全生命周期管理以及学习统计与分析。系统采用前后端分离的微服务架构，通过 API 网关统一接入，各业务领域拆分为独立服务，支撑教务管理员、班主任、教师、校长及家长/学生等多角色的使用场景。",
+  "architecture": "系统采用微服务架构风格，前端为单页应用（SPA），后端按业务领域拆分为学生服务、班级服务、年级服务、统计服务四个独立微服务，服务间通过 HTTP/REST 进行同步通信，通过消息队列进行异步解耦。统一由 API Gateway 负责路由、鉴权与限流。数据层采用关系型数据库作为主存储，Redis 作为缓存加速，各服务持有独立的数据库 schema 或专用表空间以保障领域隔离。",
   "components": [
     {
       "name": "Web UI",
       "type": "service",
-      "description": "基于 Vue.js 的单页应用，提供学生管理、班级管理、年级管理和学习统计的可视化操作界面",
+      "description": "基于现代前端框架构建的单页应用，提供学生管理、班级管理、年级管理、统计看板等可视化界面，面向教务管理员、教师、班主任、校长及家长等不同角色提供差异化视图。",
       "responsibilities": [
-        "渲染用户界面并与用户交互",
-        "调用后端 API 进行数据操作",
-        "图表展示学习统计数据",
-        "路由管理和状态管理"
+        "提供学生信息增删改查操作界面",
+        "提供班级与年级管理界面",
+        "提供学习统计看板与趋势图表",
+        "支持按角色权限动态展示功能菜单",
+        "通过 API Gateway 与后端服务通信"
       ]
     },
     {
       "name": "API Gateway",
       "type": "service",
-      "description": "统一 API 入口，负责请求路由、认证鉴权、参数校验和限流",
+      "description": "系统的统一入口，负责请求路由、身份认证、权限校验、流量控制与请求日志记录。所有客户端请求必须经过 API Gateway 才能访问后端微服务。",
       "responsibilities": [
-        "统一接收前端请求并路由至对应业务模块",
-        "用户身份认证与权限校验",
-        "请求参数合法性校验",
-        "API 限流与日志记录"
+        "统一接入所有客户端请求并进行路由分发",
+        "基于 JWT 进行用户身份认证与角色鉴权",
+        "请求限流与熔断保护后端服务",
+        "请求/响应日志记录与审计",
+        "跨域处理与协议适配"
       ]
     },
     {
       "name": "Student Service",
       "type": "service",
-      "description": "学生信息管理模块，负责学生档案的增删改查及搜索",
+      "description": "负责学生领域核心业务，管理学生从入学到毕业全生命周期的信息维护，包括基本信息管理、学号唯一性校验、学生检索以及数据的导入导出。",
       "responsibilities": [
-        "学生基本信息的创建、查询、更新和删除",
-        "按学号或姓名搜索学生",
-        "学生信息的校验与去重",
-        "提供学生数据给其他模块调用"
+        "学生基本信息的增删改查",
+        "学号唯一性校验与管理",
+        "支持按姓名、学号、年级等条件组合查询学生",
+        "学生信息的批量导入与导出",
+        "学生与班级、年级的关联关系维护"
       ]
     },
     {
       "name": "Class Service",
       "type": "service",
-      "description": "班级信息管理模块，负责班级的增删改查以及学生与班级的归属关系维护",
+      "description": "负责班级领域业务，管理班级的新建、调整与解散，维护班级-年级层级关系，支持班主任指派与班级学生名单查询。",
       "responsibilities": [
-        "班级信息的创建、查询、更新和删除",
-        "学生分配到指定班级",
-        "查看班级成员列表",
-        "维护班级与年级的归属关系"
+        "班级信息的增删改查",
+        "班级与年级的归属关系管理",
+        "班主任的指派与更换",
+        "班级学生名单查询",
+        "班级数量统计与容量管理"
       ]
     },
     {
       "name": "Grade Service",
       "type": "service",
-      "description": "年级信息管理模块，负责年级的增删改查以及年级下班级的组织关系",
+      "description": "负责年级领域业务，管理年级的新建、配置与学段分类，维护年级与班级的层级结构，支持按学年维度组织和查询。",
       "responsibilities": [
-        "年级信息的创建、查询、更新和删除",
-        "将班级归属到对应年级",
-        "查看年级下的班级列表",
-        "维护年级-班级的层级树结构"
+        "年级信息的增删改查",
+        "年级按学段（小学/初中/高中）和学年管理",
+        "年级与班级的层级关联维护",
+        "年级内班级数量统计",
+        "年级配置信息查询"
       ]
     },
     {
       "name": "Statistics Service",
       "type": "service",
-      "description": "学习统计模块，负责数据的聚合计算与统计分析",
+      "description": "负责学习数据的采集、聚合与分析，提供多维度统计报表与趋势分析，支持异步计算大批量统计数据，保证统计结果的实时性。",
       "responsibilities": [
-        "按学生维度统计学习数据",
-        "按班级/年级维度汇总统计",
-        "统计结果的格式化输出",
-        "异步处理统计任务并缓存结果"
+        "按学生、班级、年级维度聚合统计数据",
+        "学习成绩分布分析与趋势图表数据生成",
+        "出勤率统计",
+        "统计报表数据导出",
+        "异步消费消息队列事件更新统计结果"
       ]
     },
     {
       "name": "Relational Database",
       "type": "db",
-      "description": "主数据库（MySQL/PostgreSQL），存储所有业务数据的持久化信息",
+      "description": "系统主存储，采用 MySQL/PostgreSQL 关系型数据库，按服务拆分 schema 或使用独立数据库实例，存储学生、班级、年级、用户及统计等持久化数据。",
       "responsibilities": [
-        "存储学生、班级、年级等基础数据",
-        "存储学生-班级归属关系",
-        "存储班级-年级归属关系",
-        "存储学习统计数据",
-        "保证数据 ACID 特性与完整性"
+        "持久化存储学生、班级、年级等核心业务数据",
+        "保障数据的 ACID 事务特性",
+        "支持复杂查询与多维度聚合查询",
+        "按业务领域进行逻辑或物理隔离",
+        "数据备份与恢复"
       ]
     },
     {
       "name": "Cache",
       "type": "cache",
-      "description": "Redis 缓存层，缓存热点数据以提升查询性能",
+      "description": "基于 Redis 的分布式缓存层，用于缓存热点查询数据与频繁访问的配置信息，降低数据库读压力，提升接口响应速度。",
       "responsibilities": [
-        "缓存班级成员列表等热点查询结果",
-        "缓存年级结构树",
-        "缓存统计计算结果",
-        "降低数据库查询压力"
+        "缓存学生信息热点查询结果",
+        "缓存班级与年级配置信息",
+        "缓存统计中间结果提升聚合效率",
+        "实现分布式锁保障关键操作的互斥",
+        "管理会话状态与临时数据"
       ]
     },
     {
       "name": "Message Queue",
       "type": "mq",
-      "description": "消息队列，用于异步处理统计任务等耗时操作",
+      "description": "基于消息队列的异步通信层，用于服务间的异步事件通知与解耦，特别适用于统计数据的异步汇总计算场景。",
       "responsibilities": [
-        "接收统计计算请求并异步处理",
-        "解耦业务操作与统计计算",
-        "缓存失效后的异步重建",
-        "削峰填谷，避免突发请求压垮数据库"
+        "学生数据变更事件的通知与广播",
+        "异步触发统计数据计算任务",
+        "削峰填谷避免统计服务突发压力",
+        "保障消息的可靠投递与至少一次语义",
+        "服务间解耦与事件驱动编排"
       ]
     }
   ],
-  "topology": "系统部署为三层拓扑：第一层为 Nginx 反向代理，负责 SSL 终止和静态资源服务；第二层为 API Gateway 集群和 Web UI 静态资源分发；第三层为核心业务服务（Student/Class/Grade/Statistics Service）共享部署在同一应用服务器集群中。数据库采用主从架构，Redis 独立部署，消息队列独立部署。前端通过 HTTPS 访问 Nginx，Nginx 将 API 请求反向代理至 API Gateway，API Gateway 根据请求路径将请求分发至对应业务模块。业务模块之间通过内部接口调用，不经过外部网络。",
-  "data_flow": "核心数据流：用户通过 Web UI 发起操作请求 → Nginx 反向代理 → API Gateway 认证鉴权 → 对应业务 Service 处理请求 → 业务 Service 读写数据库/缓存 → 返回结果给前端。统计数据流：用户请求统计 → API Gateway → Statistics Service → Statistics Service 检查缓存，命中则直接返回，未命中则投递消息到 Message Queue → 异步 Worker 消费消息执行聚合计算 → 结果写入 DB 和 Cache，前端轮询或通过 WebSocket 获取结果。"
+  "contracts": [
+    {
+      "interface": "StudentInfoAPI",
+      "provider": "Student Service",
+      "consumers": ["API Gateway"],
+      "type": "REST",
+      "endpoint": "GET /api/v1/students",
+      "request": {
+        "path_params": [],
+        "query_params": [
+          {"name": "name", "type": "string", "required": false, "description": "学生姓名模糊搜索"},
+          {"name": "student_no", "type": "string", "required": false, "description": "学号精确匹配"},
+          {"name": "grade_id", "type": "integer", "required": false, "description": "年级 ID 过滤"},
+          {"name": "class_id", "type": "integer", "required": false, "description": "班级 ID 过滤"},
+          {"name": "page", "type": "integer", "required": false, "description": "页码"},
+          {"name": "page_size", "type": "integer", "required": false, "description": "每页条数"}
+        ],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "object",
+          "properties": {
+            "total": {"type": "integer", "description": "符合条件的学生总数"},
+            "items": {"type": "array", "items": {"type": "object", "description": "学生信息对象"}, "description": "学生列表"}
+          }
+        }
+      },
+      "description": "分页查询学生列表，支持按姓名、学号、年级、班级等多条件组合筛选"
+    },
+    {
+      "interface": "StudentDetailAPI",
+      "provider": "Student Service",
+      "consumers": ["API Gateway", "Class Service", "Grade Service"],
+      "type": "REST",
+      "endpoint": "GET /api/v1/students/{id}",
+      "request": {
+        "path_params": [
+          {"name": "id", "type": "integer", "required": true, "description": "学生 ID"}
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "integer", "description": "学生 ID"},
+            "name": {"type": "string", "description": "学生姓名"},
+            "student_no": {"type": "string", "description": "学号"},
+            "gender": {"type": "string", "description": "性别"},
+            "birth_date": {"type": "string", "description": "出生日期"},
+            "phone": {"type": "string", "description": "联系方式"},
+            "address": {"type": "string", "description": "家庭住址"},
+            "grade_id": {"type": "integer", "description": "年级 ID"},
+            "class_id": {"type": "integer", "description": "班级 ID"},
+            "enrollment_date": {"type": "string", "description": "入学日期"}
+          }
+        }
+      },
+      "description": "根据 ID 获取单个学生的完整详细信息"
+    },
+    {
+      "interface": "CreateStudentAPI",
+      "provider": "Student Service",
+      "consumers": ["API Gateway"],
+      "type": "REST",
+      "endpoint": "POST /api/v1/students",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "type": "object",
+          "properties": {
+            "name": {"type": "string", "required": true, "description": "学生姓名"},
+            "student_no": {"type": "string", "required": true, "description": "学号（系统唯一）"},
+            "gender": {"type": "string", "required": true, "description": "性别"},
+            "birth_date": {"type": "string", "required": true, "description": "出生日期"},
+            "phone": {"type": "string", "required": false, "description": "联系方式"},
+            "address": {"type": "string", "required": false, "description": "家庭住址"},
+            "grade_id": {"type": "integer", "required": true, "description": "所属年级 ID"},
+            "class_id": {"type": "integer", "required": true, "description": "所属班级 ID"}
+          }
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "integer", "description": "新创建的学生 ID"}
+          }
+        }
+      },
+      "description": "创建新学生记录，学号必须唯一"
+    },
+    {
+      "interface": "UpdateStudentAPI",
+      "provider": "Student Service",
+      "consumers": ["API Gateway"],
+      "type": "REST",
+      "endpoint": "PUT /api/v1/students/{id}",
+      "request": {
+        "path_params": [
+          {"name": "id", "type": "integer", "required": true, "description": "学生 ID"}
+        ],
+        "query_params": [],
+        "body": {
+          "type": "object",
+          "properties": {
+            "name": {"type": "string", "required": false, "description": "学生姓名"},
+            "phone": {"type": "string", "required": false, "description": "联系方式"},
+            "address": {"type": "string", "required": false, "description": "家庭住址"},
+            "grade_id": {"type": "integer", "required": false, "description": "所属年级 ID"},
+            "class_id": {"type": "integer", "required": false, "description": "所属班级 ID"}
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "integer", "description": "更新后的学生 ID"}
+          }
+        }
+      },
+      "description": "更新学生信息，支持部分字段更新"
+    },
+    {
+      "interface": "DeleteStudentAPI",
+      "provider": "Student Service",
+      "consumers": ["API Gateway"],
+      "type": "REST",
+      "endpoint": "DELETE /api/v1/students/{id}",
+      "request": {
+        "path_params": [
+          {"name": "id", "type": "integer", "required": true, "description": "学生 ID"}
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 204,
+        "body": {}
+      },
+      "description": "根据 ID 删除学生记录"
+    },
+    {
+      "interface": "StudentImportAPI",
+      "provider": "Student Service",
+      "consumers": ["API Gateway"],
+      "type": "REST",
+      "endpoint": "POST /api/v1/students/import",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "type": "object",
+          "properties": {
+            "file": {"type": "binary", "required": true, "description": "学生信息导入文件（CSV/Excel）"}
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "object",
+          "properties": {
+            "imported": {"type": "integer", "description": "成功导入条数"},
+            "failed": {"type": "integer", "description": "导入失败条数"},
+            "errors": {"type": "array", "items": {"type": "object"}, "description": "导入错误详情"}
+          }
+        }
+      },
+      "description": "批量导入学生信息"
+    },
+    {
+      "interface": "StudentExportAPI",
+      "provider": "Student Service",
+      "consumers": ["API Gateway"],
+      "type": "REST",
+      "endpoint": "GET /api/v1/students/export",
+      "request": {
+        "path_params": [],
+        "query_params": [
+          {"name": "grade_id", "type": "integer", "required": false, "description": "按年级筛选导出"},
+          {"name": "class_id", "type": "integer", "required": false, "description": "按班级筛选导出"}
+        ],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "binary",
+          "description": "导出的学生信息文件（CSV/Excel）"
+        }
+      },
+      "description": "导出学生信息为文件"
+    },
+    {
+      "interface": "ClassInfoAPI",
+      "provider": "Class Service",
+      "consumers": ["API Gateway", "Student Service"],
+      "type": "REST",
+      "endpoint": "GET /api/v1/classes",
+      "request": {
+        "path_params": [],
+        "query_params": [
+          {"name": "grade_id", "type": "integer", "required": false, "description": "按年级过滤班级"},
+          {"name": "page", "type": "integer", "required": false, "description": "页码"},
+          {"name": "page_size", "type": "integer", "required": false, "description": "每页条数"}
+        ],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "object",
+          "properties": {
+            "total": {"type": "integer", "description": "班级总数"},
+            "items": {"type": "array", "items": {"type": "object"}, "description": "班级列表"}
+          }
+        }
+      },
+      "description": "分页查询班级列表，支持按年级过滤"
+    },
+    {
+      "interface": "ClassDetailAPI",
+      "provider": "Class Service",
+      "consumers": ["API Gateway", "Student Service"],
+      "type": "REST",
+      "endpoint": "GET /api/v1/classes/{id}",
+      "request": {
+        "path_params": [
+          {"name": "id", "type": "integer", "required": true, "description": "班级 ID"}
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "integer", "description": "班级 ID"},
+            "name": {"type": "string", "description": "班级名称"},
+            "grade_id": {"type": "integer", "description": "所属年级 ID"},
+            "head_teacher": {"type": "string", "description": "班主任姓名"},
+            "student_count": {"type": "integer", "description": "班级学生人数"},
+            "capacity": {"type": "integer", "description": "班级容量上限"}
+          }
+        }
+      },
+      "description": "根据 ID 获取班级详细信息，包括班主任和学生人数"
+    },
+    {
+      "interface": "CreateClassAPI",
+      "provider": "Class Service",
+      "consumers": ["API Gateway"],
+      "type": "REST",
+      "endpoint": "POST /api/v1/classes",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "type": "object",
+          "properties": {
+            "name": {"type": "string", "required": true, "description": "班级名称"},
+            "grade_id": {"type": "integer", "required": true, "description": "所属年级 ID"},
+            "head_teacher": {"type": "string", "required": false, "description": "班主任姓名"},
+            "capacity": {"type": "integer", "required": false, "description": "班级容量上限"}
+          }
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "integer", "description": "新创建的班级 ID"}
+          }
+        }
+      },
+      "description": "创建新班级"
+    },
+    {
+      "interface": "ClassStudentsAPI",
+      "provider": "Class Service",
+      "consumers": ["API Gateway"],
+      "type": "REST",
+      "endpoint": "GET /api/v1/classes/{id}/students",
+      "request": {
+        "path_params": [
+          {"name": "id", "type": "integer", "required": true, "description": "班级 ID"}
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "object",
+          "properties": {
+            "class_id": {"type": "integer", "description": "班级 ID"},
+            "students": {"type": "array", "items": {"type": "object"}, "description": "班级学生列表"}
+          }
+        }
+      },
+      "description": "查询指定班级的学生名单"
+    },
+    {
+      "interface": "GradeInfoAPI",
+      "provider": "Grade Service",
+      "consumers": ["API Gateway", "Class Service", "Student Service"],
+      "type": "REST",
+      "endpoint": "GET /api/v1/grades",
+      "request": {
+        "path_params": [],
+        "query_params": [
+          {"name": "academic_year", "type": "string", "required": false, "description": "按学年过滤"},
+          {"name": "stage", "type": "string", "required": false, "description": "按学段过滤（小学/初中/高中）"},
+          {"name": "page", "type": "integer", "required": false, "description": "页码"},
+          {"name": "page_size", "type": "integer", "required": false, "description": "每页条数"}
+        ],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "object",
+          "properties": {
+            "total": {"type": "integer", "description": "年级总数"},
+            "items": {"type": "array", "items": {"type": "object"}, "description": "年级列表"}
+          }
+        }
+      },
+      "description": "分页查询年级列表，支持按学年和学段过滤"
+    },
+    {
+      "interface": "GradeDetailAPI",
+      "provider": "Grade Service",
+      "consumers": ["API Gateway", "Class Service", "Student Service"],
+      "type": "REST",
+      "endpoint": "GET /api/v1/grades/{id}",
+      "request": {
+        "path_params": [
+          {"name": "id", "type": "integer", "required": true, "description": "年级 ID"}
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "integer", "description": "年级 ID"},
+            "name": {"type": "string", "description": "年级名称"},
+            "stage": {"type": "string", "description": "学段（小学/初中/高中）"},
+            "academic_year": {"type": "string", "description": "所属学年"},
+            "class_count": {"type": "integer", "description": "年级下班级数量"}
+          }
+        }
+      },
+      "description": "根据 ID 获取年级详细信息"
+    },
+    {
+      "interface": "CreateGradeAPI",
+      "provider": "Grade Service",
+      "consumers": ["API Gateway"],
+      "type": "REST",
+      "endpoint": "POST /api/v1/grades",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "type": "object",
+          "properties": {
+            "name": {"type": "string", "required": true, "description": "年级名称"},
+            "stage": {"type": "string", "required": true, "description": "学段（小学/初中/高中）"},
+            "academic_year": {"type": "string", "required": true, "description": "所属学年"}
+          }
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "integer", "description": "新创建的年级 ID"}
+          }
+        }
+      },
+      "description": "创建新年级"
+    },
+    {
+      "interface": "StatisticsAPI",
+      "provider": "Statistics Service",
+      "consumers": ["API Gateway"],
+      "type": "REST",
+      "endpoint": "GET /api/v1/statistics/overview",
+      "request": {
+        "path_params": [],
+        "query_params": [
+          {"name": "scope", "type": "string", "required": true, "description": "统计范围: student/class/grade"},
+          {"name": "scope_id", "type": "integer", "required": true, "description": "对应范围 ID"},
+          {"name": "start_date", "type": "string", "required": false, "description": "统计开始日期"},
+          {"name": "end_date", "type": "string", "required": false, "description": "统计结束日期"}
+        ],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "object",
+          "properties": {
+            "scope": {"type": "string", "description": "统计范围"},
+            "total_students": {"type": "integer", "description": "学生总数"},
+            "avg_score": {"type": "number", "description": "平均分"},
+            "pass_rate": {"type": "number", "description": "及格率"},
+            "attendance_rate": {"type": "number", "description": "出勤率"},
+            "score_distribution": {"type": "object", "description": "成绩分布数据"},
+            "trend": {"type": "array", "items": {"type": "object"}, "description": "趋势数据"}
+          }
+        }
+      },
+      "description": "获取统计概览数据，支持按学生/班级/年级维度查看"
+    },
+    {
+      "interface": "StatisticsExportAPI",
+      "provider": "Statistics Service",
+      "consumers": ["API Gateway"],
+      "type": "REST",
+      "endpoint": "GET /api/v1/statistics/export",
+      "request": {
+        "path_params": [],
+        "query_params": [
+          {"name": "scope", "type": "string", "required": true, "description": "统计范围"},
+          {"name": "scope_id", "type": "integer", "required": true, "description": "对应范围 ID"},
+          {"name": "format", "type": "string", "required": false, "description": "导出格式（csv/pdf）"}
+        ],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "binary",
+          "description": "导出的统计报表文件"
+        }
+      },
+      "description": "导出统计报表"
+    },
+    {
+      "interface": "StudentEventTopic",
+      "provider": "Message Queue",
+      "consumers": ["Student Service", "Statistics Service"],
+      "type": "MQ",
+      "endpoint": "topic: student.data.changed",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "type": "object",
+          "properties": {
+            "event_type": {"type": "string", "description": "事件类型（created/updated/deleted）"},
+            "student_id": {"type": "integer", "description": "学生 ID"},
+            "timestamp": {"type": "string", "description": "事件发生时间"}
+          }
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {}
+      },
+      "description": "学生数据变更时发送事件通知，Statistics Service 异步消费以更新统计结果"
+    },
+    {
+      "interface": "AuthVerifyAPI",
+      "provider": "API Gateway",
+      "consumers": ["Web UI"],
+      "type": "REST",
+      "endpoint": "POST /api/v1/auth/login",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "type": "object",
+          "properties": {
+            "username": {"type": "string", "required": true, "description": "用户名"},
+            "password": {"type": "string", "required": true, "description": "密码"}
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "object",
+          "properties": {
+            "token": {"type": "string", "description": "JWT Token"},
+            "role": {"type": "string", "description": "用户角色"}
+          }
+        }
+      },
+      "description": "用户登录认证，返回 JWT Token"
+    }
+  ],
+  "topology": "系统部署采用分层拓扑结构。最外层为负载均衡层，将用户请求分发到 API Gateway 集群。第二层为 API Gateway 集群，负责认证鉴权后将请求路由到内网的各业务微服务实例。第三层为微服务层，包含 Student Service、Class Service、Grade Service、Statistics Service，各服务均以多实例方式部署以实现高可用。第四层为数据层，包含关系型数据库主从集群、Redis 缓存集群和消息队列集群。Web UI 通过 CDN 或反向代理对外提供服务。所有微服务实例部署在同一 Kubernetes 集群内，通过服务发现进行内部通信。",
+  "data_flow": "1）用户通过浏览器访问 Web UI，Web UI 发起 HTTP 请求至 API Gateway。2）API Gateway 验证 JWT Token 中的用户身份与角色，按路由规则将请求转发至对应的微服务。3）微服务首先查询 Redis 缓存，若命中则直接返回；若未命中则查询关系型数据库，并将结果回写缓存后返回。4）对于涉及统计数据变更的操作（如成绩录入），Student/Class Service 发送事件消息到 Message Queue。5）Statistics Service 异步消费消息队列中的事件，进行统计聚合计算后更新到数据库，并将结果缓存至 Redis。6）用户查询统计时，Statistics Service 直接从缓存或数据库返回聚合数据。7）跨服务的数据关联查询（如按年级查学生列表），通过服务间 HTTP 调用协同完成。"
 }

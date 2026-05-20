@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>学生管理系统架构方案 — sad-001</title>
+<title>学生管理系统架构设计 — sad-001</title>
 <style>
   :root {
     --c-bg: #0b0f19; --c-surface: #131926; --c-card: #191e2e;
@@ -149,8 +149,8 @@
   <div class="doc-id">sad-001</div>
   <div><span class="badge accent">系统架构文档</span></div>
 </div>
-<h1><span>系统架构文档</span> 学生管理系统架构方案</h1>
-<div class="meta">2026-05-20 11:20 &middot; 作者: architect_agent</div>
+<h1><span>系统架构文档</span> 学生管理系统架构设计</h1>
+<div class="meta">2026-05-20 13:35 &middot; 作者: architect_agent</div>
 
 <div class="section">
   <div class="section-header">
@@ -159,7 +159,7 @@
   </div>
   <div class="section-body">
 
-<p>学生管理系统是一套面向教务管理员和教师的 Web 应用，提供学生档案管理、班级管理、年级管理及学习统计等核心功能。系统采用前后端分离的模块化单体架构，以关系型数据库作为核心存储，结合缓存层提升查询性能，并通过异步任务处理统计数据的生成与缓存预热。系统旨在帮助教务管理员和教师高效维护学校组织架构并掌握学生学习情况。</p>
+<p>学生管理系统是一套面向 K12 学校的综合管理平台，覆盖学生信息、班级、年级的全生命周期管理以及学习统计与分析。系统采用前后端分离的微服务架构，通过 API 网关统一接入，各业务领域拆分为独立服务，支撑教务管理员、班主任、教师、校长及家长/学生等多角色的使用场景。</p>
   </div>
 </div>
 
@@ -170,7 +170,7 @@
   </div>
   <div class="section-body">
 
-<p>系统采用前后端分离的模块化单体架构（Modular Monolith）。后端按业务领域划分为四个核心模块：学生管理、班级管理、年级管理和学习统计，各模块通过明确的接口边界进行交互，共享同一个数据库实例但遵循按领域分表的 schema 设计原则。前端通过 RESTful API 与后端通信，API 层统一处理认证鉴权、请求路由和参数校验。缓存层（Redis）用于加速热点数据的读取（如班级成员列表、年级结构树），消息队列用于异步触发统计数据的计算与缓存更新，避免同步计算阻塞 API 响应。</p>
+<p>系统采用微服务架构风格，前端为单页应用（SPA），后端按业务领域拆分为学生服务、班级服务、年级服务、统计服务四个独立微服务，服务间通过 HTTP/REST 进行同步通信，通过消息队列进行异步解耦。统一由 API Gateway 负责路由、鉴权与限流。数据层采用关系型数据库作为主存储，Redis 作为缓存加速，各服务持有独立的数据库 schema 或专用表空间以保障领域隔离。</p>
   </div>
 </div>
 
@@ -184,56 +184,56 @@
 <div class="comp-item">
   <h3>Web UI</h3>
   <div class="comp-type">service</div>
-  <p>基于 Vue.js 的单页应用，提供学生管理、班级管理、年级管理和学习统计的可视化操作界面</p>
-  <ul class="comp-resp"><li>渲染用户界面并与用户交互</li><li>调用后端 API 进行数据操作</li><li>图表展示学习统计数据</li><li>路由管理和状态管理</li></ul>
+  <p>基于现代前端框架构建的单页应用，提供学生管理、班级管理、年级管理、统计看板等可视化界面，面向教务管理员、教师、班主任、校长及家长等不同角色提供差异化视图。</p>
+  <ul class="comp-resp"><li>提供学生信息增删改查操作界面</li><li>提供班级与年级管理界面</li><li>提供学习统计看板与趋势图表</li><li>支持按角色权限动态展示功能菜单</li><li>通过 API Gateway 与后端服务通信</li></ul>
 </div>
 <div class="comp-item">
   <h3>API Gateway</h3>
   <div class="comp-type">service</div>
-  <p>统一 API 入口，负责请求路由、认证鉴权、参数校验和限流</p>
-  <ul class="comp-resp"><li>统一接收前端请求并路由至对应业务模块</li><li>用户身份认证与权限校验</li><li>请求参数合法性校验</li><li>API 限流与日志记录</li></ul>
+  <p>系统的统一入口，负责请求路由、身份认证、权限校验、流量控制与请求日志记录。所有客户端请求必须经过 API Gateway 才能访问后端微服务。</p>
+  <ul class="comp-resp"><li>统一接入所有客户端请求并进行路由分发</li><li>基于 JWT 进行用户身份认证与角色鉴权</li><li>请求限流与熔断保护后端服务</li><li>请求/响应日志记录与审计</li><li>跨域处理与协议适配</li></ul>
 </div>
 <div class="comp-item">
   <h3>Student Service</h3>
   <div class="comp-type">service</div>
-  <p>学生信息管理模块，负责学生档案的增删改查及搜索</p>
-  <ul class="comp-resp"><li>学生基本信息的创建、查询、更新和删除</li><li>按学号或姓名搜索学生</li><li>学生信息的校验与去重</li><li>提供学生数据给其他模块调用</li></ul>
+  <p>负责学生领域核心业务，管理学生从入学到毕业全生命周期的信息维护，包括基本信息管理、学号唯一性校验、学生检索以及数据的导入导出。</p>
+  <ul class="comp-resp"><li>学生基本信息的增删改查</li><li>学号唯一性校验与管理</li><li>支持按姓名、学号、年级等条件组合查询学生</li><li>学生信息的批量导入与导出</li><li>学生与班级、年级的关联关系维护</li></ul>
 </div>
 <div class="comp-item">
   <h3>Class Service</h3>
   <div class="comp-type">service</div>
-  <p>班级信息管理模块，负责班级的增删改查以及学生与班级的归属关系维护</p>
-  <ul class="comp-resp"><li>班级信息的创建、查询、更新和删除</li><li>学生分配到指定班级</li><li>查看班级成员列表</li><li>维护班级与年级的归属关系</li></ul>
+  <p>负责班级领域业务，管理班级的新建、调整与解散，维护班级-年级层级关系，支持班主任指派与班级学生名单查询。</p>
+  <ul class="comp-resp"><li>班级信息的增删改查</li><li>班级与年级的归属关系管理</li><li>班主任的指派与更换</li><li>班级学生名单查询</li><li>班级数量统计与容量管理</li></ul>
 </div>
 <div class="comp-item">
   <h3>Grade Service</h3>
   <div class="comp-type">service</div>
-  <p>年级信息管理模块，负责年级的增删改查以及年级下班级的组织关系</p>
-  <ul class="comp-resp"><li>年级信息的创建、查询、更新和删除</li><li>将班级归属到对应年级</li><li>查看年级下的班级列表</li><li>维护年级-班级的层级树结构</li></ul>
+  <p>负责年级领域业务，管理年级的新建、配置与学段分类，维护年级与班级的层级结构，支持按学年维度组织和查询。</p>
+  <ul class="comp-resp"><li>年级信息的增删改查</li><li>年级按学段（小学/初中/高中）和学年管理</li><li>年级与班级的层级关联维护</li><li>年级内班级数量统计</li><li>年级配置信息查询</li></ul>
 </div>
 <div class="comp-item">
   <h3>Statistics Service</h3>
   <div class="comp-type">service</div>
-  <p>学习统计模块，负责数据的聚合计算与统计分析</p>
-  <ul class="comp-resp"><li>按学生维度统计学习数据</li><li>按班级/年级维度汇总统计</li><li>统计结果的格式化输出</li><li>异步处理统计任务并缓存结果</li></ul>
+  <p>负责学习数据的采集、聚合与分析，提供多维度统计报表与趋势分析，支持异步计算大批量统计数据，保证统计结果的实时性。</p>
+  <ul class="comp-resp"><li>按学生、班级、年级维度聚合统计数据</li><li>学习成绩分布分析与趋势图表数据生成</li><li>出勤率统计</li><li>统计报表数据导出</li><li>异步消费消息队列事件更新统计结果</li></ul>
 </div>
 <div class="comp-item">
   <h3>Relational Database</h3>
   <div class="comp-type">db</div>
-  <p>主数据库（MySQL/PostgreSQL），存储所有业务数据的持久化信息</p>
-  <ul class="comp-resp"><li>存储学生、班级、年级等基础数据</li><li>存储学生-班级归属关系</li><li>存储班级-年级归属关系</li><li>存储学习统计数据</li><li>保证数据 ACID 特性与完整性</li></ul>
+  <p>系统主存储，采用 MySQL/PostgreSQL 关系型数据库，按服务拆分 schema 或使用独立数据库实例，存储学生、班级、年级、用户及统计等持久化数据。</p>
+  <ul class="comp-resp"><li>持久化存储学生、班级、年级等核心业务数据</li><li>保障数据的 ACID 事务特性</li><li>支持复杂查询与多维度聚合查询</li><li>按业务领域进行逻辑或物理隔离</li><li>数据备份与恢复</li></ul>
 </div>
 <div class="comp-item">
   <h3>Cache</h3>
   <div class="comp-type">cache</div>
-  <p>Redis 缓存层，缓存热点数据以提升查询性能</p>
-  <ul class="comp-resp"><li>缓存班级成员列表等热点查询结果</li><li>缓存年级结构树</li><li>缓存统计计算结果</li><li>降低数据库查询压力</li></ul>
+  <p>基于 Redis 的分布式缓存层，用于缓存热点查询数据与频繁访问的配置信息，降低数据库读压力，提升接口响应速度。</p>
+  <ul class="comp-resp"><li>缓存学生信息热点查询结果</li><li>缓存班级与年级配置信息</li><li>缓存统计中间结果提升聚合效率</li><li>实现分布式锁保障关键操作的互斥</li><li>管理会话状态与临时数据</li></ul>
 </div>
 <div class="comp-item">
   <h3>Message Queue</h3>
   <div class="comp-type">mq</div>
-  <p>消息队列，用于异步处理统计任务等耗时操作</p>
-  <ul class="comp-resp"><li>接收统计计算请求并异步处理</li><li>解耦业务操作与统计计算</li><li>缓存失效后的异步重建</li><li>削峰填谷，避免突发请求压垮数据库</li></ul>
+  <p>基于消息队列的异步通信层，用于服务间的异步事件通知与解耦，特别适用于统计数据的异步汇总计算场景。</p>
+  <ul class="comp-resp"><li>学生数据变更事件的通知与广播</li><li>异步触发统计数据计算任务</li><li>削峰填谷避免统计服务突发压力</li><li>保障消息的可靠投递与至少一次语义</li><li>服务间解耦与事件驱动编排</li></ul>
 </div>
   </div>
 </div>
@@ -245,7 +245,7 @@
   </div>
   <div class="section-body">
 
-<p>系统部署为三层拓扑：第一层为 Nginx 反向代理，负责 SSL 终止和静态资源服务；第二层为 API Gateway 集群和 Web UI 静态资源分发；第三层为核心业务服务（Student/Class/Grade/Statistics Service）共享部署在同一应用服务器集群中。数据库采用主从架构，Redis 独立部署，消息队列独立部署。前端通过 HTTPS 访问 Nginx，Nginx 将 API 请求反向代理至 API Gateway，API Gateway 根据请求路径将请求分发至对应业务模块。业务模块之间通过内部接口调用，不经过外部网络。</p>
+<p>系统部署采用分层拓扑结构。最外层为负载均衡层，将用户请求分发到 API Gateway 集群。第二层为 API Gateway 集群，负责认证鉴权后将请求路由到内网的各业务微服务实例。第三层为微服务层，包含 Student Service、Class Service、Grade Service、Statistics Service，各服务均以多实例方式部署以实现高可用。第四层为数据层，包含关系型数据库主从集群、Redis 缓存集群和消息队列集群。Web UI 通过 CDN 或反向代理对外提供服务。所有微服务实例部署在同一 Kubernetes 集群内，通过服务发现进行内部通信。</p>
   </div>
 </div>
 
@@ -256,7 +256,7 @@
   </div>
   <div class="section-body">
 
-<p>核心数据流：用户通过 Web UI 发起操作请求 → Nginx 反向代理 → API Gateway 认证鉴权 → 对应业务 Service 处理请求 → 业务 Service 读写数据库/缓存 → 返回结果给前端。统计数据流：用户请求统计 → API Gateway → Statistics Service → Statistics Service 检查缓存，命中则直接返回，未命中则投递消息到 Message Queue → 异步 Worker 消费消息执行聚合计算 → 结果写入 DB 和 Cache，前端轮询或通过 WebSocket 获取结果。</p>
+<p>1）用户通过浏览器访问 Web UI，Web UI 发起 HTTP 请求至 API Gateway。2）API Gateway 验证 JWT Token 中的用户身份与角色，按路由规则将请求转发至对应的微服务。3）微服务首先查询 Redis 缓存，若命中则直接返回；若未命中则查询关系型数据库，并将结果回写缓存后返回。4）对于涉及统计数据变更的操作（如成绩录入），Student/Class Service 发送事件消息到 Message Queue。5）Statistics Service 异步消费消息队列中的事件，进行统计聚合计算后更新到数据库，并将结果缓存至 Redis。6）用户查询统计时，Statistics Service 直接从缓存或数据库返回聚合数据。7）跨服务的数据关联查询（如按年级查学生列表），通过服务间 HTTP 调用协同完成。</p>
   </div>
 </div>
 
