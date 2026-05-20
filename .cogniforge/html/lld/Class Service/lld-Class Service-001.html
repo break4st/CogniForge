@@ -150,7 +150,7 @@
   <div><span class="badge accent">详细设计文档</span></div>
 </div>
 <h1><span>详细设计文档</span> LLD - Class Service</h1>
-<div class="meta">2026-05-20 11:25 &middot; 作者: design_agent</div>
+<div class="meta">2026-05-20 13:41 &middot; 作者: design_agent</div>
 
 <div class="section">
   <div class="section-header">
@@ -160,44 +160,24 @@
   <div class="section-body">
 
 <p>模块: Class Service</p>
-<p>基于 RESTful 架构的班级信息管理服务，对外提供班级的增删改查、班级成员管理及班级-年级归属关系维护能力。采用分层设计：Controller 层处理 HTTP 请求与参数校验 → Service 层实现业务逻辑（班级名称去重、班级人数上限校验、学生归属关系维护） → Repository 层封装数据库访问。数据库使用 MySQL/PostgreSQL，核心表为 class（班级信息）和 class_student（班级-学生归属关系），class 表通过 grade_id 外键关联 grade 表维护班级-年级层级，class_student 表维护多对多的学生归属关系（一对多语义：一个学生在同一时间只应属于一个班级，由业务层保证）。班级成员查询需关联 student 表获取学生基本信息，并联动缓存层（Redis）缓存成员列表和班级人数，降低关联查询压力。与 Student Service 存在调用依赖：删除班级时需校验班级下是否仍有学生（防止数据孤儿）；新增/移除班级成员时需校验学生 ID 有效性（调用 Student Service）。</p>
+<p>负责班级领域业务，管理班级的新建、调整与解散，维护班级-年级层级关系，支持班主任指派与班级学生名单查询。提供 4 个 REST API 作为 provider 供 API Gateway 和 Student Service 调用；作为 consumer 依赖 Grade Service 的年级查询接口完成年级存在性校验，依赖 Student Service 的学生信息接口获取班级学生名单。provider 接口严格遵循 SAD 定义的契约签名。</p>
   </div>
 </div>
 
 <div class="section">
   <div class="section-header">
     <div class="icon" style="background:rgba(91,141,239,0.12)">🗄️</div>
-    <h2>数据模型 (7)</h2>
+    <h2>数据模型 (2)</h2>
   </div>
   <div class="section-body">
 
 <div class="model-item">
   <h3>class</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>bigint</td><td>班级 ID，自增主键，唯一标识</td></tr><tr><td>name</td><td>varchar(128)</td><td>班级名称，如'三年级一班'，同年级下名称不可重复，建立联合唯一索引 (grade_id, name)</td></tr><tr><td>grade_id</td><td>bigint</td><td>所属年级 ID，外键关联 grade 表，不可为空</td></tr><tr><td>head_teacher</td><td>varchar(64)</td><td>班主任姓名，可选</td></tr><tr><td>max_students</td><td>int</td><td>班级最大学生人数，默认 50，用于人数上限校验</td></tr><tr><td>description</td><td>varchar(256)</td><td>班级描述/备注，可选</td></tr><tr><td>created_at</td><td>datetime</td><td>创建时间，自动填充当前时间</td></tr><tr><td>updated_at</td><td>datetime</td><td>更新时间，记录变更时间戳</td></tr><tr><td>deleted_at</td><td>datetime</td><td>删除时间，逻辑删除标记，非 null 表示已删除</td></tr></tbody></table>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>bigint</td><td>主键 ID，自增</td></tr><tr><td>name</td><td>varchar(50)</td><td>班级名称</td></tr><tr><td>grade_id</td><td>bigint</td><td>所属年级 ID，关联 Grade Service 年级表</td></tr><tr><td>head_teacher</td><td>varchar(50)</td><td>班主任姓名，可为空</td></tr><tr><td>capacity</td><td>int</td><td>班级容量上限，默认 50</td></tr><tr><td>created_at</td><td>datetime</td><td>创建时间</td></tr><tr><td>updated_at</td><td>datetime</td><td>最后更新时间</td></tr></tbody></table>
 </div>
 <div class="model-item">
-  <h3>class_student</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>bigint</td><td>关系 ID，自增主键</td></tr><tr><td>class_id</td><td>bigint</td><td>班级 ID，外键关联 class 表</td></tr><tr><td>student_id</td><td>bigint</td><td>学生 ID，外键关联 student 表</td></tr><tr><td>joined_at</td><td>datetime</td><td>加入班级时间，自动填充</td></tr><tr><td>deleted_at</td><td>datetime</td><td>删除时间，逻辑删除标记，移除班级时设置此字段</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>ClassCreateRequest</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>name</td><td>string</td><td>班级名称，必填，最长 128 字符，同年级下不可重复</td></tr><tr><td>gradeId</td><td>number</td><td>所属年级 ID，必填，需与 Grade Service 校验有效性</td></tr><tr><td>headTeacher</td><td>string</td><td>班主任姓名，可选，最长 64 字符</td></tr><tr><td>maxStudents</td><td>number</td><td>班级最大人数，可选，默认 50</td></tr><tr><td>description</td><td>string</td><td>班级描述，可选，最长 256 字符</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>ClassUpdateRequest</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>name</td><td>string</td><td>班级名称，最长 128 字符，同年级下不可重复（排除自身）</td></tr><tr><td>gradeId</td><td>number</td><td>所属年级 ID，变更时校验新年级有效性及名称唯一性</td></tr><tr><td>headTeacher</td><td>string</td><td>班主任姓名</td></tr><tr><td>maxStudents</td><td>number</td><td>班级最大人数，调整后若低于当前人数则拒绝更新</td></tr><tr><td>description</td><td>string</td><td>班级描述</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>ClassResponse</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>班级 ID</td></tr><tr><td>name</td><td>string</td><td>班级名称</td></tr><tr><td>gradeId</td><td>number</td><td>所属年级 ID</td></tr><tr><td>gradeName</td><td>string</td><td>所属年级名称（关联 Grade Service 查询填充）</td></tr><tr><td>headTeacher</td><td>string</td><td>班主任姓名</td></tr><tr><td>maxStudents</td><td>number</td><td>班级最大人数</td></tr><tr><td>studentCount</td><td>number</td><td>当前在班学生数（从 class_student 表统计或从缓存读取）</td></tr><tr><td>description</td><td>string</td><td>班级描述</td></tr><tr><td>createdAt</td><td>string</td><td>创建时间 ISO 8601</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>ClassStudentResponse</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>studentId</td><td>number</td><td>学生 ID</td></tr><tr><td>name</td><td>string</td><td>学生姓名</td></tr><tr><td>studentNo</td><td>string</td><td>学号</td></tr><tr><td>gender</td><td>string</td><td>性别</td></tr><tr><td>joinedAt</td><td>string</td><td>加入班级时间 ISO 8601</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>PaginatedResult</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>items</td><td>object[]</td><td>当前页数据列表</td></tr><tr><td>page</td><td>number</td><td>当前页码</td></tr><tr><td>pageSize</td><td>number</td><td>每页条数</td></tr><tr><td>total</td><td>number</td><td>总记录数</td></tr><tr><td>totalPages</td><td>number</td><td>总页数</td></tr></tbody></table>
+  <h3>class_list_item</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>integer</td><td>班级 ID</td></tr><tr><td>name</td><td>string</td><td>班级名称</td></tr><tr><td>grade_id</td><td>integer</td><td>所属年级 ID</td></tr><tr><td>head_teacher</td><td>string</td><td>班主任姓名</td></tr><tr><td>student_count</td><td>integer</td><td>班级当前在籍学生人数，通过查询 Student Service 获得</td></tr><tr><td>capacity</td><td>integer</td><td>班级容量上限</td></tr></tbody></table>
 </div>
   </div>
 </div>
@@ -205,59 +185,44 @@
 <div class="section">
   <div class="section-header">
     <div class="icon" style="background:rgba(34,211,238,0.12)">🔌</div>
-    <h2>接口定义 (10)</h2>
+    <h2>接口定义 (7)</h2>
   </div>
   <div class="section-body">
 
 <div class="comp-item">
-  <h3>班级列表查询</h3>
-  <div class="comp-type">GET /api/classes</div>
-  <p>分页查询班级列表，支持按年级筛选和关键词搜索班级名称。条件之间为 AND 关系</p>
+  <h3>ClassInfoAPI</h3>
+  <div class="comp-type">GET /api/v1/classes</div>
+  <p>（Provider）分页查询班级列表，支持按年级过滤。返回列表中的每条记录包含 id、name、grade_id、head_teacher、student_count、capacity 字段。student_count 通过查询 Student Service 的 StudentInfoAPI（filter by class_id）获取各班级实时学生人数。命中缓存则直接返回；未命中则查询数据库后回写缓存。缓存 key 格式：class:list:{grade_id}:{page}:{page_size}。</p>
 </div>
 <div class="comp-item">
-  <h3>班级详情查询</h3>
-  <div class="comp-type">GET /api/classes/:id</div>
-  <p>根据 ID 获取单个班级的详细信息，包含年级名称和当前学生人数。返回 404 当班级不存在</p>
+  <h3>ClassDetailAPI</h3>
+  <div class="comp-type">GET /api/v1/classes/{id}</div>
+  <p>（Provider）根据 ID 获取班级详细信息。student_count 通过查询 Student Service 的 StudentInfoAPI（filter by class_id）获取当前在籍人数。命中缓存则直接返回；未命中则查询数据库后回写缓存。缓存 key 格式：class:detail:{id}。</p>
 </div>
 <div class="comp-item">
-  <h3>创建班级</h3>
-  <div class="comp-type">POST /api/classes</div>
-  <p>新增一条班级记录。校验名称在同年级下的唯一性（重复返回 409）、gradeId 有效性（调用 Grade Service 校验，年级不存在返回 400）</p>
+  <h3>CreateClassAPI</h3>
+  <div class="comp-type">POST /api/v1/classes</div>
+  <p>（Provider）创建新班级。先校验 grade_id 存在性（调用 GradeService.GradeDetailAPI），若年级不存在则拒绝并返回 422；再校验同年级内班级名称是否重复（查询 class 表 (grade_id, name) 唯一索引），若重复返回 409；校验通过后写入数据库，清除班级列表缓存。</p>
 </div>
 <div class="comp-item">
-  <h3>更新班级</h3>
-  <div class="comp-type">PUT /api/classes/:id</div>
-  <p>更新指定班级的基本信息。名称变更时校验同年级下唯一性（排除自身）。gradeId 变更时校验新年级有效性。maxStudents 调低后若低于当前在班人数则拒绝更新</p>
+  <h3>ClassStudentsAPI</h3>
+  <div class="comp-type">GET /api/v1/classes/{id}/students</div>
+  <p>（Provider）查询指定班级的学生名单。先校验班级是否存在（查 class 表），不存在则返回 404。存在则调用 StudentService.StudentInfoAPI 并传入 class_id 过滤条件，获取该班级全部在籍学生列表，将其作为 students 数组返回。返回的学生对象包含学生完整档案信息（id、name、student_no、gender、birth_date、phone、address、grade_id、class_id、enrollment_date）。</p>
 </div>
 <div class="comp-item">
-  <h3>删除班级</h3>
-  <div class="comp-type">DELETE /api/classes/:id</div>
-  <p>逻辑删除指定班级（设置 deleted_at 时间戳），不物理删除。删除前校验班级下是否仍有学生（class_student 中 deleted_at IS NULL 的记录），若有学生则拒绝删除返回 409</p>
+  <h3>StudentDetailAPI</h3>
+  <div class="comp-type">GET /api/v1/students/{id}</div>
+  <p>（Consumer — Student Service）根据 ID 获取单个学生的完整详细信息。Class Service 在 ClassStudentsAPI 中通过该接口获取班级内单名学生的详细信息（当需要精确单条查询时使用）。</p>
 </div>
 <div class="comp-item">
-  <h3>班级成员列表查询</h3>
-  <div class="comp-type">GET /api/classes/:id/students</div>
-  <p>分页查询指定班级的成员列表，需关联 student 表获取学生基本信息（姓名、学号、性别）。优先从缓存读取，缓存未命中则查 DB 并回填缓存</p>
+  <h3>GradeDetailAPI</h3>
+  <div class="comp-type">GET /api/v1/grades/{id}</div>
+  <p>（Consumer — Grade Service）根据 ID 获取年级详细信息，用于 CreateClassAPI 创建班级时校验 grade_id 的有效性。</p>
 </div>
 <div class="comp-item">
-  <h3>添加班级成员</h3>
-  <div class="comp-type">POST /api/classes/:id/students</div>
-  <p>将一个学生分配到指定班级。校验学生 ID 有效性（调用 Student Service，不存在返回 400），校验该学生是否已在其他班级（同一学生在 class_student 中只能有一条未删除记录，如果已有则先移出旧班级再加入新班级），校验班级人数是否已达上限（拒绝返回 409）。操作成功后清除班级成员列表缓存</p>
-</div>
-<div class="comp-item">
-  <h3>移除班级成员</h3>
-  <div class="comp-type">DELETE /api/classes/:id/students/:studentId</div>
-  <p>将指定学生从班级中移除（逻辑删除 class_student 中对应的记录，设置 deleted_at）。校验该学生是否确实在当前班级中（不存在返回 404）。操作成功后清除班级成员列表缓存</p>
-</div>
-<div class="comp-item">
-  <h3>搜索班级</h3>
-  <div class="comp-type">GET /api/classes/search</div>
-  <p>精简版搜索接口，不返回分页元信息，适用于下拉选择器等组件快速查找。keyword 为空时返回空列表</p>
-</div>
-<div class="comp-item">
-  <h3>获取班级人数统计</h3>
-  <div class="comp-type">GET /api/classes/statistics/headcount</div>
-  <p>按班级维度统计各班级当前在班人数（按年级分组可供前端展示）。用于学习统计模块和 Web UI 仪表盘展示。优先返回缓存数据</p>
+  <h3>GradeInfoAPI</h3>
+  <div class="comp-type">GET /api/v1/grades</div>
+  <p>（Consumer — Grade Service）分页查询年级列表，支持按学年和学段过滤。Class Service 在需要按年级维度获取班级统计信息时使用。</p>
 </div>
   </div>
 </div>
@@ -269,7 +234,7 @@
   </div>
   <div class="section-body">
 
-<p>全局统一返回标准 JSON 格式：{ code: number, message: string, details?: any }。4xx 错误携带具体校验提示：班级不存在返回 404（message: '班级不存在'），班级名称在同年级下重复返回 409（message: '该年级下已存在同名班级'），年级无效返回 400（message: '指定的年级不存在'），学生不存在返回 400（message: '指定的学生不存在'），班级人数已达上限返回 409（message: '班级人数已达上限，无法添加新成员'），班级下仍有学生时拒绝删除返回 409（message: '班级下仍有学生，请先移除所有学生后再删除'），参数格式错误返回 400（message: '参数错误' 并 details 标明具体字段）。5xx 错误统一返回 500（message: '系统内部错误'），完整错误栈记录到服务日志。逻辑删除的记录在列表查询和详情查询中均被过滤（WHERE deleted_at IS NULL）。class_student 关系表采用逻辑删除，同一学生加入新班级前自动逻辑删除旧归属记录，保证一个学生同时只属于一个班级的业务约束。缓存操作（Redis）失败时降级为直接查询数据库，不阻塞正常业务流程。</p>
+<p>Class Service 统一返回 JSON 错误体 {&quot;code&quot;: &quot;错误码&quot;, &quot;message&quot;: &quot;错误描述&quot;}。1) 班级不存在时 ClassDetailAPI / ClassStudentsAPI 返回 404 Not Found，错误码 'CLASS_NOT_FOUND'。2) 创建班级时同年级内班级名称重复返回 409 Conflict，错误码 'CLASS_NAME_DUPLICATE'。3) 引用的年级不存在（via GradeService.GradeDetailAPI）返回 422 Unprocessable Entity，错误码 'GRADE_NOT_FOUND'。4) 请求参数校验失败（如 name/grade_id 缺失、page/page_size 格式错误）返回 400 Bad Request，错误码 'INVALID_PARAMETER'。5) 调用下游服务（Student Service / Grade Service）超时阈值为 5 秒，超时或连接失败返回 503 Service Unavailable，错误码 'DEPENDENCY_TIMEOUT'。6) 数据库操作异常返回 500 Internal Server Error，错误码 'DATABASE_ERROR'。</p>
   </div>
 </div>
 
