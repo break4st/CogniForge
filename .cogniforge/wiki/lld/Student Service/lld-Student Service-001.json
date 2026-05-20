@@ -1,0 +1,147 @@
+{
+  "meta": {
+    "doc_id": "lld-Student Service-001",
+    "type": "lld",
+    "module": "Student Service",
+    "title": "LLD - Student Service",
+    "author": "design_agent",
+    "created": "2026-05-20 11:24"
+  },
+  "overview": "基于 RESTful 架构的学生档案管理服务，对外提供学生信息的增删改查及搜索能力。采用分层设计：Controller 层处理 HTTP 请求与参数校验 → Service 层实现业务逻辑（学号去重、班级归属校验、搜索解析） → Repository 层封装数据库访问。数据库使用 MySQL/PostgreSQL，学生表作为核心持久化存储，学号字段建立唯一索引保证全局唯一。搜索功能通过数据库的 LIKE 模糊匹配实现（按学号或姓名），支持分页返回。与 Class Service 存在调用依赖：创建/更新学生时需验证 classId 对应的班级是否存在，删除学生时需通知 Class Service 更新班级人数缓存。",
+  "data_models": [
+    {
+      "name": "student",
+      "type": "table",
+      "fields": [
+        { "name": "id", "type": "bigint", "description": "学生 ID，自增主键，唯一标识" },
+        { "name": "student_no", "type": "varchar(32)", "description": "学号，全局唯一，建立唯一索引" },
+        { "name": "name", "type": "varchar(64)", "description": "学生姓名" },
+        { "name": "gender", "type": "varchar(8)", "description": "性别：male / female" },
+        { "name": "phone", "type": "varchar(20)", "description": "联系方式，手机号或座机号" },
+        { "name": "class_id", "type": "bigint", "description": "所属班级 ID，外键关联 class 表，可为 null（未分配班级）" },
+        { "name": "created_at", "type": "datetime", "description": "创建时间，自动填充当前时间" },
+        { "name": "updated_at", "type": "datetime", "description": "更新时间，记录变更时间戳" },
+        { "name": "deleted_at", "type": "datetime", "description": "删除时间，逻辑删除标记，非 null 表示已删除" }
+      ]
+    },
+    {
+      "name": "StudentCreateRequest",
+      "type": "struct",
+      "fields": [
+        { "name": "name", "type": "string", "description": "学生姓名，必填，最长 64 字符" },
+        { "name": "studentNo", "type": "string", "description": "学号，必填，最长 32 字符，不可重复" },
+        { "name": "gender", "type": "string", "description": "性别，必填，枚举值 male / female" },
+        { "name": "phone", "type": "string", "description": "联系方式，可选，最长 20 字符" },
+        { "name": "classId", "type": "number", "description": "所属班级 ID，可选，需与 Class Service 校验有效性" }
+      ]
+    },
+    {
+      "name": "StudentUpdateRequest",
+      "type": "struct",
+      "fields": [
+        { "name": "name", "type": "string", "description": "学生姓名，最长 64 字符" },
+        { "name": "studentNo", "type": "string", "description": "学号，最长 32 字符，不可与已有记录重复（排除自身）" },
+        { "name": "gender", "type": "string", "description": "性别，枚举值 male / female" },
+        { "name": "phone", "type": "string", "description": "联系方式，最长 20 字符" },
+        { "name": "classId", "type": "number", "description": "所属班级 ID，设为 null 表示取消班级归属" }
+      ]
+    },
+    {
+      "name": "StudentResponse",
+      "type": "struct",
+      "fields": [
+        { "name": "id", "type": "number", "description": "学生 ID" },
+        { "name": "name", "type": "string", "description": "学生姓名" },
+        { "name": "studentNo", "type": "string", "description": "学号" },
+        { "name": "gender", "type": "string", "description": "性别" },
+        { "name": "phone", "type": "string", "description": "联系方式" },
+        { "name": "classId", "type": "number | null", "description": "所属班级 ID" },
+        { "name": "className", "type": "string", "description": "所属班级名称（关联查询 Class Service 填充）" },
+        { "name": "createdAt", "type": "string", "description": "创建时间 ISO 8601" }
+      ]
+    },
+    {
+      "name": "PaginatedResult",
+      "type": "struct",
+      "fields": [
+        { "name": "items", "type": "StudentResponse[]", "description": "当前页数据列表" },
+        { "name": "page", "type": "number", "description": "当前页码" },
+        { "name": "pageSize", "type": "number", "description": "每页条数" },
+        { "name": "total", "type": "number", "description": "总记录数" },
+        { "name": "totalPages", "type": "number", "description": "总页数" }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "学生列表查询",
+      "endpoint": "GET /api/students",
+      "description": "分页查询学生列表，支持按关键词搜索学号或姓名、按班级筛选。条件之间为 AND 关系",
+      "parameters": [
+        { "name": "page", "type": "number", "description": "页码，从 1 开始，默认 1" },
+        { "name": "pageSize", "type": "number", "description": "每页条数，默认 20，最大 100" },
+        { "name": "keyword", "type": "string", "description": "搜索关键词，在 student_no 和 name 字段上做 LIKE '%keyword%' 模糊匹配，可选" },
+        { "name": "classId", "type": "number", "description": "按班级 ID 精确筛选，可选" }
+      ]
+    },
+    {
+      "name": "学生详情查询",
+      "endpoint": "GET /api/students/:id",
+      "description": "根据 ID 获取单个学生的完整信息，包含班级名称。返回 404 当学生不存在",
+      "parameters": [
+        { "name": "id", "type": "number", "description": "学生 ID（路径参数）" }
+      ]
+    },
+    {
+      "name": "创建学生",
+      "endpoint": "POST /api/students",
+      "description": "新增一条学生档案记录。校验学号唯一性（学号重复返回 409）、班级 ID 有效性（调用 Class Service 校验，班级不存在返回 400）",
+      "parameters": [
+        { "name": "name", "type": "string", "description": "学生姓名，必填" },
+        { "name": "studentNo", "type": "string", "description": "学号，必填，不可重复" },
+        { "name": "gender", "type": "string", "description": "性别，必填，仅允许 male / female" },
+        { "name": "phone", "type": "string", "description": "联系方式，可选" },
+        { "name": "classId", "type": "number", "description": "所属班级 ID，可选" }
+      ]
+    },
+    {
+      "name": "更新学生",
+      "endpoint": "PUT /api/students/:id",
+      "description": "更新指定学生的基本信息。学号变更时校验唯一性（排除自身）。classId 变更时校验新班级的有效性",
+      "parameters": [
+        { "name": "id", "type": "number", "description": "学生 ID（路径参数）" },
+        { "name": "name", "type": "string", "description": "学生姓名" },
+        { "name": "studentNo", "type": "string", "description": "学号" },
+        { "name": "gender", "type": "string", "description": "性别" },
+        { "name": "phone", "type": "string", "description": "联系方式" },
+        { "name": "classId", "type": "number", "description": "所属班级 ID，传 null 或省略表示取消班级归属" }
+      ]
+    },
+    {
+      "name": "删除学生",
+      "endpoint": "DELETE /api/students/:id",
+      "description": "逻辑删除指定学生的档案记录（设置 deleted_at 时间戳），不物理删除。删除成功需通知 Class Service 刷新该班级的学生人数缓存",
+      "parameters": [
+        { "name": "id", "type": "number", "description": "学生 ID（路径参数）" }
+      ]
+    },
+    {
+      "name": "搜索学生",
+      "endpoint": "GET /api/students/search",
+      "description": "精简版搜索接口，不返回分页元信息，适用于下拉选择器等组件快速查找。keyword 为空时返回空列表",
+      "parameters": [
+        { "name": "keyword", "type": "string", "description": "搜索关键词，在学号和姓名上匹配，必填" },
+        { "name": "limit", "type": "number", "description": "返回条数上限，默认 10，最大 50" }
+      ]
+    },
+    {
+      "name": "批量查询学生",
+      "endpoint": "GET /api/students/batch",
+      "description": "根据 ID 列表批量查询学生基本信息，用于被 Class Service / Statistics Service 内部调用获取学生数据",
+      "parameters": [
+        { "name": "ids", "type": "number[]", "description": "学生 ID 数组，以逗号分隔传入，如 ?ids=1,2,3，上限 100 个" }
+      ]
+    }
+  ],
+  "error_handling": "全局统一返回标准 JSON 格式：{ code: number, message: string, details?: any }。4xx 错误携带具体校验提示：学生不存在返回 404（message: '学生不存在'），学号重复返回 409（message: '学号已存在'），班级无效返回 400（message: '指定的班级不存在'），参数格式错误返回 400（message: '参数错误' 并 details 标明具体字段）。5xx 错误统一返回 500（message: '系统内部错误'），完整错误栈记录到服务日志。逻辑删除的记录在列表查询和详情查询中均被过滤（WHERE deleted_at IS NULL），若通过 ID 查询到已逻辑删除的记录也返回 404。批量操作（batch 接口）中，单个 ID 不存在不整体失败，而是在返回结果中标记该 ID 对应的记录为 null。"
+}
