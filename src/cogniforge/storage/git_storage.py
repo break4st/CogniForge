@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 from datetime import datetime
 
-from git import Repo, GitCommandError
+from git import Repo, GitCommandError, InvalidGitRepositoryError
 
 from cogniforge.core.exceptions import GitStorageError
 
@@ -20,7 +20,7 @@ class GitStorage:
         self.repo_path = Path(repo_path)
         try:
             self.repo = Repo(self.repo_path)
-        except GitCommandError:
+        except (GitCommandError, InvalidGitRepositoryError):
             self.repo = Repo.init(self.repo_path)
 
     def read_file(self, relative_path: str) -> Optional[str]:
