@@ -1,0 +1,315 @@
+{
+  "meta": {
+    "doc_id": "lld-关系型数据库-001",
+    "type": "lld",
+    "module": "关系型数据库",
+    "title": "LLD - 关系型数据库",
+    "author": "design_agent",
+    "created": "2026-05-20 16:34"
+  },
+  "overview": {
+    "description": "关系型数据库是CogniForge系统的数据持久化核心，基于MySQL 8.0提供结构化数据的存储与访问能力。统一存储项目信息、环境配置（含加密SSH密钥）、部署历史记录和用户信息，为上层四个业务服务（项目管理、环境管理、部署编排、SSH执行）提供可靠的数据持久化支持。通过合理的外键约束和索引设计保障数据完整性与查询性能，支持事务确保关键操作的一致性。",
+    "dependencies": [],
+    "tech_stack": ["MySQL 8.0", "InnoDB", "JDBC", "Flyway（数据库迁移）"]
+  },
+  "data_models": [
+    {
+      "name": "users",
+      "type": "table",
+      "description": "用户信息表，存储系统用户账号和角色信息。API网关通过该表完成身份认证与权限校验",
+      "fields": [
+        {"name": "id", "type": "int", "required": true, "description": "主键，自增用户ID"},
+        {"name": "username", "type": "string", "required": true, "description": "用户名，唯一约束，用于登录"},
+        {"name": "password_hash", "type": "string", "required": true, "description": "密码哈希值（bcrypt加密存储）"},
+        {"name": "role", "type": "string", "required": true, "description": "用户角色，枚举值：admin/developer/manager"},
+        {"name": "created_at", "type": "datetime", "required": true, "description": "创建时间"},
+        {"name": "updated_at", "type": "datetime", "required": true, "description": "最后更新时间"}
+      ]
+    },
+    {
+      "name": "projects",
+      "type": "table",
+      "description": "项目信息表，存储项目核心元数据。环境管理服务和部署编排服务通过project_id外键关联至此表",
+      "fields": [
+        {"name": "id", "type": "int", "required": true, "description": "主键，自增项目ID"},
+        {"name": "name", "type": "string", "required": true, "description": "项目名称，唯一约束"},
+        {"name": "description", "type": "string", "required": false, "description": "项目描述信息"},
+        {"name": "created_at", "type": "datetime", "required": true, "description": "创建时间"},
+        {"name": "updated_at", "type": "datetime", "required": true, "description": "最后更新时间"}
+      ]
+    },
+    {
+      "name": "environments",
+      "type": "table",
+      "description": "部署环境配置表，存储环境连接信息及加密SSH密钥。每个环境隶属于一个项目，environment_id被部署记录表引用",
+      "fields": [
+        {"name": "id", "type": "int", "required": true, "description": "主键，自增环境ID"},
+        {"name": "project_id", "type": "int", "required": true, "description": "外键，关联projects.id。删除项目时级联删除关联环境"},
+        {"name": "name", "type": "string", "required": true, "description": "环境名称，同项目内唯一"},
+        {"name": "type", "type": "string", "required": true, "description": "环境类型，枚举值：test/staging/production"},
+        {"name": "host", "type": "string", "required": true, "description": "远程服务器主机地址（IP或域名）"},
+        {"name": "port", "type": "int", "required": true, "description": "SSH连接端口，默认22"},
+        {"name": "ssh_key", "type": "string", "required": true, "description": "SSH私钥内容（AES-256-GCM加密后存储）"},
+        {"name": "username", "type": "string", "required": true, "description": "SSH登录用户名"},
+        {"name": "status", "type": "string", "required": true, "description": "环境状态，枚举值：active/inactive，默认active"},
+        {"name": "created_at", "type": "datetime", "required": true, "description": "创建时间"},
+        {"name": "updated_at", "type": "datetime", "required": true, "description": "最后更新时间"}
+      ]
+    },
+    {
+      "name": "deployments",
+      "type": "table",
+      "description": "部署记录表，记录每次部署任务的完整信息和执行状态。部署编排服务维护该表的状态流转，支持版本回滚追溯",
+      "fields": [
+        {"name": "id", "type": "int", "required": true, "description": "主键，自增部署记录ID（对应SAD契约中的deployment_id）"},
+        {"name": "project_id", "type": "int", "required": true, "description": "外键，关联projects.id"},
+        {"name": "environment_id", "type": "int", "required": true, "description": "外键，关联environments.id"},
+        {"name": "version", "type": "string", "required": true, "description": "部署版本号，格式：yyyyMMdd-HHmmss 或自定义"},
+        {"name": "file_url", "type": "string", "required": true, "description": "部署包文件URL（指向文件存储模块）"},
+        {"name": "deploy_script", "type": "string", "required": false, "description": "部署执行脚本内容"},
+        {"name": "status", "type": "string", "required": true, "description": "部署状态，枚举值：pending/running/success/failed"},
+        {"name": "progress", "type": "int", "required": true, "description": "部署进度百分比，取值范围0-100"},
+        {"name": "current_step", "type": "string", "required": false, "description": "当前执行步骤描述"},
+        {"name": "created_at", "type": "datetime", "required": true, "description": "创建时间（部署触发时间）"},
+        {"name": "updated_at", "type": "datetime", "required": true, "description": "最后更新时间（状态变更时间）"}
+      ]
+    },
+    {
+      "name": "deployment_logs",
+      "type": "table",
+      "description": "部署日志表，按时间顺序记录部署过程中产生的详细日志。通过deployment_id关联到具体部署记录，支持按级别筛选",
+      "fields": [
+        {"name": "id", "type": "int", "required": true, "description": "主键，自增日志ID"},
+        {"name": "deployment_id", "type": "int", "required": true, "description": "外键，关联deployments.id。删除部署记录时级联删除关联日志"},
+        {"name": "message", "type": "string", "required": true, "description": "日志消息内容"},
+        {"name": "level", "type": "string", "required": true, "description": "日志级别，枚举值：info/warn/error/debug"},
+        {"name": "created_at", "type": "datetime", "required": true, "description": "日志记录时间"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "项目数据写入",
+      "method": "INTERNAL",
+      "endpoint": "DAO::ProjectRepository.insert/update",
+      "description": "写入项目记录（创建新项目或更新已有项目）。创建时校验项目名称唯一性，更新时乐观锁防止并发覆盖",
+      "parameters": [
+        {"name": "id", "type": "int", "description": "项目ID（更新时必填，创建时不填）"},
+        {"name": "name", "type": "string", "description": "项目名称，1-100字符，唯一约束"},
+        {"name": "description", "type": "string", "description": "项目描述，最多500字符"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "int",
+          "name": "string",
+          "description": "string",
+          "created_at": "datetime"
+        }
+      },
+      "error_codes": [
+        {"code": 1062, "message": "唯一约束违反：项目名称已存在"},
+        {"code": 1406, "message": "字段值超出长度限制"}
+      ]
+    },
+    {
+      "name": "项目数据查询",
+      "method": "INTERNAL",
+      "endpoint": "DAO::ProjectRepository.select",
+      "description": "按条件查询项目记录，支持单项目查询和分页列表查询。项目管理服务和API网关通过此接口获取项目数据",
+      "parameters": [
+        {"name": "id", "type": "int", "description": "项目ID（按ID精确查询时使用，可选）"},
+        {"name": "page", "type": "int", "description": "页码，从1开始（列表查询时使用）"},
+        {"name": "page_size", "type": "int", "description": "每页条数，默认20"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "items": "array<object>（{id:int, name:string, description:string, created_at:datetime}）",
+          "total": "int",
+          "page": "int"
+        }
+      },
+      "error_codes": [
+        {"code": 0, "message": "查询结果为空时返回空列表不报错"}
+      ]
+    },
+    {
+      "name": "环境数据写入",
+      "method": "INTERNAL",
+      "endpoint": "DAO::EnvironmentRepository.insert/update",
+      "description": "写入环境配置记录。SSH密钥在业务层加密后存入ssh_key字段，更新时需重新加密。删除环境前检查是否存在关联部署记录",
+      "parameters": [
+        {"name": "project_id", "type": "int", "description": "所属项目ID"},
+        {"name": "name", "type": "string", "description": "环境名称，同项目内唯一"},
+        {"name": "type", "type": "string", "description": "环境类型：test/staging/production"},
+        {"name": "host", "type": "string", "description": "远程服务器地址"},
+        {"name": "port", "type": "int", "description": "SSH端口"},
+        {"name": "ssh_key", "type": "string", "description": "AES-256-GCM加密后的SSH私钥"},
+        {"name": "username", "type": "string", "description": "SSH登录用户名"},
+        {"name": "status", "type": "string", "description": "环境状态：active/inactive"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "int",
+          "name": "string",
+          "type": "string",
+          "host": "string",
+          "port": "int",
+          "status": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 1452, "message": "外键约束违反：project_id引用的项目不存在"},
+        {"code": 1062, "message": "唯一约束违反：同项目下环境名称重复"}
+      ]
+    },
+    {
+      "name": "环境数据查询",
+      "method": "INTERNAL",
+      "endpoint": "DAO::EnvironmentRepository.select",
+      "description": "按条件查询环境配置。支持按环境ID查详情、按项目ID查列表、按类型筛选。ssh_key字段仅在环境详情查询时返回（用于SSH连接测试）",
+      "parameters": [
+        {"name": "id", "type": "int", "description": "环境ID（可选）"},
+        {"name": "project_id", "type": "int", "description": "所属项目ID（可选）"},
+        {"name": "type", "type": "string", "description": "环境类型筛选（可选，test/staging/production）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "int",
+          "name": "string",
+          "type": "string",
+          "host": "string",
+          "port": "int",
+          "status": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 0, "message": "查询结果为空时返回空列表，单个查询返回null"}
+      ]
+    },
+    {
+      "name": "部署记录写入",
+      "method": "INTERNAL",
+      "endpoint": "DAO::DeploymentRepository.insert/update",
+      "description": "写入部署记录（创建新部署或更新状态进度）。创建时插入初始状态（status=pending, progress=0），部署过程中逐步更新status/progress/current_step，部署完成写入最终状态",
+      "parameters": [
+        {"name": "project_id", "type": "int", "description": "所属项目ID"},
+        {"name": "environment_id", "type": "int", "description": "目标环境ID"},
+        {"name": "version", "type": "string", "description": "部署版本号"},
+        {"name": "file_url", "type": "string", "description": "部署包文件URL"},
+        {"name": "deploy_script", "type": "string", "description": "部署脚本内容（可选）"},
+        {"name": "status", "type": "string", "description": "部署状态：pending/running/success/failed"},
+        {"name": "progress", "type": "int", "description": "进度百分比0-100"},
+        {"name": "current_step", "type": "string", "description": "当前步骤描述（可选）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "deployment_id": "int",
+          "status": "string",
+          "created_at": "datetime"
+        }
+      },
+      "error_codes": [
+        {"code": 1452, "message": "外键约束违反：project_id或environment_id引用不存在"},
+        {"code": 4025, "message": "状态值不在枚举范围内或progress超出0-100范围"}
+      ]
+    },
+    {
+      "name": "部署记录查询",
+      "method": "INTERNAL",
+      "endpoint": "DAO::DeploymentRepository.select",
+      "description": "按条件查询部署记录。支持按ID查详情（含关联日志）、按项目/环境/时间范围分页查询历史。部署编排服务和Web管理控制台通过此接口获取部署数据",
+      "parameters": [
+        {"name": "id", "type": "int", "description": "部署记录ID（详情查询时使用）"},
+        {"name": "project_id", "type": "int", "description": "项目ID筛选（可选）"},
+        {"name": "environment_id", "type": "int", "description": "环境ID筛选（可选）"},
+        {"name": "page", "type": "int", "description": "页码（历史列表查询时使用）"},
+        {"name": "page_size", "type": "int", "description": "每页条数"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "items": "array<object>",
+          "total": "int",
+          "page": "int",
+          "page_size": "int"
+        }
+      },
+      "error_codes": [
+        {"code": 0, "message": "查询结果为空时items返回空数组，total为0"}
+      ]
+    },
+    {
+      "name": "部署状态与日志查询",
+      "method": "INTERNAL",
+      "endpoint": "DAO::DeploymentRepository.selectWithLogs",
+      "description": "联合查询部署记录及其关联日志。为部署状态轮询接口提供完整数据，包含当前进度、执行步骤和所有日志行。数据按日志时间升序排列",
+      "parameters": [
+        {"name": "id", "type": "int", "description": "部署记录ID"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "deployment_id": "int",
+          "status": "string",
+          "progress": "int",
+          "current_step": "string",
+          "logs": "array<string>"
+        }
+      },
+      "error_codes": [
+        {"code": 0, "message": "部署记录不存在时返回空结果"}
+      ]
+    },
+    {
+      "name": "部署日志追加",
+      "method": "INTERNAL",
+      "endpoint": "DAO::DeploymentLogRepository.insert",
+      "description": "向指定部署记录追加日志条目。部署编排服务在部署过程中逐条写入，每条日志包含级别标记以便前端按级别筛选显示",
+      "parameters": [
+        {"name": "deployment_id", "type": "int", "description": "部署记录ID"},
+        {"name": "message", "type": "string", "description": "日志消息内容"},
+        {"name": "level", "type": "string", "description": "日志级别：info/warn/error/debug"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "int",
+          "deployment_id": "int",
+          "message": "string",
+          "level": "string",
+          "created_at": "datetime"
+        }
+      },
+      "error_codes": [
+        {"code": 1452, "message": "外键约束违反：deployment_id引用的部署记录不存在"}
+      ]
+    },
+    {
+      "name": "用户认证查询",
+      "method": "INTERNAL",
+      "endpoint": "DAO::UserRepository.selectByUsername",
+      "description": "根据用户名查询用户信息，用于登录认证。API网关在收到登录请求后通过此接口获取用户凭据进行密码比对。密码以bcrypt哈希存储，不支持明文查询",
+      "parameters": [
+        {"name": "username", "type": "string", "description": "用户名，精确匹配查询"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "int",
+          "username": "string",
+          "password_hash": "string",
+          "role": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 0, "message": "用户名不存在时返回空结果，由业务层返回401未授权"}
+      ]
+    }
+  ],
+  "error_handling": "关系型数据库采用分层错误处理策略：1）连接层——MySQL主库连异常时，采用指数退避重试策略（初始1s，最大30s，共3次），超出重试次数后向上层抛出ConnectionTimeout异常；2）约束层——唯一约束违反（DuplicateKeyException）返回错误码1062，外键约束违反（DataIntegrityViolationException）返回错误码1452，字段超长（DataTruncation）返回错误码1406，所有约束异常由DAO层捕获并转换为业务语义错误，不直接暴露MySQL原生错误信息；3）事务层——关键操作（创建部署记录并写入初始日志、更新部署状态并追加日志）使用数据库事务保证原子性，事务失败时自动回滚并通过Spring @Transactional传播RollbackException；4）超时控制——查询操作超时默认5s，写入操作超时默认3s，超过阈值时抛出QueryTimeoutException，由调用方决定重试或降级；5）连接池——使用HikariCP连接池，最大连接数20，最小空闲连接5，连接最大存活时间30分钟，空闲超时10分钟，连接池耗尽时抛出HikariPoolTimeoutException，调用方应排队等待或快速失败。所有底层异常统一转换为DatabaseException（含error_code、message、sql_state字段）后向上传递。"
+}
