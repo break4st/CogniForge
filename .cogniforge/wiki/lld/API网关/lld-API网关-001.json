@@ -1,0 +1,494 @@
+{
+  "meta": {
+    "doc_id": "lld-API网关-001",
+    "type": "lld",
+    "module": "API网关",
+    "title": "LLD - API网关",
+    "author": "design_agent",
+    "created": "2026-05-20 16:06"
+  },
+  "overview": "API网关作为系统的统一入口层，基于Fastify网关框架实现，位于Web管理控制台与后端服务之间。职责涵盖：HTTP请求路由转发（将前端请求分发至项目管理服务、环境管理服务、部署编排服务）、JWT令牌认证与RBAC访问控制、基于令牌桶算法的请求速率限制、CORS跨域策略管理、全量请求/响应审计日志记录。网关不包含业务逻辑，仅做协议转换与横切关注点处理。",
+  "data_models": [
+    {
+      "name": "RouteRule",
+      "type": "config",
+      "description": "路由规则定义，描述请求路径到后端服务的映射关系",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string",
+          "description": "路由规则唯一标识"
+        },
+        {
+          "name": "method",
+          "type": "string",
+          "description": "HTTP方法，GET/POST/PUT/DELETE"
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "description": "匹配的请求路径模式，如 /api/projects/:projectId/environments"
+        },
+        {
+          "name": "target_service",
+          "type": "string",
+          "description": "目标服务名称，如 project-service / environment-service / deployment-service"
+        },
+        {
+          "name": "target_endpoint",
+          "type": "string",
+          "description": "目标服务内部端点路径，支持路径参数模板替换"
+        },
+        {
+          "name": "require_auth",
+          "type": "boolean",
+          "description": "是否需要认证，默认 true"
+        },
+        {
+          "name": "required_roles",
+          "type": "array",
+          "description": "允许访问的角色列表，空数组表示无需角色检查"
+        },
+        {
+          "name": "rate_limit_scope",
+          "type": "string",
+          "description": "限流范围标识，关联 RateLimitPolicy"
+        }
+      ]
+    },
+    {
+      "name": "RateLimitPolicy",
+      "type": "config",
+      "description": "速率限制策略配置，基于令牌桶算法",
+      "fields": [
+        {
+          "name": "scope",
+          "type": "string",
+          "description": "策略范围标识，如 global / user / endpoint:/api/projects"
+        },
+        {
+          "name": "tokens_per_second",
+          "type": "integer",
+          "description": "每秒令牌补充速率"
+        },
+        {
+          "name": "burst_capacity",
+          "type": "integer",
+          "description": "令牌桶最大容量，允许突发流量"
+        },
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "description": "是否启用限流"
+        }
+      ]
+    },
+    {
+      "name": "CorsSettings",
+      "type": "config",
+      "description": "跨域资源共享策略配置",
+      "fields": [
+        {
+          "name": "allowed_origins",
+          "type": "array",
+          "description": "允许的源列表，如 [https://console.example.com]"
+        },
+        {
+          "name": "allowed_methods",
+          "type": "array",
+          "description": "允许的HTTP方法，默认 GET,POST,PUT,DELETE,OPTIONS"
+        },
+        {
+          "name": "allowed_headers",
+          "type": "array",
+          "description": "允许的请求头，包含 Authorization, Content-Type 等"
+        },
+        {
+          "name": "exposed_headers",
+          "type": "array",
+          "description": "暴露给客户端的响应头"
+        },
+        {
+          "name": "max_age",
+          "type": "integer",
+          "description": "预检请求缓存时间（秒），默认 86400"
+        },
+        {
+          "name": "allow_credentials",
+          "type": "boolean",
+          "description": "是否允许携带凭证，默认 true"
+        }
+      ]
+    },
+    {
+      "name": "AuditLogEntry",
+      "type": "api",
+      "description": "请求审计日志条目结构，持久化至 MySQL 用于事后追溯",
+      "fields": [
+        {
+          "name": "log_id",
+          "type": "string",
+          "description": "日志唯一ID，UUID 格式"
+        },
+        {
+          "name": "timestamp",
+          "type": "datetime",
+          "description": "请求到达时间"
+        },
+        {
+          "name": "client_ip",
+          "type": "string",
+          "description": "客户端来源IP"
+        },
+        {
+          "name": "method",
+          "type": "string",
+          "description": "HTTP请求方法"
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "description": "请求路径"
+        },
+        {
+          "name": "user_id",
+          "type": "integer",
+          "description": "认证用户ID（未认证时为 null）"
+        },
+        {
+          "name": "status_code",
+          "type": "integer",
+          "description": "响应状态码"
+        },
+        {
+          "name": "latency_ms",
+          "type": "integer",
+          "description": "请求处理耗时（毫秒）"
+        },
+        {
+          "name": "target_service",
+          "type": "string",
+          "description": "路由目标服务名称"
+        },
+        {
+          "name": "error_info",
+          "type": "string",
+          "description": "错误信息（请求正常时为空）"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "Login",
+      "endpoint": "POST /api/auth/login",
+      "description": "用户登录认证，校验用户名密码后签发 JWT 访问令牌。网关自身提供的认证入口，不依赖后端服务",
+      "parameters": [
+        {
+          "name": "body:username",
+          "type": "string",
+          "description": "用户名"
+        },
+        {
+          "name": "body:password",
+          "type": "string",
+          "description": "密码（传输过程中要求 HTTPS 加密）"
+        }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "token": {
+            "type": "string",
+            "description": "JWT 访问令牌"
+          },
+          "expires_in": {
+            "type": "integer",
+            "description": "令牌过期时间（秒）"
+          },
+          "user_id": {
+            "type": "integer",
+            "description": "用户 ID"
+          },
+          "roles": {
+            "type": "array",
+            "item_type": "string",
+            "description": "用户角色列表"
+          }
+        }
+      }
+    },
+    {
+      "name": "CreateProject",
+      "endpoint": "POST /api/projects",
+      "description": "代理创建项目请求。网关鉴权通过后路由至项目管理服务（CreateProject），请求体透传",
+      "parameters": [
+        {
+          "name": "header:Authorization",
+          "type": "string",
+          "description": "Bearer JWT 令牌，必需"
+        },
+        {
+          "name": "body:name",
+          "type": "string",
+          "description": "项目名称，必需"
+        },
+        {
+          "name": "body:description",
+          "type": "string",
+          "description": "项目描述，可选"
+        }
+      ],
+      "response": {
+        "status": 201,
+        "body": {
+          "id": {
+            "type": "integer",
+            "description": "项目ID"
+          },
+          "name": {
+            "type": "string",
+            "description": "项目名称"
+          },
+          "description": {
+            "type": "string",
+            "description": "项目描述"
+          },
+          "created_at": {
+            "type": "datetime",
+            "description": "创建时间"
+          }
+        }
+      }
+    },
+    {
+      "name": "ListProjects",
+      "endpoint": "GET /api/projects",
+      "description": "代理获取项目列表请求。网关鉴权后路由至项目管理服务（ListProjects），支持分页参数",
+      "parameters": [
+        {
+          "name": "header:Authorization",
+          "type": "string",
+          "description": "Bearer JWT 令牌，必需"
+        },
+        {
+          "name": "query:page",
+          "type": "integer",
+          "description": "页码，默认 1"
+        },
+        {
+          "name": "query:page_size",
+          "type": "integer",
+          "description": "每页条数，默认 20"
+        }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "total": {
+            "type": "integer",
+            "description": "项目总数"
+          },
+          "items": {
+            "type": "array",
+            "item_type": "object",
+            "description": "项目列表"
+          }
+        }
+      }
+    },
+    {
+      "name": "CreateEnvironment",
+      "endpoint": "POST /api/projects/{projectId}/environments",
+      "description": "代理创建部署环境请求。网关鉴权后路由至环境管理服务（CreateEnvironment），路径参数与请求体透传",
+      "parameters": [
+        {
+          "name": "header:Authorization",
+          "type": "string",
+          "description": "Bearer JWT 令牌，必需"
+        },
+        {
+          "name": "path:projectId",
+          "type": "integer",
+          "description": "所属项目 ID"
+        },
+        {
+          "name": "body:name",
+          "type": "string",
+          "description": "环境名称，如 测试线，必需"
+        },
+        {
+          "name": "body:tag",
+          "type": "string",
+          "description": "环境标签，如 test/canary/production，必需"
+        },
+        {
+          "name": "body:server_host",
+          "type": "string",
+          "description": "远程服务器 IP 或域名，必需"
+        },
+        {
+          "name": "body:server_port",
+          "type": "integer",
+          "description": "SSH 端口，默认 22，必需"
+        },
+        {
+          "name": "body:username",
+          "type": "string",
+          "description": "SSH 登录用户名，必需"
+        }
+      ],
+      "response": {
+        "status": 201,
+        "body": {
+          "id": {
+            "type": "integer",
+            "description": "环境ID"
+          },
+          "name": {
+            "type": "string",
+            "description": "环境名称"
+          },
+          "tag": {
+            "type": "string",
+            "description": "环境标签"
+          },
+          "server_host": {
+            "type": "string",
+            "description": "服务器地址"
+          },
+          "server_port": {
+            "type": "integer",
+            "description": "SSH端口"
+          },
+          "username": {
+            "type": "string",
+            "description": "SSH用户名"
+          },
+          "created_at": {
+            "type": "datetime",
+            "description": "创建时间"
+          }
+        }
+      }
+    },
+    {
+      "name": "ConfigureSSHKey",
+      "endpoint": "PUT /api/projects/{projectId}/environments/{envId}/key",
+      "description": "代理配置 SSH 密钥请求。网关鉴权后路由至环境管理服务（ConfigureSSHKey），路径参数与请求体透传",
+      "parameters": [
+        {
+          "name": "header:Authorization",
+          "type": "string",
+          "description": "Bearer JWT 令牌，必需"
+        },
+        {
+          "name": "path:projectId",
+          "type": "integer",
+          "description": "项目 ID"
+        },
+        {
+          "name": "path:envId",
+          "type": "integer",
+          "description": "环境 ID"
+        },
+        {
+          "name": "body:private_key",
+          "type": "string",
+          "description": "SSH 私钥内容（传输时加密），必需"
+        },
+        {
+          "name": "body:passphrase",
+          "type": "string",
+          "description": "密钥口令，可选"
+        }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "status": {
+            "type": "string",
+            "description": "配置结果，success/failure"
+          },
+          "fingerprint": {
+            "type": "string",
+            "description": "密钥指纹"
+          }
+        }
+      }
+    },
+    {
+      "name": "TriggerDeployment",
+      "endpoint": "POST /api/projects/{projectId}/deployments",
+      "description": "代理触发部署请求。网关鉴权后路由至部署编排服务（TriggerDeployment），路径参数与请求体透传",
+      "parameters": [
+        {
+          "name": "header:Authorization",
+          "type": "string",
+          "description": "Bearer JWT 令牌，必需"
+        },
+        {
+          "name": "path:projectId",
+          "type": "integer",
+          "description": "项目 ID"
+        },
+        {
+          "name": "body:environment_id",
+          "type": "integer",
+          "description": "目标环境 ID，必需"
+        },
+        {
+          "name": "body:artifact_path",
+          "type": "string",
+          "description": "可执行文件路径，必需"
+        },
+        {
+          "name": "body:version",
+          "type": "string",
+          "description": "版本号，用于创建版本文件夹，必需"
+        }
+      ],
+      "response": {
+        "status": 202,
+        "body": {
+          "deployment_id": {
+            "type": "integer",
+            "description": "部署记录ID"
+          },
+          "status": {
+            "type": "string",
+            "description": "初始状态，pending"
+          },
+          "created_at": {
+            "type": "datetime",
+            "description": "创建时间"
+          }
+        }
+      }
+    },
+    {
+      "name": "HealthCheck",
+      "endpoint": "GET /api/health",
+      "description": "网关健康检查端点，返回网关自身及各后端服务的连通性状态，无需认证",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "status": {
+            "type": "string",
+            "description": "网关自身状态，ok / degraded / down"
+          },
+          "services": {
+            "type": "object",
+            "description": "各后端服务连通性状态映射，如 { \"project-service\": \"ok\", \"environment-service\": \"ok\" }"
+          },
+          "timestamp": {
+            "type": "datetime",
+            "description": "检查时间"
+          }
+        }
+      }
+    }
+  ],
+  "error_handling": "网关层统一捕获所有异常并返回标准化 JSON 错误响应，格式为 { \"error\": { \"code\": \"...\", \"message\": \"...\", \"request_id\": \"...\" } }。各场景处理策略：\n1. 401 未认证：JWT 缺失、过期或签名无效时返回，前端应跳转至登录页。\n2. 403 无权限：JWT 有效但当前用户角色不满足 required_roles 时返回。\n3. 429 限流触发：令牌桶取令牌失败时返回，响应头附加 X-RateLimit-Remaining: 0 和 Retry-After 秒数。\n4. 502 后端不可达：路由目标服务连接超时或拒绝连接时返回，触发自动重试机制（最多 1 次，间隔 500ms），重试仍失败则降级返回。\n5. 504 后端超时：后端服务处理超过 30s 阈值时返回，同时记录超时审计日志以便排查。\n6. 404 未知路由：无匹配 RouteRule 时返回。\n7. CORS 预检：OPTIONS 请求直接返回 204 并写入 CORS 头后结束，不经过认证与路由。\n8. 请求体校验：Content-Type 非 application/json 时返回 415，必填字段缺失时返回 422 并指明缺失字段名。"
+}
