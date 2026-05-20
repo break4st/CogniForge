@@ -1,0 +1,171 @@
+{
+  "meta": {
+    "doc_id": "lld-文件存储-001",
+    "type": "lld",
+    "module": "文件存储",
+    "title": "LLD - 文件存储",
+    "author": "design_agent",
+    "created": "2026-05-20 16:36"
+  },
+  "overview": {
+    "description": "文件存储模块基于MinIO对象存储，为系统提供可执行文件和部署脚本的统一存储与管理能力。接收Web管理控制台上传的部署包（可执行文件），为部署编排服务提供文件持久化和下载接口，同时支持内部服务存储部署过程中生成的脚本文件。通过MD5校验保证文件完整性，元数据记录在MySQL中便于检索，文件实际内容存储在MinIO中实现读写分离。",
+    "dependencies": ["MinIO服务", "关系型数据库"],
+    "tech_stack": ["Python 3.11", "FastAPI", "MinIO SDK", "MySQL 8.0"]
+  },
+  "data_models": [
+    {
+      "name": "files",
+      "type": "table",
+      "description": "文件元数据表，记录上传到MinIO的每个文件的索引信息。文件实际内容存储在MinIO对象存储中，该表仅记录元数据（文件ID、路径、大小、MD5等）。部署编排服务通过file_url或file_id引用文件",
+      "fields": [
+        {"name": "id", "type": "int", "required": true, "description": "主键，自增文件ID（对应SAD契约中的file_id）"},
+        {"name": "project_id", "type": "int", "required": true, "description": "外键，关联projects.id，文件所属项目"},
+        {"name": "file_name", "type": "string", "required": true, "description": "原始文件名，上传时保留用于下载展示"},
+        {"name": "file_size", "type": "int", "required": true, "description": "文件大小，单位字节（对应SAD契约中的file_size）"},
+        {"name": "md5", "type": "string", "required": true, "description": "文件MD5哈希值，用于完整性校验和去重（对应SAD契约中的md5）"},
+        {"name": "file_url", "type": "string", "required": true, "description": "文件访问URL，格式：/api/files/{id}（对应SAD契约中的file_url）"},
+        {"name": "object_key", "type": "string", "required": true, "description": "MinIO对象存储中的路径键，格式：{project_id}/{file_id}/{file_name}"},
+        {"name": "bucket", "type": "string", "required": true, "description": "MinIO存储桶名称，默认cogniforge-files"},
+        {"name": "content_type", "type": "string", "required": false, "description": "文件MIME类型，可执行文件为application/octet-stream"},
+        {"name": "file_type", "type": "string", "required": true, "description": "文件类型分类，枚举值：executable（可执行文件）/script（部署脚本）"},
+        {"name": "created_at", "type": "datetime", "required": true, "description": "文件上传/创建时间"},
+        {"name": "created_by", "type": "int", "required": false, "description": "上传者用户ID，executable类型记录上传用户，script类型记录触发的部署记录ID"}
+      ]
+    },
+    {
+      "name": "minio_config",
+      "type": "config",
+      "description": "MinIO对象存储连接配置，通过环境变量注入。文件存储模块启动时读取此配置初始化MinIO客户端",
+      "fields": [
+        {"name": "endpoint", "type": "string", "required": true, "description": "MinIO服务端点地址，格式：host:port，如minio:9000"},
+        {"name": "access_key", "type": "string", "required": true, "description": "MinIO访问密钥AK，通过环境变量MINIO_ACCESS_KEY注入"},
+        {"name": "secret_key", "type": "string", "required": true, "description": "MinIO安全密钥SK，通过环境变量MINIO_SECRET_KEY注入"},
+        {"name": "region", "type": "string", "required": false, "description": "存储区域，默认us-east-1"},
+        {"name": "bucket", "type": "string", "required": true, "description": "默认存储桶名称，cogniforge-files"},
+        {"name": "secure", "type": "bool", "required": true, "description": "是否启用TLS加密连接，内网部署默认false"},
+        {"name": "upload_expiry", "type": "int", "required": true, "description": "预签名上传URL有效期（秒），默认3600"},
+        {"name": "download_expiry", "type": "int", "required": true, "description": "预签名下载URL有效期（秒），默认3600"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "文件上传接口",
+      "method": "POST",
+      "endpoint": "/api/files/upload",
+      "description": "上传可执行文件到文件存储服务。接收multipart/form-data格式的文件流和项目ID，先计算MD5查重（相同MD5直接返回已有记录），否则写入MinIO并记录元数据。单文件上限500MB",
+      "parameters": [
+        {"name": "file", "type": "binary", "description": "上传的可执行文件，multipart/form-data格式"},
+        {"name": "project_id", "type": "int", "description": "文件所属项目ID"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "file_id": "int",
+          "file_url": "string",
+          "file_size": "int",
+          "md5": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数缺失或格式错误（缺少file或project_id）"},
+        {"code": 400, "message": "文件大小超过上限（500MB）"},
+        {"code": 413, "message": "上传文件体积超出服务器限制"},
+        {"code": 500, "message": "MinIO存储失败或数据库写入异常"}
+      ]
+    },
+    {
+      "name": "文件下载接口",
+      "method": "GET",
+      "endpoint": "/api/files/{file_id}/download",
+      "description": "根据文件ID从MinIO获取文件内容并返回二进制文件流。部署编排服务通过此接口获取部署包后经SSH执行服务传输到远程服务器。支持Range头实现断点续传",
+      "parameters": [
+        {"name": "file_id", "type": "int", "description": "文件ID，路径参数"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "file": "binary（文件字节流）",
+          "content_type": "application/octet-stream"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "文件ID不存在或已被删除"},
+        {"code": 500, "message": "MinIO文件读取失败或连接异常"}
+      ]
+    },
+    {
+      "name": "文件信息查询接口",
+      "method": "GET",
+      "endpoint": "/api/files/{file_id}",
+      "description": "查询指定文件的元数据信息，不返回文件内容。部署编排服务通过此接口获取文件MD5和大小用于校验",
+      "parameters": [
+        {"name": "file_id", "type": "int", "description": "文件ID，路径参数"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "file_id": "int",
+          "file_name": "string",
+          "file_size": "int",
+          "md5": "string",
+          "file_type": "string",
+          "created_at": "datetime"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "文件ID不存在或已被删除"}
+      ]
+    },
+    {
+      "name": "文件列表查询接口",
+      "method": "GET",
+      "endpoint": "/api/files",
+      "description": "按项目分页查询已上传文件列表。Web管理控制台通过此接口展示项目下的可执行文件供用户选择部署",
+      "parameters": [
+        {"name": "project_id", "type": "int", "description": "项目ID，必填查询参数"},
+        {"name": "file_type", "type": "string", "description": "文件类型筛选：executable/script（可选）"},
+        {"name": "page", "type": "int", "description": "页码，从1开始"},
+        {"name": "page_size", "type": "int", "description": "每页条数，默认20"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "items": "array<object>",
+          "total": "int",
+          "page": "int"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "缺少必填参数project_id"},
+        {"code": 404, "message": "项目ID不存在"}
+      ]
+    },
+    {
+      "name": "内部文件存储接口",
+      "method": "INTERNAL",
+      "endpoint": "/internal/files/store",
+      "description": "内部服务间接口，供部署编排服务存储部署过程中生成的脚本文件。接收脚本内容和项目信息，写入MinIO并以script类型记录元数据，返回file_url供编排服务引用",
+      "parameters": [
+        {"name": "project_id", "type": "int", "description": "所属项目ID"},
+        {"name": "file_name", "type": "string", "description": "脚本文件名，如deploy-{version}.sh"},
+        {"name": "content", "type": "string", "description": "脚本文件内容（文本）"},
+        {"name": "deployment_id", "type": "int", "description": "触发该存储的部署记录ID，用于追溯"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "file_id": "int",
+          "file_url": "string",
+          "file_size": "int",
+          "md5": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数缺失"},
+        {"code": 500, "message": "MinIO写入失败"}
+      ]
+    }
+  ],
+  "error_handling": "文件存储模块错误处理策略：1）参数校验层——上传接口校验file和project_id必填，文件大小上限500MB，超出返回400/413；文件信息查询和下载接口校验file_id合法性（正整数），非法格式返回400；2）MinIO操作层——客户端初始化时健康检查，bucket不存在则自动创建；MinIO读写异常（连接超时、权限错误、bucket不存在）由SDK原生异常捕获，统一转换为FileStorageException（含error_code、operation、bucket、object_key字段）向上传递；写入失败采用指数退避重试（初始500ms，最大3次），重试耗尽后报500；3）数据库层——files表写入使用事务，若MySQL写入成功而MinIO写入失败则标记状态为failed便于人工修复补偿；MD5查重发现相同文件直接返回已有记录避免重复上传；文件采用软删除策略（保留元数据记录仅删除MinIO对象），防止误删不可追溯。对外部服务（部署编排服务）的依赖：若文件存储模块不可用，编排服务应缓存上传结果并定期重试。"
+}

@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLD - 文件存储 — lld-文件存储-001</title>
+<style>
+  :root {
+    --c-bg: #0b0f19; --c-surface: #131926; --c-card: #191e2e;
+    --c-border: #252b3d; --c-text: #c8d2e0; --c-heading: #e2e8f4;
+    --c-muted: #6b7394; --c-accent: #5b8def; --c-accent2: #7c6ff7;
+    --c-green: #34d399; --c-amber: #fbbf24; --c-red: #f87171;
+    --c-cyan: #22d3ee; --radius: 10px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+    background: var(--c-bg); color: var(--c-text);
+    line-height: 1.75; font-size: 15px;
+    max-width: 860px; margin: 0 auto; padding: 48px 40px 80px;
+  }
+  body:has(.page-layout) { max-width: none; margin: 0; padding: 0; }
+  .top-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 40px; padding-bottom: 24px;
+    border-bottom: 1px solid var(--c-border);
+  }
+  .doc-id { font-size: 0.8em; color: var(--c-muted); font-family: monospace; }
+  .badge {
+    display: inline-flex; padding: 5px 14px; border-radius: 20px;
+    font-size: 0.78em; font-weight: 500;
+    background: rgba(255,255,255,0.04); border: 1px solid var(--c-border);
+    color: var(--c-muted);
+  }
+  .badge.accent { border-color: rgba(91,141,239,0.3); color: var(--c-accent); }
+  .badge.green  { border-color: rgba(52,211,153,0.3); color: var(--c-green); }
+  h1 {
+    font-size: 2.4em; font-weight: 800; color: #fff;
+    letter-spacing: -1px; line-height: 1.2; margin-bottom: 6px;
+  }
+  h1 span {
+    background: linear-gradient(135deg, var(--c-accent), var(--c-cyan));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .meta { font-size: 0.85em; color: var(--c-muted); margin-bottom: 4px; }
+  .section { margin-bottom: 36px; }
+  .section-header {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 18px;
+  }
+  .section-header .icon {
+    width: 40px; height: 40px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.2em; flex-shrink: 0;
+  }
+  .section-header h2 {
+    font-size: 1.25em; font-weight: 700; color: var(--c-heading);
+  }
+  .section-body {
+    background: var(--c-card); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 28px 32px;
+  }
+  .section-body p { margin-bottom: 12px; }
+  .section-body p:last-child { margin-bottom: 0; }
+  .req-item {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .req-item:last-child { margin-bottom: 0; }
+  .req-item h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); margin-bottom: 6px; }
+  .req-desc { font-size: 0.9em; color: var(--c-muted); margin-bottom: 10px; }
+  .ac-list { list-style: none; padding: 0; margin: 0; }
+  .ac-list li {
+    padding: 4px 0 4px 18px; position: relative;
+    font-size: 0.88em; color: var(--c-text);
+  }
+  .ac-list li::before {
+    content: ""; position: absolute; left: 0; top: 12px;
+    width: 6px; height: 6px; border-radius: 50%; background: var(--c-green);
+  }
+  .ac-label {
+    font-size: 0.75em; font-weight: 600; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .story-item {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 14px 18px; border-radius: 8px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    margin-bottom: 8px;
+  }
+  .story-item:last-child { margin-bottom: 0; }
+  .story-role {
+    font-size: 0.8em; font-weight: 600; color: var(--c-accent);
+    background: rgba(91,141,239,0.1); padding: 2px 10px;
+    border-radius: 12px; white-space: nowrap; flex-shrink: 0;
+  }
+  .story-text { font-size: 0.92em; }
+  .story-text .goal { color: var(--c-muted); font-size: 0.88em; }
+  .priority-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .priority-tag {
+    display: inline-flex; padding: 6px 14px; border-radius: 6px;
+    font-size: 0.85em; font-weight: 500;
+  }
+  .priority-tag.high   { background: rgba(248,113,113,0.1);  color: #fca5a5; }
+  .priority-tag.medium { background: rgba(251,191,36,0.1);  color: #fcd34d; }
+  .priority-tag.low    { background: rgba(107,115,148,0.15); color: #9ca3af; }
+  .comp-item {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .comp-item h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); }
+  .comp-type {
+    font-size: 0.78em; color: var(--c-accent); margin-bottom: 8px;
+  }
+  .comp-resp { margin-top: 8px; font-size: 0.88em; }
+  .comp-resp li { margin: 2px 0; }
+
+  /* ── Contract Groups ── */
+  .contract-group {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); margin-bottom: 12px; overflow: hidden;
+  }
+  .contract-group[open] { border-color: rgba(91,141,239,0.25); }
+  .contract-group summary {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 20px; cursor: pointer; user-select: none;
+    font-weight: 600; font-size: 0.95em; color: var(--c-heading);
+    background: rgba(255,255,255,0.015);
+  }
+  .contract-group summary:hover { background: rgba(255,255,255,0.03); }
+  .contract-group summary::-webkit-details-marker { display: none; }
+  .contract-group summary::before {
+    content: "›"; display: inline-block; font-size: 1.3em; font-weight: 400;
+    width: 16px; color: var(--c-muted); transition: transform 0.2s;
+  }
+  .contract-group[open] summary::before { transform: rotate(90deg); }
+  .cg-count {
+    font-size: 0.78em; font-weight: 500; color: var(--c-muted);
+    background: rgba(255,255,255,0.04); padding: 2px 10px; border-radius: 10px;
+  }
+  .contract-card {
+    padding: 16px 20px; border-top: 1px solid var(--c-border);
+  }
+  .contract-card:first-of-type { border-top: 1px solid var(--c-border); }
+  .cc-head {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .cc-head .cc-name { font-weight: 600; font-size: 0.93em; color: var(--c-heading); }
+  .method-badge {
+    font-family: monospace; font-size: 0.75em; font-weight: 700;
+    padding: 3px 8px; border-radius: 5px; white-space: nowrap;
+  }
+  .method-badge.get    { background: rgba(52,211,153,0.15);  color: var(--c-green); }
+  .method-badge.post   { background: rgba(91,141,239,0.15);  color: var(--c-accent); }
+  .method-badge.put    { background: rgba(251,191,36,0.12);  color: var(--c-amber); }
+  .method-badge.delete { background: rgba(248,113,113,0.12); color: var(--c-red); }
+  .method-badge.mq     { background: rgba(124,111,247,0.13); color: var(--c-accent2); }
+  .cc-endpoint {
+    font-family: monospace; font-size: 0.82em; color: var(--c-text);
+    background: rgba(255,255,255,0.03); padding: 2px 8px; border-radius: 4px;
+  }
+  .cc-type-tag {
+    font-size: 0.72em; font-weight: 600; padding: 3px 8px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    background: rgba(91,141,239,0.1); color: var(--c-accent);
+  }
+  .cc-meta {
+    font-size: 0.82em; color: var(--c-muted); margin-bottom: 6px;
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .cc-meta .cc-consumer {
+    font-size: 0.85em; color: var(--c-accent2);
+    background: rgba(124,111,247,0.08); padding: 1px 8px; border-radius: 4px;
+  }
+  .cc-desc { font-size: 0.85em; color: var(--c-muted); margin-bottom: 10px; }
+  .body-table {
+    width: 100%; border-collapse: collapse; font-size: 0.8em; margin: 6px 0 4px;
+  }
+  .body-table th {
+    text-align: left; padding: 5px 10px; font-weight: 600;
+    color: var(--c-muted); font-size: 0.85em; text-transform: uppercase;
+    letter-spacing: 0.4px; border-bottom: 2px solid var(--c-border);
+    background: rgba(255,255,255,0.015);
+  }
+  .body-table td {
+    padding: 4px 10px; border-bottom: 1px solid rgba(255,255,255,0.04);
+    color: var(--c-text);
+  }
+  .body-table .field-type { color: var(--c-accent); font-family: monospace; font-size: 0.9em; }
+  .body-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 2px;
+  }
+  .model-item {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .model-item h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); }
+  table {
+    width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9em;
+  }
+  th {
+    text-align: left; padding: 10px 14px; font-weight: 600;
+    color: var(--c-muted); font-size: 0.8em; text-transform: uppercase;
+    letter-spacing: 0.5px; border-bottom: 2px solid var(--c-border);
+  }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--c-border); }
+  tr:hover td { background: rgba(255,255,255,0.015); }
+  .footer {
+    margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--c-border);
+    text-align: center; color: var(--c-muted); font-size: 0.8em;
+  }
+  /* ── System Overview ── */
+  .overview-hero {
+    background: linear-gradient(135deg, rgba(124,111,247,0.08), rgba(91,141,239,0.05));
+    border: 1px solid rgba(124,111,247,0.18); border-radius: var(--radius);
+    padding: 24px 28px; margin-bottom: 24px;
+  }
+  .overview-hero .hero-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-accent2);
+    text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 10px;
+  }
+  .overview-hero p { font-size: 1.02em; line-height: 1.85; color: var(--c-text); }
+  .role-cards {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
+  }
+  .role-card {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 22px 20px; text-align: center;
+  }
+  .role-card .role-icon {
+    width: 48px; height: 48px; border-radius: 50%; margin: 0 auto 12px;
+    display: flex; align-items: center; justify-content: center; font-size: 1.3em;
+  }
+  .role-card .role-name {
+    font-size: 1em; font-weight: 700; color: var(--c-heading); margin-bottom: 10px;
+  }
+  .role-card .role-perms {
+    font-size: 0.84em; color: var(--c-muted); line-height: 1.7;
+    list-style: none; padding: 0;
+  }
+  .role-card .role-perms li { padding: 1px 0; }
+
+  /* ── Architecture Diagram ── */
+  .arch-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 24px 20px 20px; margin-bottom: 22px;
+  }
+  .arch-tier {
+    display: flex; align-items: center; margin-bottom: 4px;
+  }
+  .arch-tier-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0;
+    width: 52px; text-align: right; padding-right: 16px;
+  }
+  .arch-tier-boxes { display: flex; gap: 8px; flex: 1; flex-wrap: wrap; }
+  .arch-box {
+    border-radius: 8px; padding: 12px 16px; text-align: center;
+    font-weight: 600; font-size: 0.85em; flex: 1; min-width: 80px;
+  }
+  .arch-box.frontend {
+    background: rgba(34,211,238,0.12); border: 1px solid rgba(34,211,238,0.28);
+    color: var(--c-cyan);
+  }
+  .arch-box.gateway {
+    background: rgba(124,111,247,0.13); border: 1px solid rgba(124,111,247,0.3);
+    color: var(--c-accent2);
+  }
+  .arch-box.service {
+    background: rgba(91,141,239,0.1); border: 1px solid rgba(91,141,239,0.22);
+    color: var(--c-accent);
+  }
+  .arch-box.db {
+    background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.22);
+    color: var(--c-green);
+  }
+  .arch-box.cache {
+    background: rgba(251,191,36,0.09); border: 1px solid rgba(251,191,36,0.22);
+    color: var(--c-amber);
+  }
+  .arch-box.mq {
+    background: rgba(248,113,113,0.07); border: 1px solid rgba(248,113,113,0.18);
+    color: var(--c-red);
+  }
+  .arch-overview {
+    display: flex; align-items: center; gap: 0; margin-bottom: 20px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 8px; overflow: hidden;
+  }
+  .arch-ov-item {
+    flex: 1; text-align: center; padding: 16px 12px; position: relative;
+  }
+  .arch-ov-item .ov-count {
+    font-size: 1.8em; font-weight: 800; line-height: 1.1;
+  }
+  .arch-ov-item .ov-label {
+    font-size: 0.75em; color: var(--c-muted); margin-top: 4px;
+  }
+  .arch-ov-arrow {
+    font-size: 1.1em; color: var(--c-muted); flex-shrink: 0;
+    padding: 0 2px;
+  }
+  .arch-style-badge {
+    display: inline-flex; padding: 6px 16px; border-radius: 20px;
+    font-size: 0.85em; font-weight: 700; margin-bottom: 16px;
+    background: linear-gradient(135deg, rgba(124,111,247,0.15), rgba(91,141,239,0.1));
+    border: 1px solid rgba(124,111,247,0.25); color: var(--c-accent2);
+  }
+  .arch-features {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px;
+    padding-top: 16px; border-top: 1px solid var(--c-border);
+  }
+  .arch-feature-tag {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 14px; border-radius: 18px; font-size: 0.82em; font-weight: 500;
+    background: rgba(255,255,255,0.03); border: 1px solid var(--c-border);
+    color: var(--c-text);
+  }
+  .arch-feature-tag .dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  }
+  .arch-desc { margin-bottom: 18px; color: var(--c-text); line-height: 1.8; }
+
+  /* ── Topology ── */
+  .topo-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 24px 20px 20px; margin-bottom: 22px;
+  }
+  .topo-tier {
+    display: flex; align-items: stretch; margin-bottom: 2px;
+  }
+  .topo-tier-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0;
+    width: 52px; text-align: right; padding-right: 16px; padding-top: 12px;
+  }
+  .topo-tier-content { flex: 1; display: flex; flex-wrap: wrap; gap: 8px; }
+  .topo-node {
+    border-radius: 8px; padding: 10px 15px; text-align: center;
+    font-weight: 600; font-size: 0.83em; flex: 1; min-width: 80px;
+  }
+  .topo-node.frontend {
+    background: rgba(34,211,238,0.12); border: 1px solid rgba(34,211,238,0.28);
+    color: var(--c-cyan);
+  }
+  .topo-node.gateway {
+    background: rgba(124,111,247,0.13); border: 1px solid rgba(124,111,247,0.3);
+    color: var(--c-accent2);
+  }
+  .topo-node.service {
+    background: rgba(91,141,239,0.1); border: 1px solid rgba(91,141,239,0.22);
+    color: var(--c-accent);
+  }
+  .topo-node.db {
+    background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.22);
+    color: var(--c-green);
+  }
+  .topo-node.cache {
+    background: rgba(251,191,36,0.09); border: 1px solid rgba(251,191,36,0.22);
+    color: var(--c-amber);
+  }
+  .topo-node.mq {
+    background: rgba(248,113,113,0.07); border: 1px solid rgba(248,113,113,0.18);
+    color: var(--c-red);
+  }
+  .topo-connector {
+    display: flex; align-items: center; padding: 2px 0 2px 52px;
+    gap: 10px; flex-wrap: wrap;
+  }
+  .topo-connector-line {
+    flex: 1; min-width: 60px; display: flex; align-items: center; gap: 6px;
+    color: var(--c-muted); font-size: 0.75em; font-weight: 500;
+  }
+  .topo-connector-line::before {
+    content: ""; display: inline-block; width: 12px; height: 1px;
+    background: var(--c-border); flex-shrink: 0;
+  }
+  .topo-connector-line .proto {
+    color: var(--c-accent2); font-family: monospace; font-size: 0.9em;
+    background: rgba(124,111,247,0.08); padding: 1px 6px; border-radius: 4px;
+  }
+
+  /* ── Data Flow ── */
+  .flow-cards { display: flex; flex-direction: column; gap: 16px; }
+  .flow-card {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 20px 22px;
+  }
+  .flow-card-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+  }
+  .flow-card-header .flow-num {
+    width: 28px; height: 28px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.8em; font-weight: 700; flex-shrink: 0;
+  }
+  .flow-card-header .flow-name {
+    font-weight: 700; font-size: 0.95em; color: var(--c-heading);
+  }
+  .flow-steps {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+  }
+  .flow-step {
+    font-size: 0.82em; padding: 5px 10px; border-radius: 6px;
+    background: rgba(255,255,255,0.03); border: 1px solid var(--c-border);
+    color: var(--c-text); white-space: nowrap;
+  }
+  .flow-step.start  { border-color: rgba(52,211,153,0.3);  color: var(--c-green); }
+  .flow-step.mid    { border-color: rgba(91,141,239,0.25);  color: var(--c-accent); }
+  .flow-step.end    { border-color: rgba(124,111,247,0.3);  color: var(--c-accent2); }
+  .flow-arrow { color: var(--c-muted); font-size: 0.85em; flex-shrink: 0; }
+
+  @media (max-width: 700px) {
+    body { padding: 24px 16px 48px; }
+    h1 { font-size: 1.6em; }
+    .section-body { padding: 20px 16px; }
+    .role-cards { grid-template-columns: 1fr; }
+    .arch-overview { flex-wrap: wrap; }
+    .arch-ov-arrow { display: none; }
+    .arch-tier { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .arch-tier-label { width: auto; text-align: left; padding-right: 0; }
+    .arch-arrows { padding-left: 0; justify-content: flex-start; }
+    .arch-tier-boxes { width: 100%; }
+    .topo-tier { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .topo-tier-label { width: auto; text-align: left; padding-right: 0; padding-top: 0; }
+    .topo-connector { padding-left: 0; }
+    .flow-steps { flex-direction: column; align-items: flex-start; }
+    .flow-arrow { display: none; }
+    .cc-head { flex-direction: column; align-items: flex-start; gap: 6px; }
+    .cc-meta { flex-direction: column; align-items: flex-start; }
+    .page-layout { flex-direction: column; }
+    .sidebar { display: none; }
+    .sidebar.mobile-open { display: flex; }
+    .sidebar-toggle { display: flex; }
+  }
+
+  /* ── Sidebar Layout ── */
+  .page-layout {
+    display: flex; min-height: 100vh;
+  }
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0;
+    width: 230px; overflow-y: auto;
+    background: var(--c-surface); border-right: 1px solid var(--c-border);
+    display: flex; flex-direction: column; padding: 24px 0;
+    z-index: 100;
+  }
+  .sidebar-header {
+    padding: 0 20px 20px; border-bottom: 1px solid var(--c-border); margin-bottom: 12px;
+  }
+  .sidebar-header .sid {
+    font-size: 0.72em; font-weight: 600; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .sidebar-header .stitle {
+    font-size: 0.95em; font-weight: 700; color: var(--c-heading);
+    margin-top: 4px; line-height: 1.3;
+  }
+  .sidebar-nav { flex: 1; padding: 0 12px; }
+  .sidebar-link {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; border-radius: 7px;
+    font-size: 0.86em; color: var(--c-muted); text-decoration: none;
+    margin-bottom: 2px; transition: all 0.15s;
+  }
+  .sidebar-link:hover { color: var(--c-text); background: rgba(255,255,255,0.03); }
+  .sidebar-link.active {
+    color: var(--c-accent); background: rgba(91,141,239,0.1);
+    font-weight: 600;
+  }
+  .sidebar-link .sl-icon { font-size: 1.05em; width: 20px; text-align: center; flex-shrink: 0; }
+  .sidebar-toggle {
+    display: none; position: fixed; top: 12px; left: 12px; z-index: 200;
+    width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--c-border);
+    background: var(--c-surface); color: var(--c-text); font-size: 1.2em;
+    cursor: pointer; align-items: center; justify-content: center;
+  }
+  .main-content {
+    margin-left: 230px; flex: 1; min-width: 0;
+    max-width: 860px; padding: 48px 40px 80px;
+  }
+  html { scroll-behavior: smooth; }
+  @media print {
+    body { background: #fff; color: #222; }
+    .section-body, .req-item, .story-item { background: #fff; border: 1px solid #ddd; }
+    h1 { color: #111; }
+  }
+</style>
+</head>
+<body>
+<div class="page-layout">
+<nav class="sidebar" id="sidebar"><div class="sidebar-header"><div class="sid">lld-文件存储-001</div><div class="stitle">LLD - 文件存储</div></div><div class="sidebar-nav"><a href="#overview" class="sidebar-link"><span class="sl-icon">📄</span>概述</a><a href="#models" class="sidebar-link"><span class="sl-icon">🗄️</span>数据模型 (2)</a><a href="#interfaces" class="sidebar-link"><span class="sl-icon">🔌</span>接口定义 (5)</a><a href="#errors" class="sidebar-link"><span class="sl-icon">⚠️</span>错误处理</a></div></nav><button id="sidebar-toggle" class="sidebar-toggle" aria-label="菜单">☰</button>
+<div class="main-content">
+<div class="top-bar">
+  <div class="doc-id">lld-文件存储-001</div>
+  <div><span class="badge accent">详细设计文档</span></div>
+</div>
+<h1><span>详细设计文档</span> LLD - 文件存储</h1>
+<div class="meta">2026-05-20 16:36 &middot; 作者: design_agent</div>
+
+<div class="section" id="overview">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(124,111,247,0.12)">📄</div>
+    <h2>概述</h2>
+  </div>
+  <div class="section-body">
+
+<div class="arch-style-badge" style="margin-bottom:12px">模块: 文件存储</div>
+<div class="arch-desc">文件存储模块基于MinIO对象存储，为系统提供可执行文件和部署脚本的统一存储与管理能力。接收Web管理控制台上传的部署包（可执行文件），为部署编排服务提供文件持久化和下载接口，同时支持内部服务存储部署过程中生成的脚本文件。通过MD5校验保证文件完整性，元数据记录在MySQL中便于检索，文件实际内容存储在MinIO中实现读写分离。</div>
+<div style="margin-bottom:12px"><span style="font-size:0.82em;color:var(--c-muted)">依赖: </span><span class="cc-consumer" style="margin:2px">MinIO服务</span><span class="cc-consumer" style="margin:2px">关系型数据库</span></div>
+<div style="margin-bottom:8px"><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Python 3.11</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>FastAPI</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>MinIO SDK</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>MySQL 8.0</span></div>
+  </div>
+</div>
+
+<div class="section" id="models">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(91,141,239,0.12)">🗄️</div>
+    <h2>数据模型 (2)</h2>
+  </div>
+  <div class="section-body">
+
+<details class="contract-group" open><summary>数据库表 <span class="cg-count">1</span></summary><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗄️ files</h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">文件元数据表，记录上传到MinIO的每个文件的索引信息。文件实际内容存储在MinIO对象存储中，该表仅记录元数据（文件ID、路径、大小、MD5等）。部署编排服务通过file_url或file_id引用文件</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>主键，自增文件ID（对应SAD契约中的file_id）</td></tr><tr><td>project_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>外键，关联projects.id，文件所属项目</td></tr><tr><td>file_name <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>原始文件名，上传时保留用于下载展示</td></tr><tr><td>file_size <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>文件大小，单位字节（对应SAD契约中的file_size）</td></tr><tr><td>md5 <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>文件MD5哈希值，用于完整性校验和去重（对应SAD契约中的md5）</td></tr><tr><td>file_url <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>文件访问URL，格式：/api/files/{id}（对应SAD契约中的file_url）</td></tr><tr><td>object_key <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>MinIO对象存储中的路径键，格式：{project_id}/{file_id}/{file_name}</td></tr><tr><td>bucket <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>MinIO存储桶名称，默认cogniforge-files</td></tr><tr><td>content_type</td><td class="field-type">string</td><td>文件MIME类型，可执行文件为application/octet-stream</td></tr><tr><td>file_type <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>文件类型分类，枚举值：executable（可执行文件）/script（部署脚本）</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">datetime</td><td>文件上传/创建时间</td></tr><tr><td>created_by</td><td class="field-type">int</td><td>上传者用户ID，executable类型记录上传用户，script类型记录触发的部署记录ID</td></tr></tbody></table></div></details>
+<details class="contract-group" open><summary>配置定义 <span class="cg-count">1</span></summary><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">⚙️ minio_config</h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">MinIO对象存储连接配置，通过环境变量注入。文件存储模块启动时读取此配置初始化MinIO客户端</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>endpoint <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>MinIO服务端点地址，格式：host:port，如minio:9000</td></tr><tr><td>access_key <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>MinIO访问密钥AK，通过环境变量MINIO_ACCESS_KEY注入</td></tr><tr><td>secret_key <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>MinIO安全密钥SK，通过环境变量MINIO_SECRET_KEY注入</td></tr><tr><td>region</td><td class="field-type">string</td><td>存储区域，默认us-east-1</td></tr><tr><td>bucket <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>默认存储桶名称，cogniforge-files</td></tr><tr><td>secure <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">bool</td><td>是否启用TLS加密连接，内网部署默认false</td></tr><tr><td>upload_expiry <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>预签名上传URL有效期（秒），默认3600</td></tr><tr><td>download_expiry <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>预签名下载URL有效期（秒），默认3600</td></tr></tbody></table></div></details>
+  </div>
+</div>
+
+<div class="section" id="interfaces">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(34,211,238,0.12)">🔌</div>
+    <h2>接口定义 (5)</h2>
+  </div>
+  <div class="section-body">
+
+<div class="contract-card"><div class="cc-head"><span class="method-badge post">POST</span><span class="cc-endpoint">/api/files/upload</span><span class="cc-name">文件上传接口</span></div><div class="cc-desc">上传可执行文件到文件存储服务。接收multipart/form-data格式的文件流和项目ID，先计算MD5查重（相同MD5直接返回已有记录），否则写入MinIO并记录元数据。单文件上限500MB</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>file</td><td class="field-type">binary</td><td>上传的可执行文件，multipart/form-data格式</td></tr><tr><td>project_id</td><td class="field-type">int</td><td>文件所属项目ID</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>file_id</td><td class="field-type">int</td></tr><tr><td>file_url</td><td class="field-type">string</td></tr><tr><td>file_size</td><td class="field-type">int</td></tr><tr><td>md5</td><td class="field-type">string</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>请求参数缺失或格式错误（缺少file或project_id）</td></tr><tr><td>400</td><td>文件大小超过上限（500MB）</td></tr><tr><td>413</td><td>上传文件体积超出服务器限制</td></tr><tr><td>500</td><td>MinIO存储失败或数据库写入异常</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/files/{file_id}/download</span><span class="cc-name">文件下载接口</span></div><div class="cc-desc">根据文件ID从MinIO获取文件内容并返回二进制文件流。部署编排服务通过此接口获取部署包后经SSH执行服务传输到远程服务器。支持Range头实现断点续传</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>file_id</td><td class="field-type">int</td><td>文件ID，路径参数</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>file</td><td class="field-type">binary（文件字节流）</td></tr><tr><td>content_type</td><td class="field-type">application/octet-stream</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>404</td><td>文件ID不存在或已被删除</td></tr><tr><td>500</td><td>MinIO文件读取失败或连接异常</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/files/{file_id}</span><span class="cc-name">文件信息查询接口</span></div><div class="cc-desc">查询指定文件的元数据信息，不返回文件内容。部署编排服务通过此接口获取文件MD5和大小用于校验</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>file_id</td><td class="field-type">int</td><td>文件ID，路径参数</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>file_id</td><td class="field-type">int</td></tr><tr><td>file_name</td><td class="field-type">string</td></tr><tr><td>file_size</td><td class="field-type">int</td></tr><tr><td>md5</td><td class="field-type">string</td></tr><tr><td>file_type</td><td class="field-type">string</td></tr><tr><td>created_at</td><td class="field-type">datetime</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>404</td><td>文件ID不存在或已被删除</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/files</span><span class="cc-name">文件列表查询接口</span></div><div class="cc-desc">按项目分页查询已上传文件列表。Web管理控制台通过此接口展示项目下的可执行文件供用户选择部署</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>project_id</td><td class="field-type">int</td><td>项目ID，必填查询参数</td></tr><tr><td>file_type</td><td class="field-type">string</td><td>文件类型筛选：executable/script（可选）</td></tr><tr><td>page</td><td class="field-type">int</td><td>页码，从1开始</td></tr><tr><td>page_size</td><td class="field-type">int</td><td>每页条数，默认20</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>items</td><td class="field-type">array&lt;object&gt;</td></tr><tr><td>total</td><td class="field-type">int</td></tr><tr><td>page</td><td class="field-type">int</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>缺少必填参数project_id</td></tr><tr><td>404</td><td>项目ID不存在</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge internal">INTERNAL</span><span class="cc-endpoint">/internal/files/store</span><span class="cc-name">内部文件存储接口</span></div><div class="cc-desc">内部服务间接口，供部署编排服务存储部署过程中生成的脚本文件。接收脚本内容和项目信息，写入MinIO并以script类型记录元数据，返回file_url供编排服务引用</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>project_id</td><td class="field-type">int</td><td>所属项目ID</td></tr><tr><td>file_name</td><td class="field-type">string</td><td>脚本文件名，如deploy-{version}.sh</td></tr><tr><td>content</td><td class="field-type">string</td><td>脚本文件内容（文本）</td></tr><tr><td>deployment_id</td><td class="field-type">int</td><td>触发该存储的部署记录ID，用于追溯</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>file_id</td><td class="field-type">int</td></tr><tr><td>file_url</td><td class="field-type">string</td></tr><tr><td>file_size</td><td class="field-type">int</td></tr><tr><td>md5</td><td class="field-type">string</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>参数缺失</td></tr><tr><td>500</td><td>MinIO写入失败</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<div class="section" id="errors">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(251,191,36,0.12)">⚠️</div>
+    <h2>错误处理</h2>
+  </div>
+  <div class="section-body">
+
+<p>文件存储模块错误处理策略：1）参数校验层——上传接口校验file和project_id必填，文件大小上限500MB，超出返回400/413；文件信息查询和下载接口校验file_id合法性（正整数），非法格式返回400；2）MinIO操作层——客户端初始化时健康检查，bucket不存在则自动创建；MinIO读写异常（连接超时、权限错误、bucket不存在）由SDK原生异常捕获，统一转换为FileStorageException（含error_code、operation、bucket、object_key字段）向上传递；写入失败采用指数退避重试（初始500ms，最大3次），重试耗尽后报500；3）数据库层——files表写入使用事务，若MySQL写入成功而MinIO写入失败则标记状态为failed便于人工修复补偿；MD5查重发现相同文件直接返回已有记录避免重复上传；文件采用软删除策略（保留元数据记录仅删除MinIO对象），防止误删不可追溯。对外部服务（部署编排服务）的依赖：若文件存储模块不可用，编排服务应缓存上传结果并定期重试。</p>
+  </div>
+</div>
+
+<div class="footer">CogniForge 文档驱动系统</div>
+</div>
+</div>
+
+<script>
+(function() {
+  var links = document.querySelectorAll('.sidebar-link');
+  var sections = [];
+  links.forEach(function(l) { var s = document.getElementById(l.getAttribute('href').slice(1)); if (s) sections.push([s, l]); });
+  function update() {
+    var top = window.scrollY + 80;
+    var active = null;
+    sections.forEach(function(p) { if (p[0].offsetTop <= top) active = p[1]; });
+    links.forEach(function(l) { l.classList.remove('active'); });
+    if (active) active.classList.add('active');
+  }
+  window.addEventListener('scroll', update, {passive: true});
+  update();
+
+  var toggle = document.getElementById('sidebar-toggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function() { sidebar.classList.toggle('mobile-open'); });
+  }
+})();
+</script>
+</body>
+</html>
