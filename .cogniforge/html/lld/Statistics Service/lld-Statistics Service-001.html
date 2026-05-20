@@ -150,7 +150,7 @@
   <div><span class="badge accent">详细设计文档</span></div>
 </div>
 <h1><span>详细设计文档</span> LLD - Statistics Service</h1>
-<div class="meta">2026-05-20 11:27 &middot; 作者: design_agent</div>
+<div class="meta">2026-05-20 13:52 &middot; 作者: design_agent</div>
 
 <div class="section">
   <div class="section-header">
@@ -160,76 +160,32 @@
   <div class="section-body">
 
 <p>模块: Statistics Service</p>
-<p>学习统计模块，负责数据的聚合计算与统计分析。采用 异步计算 + 缓存加速 架构：用户请求统计时优先查缓存（Redis），缓存命中直接返回；未命中则投递消息到消息队列（Message Queue），由异步 Worker 消费消息执行聚合计算，结果写入数据库（MySQL/PostgreSQL）和缓存，前端通过轮询或 WebSocket 获取计算结果。缓存键策略采用 'stats:{type}:{dimensionId}' 格式，TTL 1800 秒。聚合计算支持按学生、班级、年级三个维度进行汇总，包括学生人数统计、性别分布、趋势分析等。分层设计：Controller 层处理 HTTP 请求与参数校验 → Service 层实现统计业务逻辑（缓存读取/写入、异步任务投递、聚合计算编排） → Repository 层封装数据库访问。</p>
+<p>学习统计服务，负责学习数据的记录、统计分析和报告生成。作为微服务架构中的领域服务之一，通过 REST 内部接口对外提供学习数据录入和多维度统计查询能力，消费者为 API Gateway。服务内部职责包括：1）学习数据记录的创建和存储，支持每名学生每个科目下多条成绩记录的持久化；2）按学生维度统计学习情况，计算各科目的总分、平均分、最高分、最低分及记录条数，并汇总总体平均分；3）按班级维度汇总统计，计算各科目的班级平均分、最高分、最低分和及格率；4）按年级维度汇总统计，计算年级平均分和各班级的平均分与人数；5）异步消费消息队列中的统计任务，在业务操作触发时重新计算和刷新统计缓存。本服务不处理认证鉴权——该职责由 API Gateway 统一负责。数据存储采用关系型数据库，学习记录主表为 study_records，统计数据通过 SQL 聚合查询实时计算（不预聚合持久化），以简化数据一致性管理。对于高频查询的统计结果可接入 Redis 缓存（由 Cache 组件提供）来提升性能。本服务依赖 Message Queue 接收异步统计计算任务（topic: statistics.calculation），实现削峰填谷和解耦。</p>
   </div>
 </div>
 
 <div class="section">
   <div class="section-header">
     <div class="icon" style="background:rgba(91,141,239,0.12)">🗄️</div>
-    <h2>数据模型 (15)</h2>
+    <h2>数据模型 (4)</h2>
   </div>
   <div class="section-body">
 
 <div class="model-item">
-  <h3>student_statistics</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>bigint</td><td>统计记录 ID，自增主键</td></tr><tr><td>student_id</td><td>bigint</td><td>学生 ID，关联 student 表，建立唯一索引</td></tr><tr><td>total_courses</td><td>int</td><td>该学生参与课程总数，默认 0</td></tr><tr><td>attendance_rate</td><td>decimal(5,2)</td><td>出勤率百分比（0.00-100.00），统计周期内实际出勤次数/应出勤次数</td></tr><tr><td>homework_completion_rate</td><td>decimal(5,2)</td><td>作业提交完成率百分比（0.00-100.00），已提交作业数/应提交作业数</td></tr><tr><td>avg_score</td><td>decimal(5,2)</td><td>平均成绩，各科成绩的算术平均值，取值 0-100</td></tr><tr><td>rank_in_class</td><td>int</td><td>班级内排名，按 avg_score 降序排列后的名次，默认 0 表示未计算</td></tr><tr><td>stat_period</td><td>varchar(32)</td><td>统计周期标识，如 '2026-SEM1'（2026年第一学期）、'2026-MONTH-05'（2026年5月），用于区分不同周期的统计结果</td></tr><tr><td>calculated_at</td><td>datetime</td><td>本次统计计算时间戳</td></tr><tr><td>created_at</td><td>datetime</td><td>记录创建时间，自动填充</td></tr><tr><td>updated_at</td><td>datetime</td><td>记录更新时间，自动更新</td></tr></tbody></table>
+  <h3>study_records</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>BIGINT</td><td>主键，自增，学习记录唯一标识</td></tr><tr><td>student_id</td><td>BIGINT</td><td>学生 ID，关联 Student Service 的学生数据，不可为空</td></tr><tr><td>subject</td><td>VARCHAR(100)</td><td>科目名称，如'数学'、'语文'、'英语'，不可为空</td></tr><tr><td>score</td><td>DECIMAL(5,1)</td><td>分数，取值范围 0-100，保留一位小数</td></tr><tr><td>record_date</td><td>DATE</td><td>记录日期，标识成绩所属的评测日期，不可为空</td></tr><tr><td>remarks</td><td>VARCHAR(500)</td><td>备注说明，可为 null，用于补充考试类型或特殊说明</td></tr><tr><td>created_at</td><td>DATETIME</td><td>记录创建时间，默认 CURRENT_TIMESTAMP</td></tr></tbody></table>
 </div>
 <div class="model-item">
-  <h3>class_statistics</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>bigint</td><td>统计记录 ID，自增主键</td></tr><tr><td>class_id</td><td>bigint</td><td>班级 ID，关联 class 表，建立唯一索引</td></tr><tr><td>student_count</td><td>int</td><td>班级学生总人数（该班 active 状态学生数量）</td></tr><tr><td>male_count</td><td>int</td><td>男生人数</td></tr><tr><td>female_count</td><td>int</td><td>女生人数</td></tr><tr><td>avg_attendance_rate</td><td>decimal(5,2)</td><td>班级平均出勤率，全班学生出勤率的算术平均</td></tr><tr><td>avg_homework_completion_rate</td><td>decimal(5,2)</td><td>班级平均作业提交完成率</td></tr><tr><td>avg_score</td><td>decimal(5,2)</td><td>班级平均成绩，全班学生 avg_score 的算术平均</td></tr><tr><td>top_student_id</td><td>bigint</td><td>班级第一名学生 ID（avg_score 最高者，并列取 student_id 最小者）</td></tr><tr><td>pass_count</td><td>int</td><td>及格人数（avg_score &gt;= 60 的学生数）</td></tr><tr><td>pass_rate</td><td>decimal(5,2)</td><td>及格率百分比，pass_count / student_count * 100</td></tr><tr><td>excellent_count</td><td>int</td><td>优秀人数（avg_score &gt;= 90 的学生数）</td></tr><tr><td>excellent_rate</td><td>decimal(5,2)</td><td>优秀率百分比，excellent_count / student_count * 100</td></tr><tr><td>stat_period</td><td>varchar(32)</td><td>统计周期标识，同 student_statistics.stat_period</td></tr><tr><td>calculated_at</td><td>datetime</td><td>本次统计计算时间戳</td></tr><tr><td>created_at</td><td>datetime</td><td>记录创建时间</td></tr><tr><td>updated_at</td><td>datetime</td><td>记录更新时间</td></tr></tbody></table>
+  <h3>idx_student_subject_date</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>student_id</td><td>INDEX</td><td>学生 ID</td></tr><tr><td>subject</td><td>INDEX</td><td>科目名称</td></tr><tr><td>record_date</td><td>INDEX</td><td>记录日期</td></tr></tbody></table>
 </div>
 <div class="model-item">
-  <h3>grade_statistics</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>bigint</td><td>统计记录 ID，自增主键</td></tr><tr><td>grade_id</td><td>bigint</td><td>年级 ID，关联 grade 表，建立唯一索引</td></tr><tr><td>class_count</td><td>int</td><td>年级下班级总数</td></tr><tr><td>student_count</td><td>int</td><td>年级学生总人数</td></tr><tr><td>male_count</td><td>int</td><td>男生总人数</td></tr><tr><td>female_count</td><td>int</td><td>女生总人数</td></tr><tr><td>avg_attendance_rate</td><td>decimal(5,2)</td><td>年级平均出勤率</td></tr><tr><td>avg_homework_completion_rate</td><td>decimal(5,2)</td><td>年级平均作业提交完成率</td></tr><tr><td>avg_score</td><td>decimal(5,2)</td><td>年级平均成绩</td></tr><tr><td>pass_rate</td><td>decimal(5,2)</td><td>年级总体及格率</td></tr><tr><td>excellent_rate</td><td>decimal(5,2)</td><td>年级总体优秀率</td></tr><tr><td>stat_period</td><td>varchar(32)</td><td>统计周期标识</td></tr><tr><td>calculated_at</td><td>datetime</td><td>本次统计计算时间戳</td></tr><tr><td>created_at</td><td>datetime</td><td>记录创建时间</td></tr><tr><td>updated_at</td><td>datetime</td><td>记录更新时间</td></tr></tbody></table>
+  <h3>idx_record_date</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>record_date</td><td>INDEX</td><td>记录日期索引</td></tr></tbody></table>
 </div>
 <div class="model-item">
-  <h3>statistics_task</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>varchar(36)</td><td>任务 ID，UUID v4 格式，全局唯一</td></tr><tr><td>type</td><td>varchar(32)</td><td>任务类型枚举：'student'/'class'/'grade'/'all'，表示重新计算哪个维度的统计</td></tr><tr><td>dimension_id</td><td>bigint</td><td>维度 ID，当 type=student/class/grade 时指定具体业务 ID，type=all 时为 null</td></tr><tr><td>status</td><td>varchar(16)</td><td>任务状态枚举：'pending'/'processing'/'completed'/'failed'，默认 'pending'</td></tr><tr><td>progress</td><td>int</td><td>计算进度百分比（0-100），默认 0</td></tr><tr><td>result_summary</td><td>varchar(512)</td><td>计算结果摘要描述，如 '统计完成：共处理 5 个班级 120 名学生'，status=completed 时填充</td></tr><tr><td>error_message</td><td>varchar(512)</td><td>错误信息，status=failed 时填充错误原因，以便排查</td></tr><tr><td>stat_period</td><td>varchar(32)</td><td>统计周期标识</td></tr><tr><td>created_at</td><td>datetime</td><td>任务创建时间</td></tr><tr><td>started_at</td><td>datetime</td><td>任务开始处理时间，status 变为 processing 时填充</td></tr><tr><td>completed_at</td><td>datetime</td><td>任务完成时间，status 变为 completed/failed 时填充</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>StudentStatsRequest</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>studentId</td><td>number</td><td>学生 ID，必填，路径参数</td></tr><tr><td>period</td><td>string</td><td>统计周期，可选，默认取最近一个周期，如 '2026-SEM1'</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>StudentStatsResponse</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>studentId</td><td>number</td><td>学生 ID</td></tr><tr><td>studentName</td><td>string</td><td>学生姓名，从 student 表关联获取</td></tr><tr><td>className</td><td>string</td><td>所在班级名称</td></tr><tr><td>totalCourses</td><td>number</td><td>参与课程总数</td></tr><tr><td>attendanceRate</td><td>number</td><td>出勤率百分比</td></tr><tr><td>homeworkCompletionRate</td><td>number</td><td>作业提交完成率百分比</td></tr><tr><td>avgScore</td><td>number</td><td>平均成绩</td></tr><tr><td>rankInClass</td><td>number</td><td>班级内排名</td></tr><tr><td>statPeriod</td><td>string</td><td>统计周期</td></tr><tr><td>calculatedAt</td><td>string</td><td>计算时间 ISO 8601</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>ClassStatsResponse</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>classId</td><td>number</td><td>班级 ID</td></tr><tr><td>className</td><td>string</td><td>班级名称，从 class 表关联获取</td></tr><tr><td>gradeName</td><td>string</td><td>所属年级名称</td></tr><tr><td>studentCount</td><td>number</td><td>学生总人数</td></tr><tr><td>maleCount</td><td>number</td><td>男生人数</td></tr><tr><td>femaleCount</td><td>number</td><td>女生人数</td></tr><tr><td>avgAttendanceRate</td><td>number</td><td>班级平均出勤率</td></tr><tr><td>avgHomeworkCompletionRate</td><td>number</td><td>班级平均作业提交完成率</td></tr><tr><td>avgScore</td><td>number</td><td>班级平均成绩</td></tr><tr><td>passRate</td><td>number</td><td>及格率百分比</td></tr><tr><td>excellentRate</td><td>number</td><td>优秀率百分比</td></tr><tr><td>topStudentName</td><td>string</td><td>班级第一名学生姓名</td></tr><tr><td>statPeriod</td><td>string</td><td>统计周期</td></tr><tr><td>calculatedAt</td><td>string</td><td>计算时间 ISO 8601</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>GradeStatsResponse</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>gradeId</td><td>number</td><td>年级 ID</td></tr><tr><td>gradeName</td><td>string</td><td>年级名称</td></tr><tr><td>classCount</td><td>number</td><td>班级总数</td></tr><tr><td>studentCount</td><td>number</td><td>学生总人数</td></tr><tr><td>maleCount</td><td>number</td><td>男生总人数</td></tr><tr><td>femaleCount</td><td>number</td><td>女生总人数</td></tr><tr><td>avgAttendanceRate</td><td>number</td><td>年级平均出勤率</td></tr><tr><td>avgHomeworkCompletionRate</td><td>number</td><td>年级平均作业提交完成率</td></tr><tr><td>avgScore</td><td>number</td><td>年级平均成绩</td></tr><tr><td>passRate</td><td>number</td><td>年级总体及格率</td></tr><tr><td>excellentRate</td><td>number</td><td>年级总体优秀率</td></tr><tr><td>statPeriod</td><td>string</td><td>统计周期</td></tr><tr><td>calculatedAt</td><td>string</td><td>计算时间 ISO 8601</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>DashboardSummaryResponse</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>totalStudents</td><td>number</td><td>全校学生总数</td></tr><tr><td>totalClasses</td><td>number</td><td>全校班级总数</td></tr><tr><td>totalGrades</td><td>number</td><td>年级总数</td></tr><tr><td>genderDistribution</td><td>object</td><td>性别分布，{ male: number, female: number }</td></tr><tr><td>overallAvgScore</td><td>number</td><td>全校平均成绩</td></tr><tr><td>overallPassRate</td><td>number</td><td>全校及格率</td></tr><tr><td>overallExcellentRate</td><td>number</td><td>全校优秀率</td></tr><tr><td>gradeStats</td><td>object[]</td><td>各年级简要统计，每项含 gradeId、gradeName、studentCount、avgScore</td></tr><tr><td>statPeriod</td><td>string</td><td>统计周期</td></tr><tr><td>calculatedAt</td><td>string</td><td>计算时间 ISO 8601</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>StatPeriodItem</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>period</td><td>string</td><td>统计周期标识，如 '2026-SEM1'</td></tr><tr><td>label</td><td>string</td><td>显示标签，如 '2026年第一学期'</td></tr><tr><td>isCurrent</td><td>boolean</td><td>是否为当前活跃周期</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>RefreshTaskResponse</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>taskId</td><td>string</td><td>任务 ID，UUID 格式</td></tr><tr><td>type</td><td>string</td><td>任务类型</td></tr><tr><td>status</td><td>string</td><td>任务状态，初始为 'pending'</td></tr><tr><td>createdAt</td><td>string</td><td>创建时间 ISO 8601</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>ScoreDistributionItem</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>range</td><td>string</td><td>分数段标签，如 '90-100'、'80-89'、'70-79'、'60-69'、'0-59'</td></tr><tr><td>count</td><td>number</td><td>该分数段的学生人数</td></tr><tr><td>percentage</td><td>number</td><td>占统计总人数的百分比</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>ScoreDistributionResponse</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>dimension</td><td>string</td><td>统计维度，'class' 或 'grade'</td></tr><tr><td>dimensionId</td><td>number</td><td>维度 ID</td></tr><tr><td>dimensionName</td><td>string</td><td>维度名称（班级名或年级名）</td></tr><tr><td>distribution</td><td>object[]</td><td>分数段分布列表，按分数段从高到低排列，每项为 ScoreDistributionItem</td></tr><tr><td>statPeriod</td><td>string</td><td>统计周期</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>TrendItem</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>period</td><td>string</td><td>周期标识</td></tr><tr><td>label</td><td>string</td><td>显示标签</td></tr><tr><td>avgScore</td><td>number</td><td>该周期平均成绩</td></tr><tr><td>passRate</td><td>number</td><td>该周期及格率</td></tr><tr><td>excellentRate</td><td>number</td><td>该周期优秀率</td></tr><tr><td>studentCount</td><td>number</td><td>该周期统计人数</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>TrendResponse</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>dimension</td><td>string</td><td>统计维度</td></tr><tr><td>dimensionId</td><td>number</td><td>维度 ID</td></tr><tr><td>dimensionName</td><td>string</td><td>维度名称</td></tr><tr><td>trends</td><td>object[]</td><td>各周期趋势数据，按 period 升序排列，每项为 TrendItem</td></tr></tbody></table>
+  <h3>idx_subject</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>subject</td><td>INDEX</td><td>科目索引</td></tr></tbody></table>
 </div>
   </div>
 </div>
@@ -237,74 +193,44 @@
 <div class="section">
   <div class="section-header">
     <div class="icon" style="background:rgba(34,211,238,0.12)">🔌</div>
-    <h2>接口定义 (13)</h2>
+    <h2>接口定义 (5)</h2>
   </div>
   <div class="section-body">
 
 <div class="comp-item">
-  <h3>仪表盘概况查询</h3>
-  <div class="comp-type">GET /api/statistics/dashboard</div>
-  <p>获取全校统计概况数据，用于首页仪表盘展示，包括学生总数、班级总数、性别分布、全校平均成绩、及格率、优秀率和各年级简要统计。优先查缓存，缓存键 'stats:dashboard:{period}'，TTL 1800 秒。未命中时聚合计算（遍历各年级统计数据求和）后回填缓存。如果所有统计数据均未计算（DB 中无统计记录），返回默认零值而非报错</p>
+  <h3>统计管理内部接口（学习数据录入）</h3>
+  <div class="comp-type">POST /internal/statistics/records</div>
+  <p>录入学习数据记录。接收学生 ID、科目、分数、记录日期和可选备注。核心校验规则：1）student_id、subject、score、record_date 为必填字段，缺失时返回 422；2）score 取值范围 0-100，超出时返回 422；3）record_date 格式必须为 YYYY-MM-DD，格式非法时返回 422；4）学生存在性校验：需确认 student_id 在共享数据库 students 表中存在，不存在时返回 422（提示学生不存在）；5）创建成功返回 201 及完整记录信息（含自动生成的 id 和 created_at）。同时，成功录入后发送异步消息到 MQ topic: statistics.calculation（task_type=student, entity_id=student_id, action=recalculate），触发相关统计缓存刷新。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>student_id</td><td>number</td><td>学生 ID，必填</td></tr><tr><td>subject</td><td>string</td><td>科目名称，如'数学'、'语文'，必填</td></tr><tr><td>score</td><td>number</td><td>分数，取值范围 0-100，必填</td></tr><tr><td>record_date</td><td>string (date)</td><td>记录日期，格式 YYYY-MM-DD，必填</td></tr><tr><td>remarks</td><td>string (optional)</td><td>备注，选填</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>学生统计查询</h3>
-  <div class="comp-type">GET /api/statistics/students/:studentId</div>
-  <p>查询单个学生的学习统计数据，包含各项指标及班级内排名。优先查缓存，缓存键 'stats:student:{studentId}:{period}'，TTL 1800 秒。未命中时查 DB 返回，若 DB 中也无数据（从未计算过）则返回 404 并提示'该学生统计数据尚未生成，请触发刷新'。关联 student 表和 class 表获取学生姓名和班级名称</p>
+  <h3>统计管理内部接口（学生统计）</h3>
+  <div class="comp-type">GET /internal/statistics/students/{id}</div>
+  <p>查询指定学生的统计信息，按科目汇总。路径参数 id 为学生 ID。支持按日期范围筛选（start_date/end_date），不传时统计全部历史数据。核心逻辑：1）查询 study_records 表按 student_id 过滤，指定日期范围时附加 record_date BETWEEN start_date AND end_date 条件；2）按 subject 分组，聚合计算各科目的 total_scores（SUM）、average_score（AVG）、max_score（MAX）、min_score（MIN）、record_count（COUNT）；3）计算 overall_average 为所有科目所有记录的平均分（即所有记录 score 的 AVG）；4）仅统计有成绩记录的学生，无记录时返回空 subjects 数组和 overall_average=0；5）student_name 从共享数据库 students 表关联查询获取，学生不存在时返回 404。查询结果根据条件动态生成完毕直接返回，不做缓存（或由 Cache 组件按需缓存）。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>学生 ID，路径参数</td></tr><tr><td>start_date</td><td>string (date, optional)</td><td>统计开始日期，格式 YYYY-MM-DD</td></tr><tr><td>end_date</td><td>string (date, optional)</td><td>统计结束日期，格式 YYYY-MM-DD</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>班级统计查询</h3>
-  <div class="comp-type">GET /api/statistics/classes/:classId</div>
-  <p>查询指定班级的聚合统计数据，包含班级学生总数、性别分布、平均成绩、及格率、优秀率、班级第一名等信息。优先查缓存，缓存键 'stats:class:{classId}:{period}'，TTL 1800 秒。未命中时查 DB。关联 class 表和 grade 表获取班级名称和所属年级名称。班级不存在返回 404（'班级不存在'）</p>
+  <h3>统计管理内部接口（班级统计）</h3>
+  <div class="comp-type">GET /internal/statistics/classes/{id}</div>
+  <p>查询指定班级的统计汇总数据。路径参数 id 为班级 ID。支持按科目（subject）和日期范围筛选。核心逻辑：1）先校验班级存在性——查询 classes 表，班级不存在时返回 404；2）查询共享数据库 students 表获取该班级下的所有学生 ID 列表；3）以这些 student_id 列表为条件，查询 study_records 表进行聚合计算；4）按 subject 分组，计算班级内所有学生在各科目的 class_average（AVG）、highest_score（MAX）、lowest_score（MIN）和 pass_rate（及格率 = 得分 &gt;= 60 的记录数 / 总记录数 * 100，百分比数值）；5）class_average 为该班级所有记录（全部科目）的总体平均分；6）student_count 通过 COUNT 聚合 students 表中 class_id 匹配的记录数计算，反映班级当前实际人数。有 subject 参数时仅返回该科目的统计，无 subject 时返回全部科目的统计数组。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>班级 ID，路径参数</td></tr><tr><td>subject</td><td>string (optional)</td><td>按科目筛选，如'数学'，传此参数时只返回该科目的统计</td></tr><tr><td>start_date</td><td>string (date, optional)</td><td>统计开始日期，格式 YYYY-MM-DD</td></tr><tr><td>end_date</td><td>string (date, optional)</td><td>统计结束日期，格式 YYYY-MM-DD</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>年级统计查询</h3>
-  <div class="comp-type">GET /api/statistics/grades/:gradeId</div>
-  <p>查询指定年级的聚合统计数据，包含年级下班级总数、学生总人数、性别分布、平均成绩、及格率、优秀率等。优先查缓存，缓存键 'stats:grade:{gradeId}:{period}'，TTL 1800 秒。未命中时查 DB。年级不存在返回 404</p>
+  <h3>统计管理内部接口（年级统计）</h3>
+  <div class="comp-type">GET /internal/statistics/grades/{id}</div>
+  <p>查询指定年级的统计汇总数据。路径参数 id 为年级 ID。支持按科目和日期范围筛选。核心逻辑：1）先校验年级存在性——查询 grades 表，年级不存在时返回 404；2）查询共享数据库 classes 表获取该年级下的所有班级 ID 和名称；3）对于每个班级，查询其下的所有学生（通过 students 表 class_id 关联），再汇总这些学生的成绩记录进行聚合；4）grade_average 为该年级所有记录（全部班级、全部科目）的总体平均分；5）class_count 为年级下的班级数，student_count 为年级下的学生总数（去重），均实时聚合计算；6）classes 数组列出该年级下每个班级的 class_id、class_name、class_average（本班所有记录的平均分）和 student_count（本班人数）；7）subject 参数影响 grade_average 的计算范围（有 subject 时只计算该科目的平均分），但 classes 数组中每个班级的 class_average 始终为该班级全部科目的平均分（如需按科目过滤班级统计由班级统计接口提供）。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>年级 ID，路径参数</td></tr><tr><td>subject</td><td>string (optional)</td><td>按科目筛选，影响 grade_average 的计算范围</td></tr><tr><td>start_date</td><td>string (date, optional)</td><td>统计开始日期，格式 YYYY-MM-DD</td></tr><tr><td>end_date</td><td>string (date, optional)</td><td>统计结束日期，格式 YYYY-MM-DD</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>成绩分数段分布查询</h3>
-  <div class="comp-type">GET /api/statistics/classes/:classId/score-distribution</div>
-  <p>查询指定班级的成绩分数段分布，按 '90-100'、'80-89'、'70-79'、'60-69'、'0-59' 五个分数段统计学生人数和占比。优先查缓存，缓存键 'stats:class:{classId}:distribution:{period}'。适用于前端图表展示（柱状图/饼图）。班级不存在返回 404。该接口不存储在 DB 中，每次从 student_statistics 表实时聚合计算</p>
-</div>
-<div class="comp-item">
-  <h3>年级分数段分布查询</h3>
-  <div class="comp-type">GET /api/statistics/grades/:gradeId/score-distribution</div>
-  <p>查询指定年级的成绩分数段分布，逻辑同上，聚合该年级下所有学生数据。缓存键 'stats:grade:{gradeId}:distribution:{period}'</p>
-</div>
-<div class="comp-item">
-  <h3>班级趋势查询</h3>
-  <div class="comp-type">GET /api/statistics/classes/:classId/trend</div>
-  <p>查询指定班级的跨周期趋势数据，返回多个周期的 avgScore、passRate、excellentRate 等指标，用于前端折线图趋势展示。从 class_statistics 表按 class_id 和多个 stat_period 查询。默认返回最近 6 个周期的数据。班级不存在返回 404。缓存键 'stats:class:{classId}:trend'，TTL 3600 秒（趋势数据变更频率低，缓存时间相对更长）</p>
-</div>
-<div class="comp-item">
-  <h3>年级趋势查询</h3>
-  <div class="comp-type">GET /api/statistics/grades/:gradeId/trend</div>
-  <p>查询指定年级的跨周期趋势数据，逻辑同班级趋势。从 grade_statistics 表查询。缓存键 'stats:grade:{gradeId}:trend'，TTL 3600 秒</p>
-</div>
-<div class="comp-item">
-  <h3>全局趋势查询</h3>
-  <div class="comp-type">GET /api/statistics/trends/overall</div>
-  <p>查询全校总体趋势数据，聚合所有年级的统计结果。缓存键 'stats:overall:trend'，TTL 3600 秒。无参数，返回最近 6 个周期的全校级趋势</p>
-</div>
-<div class="comp-item">
-  <h3>统计计算刷新（触发异步任务）</h3>
-  <div class="comp-type">POST /api/statistics/refresh</div>
-  <p>触发统计数据异步重新计算。在 statistics_task 表创建一条任务记录（status='pending'），投递消息到消息队列后立即返回 taskId。前端可轮询任务状态接口获取计算结果。同一个 dimension 不允许并发：如果该 dimension 已有 status='pending' 或 'processing' 的任务，返回 409（'该维度已有正在执行的统计任务'）。type='all' 时刷新全量统计（无需校验并发），但 type='all' 的频率限制为每 5 分钟最多触发一次（使用 Redis 分布式锁，锁键 'stats:refresh:lock'，TTL 300 秒）</p>
-</div>
-<div class="comp-item">
-  <h3>统计任务状态查询</h3>
-  <div class="comp-type">GET /api/statistics/tasks/:taskId</div>
-  <p>查询统计刷新任务的当前状态和进度。用于前端轮询获取异步任务结果。任务不存在返回 404。任务状态为 'completed' 时返回 resultSummary 摘要；'failed' 时返回 errorMessage 供排查</p>
-</div>
-<div class="comp-item">
-  <h3>统计周期列表查询</h3>
-  <div class="comp-type">GET /api/statistics/periods</div>
-  <p>获取所有可用的统计周期列表，用于前端下拉选择器切换统计周期。从 student_statistics 表 DISTINCT stat_period 获取。按周期标识降序排列（最近的在最前）。无参数。缓存键 'stats:periods'，TTL 3600 秒</p>
-</div>
-<div class="comp-item">
-  <h3>班级统计列表查询</h3>
-  <div class="comp-type">GET /api/statistics/classes</div>
-  <p>分页查询所有班级的统计数据概览，每项包含班级基本信息+核心统计指标（学生数、平均分、及格率等）。该接口不查缓存，直接从 class_statistics 表分页查询，支持按 gradeId 过滤。适用于班级统计概览页面</p>
+  <h3>统计任务消息队列（consumer）</h3>
+  <div class="comp-type">topic: statistics.calculation</div>
+  <p>Statistics Service 作为消费者订阅 MQ topic: statistics.calculation。当业务操作（如录入成绩、修改学生/班级/年级归属等）触发统计需求时，上游服务发送消息到此队列，本服务异步消费并执行统计计算。消费逻辑：1）反序列化消息体，解析 task_type（student|class|grade）、entity_id、action（recalculate|refresh）和 triggered_at；2）根据 task_type 决定统计范围——task_type=student 时重新计算该学生的所有统计摘要，task_type=class 时重新计算该班级下所有学生的汇总，task_type=grade 时重新计算该年级所有班级的汇总；3）action=recalculate 表示全量重新计算，action=refresh 表示增量刷新（当前先按全量重算实现，后续可优化为增量）；4）计算结果写入共享数据库的统计缓存表（如有）或直接更新 Redis 缓存；5）消费失败的消息根据 MQ 重试机制重新投递，重试 3 次仍失败后进入死信队列并告警。此接口定义在 SAD 中，本处引用以说明消息消费依赖。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>task_type</td><td>string</td><td>任务类型枚举: student|class|grade，标识统计维度</td></tr><tr><td>entity_id</td><td>number</td><td>统计对象 ID，对应 student_id/class_id/grade_id</td></tr><tr><td>action</td><td>string</td><td>动作枚举: recalculate|refresh，标识全量重算或增量刷新</td></tr><tr><td>triggered_at</td><td>string (datetime)</td><td>任务触发时间戳</td></tr></tbody></table>
 </div>
   </div>
 </div>
@@ -316,7 +242,7 @@
   </div>
   <div class="section-body">
 
-<p>全局统一返回标准 JSON 格式：{ code: number, message: string, details?: any }。4xx 错误：统计数据未生成返回 404（message: '统计数据尚未生成，请触发刷新'），班级/年级不存在返回 404，同一维度并发刷新返回 409（message: '该维度已有正在执行的统计任务'），全量刷新频率超限返回 429（message: '全量刷新过于频繁，请 5 分钟后再试'），type 值非法返回 400（message: '参数错误' 并 details 指明 type 取值范围）。5xx 错误统一返回 500（message: '系统内部错误'），完整错误栈记录到服务日志。缓存操作（Redis）失败时降级为直接查询 DB，不阻塞正常业务流程。缓存键采用统一前缀 'stats:' 命名空间，便于管理和批量失效。统计数据变更后（刷新完成）需主动失效对应缓存：student 级别失效 'stats:student:{id}:*' 和关联的班级/年级/仪表盘缓存；class 级别失效 'stats:class:{id}:*' 和关联的年级/仪表盘缓存；grade 级别失效 'stats:grade:{id}:*' 和仪表盘缓存；type=all 时批量失效所有 stats: 前缀的缓存。消息队列投递失败时任务记录保留在 DB（status='pending'），通过定时任务（cron 每 5 分钟扫描超过 10 分钟仍为 pending 的任务）重新投递。异步 Worker 执行统计计算时遇到数据异常（如除零、空数据集）记录警告日志并返回零值而非中断流程。statistics_task 表中的任务记录保留最近 30 天，超过 30 天的由定时清理任务（每日凌晨 3:00 执行）物理删除。</p>
+<p>Statistics Service 按以下规则处理异常：1）必填字段缺失——录入学习数据时缺少 student_id/subject/score/record_date 中任一字段，返回 422 Unprocessable Entity，响应体为 {&quot;error&quot;: &quot;validation_error&quot;, &quot;message&quot;: &quot;缺少必填字段&quot;, &quot;fields&quot;: [缺失字段列表]}；2）分数越界——score 不在 0-100 范围内，返回 422，响应体为 {&quot;error&quot;: &quot;validation_error&quot;, &quot;message&quot;: &quot;分数必须在 0-100 之间&quot;, &quot;field&quot;: &quot;score&quot;}；3）日期格式非法——record_date 不满足 YYYY-MM-DD 格式，返回 422，响应体为 {&quot;error&quot;: &quot;validation_error&quot;, &quot;message&quot;: &quot;日期格式错误，应为 YYYY-MM-DD&quot;, &quot;field&quot;: &quot;record_date&quot;}；4）学生不存在——录入时 student_id 在 students 表中不存在，返回 422，响应体为 {&quot;error&quot;: &quot;validation_error&quot;, &quot;message&quot;: &quot;学生不存在&quot;, &quot;field&quot;: &quot;student_id&quot;}；5）班级不存在——查询班级统计时 id 在 classes 表中不存在，返回 404 Not Found，响应体为 {&quot;error&quot;: &quot;not_found&quot;, &quot;message&quot;: &quot;班级不存在&quot;}；6）年级不存在——查询年级统计时 id 在 grades 表中不存在，返回 404 Not Found，响应体为 {&quot;error&quot;: &quot;not_found&quot;, &quot;message&quot;: &quot;年级不存在&quot;}；7）日期范围无效——start_date 晚于 end_date，返回 422，响应体为 {&quot;error&quot;: &quot;validation_error&quot;, &quot;message&quot;: &quot;开始日期不能晚于结束日期&quot;}；8）MQ 消费异常——消费统计任务消息时发生异常，记录错误日志并触发消息重试，重试 3 次仍失败后发送到死信队列并触发告警通知；9）空统计结果——查询学生/班级/年级统计时无成绩记录，不属于异常，正常返回 200，subjects 为空数组，各项平均值返回 0。所有操作记录结构化日志，包含请求路径、方法、耗时和操作结果状态，日志级别：正常操作 INFO，业务校验失败 WARN，系统异常 ERROR。MQ 消费日志额外包含消息 ID、task_type、entity_id 和重试次数。</p>
   </div>
 </div>
 
