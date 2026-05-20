@@ -1,0 +1,82 @@
+{
+  "meta": {
+    "doc_id": "lld-项目管理服务-001",
+    "type": "lld",
+    "module": "项目管理服务",
+    "title": "LLD - 项目管理服务",
+    "author": "design_agent",
+    "created": "2026-05-20 16:07"
+  },
+  "overview": "项目管理服务是自动化部署系统的核心服务之一，负责管理项目元数据的全生命周期。提供项目创建、详情查询、列表分页、信息编辑、软删除等 CRUD 能力，维护项目与部署环境的一对多关联关系，并承担项目级别的权限校验职责。采用 RESTful 接口对外暴露能力，数据持久化于 MySQL。项目作为系统的顶层业务实体，环境管理服务和部署编排服务均依赖项目的存在性校验。",
+  "data_models": [
+    {
+      "name": "projects",
+      "type": "table",
+      "description": "项目核心表，存储所有项目的元数据信息。每条记录代表一个独立的部署项目。使用逻辑删除（deleted_at 字段）避免误删导致关联数据失效。",
+      "fields": [
+        { "name": "id", "type": "BIGINT", "description": "项目唯一标识，自增主键" },
+        { "name": "name", "type": "VARCHAR(255)", "description": "项目名称，唯一索引，不可为空" },
+        { "name": "description", "type": "TEXT", "description": "项目描述信息，可选" },
+        { "name": "created_by", "type": "VARCHAR(255)", "description": "创建者标识，用于权限追溯" },
+        { "name": "created_at", "type": "DATETIME", "description": "创建时间，默认 CURRENT_TIMESTAMP" },
+        { "name": "updated_at", "type": "DATETIME", "description": "最后更新时间，ON UPDATE CURRENT_TIMESTAMP" },
+        { "name": "deleted_at", "type": "DATETIME", "description": "逻辑删除时间，NULL 表示未删除" }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "CreateProject",
+      "endpoint": "POST /api/projects",
+      "description": "创建新的部署项目。校验项目名称唯一性，名称不可为空且不可重复，描述可选。创建成功后返回项目完整信息，状态码 201。",
+      "parameters": [
+        { "name": "name", "type": "string", "description": "项目名称，必填，长度 1-255，全局唯一" },
+        { "name": "description", "type": "string", "description": "项目描述，选填" }
+      ]
+    },
+    {
+      "name": "ListProjects",
+      "endpoint": "GET /api/projects",
+      "description": "获取所有未删除项目的列表，支持分页查询。返回数据包含项目总数和当前页的项目对象数组，默认每页 20 条。结果按创建时间倒序排列。",
+      "parameters": [
+        { "name": "page", "type": "integer", "description": "页码，从 1 开始，默认 1" },
+        { "name": "page_size", "type": "integer", "description": "每页条数，范围 1-100，默认 20" }
+      ]
+    },
+    {
+      "name": "GetProject",
+      "endpoint": "GET /api/projects/{projectId}",
+      "description": "查询单个项目的详细信息。返回项目元数据及关联的环境数量概览。项目不存在或已逻辑删除时返回 404。",
+      "parameters": [
+        { "name": "projectId", "type": "integer", "description": "项目 ID，路径参数" }
+      ]
+    },
+    {
+      "name": "UpdateProject",
+      "endpoint": "PUT /api/projects/{projectId}",
+      "description": "编辑项目信息。可修改项目名称和描述。修改名称时校验唯一性，不允许与已有项目重名。仅更新传入的字段，未传字段保持原值。",
+      "parameters": [
+        { "name": "projectId", "type": "integer", "description": "项目 ID，路径参数" },
+        { "name": "name", "type": "string", "description": "项目名称，选填，修改时校验唯一性" },
+        { "name": "description", "type": "string", "description": "项目描述，选填" }
+      ]
+    },
+    {
+      "name": "DeleteProject",
+      "endpoint": "DELETE /api/projects/{projectId}",
+      "description": "逻辑删除项目。将 deleted_at 字段置为当前时间。删除前校验项目下是否存在未删除的环境，若存在则拒绝删除并返回 409 Conflict。",
+      "parameters": [
+        { "name": "projectId", "type": "integer", "description": "项目 ID，路径参数" }
+      ]
+    },
+    {
+      "name": "ValidateProjectExistence",
+      "endpoint": "INTERNAL",
+      "description": "内部接口，供环境管理服务/部署编排服务校验项目是否存在且未删除。返回布尔值及项目基本信息，用于跨服务关联校验。",
+      "parameters": [
+        { "name": "projectId", "type": "integer", "description": "项目 ID" }
+      ]
+    }
+  ],
+  "error_handling": "统一错误处理策略：\n1. 输入校验错误：name 为空或超过 255 字符时返回 400，错误码 INVALID_PROJECT_NAME；description 超过 65535 字符时返回 400，错误码 INVALID_DESCRIPTION；page 或 page_size 为负数时返回 400，错误码 INVALID_PAGINATION。\n2. 唯一性冲突：创建或更新时 name 与已有项目（含逻辑删除的）重复，返回 409，错误码 DUPLICATE_PROJECT_NAME。\n3. 资源不存在：GetProject/UpdateProject/DeleteProject 时 projectId 对应记录不存在或已逻辑删除，返回 404，错误码 PROJECT_NOT_FOUND。\n4. 依赖冲突：DeleteProject 时检查到该项目下存在未删除的环境记录，返回 409，错误码 PROJECT_HAS_ENVIRONMENTS。\n5. 权限拒绝：created_by 字段记录创建者，非创建者或无权限的请求返回 403，错误码 PERMISSION_DENIED。\n6. 数据库异常：MySQL 连接超时或写入失败时捕获异常，返回 500，错误码 DB_ERROR，同时记录错误日志用于排查。\n7. 并发控制：UpdateProject/DeleteProject 使用乐观锁（WHERE updated_at = 上次读取值），更新条数为 0 时返回 409，错误码 CONFLICT，提示客户端重新获取最新数据。\n8. 超时控制：数据库查询超时设为 5s，超时后返回 504，错误码 GATEWAY_TIMEOUT，避免请求长时间挂起。"
+}
