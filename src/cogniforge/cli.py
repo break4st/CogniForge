@@ -4,6 +4,14 @@ import click
 import logging
 from pathlib import Path
 
+# Terminal color theme
+C_PURPLE = "\033[35m"
+C_GREEN  = "\033[32m"
+C_RED    = "\033[31m"
+C_AMBER  = "\033[33m"
+C_DIM    = "\033[2m"
+C_RESET  = "\033[0m"
+
 from cogniforge.core.config import Config
 from cogniforge.core.constants import AgentRole, TaskStatus
 from cogniforge.storage.git_storage import GitStorage
@@ -137,9 +145,9 @@ def init(ctx: Context, prd: str):
     loader = ConstraintLoader(ctx.config.repo_path)
     created = loader.init_all()
     if created:
-        click.echo(f"✓ 已生成 {len(created)} 个角色约束文件")
+        click.echo(f"{C_GREEN}✓{C_RESET} 已生成 {len(created)} 个角色约束文件")
 
-    click.echo("✓ 项目结构已创建")
+    click.echo(f"{C_GREEN}✓{C_RESET} 项目结构已创建")
     click.echo("\n下一步: 使用 'cogniforge start' 启动工作流")
 
 
@@ -150,13 +158,13 @@ def status(ctx: Context):
     workflow_state = ctx.workflow.get_state()
     task_stats = ctx.task_engine.get_statistics()
 
-    click.echo("\n" + "=" * 50)
-    click.echo("  CogniForge 工作流状态")
-    click.echo("=" * 50)
+    click.echo(f"\n{C_PURPLE}{'=' * 50}{C_RESET}")
+    click.echo(f"  {C_PURPLE}CogniForge 工作流状态{C_RESET}")
+    click.echo(f"{C_PURPLE}{'=' * 50}{C_RESET}")
 
     # 工作流基本信息
     click.echo(f"\n工作流ID: {workflow_state.get('workflow_id', 'N/A')}")
-    click.echo(f"启动状态: {'✓ 已启动' if workflow_state['started'] else '✗ 未启动'}")
+    click.echo(f"启动状态: {C_GREEN}✓ 已启动{C_RESET}" if workflow_state['started'] else f"启动状态: {C_RED}✗ 未启动{C_RESET}")
     click.echo(f"当前步骤: {workflow_state['current_step'] or '无'}")
     click.echo(f"等待审批: {'是' if workflow_state.get('awaiting_approval') else '否'}")
 
@@ -167,9 +175,9 @@ def status(ctx: Context):
     current_approval = workflow_state.get('current_approval')
     if current_approval:
         status_icon = {
-            'approved': '✓',
-            'rejected': '✗',
-            'pending': '⏳'
+            'approved': f'{C_GREEN}✓{C_RESET}',
+            'rejected': f'{C_RED}✗{C_RESET}',
+            'pending': f'{C_AMBER}⏳{C_RESET}'
         }.get(current_approval['status'], '?')
         click.echo(f"\n当前步骤审批状态: {status_icon} {current_approval['status']}")
         if current_approval.get('approver'):
@@ -186,7 +194,10 @@ def status(ctx: Context):
     if approval_records:
         click.echo(f"\n--- 审批历史 ---")
         for step, record in approval_records.items():
-            status_icon = {'approved': '✓', 'rejected': '✗'}.get(record['status'], '?')
+            status_icon = {
+                'approved': f'{C_GREEN}✓{C_RESET}',
+                'rejected': f'{C_RED}✗{C_RESET}'
+            }.get(record['status'], '?')
             click.echo(f"  [{step}] {status_icon} {record['status']} by {record['approver']}")
 
     # 显示已完成步骤
@@ -226,7 +237,7 @@ def start(ctx: Context):
         return
 
     current = ctx.workflow.start()
-    click.echo(f"\n✓ 工作流已启动")
+    click.echo(f"\n{C_GREEN}✓{C_RESET} 工作流已启动")
     click.echo(f"当前步骤: {current.value}")
     click.echo(f"\n{current.get_approval_prompt()}")
     click.echo("\n使用 approve 命令审批此步骤，或使用 agent 命令执行具体工作")
@@ -265,7 +276,7 @@ def approve(ctx: Context, comment: str, approver: str):
     success = ctx.workflow.approve(comment=comment, approver=approver)
 
     if success:
-        click.echo(f"\n✓ 步骤 [{current.value}] 审批通过")
+        click.echo(f"\n{C_GREEN}✓{C_RESET} 步骤 [{current.value}] 审批通过")
         click.echo(f"审批人: {approver}")
         if comment:
             click.echo(f"备注: {comment}")
@@ -276,7 +287,7 @@ def approve(ctx: Context, comment: str, approver: str):
             click.echo(f"\n下一步: {next_step.value}")
             click.echo(f"使用 'cogniforge advance' 进入下一步")
         else:
-            click.echo("\n✓ 工作流已完成")
+            click.echo(f"\n{C_GREEN}✓{C_RESET} 工作流已完成")
     else:
         click.echo("审批失败")
 
@@ -303,7 +314,7 @@ def reject(ctx: Context, comment: str, approver: str):
     success = ctx.workflow.reject(comment=comment, approver=approver)
 
     if success:
-        click.echo(f"\n✗ 步骤 [{current.value}] 已拒绝")
+        click.echo(f"\n{C_RED}✗{C_RESET} 步骤 [{current.value}] 已拒绝")
         click.echo(f"拒绝原因: {comment}")
         click.echo("\n需要修复后重新提交审批")
 
@@ -331,10 +342,10 @@ def advance(ctx: Context):
     next_step = ctx.workflow.advance()
 
     if next_step:
-        click.echo(f"\n✓ 已进入步骤: {next_step.value}")
+        click.echo(f"\n{C_GREEN}✓{C_RESET} 已进入步骤: {next_step.value}")
         click.echo(f"\n{next_step.get_approval_prompt()}")
     else:
-        click.echo("\n✓ 工作流已完成所有步骤")
+        click.echo(f"\n{C_GREEN}✓{C_RESET} 工作流已完成所有步骤")
 
 
 @cli.command()
@@ -490,7 +501,7 @@ def adr(ctx: Context, title: str, context_text: str, decision: str, consequences
     )
 
     ctx.wiki_system.write_document(doc, f"docs: ADR - {title}")
-    click.echo(f"\n✓ ADR已创建: {doc.path}")
+    click.echo(f"\n{C_GREEN}✓{C_RESET} ADR已创建: {doc.path}")
 
 
 @cli.command()
@@ -566,7 +577,7 @@ def audit(ctx: Context):
     click.echo("\n" + "-" * 50)
 
     for i, entry in enumerate(audit_log.entries):
-        status_icon = "✓" if entry.reviewed else "⏳"
+        status_icon = f"{C_GREEN}✓{C_RESET}" if entry.reviewed else f"{C_AMBER}⏳{C_RESET}"
         click.echo(f"\n[{i}] {status_icon} {entry.agent_role} - {entry.operation}")
         click.echo(f"    时间: {entry.timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
         click.echo(f"    状态: {entry.status}")
@@ -600,7 +611,7 @@ def review(ctx: Context, entry_index: int, comment: str, reviewer: str):
     entry = audit_log.entries[entry_index]
 
     if audit_log.mark_reviewed(entry_index, reviewer, comment):
-        click.echo(f"\n✓ 已标记 [{entry_index}] 为已审核")
+        click.echo(f"\n{C_GREEN}✓{C_RESET} 已标记 [{entry_index}] 为已审核")
         click.echo(f"审核人: {reviewer}")
         click.echo(f"意见: {comment}")
     else:
@@ -622,7 +633,7 @@ def audit_report(ctx: Context):
 
     report_path = audit_log.save_review_report()
 
-    click.echo(f"\n✓ 报告已生成: {report_path}")
+    click.echo(f"\n{C_GREEN}✓{C_RESET} 报告已生成: {report_path}")
     click.echo("\n" + "=" * 50)
 
     # Also display summary
@@ -669,7 +680,7 @@ def history(ctx: Context):
     if approval_records:
         click.echo("\n=== 审批记录 ===\n")
         for step, record in approval_records.items():
-            status_icon = {'approved': '✓', 'rejected': '✗'}.get(record['status'], '?')
+            status_icon = {'approved': f'{C_GREEN}✓{C_RESET}', 'rejected': f'{C_RED}✗{C_RESET}'}.get(record['status'], '?')
             click.echo(f"[{step}] {status_icon} {record['status']}")
             click.echo(f"    审批人: {record.get('approver', 'N/A')}")
             click.echo(f"    备注: {record.get('comment', 'N/A')}")
@@ -699,7 +710,7 @@ def pending_reviews(ctx: Context, agent_role: str):
         click.echo("\n=== 所有待审核项 ===")
 
     if not entries:
-        click.echo("\n✓ 没有待审核项")
+        click.echo(f"\n{C_GREEN}✓{C_RESET} 没有待审核项")
         return
 
     click.echo(f"\n共 {len(entries)} 项待审核\n")

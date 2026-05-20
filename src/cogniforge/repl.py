@@ -74,6 +74,17 @@ from cogniforge.repl_text import (
 )
 
 # ---------------------------------------------------------------------------
+# Terminal color theme
+# ---------------------------------------------------------------------------
+
+C_PURPLE = "\033[35m"
+C_GREEN  = "\033[32m"
+C_RED    = "\033[31m"
+C_AMBER  = "\033[33m"
+C_DIM    = "\033[2m"
+C_RESET  = "\033[0m"
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -133,12 +144,12 @@ def _draw_box(top_line: str, lines: list[str], bottom_close: bool = True) -> str
     def _pad(ln: str) -> str:
         return ln + " " * (max_w - _display_width(ln))
 
-    # Top: ╭─ title ───────╮
+    # Top: ╭─ title ───────╮  (purple borders)
+    P, R = C_PURPLE, C_RESET
     fill_w = max_w - _display_width(top_line) - 2  # always ≥ 0 now
-    top = f"  ╭─ {top_line} {'─' * fill_w}─╮"
-
-    body = [f"  │ {_pad(ln)} │" for ln in lines]
-    bottom = f"  ╰─{'─' * max_w}─╯" if bottom_close else None
+    top = f"  {P}╭─{R} {top_line} {P}{'─' * fill_w}─╮{R}"
+    body = [f"  {P}│{R} {_pad(ln)} {P}│{R}" for ln in lines]
+    bottom = f"  {P}╰─{'─' * max_w}─╯{R}" if bottom_close else None
 
     return "\n".join([top] + body + ([bottom] if bottom else []))
 
@@ -177,11 +188,13 @@ def _read_key() -> str:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
-def _select(options: list[tuple[str, str]], default: int = 0) -> str:
+def _select(options: list[tuple[str, str]], default: int = 0,
+            colors: list[str] | None = None) -> str:
     """Arrow-key navigable menu.  Falls back to plain input if no TTY.
 
     options: [(value, label), ...]
     default: index of default selection
+    colors: optional list of ANSI color codes per option (applied when highlighted)
     """
     n = len(options)
     labels = [label for _val, label in options]
@@ -189,8 +202,10 @@ def _select(options: list[tuple[str, str]], default: int = 0) -> str:
     # Fallback for non-TTY (tests, pipes)
     if not sys.stdin.isatty():
         for i, label in enumerate(labels):
-            mark = "→" if i == default else " "
-            click.echo(f"  {mark} {label}")
+            c = (colors[i] if colors and i < len(colors) else "") if i == default else ""
+            r = C_RESET if c else ""
+            mark = f"{c}→{r}" if i == default else " "
+            click.echo(f"  {mark} {c}{label}{r}")
         choice = click.prompt(
             "  输入选项",
             type=click.Choice([v for v, _ in options]),
@@ -205,8 +220,11 @@ def _select(options: list[tuple[str, str]], default: int = 0) -> str:
         """Clear from cursor and redraw all options, leaving cursor at top line."""
         sys.stdout.write("\033[J")  # Clear from cursor to end of screen
         for i, label in enumerate(labels):
-            prefix = "❯" if i == idx else " "
-            sys.stdout.write(f"\r\033[K  {prefix} {label}\n")
+            if i == idx:
+                c = colors[i] if colors and i < len(colors) else C_PURPLE
+                sys.stdout.write(f"\r\033[K  {c}❯ {label}{C_RESET}\n")
+            else:
+                sys.stdout.write(f"\r\033[K     {label}\n")
         # Move cursor back to first option
         sys.stdout.write(f"\033[{n}A")
         sys.stdout.flush()
@@ -262,7 +280,7 @@ class Spinner:
         for char in itertools.cycle(self._chars):
             if not self._running:
                 break
-            sys.stderr.write(f"\r  {char} {self.message}...")
+            sys.stderr.write(f"\r  {C_AMBER}{char}{C_RESET} {self.message}...")
             sys.stderr.flush()
             time.sleep(0.08)
 
@@ -314,9 +332,9 @@ class Repl:
 
         step = self.workflow.current_step
         click.echo()
-        click.echo(WELCOME_LINE_1)
+        click.echo(f"  {C_PURPLE}CogniForge REPL{C_RESET}")
         click.echo(WELCOME_LINE_2.format(step_label=_step_label(step)))
-        click.echo(WELCOME_LINE_3)
+        click.echo(C_DIM + WELCOME_LINE_3 + C_RESET)
         self._print_step_hint(step)
         self._last_printed_step = step.value if step else None
         click.echo()
@@ -408,23 +426,19 @@ class Repl:
 
     # ---- card-based PRD wizard -------------------------------------------
 
-    # ANSI color codes for card headers
-    _CARD_COLORS = {
-        "purple": "\033[35m",
-        "blue":   "\033[34m",
-        "cyan":   "\033[36m",
-        "green":  "\033[32m",
-        "amber":  "\033[33m",
-        "reset":  "\033[0m",
-    }
-
-    def _card_header(self, icon: str, title: str, color: str = "blue") -> None:
+    def _card_header(self, icon: str, title: str, color: str = "purple") -> None:
         """Draw a colored card header line."""
-        c = self._CARD_COLORS.get(color, self._CARD_COLORS["blue"])
+        c = {
+            "purple": C_PURPLE,
+            "blue":   "\033[34m",
+            "cyan":   "\033[36m",
+            "green":  C_GREEN,
+            "amber":  C_AMBER,
+        }.get(color, C_PURPLE)
         width = 52
         text = f"  {icon}  {title}  "
         pad = width - _display_width(text)
-        click.echo(f"\n  {c}┌{text}{'─' * max(pad, 0)}┐{self._CARD_COLORS['reset']}")
+        click.echo(f"\n  {c}┌{text}{'─' * max(pad, 0)}┐{C_RESET}")
 
     def _card_hint(self, text: str) -> None:
         """Draw a hint line inside the card."""
@@ -458,7 +472,7 @@ class Repl:
             self._card_header("📋", "项目名称", "purple")
             self._card_hint("这个项目叫什么名字？")
             if initial:
-                self._card_hint(f"\033[2m从你的描述中提取: {initial[:60]}...\033[0m")
+                self._card_hint(f"{C_DIM}从你的描述中提取: {initial[:60]}...{C_RESET}")
             title = input("  > ").strip()
         if not title:
             click.echo("  ⚠ 已取消")
@@ -701,7 +715,10 @@ class Repl:
         finally:
             spinner.stop()
 
-        status_icon = "✓" if result.get("status") == "success" else "✗"
+        if result.get("status") == "success":
+            status_icon = f"{C_GREEN}✓{C_RESET}"
+        else:
+            status_icon = f"{C_RED}✗{C_RESET}"
         lines = [f"\n  [{status_icon}] {result.get('message', '')}"]
         # Only show user-facing files (HTML), not internal JSON
         for a in result.get("artifacts", []):
@@ -779,7 +796,7 @@ class Repl:
             ("approve", CHOICE_APPROVE),
             ("reject", CHOICE_REJECT),
             ("retry", CHOICE_RETRY),
-        ], default=0)
+        ], default=0, colors=[C_GREEN, C_RED, C_AMBER])
 
     def _exec_approve(self, action: dict) -> str:
         step = self.workflow.current_step
@@ -794,7 +811,7 @@ class Repl:
             self.workflow.approve(comment="", approver="repl_user")
             next_step = self.workflow.advance()
 
-        lines = [APPROVE_OK.format(step=step.value)]
+        lines = [f"  {C_GREEN}✓{C_RESET} 已审批: {step.value}"]
         if next_step:
             lines.append(APPROVE_NEXT.format(step_label=_step_label(next_step)))
         else:
@@ -809,7 +826,7 @@ class Repl:
         comment = action.get("comment", REJECT_DEFAULT)
         self.workflow.reject(comment=comment, approver="repl_user")
         return "\n".join([
-            REJECT_OK.format(step=step.value),
+            f"  {C_RED}✗{C_RESET} 已拒绝: {step.value}",
             REJECT_REASON.format(reason=comment),
             REJECT_HINT,
         ])
@@ -867,9 +884,9 @@ class Repl:
         click.echo()
         for s in DAGStep:
             if DAGStep.from_string(s.value) == current:
-                prefix = "→"
+                prefix = f"{C_PURPLE}→{C_RESET}"
             elif s.value in completed:
-                prefix = "✓"
+                prefix = f"{C_GREEN}✓{C_RESET}"
             else:
                 prefix = " "
             tag = " [评审]" if s.value in REVIEW_STEPS else ""
