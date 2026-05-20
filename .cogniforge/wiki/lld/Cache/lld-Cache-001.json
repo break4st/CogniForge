@@ -5,140 +5,103 @@
     "module": "Cache",
     "title": "LLD - Cache",
     "author": "design_agent",
-    "created": "2026-05-20 11:30"
+    "created": "2026-05-20 13:55"
   },
-  "overview": "Redis 缓存层，为各业务模块提供统一的热点数据缓存能力，降低数据库查询压力。采用 Cache-Aside 模式：查询时优先读缓存，缓存未命中则回查数据库并回填缓存；数据变更时主动删除或更新缓存，由消息队列异步触发缓存重建。缓存 Key 按业务模块分层命名（cache:<module>:<entity>:<id>），每个缓存条目携带 TTL，过期后自动失效避免数据脏读。支持缓存统计和批量清理操作，供运维监控和管理使用。",
+  "overview": "Redis 缓存层，提升热点数据的查询性能，减轻数据库压力。缓存层以独立中间件形态存在，被 Student Service、Class Service、Grade Service、Statistics Service 通过 Redis 客户端程序化接入（不暴露 REST 接口）。缓存策略采用 Cache-Aside 模式：读操作先查缓存，命中则直接返回，未命中则回查数据库并将结果写入缓存；写操作先更新数据库，再删除缓存中的对应条目，确保数据一致性。缓存键按业务模块分层命名，支持按前缀批量失效。默认 TTL 按数据热度分档设置：高频读低变更数据（如班级/年级列表）120 秒，中频读数据（如学生详情）300 秒，低频读数据或统计结果（如统计分析）600 秒。缓存值使用 JSON 序列化存储，Redis 数据类型以 String 为主，列表类数据采用整体序列化方式（非 Redis List 结构），简化一致性和失效管理。",
   "data_models": [
     {
-      "name": "CacheKeySchema",
-      "type": "config",
+      "name": "cache_key_schema",
+      "type": "api",
+      "description": "缓存键分层命名规范。采用 {module}:{entity}:{identifier} 三层结构，module 为业务模块缩写（stu/class/grade/stat），entity 为实体类型（detail/list），identifier 为唯一标识或查询参数的哈希摘要。支持按 module:entity:* 模式匹配批量失效。键名全部使用小写，冒号分隔。",
       "fields": [
-        { "name": "pattern", "type": "string", "description": "缓存 Key 模板，如 cache:class:{classId}:members" },
-        { "name": "module", "type": "string", "description": "所属模块：class / grade / statistics" },
-        { "name": "description", "type": "string", "description": "缓存内容说明" },
-        { "name": "ttlSeconds", "type": "number", "description": "缓存过期时间（秒），默认值" }
+        { "name": "student:detail:{id}", "type": "String", "description": "学生详情缓存。键如 student:detail:1，值为学生详情 JSON，TTL 300 秒。适用于 GET /internal/students/{id} 的查询结果缓存。" },
+        { "name": "student:list:{query_hash}", "type": "String", "description": "学生列表缓存。query_hash 为查询参数（name,student_no,class_id,page,page_size）的 MD5 摘要，值为分页结果 JSON，TTL 120 秒。适用于 GET /internal/students 的查询结果缓存。键名例：student:list:a1b2c3d4e5。" },
+        { "name": "class:detail:{id}", "type": "String", "description": "班级详情缓存。键如 class:detail:1，值为班级详情 JSON（含实时计算的 student_count），TTL 300 秒。适用于 GET /internal/classes/{id} 的查询结果缓存。" },
+        { "name": "class:list:{query_hash}", "type": "String", "description": "班级列表缓存。query_hash 为查询参数（grade_id,name,page,page_size）的 MD5 摘要，值为分页结果 JSON，TTL 120 秒。适用于 GET /internal/classes 的查询结果缓存。" },
+        { "name": "class:exists:{id}", "type": "String", "description": "班级存在性校验缓存。键如 class:exists:1，值为 {\"exists\":true,\"id\":1,\"name\":\"一班\"} JSON，TTL 300 秒。适用于 GET /internal/classes/{id}/exists 的结果缓存。" },
+        { "name": "grade:detail:{id}", "type": "String", "description": "年级详情缓存。键如 grade:detail:1，值为年级详情 JSON，TTL 300 秒。适用于 GET /internal/grades/{id} 的查询结果缓存。" },
+        { "name": "grade:list:{query_hash}", "type": "String", "description": "年级列表缓存。query_hash 为查询参数（page,page_size）的 MD5 摘要或仅 'all' 表示全量列表，值为分页结果 JSON，TTL 120 秒。适用于 GET /internal/grades 的查询结果缓存。" },
+        { "name": "grade:classes:{id}", "type": "String", "description": "年级班级结构缓存。键如 grade:classes:1，值为该年级下的班级列表 JSON，TTL 120 秒。适用于 GET /internal/grades/{id}/classes 的查询结果缓存。" },
+        { "name": "grade:exists:{id}", "type": "String", "description": "年级存在性校验缓存。键如 grade:exists:1，值为 {\"exists\":true,\"id\":1,\"name\":\"一年级\"} JSON，TTL 300 秒。适用于 GET /internal/grades/{id}/exists 的结果缓存。" },
+        { "name": "stat:student:{id}:{date_range_hash}", "type": "String", "description": "学生统计缓存。date_range_hash 为 start_date 和 end_date 的摘要，无日期范围时为 'all'，值为学生统计结果 JSON，TTL 600 秒。适用于 GET /internal/statistics/students/{id} 的结果缓存。" },
+        { "name": "stat:class:{id}:{param_hash}", "type": "String", "description": "班级统计缓存。param_hash 为 subject、start_date、end_date 的摘要，值为班级统计结果 JSON，TTL 600 秒。适用于 GET /internal/statistics/classes/{id} 的结果缓存。" },
+        { "name": "stat:grade:{id}:{param_hash}", "type": "String", "description": "年级统计缓存。param_hash 为 subject、start_date、end_date 的摘要，值为年级统计结果 JSON，TTL 600 秒。适用于 GET /internal/statistics/grades/{id} 的结果缓存。" }
       ]
     },
     {
-      "name": "ClassMemberListCache",
-      "type": "cache",
+      "name": "cache_ttl_policy",
+      "type": "api",
+      "description": "缓存 TTL 分档策略。根据数据变更频率和读取频率设定差异化的过期时间，在缓存命中率和数据新鲜度之间取得平衡。变更极频繁的数据（如频繁更新的学生信息）不设缓存或缩短 TTL。",
       "fields": [
-        { "name": "key", "type": "string", "description": "cache:class:{classId}:members，如 cache:class:5:members" },
-        { "name": "value", "type": "StudentResponse[]", "description": "班级成员列表的 JSON 序列化数据" },
-        { "name": "ttlSeconds", "type": "number", "description": "300 秒（5 分钟），班级成员变动不频繁" }
+        { "name": "HOT_SHORT_TTL", "type": "number", "description": "120 秒。适用于列表类缓存（学生列表、班级列表、年级列表、年级班级结构），这些数据按分页查询且查询参数组合多，缓存收益中等，需保持较好新鲜度。" },
+        { "name": "WARM_MEDIUM_TTL", "type": "number", "description": "300 秒。适用于详情类缓存和存在性校验缓存（学生详情、班级详情、年级详情、班级存在性、年级存在性），这些数据按 ID 精确查询，缓存命中率高，变更频率低。" },
+        { "name": "COLD_LONG_TTL", "type": "number", "description": "600 秒。适用于统计结果缓存（学生统计、班级统计、年级统计），统计计算成本高且结果相对稳定，依赖统计数据写入时主动失效来保证新鲜度。" }
       ]
     },
     {
-      "name": "GradeTreeCache",
-      "type": "cache",
+      "name": "invalidation_strategy",
+      "type": "api",
+      "description": "缓存失效策略，采用 Cache-Aside 模式中的 Delete 策略（先更新数据库，再删除缓存）。所有写操作（Create/Update/Delete）完成后，主动删除受影响的缓存键。下次读取时自动回查数据库并重建缓存。列表类缓存因查询参数组合多、难以精确枚举，采用按前缀模糊匹配批量删除的方式，确保一致性。",
       "fields": [
-        { "name": "key", "type": "string", "description": "cache:grade:tree" },
-        { "name": "value", "type": "object", "description": "年级-班级层级树结构的 JSON 序列化数据：{ gradeId, gradeName, classes: [{ classId, className, studentCount }] }" },
-        { "name": "ttlSeconds", "type": "number", "description": "600 秒（10 分钟），年级结构相对稳定" }
-      ]
-    },
-    {
-      "name": "StatisticsCache",
-      "type": "cache",
-      "fields": [
-        { "name": "key", "type": "string", "description": "cache:statistics:{dimension}:{id}，如 cache:statistics:student:42 或 cache:statistics:class:3" },
-        { "name": "value", "type": "object", "description": "统计计算结果的 JSON 序列化数据，包含各项统计指标的键值对" },
-        { "name": "ttlSeconds", "type": "number", "description": "1800 秒（30 分钟），统计计算成本高，适当延长缓存时效" }
-      ]
-    },
-    {
-      "name": "CacheConfigEntry",
-      "type": "config",
-      "fields": [
-        { "name": "keyPrefix", "type": "string", "description": "缓存 Key 前缀，如 cache:class" },
-        { "name": "defaultTtlSeconds", "type": "number", "description": "默认过期时间（秒）" },
-        { "name": "maxSize", "type": "number", "description": "该前缀下的最大缓存条目数，防止内存溢出" },
-        { "name": "evictionPolicy", "type": "string", "description": "淘汰策略：TTL（自动过期） / LRU（配合 Redis allkeys-lru），默认 TTL" }
-      ]
-    },
-    {
-      "name": "CacheMetrics",
-      "type": "monitor",
-      "fields": [
-        { "name": "hits", "type": "number", "description": "缓存命中次数" },
-        { "name": "misses", "type": "number", "description": "缓存未命中次数" },
-        { "name": "hitRate", "type": "float", "description": "缓存命中率，hits / (hits + misses)" },
-        { "name": "totalKeys", "type": "number", "description": "当前缓存中的 Key 总数" },
-        { "name": "usedMemoryBytes", "type": "number", "description": "Redis 已用内存字节数" }
+        { "name": "学生写操作失效", "type": "rule", "description": "学生 Create/Update/Delete 后：1）DELETE student:detail:{id}（精确键）；2）SCAN 0 MATCH student:list:* 批量删除所有学生列表缓存（前缀通配）；3）如涉及 class_id 变更，还需 SCAN 0 MATCH class:detail:{class_id} 删除新旧班级详情缓存（因为班级详情含 student_count 实时计数，实际为 SQL 实时聚合，但如对 class detail 有缓存则需失效）。" },
+        { "name": "班级写操作失效", "type": "rule", "description": "班级 Create/Update/Delete 后：1）DELETE class:detail:{id}（精确键）；2）DELETE class:exists:{id}；3）SCAN 0 MATCH class:list:* 批量删除所有班级列表缓存；4）如涉及 grade_id 变更，DELETE grade:detail:{grade_id} 和 DELETE grade:classes:{grade_id}（因为年级详情含 class_count、年级班级结构包含班级信息）；5）SCAN 0 MATCH grade:list:* 批量删除年级列表缓存（列表项含 class_count）。" },
+        { "name": "年级写操作失效", "type": "rule", "description": "年级 Create/Update/Delete 后：1）DELETE grade:detail:{id}；2）DELETE grade:exists:{id}；3）DELETE grade:classes:{id}；4）SCAN 0 MATCH grade:list:* 批量删除所有年级列表缓存；5）因年级变更会影响关联班级的 grade_name 显示，需 SCAN 0 MATCH class:list:* 和 DELETE class:detail:*（按前缀批量删除班级缓存，使下次查询时回填最新的年级名称）。" },
+        { "name": "统计数据写操作失效", "type": "rule", "description": "学习数据录入或批量导入后：1）DELETE stat:student:{student_id}:*；2）如涉及班级/年级维度的统计失效，需 DELETE stat:class:{class_id}:* 和 DELETE stat:grade:{grade_id}:*；3）SCAN 0 MATCH stat:* 模式匹配可选，因统计查询参数组合多，精确失效目标键即可，其余统计缓存依靠 TTL 自然过期。" },
+        { "name": "批量失效的安全说明", "type": "note", "description": "SCAN 命令替代 KEYS 命令进行通配匹配，避免阻塞 Redis 单线程。生产环境中 SCAN 的 COUNT 参数建议设为 100，分批次遍历键空间。对统计缓存的 SCAN 操作仅建议在低峰期执行或配合限流，避免大量键扫描影响 Redis 性能。" }
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "获取缓存",
-      "endpoint": "Cache.get(key: string)",
-      "description": "根据 Key 获取缓存值。命中时返回反序列化后的对象，未命中返回 null。调用方判断返回值后决定是否回填",
+      "name": "缓存读取操作（Cache Get）",
+      "endpoint": "Redis GET {key}",
+      "description": "读取指定键的缓存值。由各微服务在查询数据时调用。核心逻辑：1）构造缓存键（按缓存键命名规范拼接）；2）调用 Redis GET 命令获取值；3）如果值存在且未过期，反序列化 JSON 后直接返回（缓存命中）；4）如果值不存在或已过期（返回 nil），回查数据库获取最新数据，然后序列化为 JSON 并调用 Redis SETEX 写入缓存（含 TTL），再返回数据。所有缓存操作应设置合理的超时时间（Redis 命令超时默认 2 秒），超时或连接异常时降级为直接查数据库，不阻塞业务流程。",
       "parameters": [
-        { "name": "key", "type": "string", "description": "缓存 Key，格式如 cache:class:5:members" }
+        { "name": "key", "type": "string", "description": "缓存键，按 student:detail:{id} / class:list:{query_hash} 等规范格式构造" },
+        { "name": "timeout_ms", "type": "number", "description": "Redis 命令执行超时，默认 2000 毫秒，超时后降级查数据库" }
       ]
     },
     {
-      "name": "设置缓存",
-      "endpoint": "Cache.set(key: string, value: object, ttlSeconds?: number)",
-      "description": "写入缓存条目，value 自动序列化为 JSON。ttlSeconds 缺省时使用对应 Key 前缀的默认 TTL",
+      "name": "缓存写入操作（Cache Set）",
+      "endpoint": "Redis SETEX {key} {ttl} {value}",
+      "description": "写入指定键的缓存值，同时设置过期时间。由各微服务在缓存未命中回查数据库后调用，将查询结果写入缓存。核心逻辑：1）将查询结果对象序列化为 JSON 字符串；2）调用 Redis SETEX 命令，同时设置键和 TTL；3）写入失败（如 Redis 不可用）不抛异常，仅记录 WARN 日志，不影响业务流程——下次查询时再次尝试写入。SETEX 是原子操作，确保键和 TTL 同时设置，避免 SET + EXPIRE 之间出现竞态。",
       "parameters": [
-        { "name": "key", "type": "string", "description": "缓存 Key" },
-        { "name": "value", "type": "object", "description": "缓存值，可序列化为 JSON 的对象" },
-        { "name": "ttlSeconds", "type": "number", "description": "可选，自定义过期时间，覆盖默认 TTL" }
+        { "name": "key", "type": "string", "description": "缓存键" },
+        { "name": "ttl", "type": "number", "description": "过期时间（秒），根据缓存键类型参考 TTL 分档策略设定" },
+        { "name": "value", "type": "string", "description": "JSON 序列化的缓存值" }
       ]
     },
     {
-      "name": "删除缓存",
-      "endpoint": "Cache.del(key: string)",
-      "description": "主动删除指定缓存条目。在对应业务数据发生变更时调用（如班级成员变更后删除 cache:class:{classId}:members），下次查询时重新回填",
+      "name": "缓存删除操作（Cache Delete）",
+      "endpoint": "Redis DEL {key}",
+      "description": "删除指定键的缓存值。由各微服务在写操作（Create/Update/Delete）完成后调用，执行 Cache-Aside 的 Delete 策略。核心逻辑：1）写操作先执行数据库事务（INSERT/UPDATE/DELETE）；2）数据库事务成功后，立即调用 DEL 删除受影响缓存键；3）DEL 为异步非阻塞操作，删除失败仅记录 WARN 日志，不引发事务回滚；4）对于列表类缓存的前缀批量删除，使用 SCAN 0 MATCH {prefix}* 遍历匹配的键后逐个 DEL。SCAN 操作建议使用游标分批执行，避免长时间阻塞 Redis。",
       "parameters": [
-        { "name": "key", "type": "string", "description": "缓存 Key" }
+        { "name": "key", "type": "string", "description": "要删除的精确缓存键" }
       ]
     },
     {
-      "name": "按前缀批量删除",
-      "endpoint": "Cache.delByPrefix(prefix: string)",
-      "description": "按 Key 前缀批量删除缓存条目。用于某个模块的大量数据变更场景（如批量重新分班），通过 Redis SCAN + DEL 实现，避免 KEYS 阻塞",
+      "name": "缓存前缀批量删除（Cache Scan & Delete）",
+      "endpoint": "Redis SCAN 0 MATCH {prefix}* COUNT 100 → DEL {key1} {key2} ...",
+      "description": "按前缀模式匹配并批量删除缓存键。适用于列表类缓存的批量失效场景。核心逻辑：1）使用 SCAN 命令以游标方式迭代匹配指定前缀的键，COUNT 参数设为 100 控制每批返回量；2）对每批返回的键列表执行 DEL 命令（可单条或批量 DEL）；3）重复 SCAN 直到游标返回 0（遍历完成）；4）SCAN 只返回当前存活且匹配的键，不保证返回所有键（与 KEYS 不同），但渐进式扫描不影响 Redis 服务稳定性。此操作仅在写操作触发缓存失效时执行，频率较低，对 Redis 整体性能影响可控。",
       "parameters": [
-        { "name": "prefix", "type": "string", "description": "Key 前缀，如 cache:class" }
+        { "name": "prefix", "type": "string", "description": "缓存键前缀，如 student:list:、class:list:、grade:list:" },
+        { "name": "count", "type": "number", "description": "每次 SCAN 返回的最大键数量，默认 100" }
       ]
     },
     {
-      "name": "缓存存在检查",
-      "endpoint": "Cache.exists(key: string): boolean",
-      "description": "检查指定 Key 是否存在于缓存中，不返回实际值。用于预热判断等场景",
+      "name": "Redis 连接管理",
+      "endpoint": "redis://{host}:{port}/{db}",
+      "description": "Redis 客户端连接配置与管理。各微服务通过 Redis 客户端连接池与缓存层通信。连接池配置：最大连接数 20，最小空闲连接数 5，连接超时 2 秒，读取超时 2 秒，空闲连接检测间隔 60 秒（发送 PING 心跳）。Redis 部署模式：单机模式（开发环境）或哨兵模式/Cluster 模式（生产环境）。Database 选择：统一使用 db=0。密码认证通过 Redis AUTH 命令配置。客户端建议使用 Lettuce（Java）或 redis-py（Python）等成熟客户端库，支持连接池、自动重连和异步操作。",
       "parameters": [
-        { "name": "key", "type": "string", "description": "缓存 Key" }
+        { "name": "host", "type": "string", "description": "Redis 服务器主机地址" },
+        { "name": "port", "type": "number", "description": "Redis 服务器端口，默认 6379" },
+        { "name": "password", "type": "string", "description": "Redis 认证密码（可选）" },
+        { "name": "db", "type": "number", "description": "Redis 数据库索引，统一使用 0" },
+        { "name": "pool_max_active", "type": "number", "description": "连接池最大活跃连接数，默认 20" },
+        { "name": "pool_max_idle", "type": "number", "description": "连接池最大空闲连接数，默认 5" },
+        { "name": "timeout_ms", "type": "number", "description": "连接/读写超时（毫秒），默认 2000" }
       ]
-    },
-    {
-      "name": "缓存 TTL 查询",
-      "endpoint": "Cache.ttl(key: string): number",
-      "description": "查询指定缓存条目的剩余过期时间（秒）。返回 -2 表示 Key 不存在，-1 表示未设置 TTL（永不过期）",
-      "parameters": [
-        { "name": "key", "type": "string", "description": "缓存 Key" }
-      ]
-    },
-    {
-      "name": "批量获取缓存",
-      "endpoint": "Cache.mget(keys: string[]): (object | null)[]",
-      "description": "批量获取多个缓存值，返回与 keys 输入顺序对应的数组。某 Key 不存在时对应位置为 null。用于一次性加载多个学生信息等场景，减少网络往返",
-      "parameters": [
-        { "name": "keys", "type": "string[]", "description": "缓存 Key 数组" }
-      ]
-    },
-    {
-      "name": "缓存统计",
-      "endpoint": "Cache.stats(): CacheMetrics",
-      "description": "获取缓存层的运行统计数据，包括命中次数、未命中次数、命中率、Key 总数和内存使用量。由运维监控定期采集，用于评估缓存效果和容量规划",
-      "parameters": []
-    },
-    {
-      "name": "清空缓存",
-      "endpoint": "Cache.flushAll()",
-      "description": "清空所有缓存条目。仅在系统维护或数据大面积回滚时使用，调用前需确认影响范围。生产环境慎用",
-      "parameters": []
     }
   ],
-  "error_handling": "缓存操作异常统一以 CacheException 形式抛出，不影响主业务流程的正常执行。读缓存失败（Redis 连接超时、命令执行异常等）时，Cache.get 降级返回 null，调用方自动回查数据库保证业务可用；写缓存失败仅记录 WARN 级别日志，不阻塞业务操作完成。Key 或 Value 序列化异常（如 JSON 序列化失败）记录错误日志并返回 null 或 false。批量操作（mget/delByPrefix）中单个 Key 失败不影响其他 Key 的操作结果，最终以 AggregateException 形式汇总失败情况。Redis 连接断开时，所有缓存操作自动降级（fail-open 策略），同时启动重连机制（指数退避，最多重试 3 次）。"
+  "error_handling": "Cache 层按以下规则处理异常：1）Redis 连接失败——微服务在启动时或运行中无法连接 Redis，不应影响业务正常运行，所有缓存操作降级为直接查数据库，记录 WARN 级日志\"Redis 不可用，已降级为直连数据库\"，Redis 恢复后自动重连并恢复正常缓存流程；2）缓存操作超时——Redis 命令执行超过 2000 毫秒超时阈值时，中断当前命令并降级查数据库，记录 WARN 日志\"Redis 命令超时\"，包含操作类型（GET/SET/DEL/SCAN）和键名前缀（不记录完整键名以防止敏感信息泄露）；3）反序列化异常——从 Redis 读取的缓存值 JSON 格式异常或与预期结构不匹配时，视为缓存失效，删除该键并回查数据库重建缓存，记录 WARN 日志\"缓存反序列化失败，已清除\"；4）序列化异常——写入缓存时对象序列化失败（如循环引用、非 JSON 可序列化类型），放弃缓存写入，记录 ERROR 日志\"缓存值序列化失败\"并排查数据模型；5）SCAN 阻塞风险——SCAN 命令在键数量极大（数百万级别）时即使分批遍历也可能产生性能影响，建议在低峰期执行批量失效，或考虑将列表缓存键的失效策略优化为按版本号管理（维护缓存版本计数器，版本变更时所有缓存自然过期），此优化作为后续迭代项；6）缓存穿透——对于数据库中不存在的数据（如按 ID 查学生不存在），不应写入空值缓存以避免缓存穿透，而是直接返回 404，由调用方处理。如确需防止对同一不存在 ID 的反复穿透查询，可采用布隆过滤器策略（Bloom Filter），此优化作为后续迭代项；7）缓存雪崩——大量缓存同时过期可能导致短时数据库压力激增，通过 TTL 分档策略（120/300/600 秒差异化过期时间）和为每个缓存键的 TTL 增加 ±10% 随机偏移量来避免大量键同时过期；8）缓存击穿——热点缓存键在过期瞬间遭遇高并发查询时，多个请求同时回查数据库，通过互斥锁（分布式锁或单实例 synchronized）控制只有一个请求回查数据库并重建缓存，其余请求等待缓存重建完成后直接读取缓存，锁等待超时默认 500 毫秒，超时后降级查数据库。所有缓存操作记录结构化日志，包含操作类型（GET/SET/DEL/SCAN）、键名前缀（模糊化）、命中状态（hit/miss）、耗时（毫秒）和结果状态（success/fallback/error），日志级别：正常命中 DEBUG，缓存未命中 INFO，降级查数据库 WARN，系统异常 ERROR。"
 }
