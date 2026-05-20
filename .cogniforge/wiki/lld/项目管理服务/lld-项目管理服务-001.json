@@ -5,78 +5,154 @@
     "module": "项目管理服务",
     "title": "LLD - 项目管理服务",
     "author": "design_agent",
-    "created": "2026-05-20 16:07"
+    "created": "2026-05-20 16:30"
   },
-  "overview": "项目管理服务是自动化部署系统的核心服务之一，负责管理项目元数据的全生命周期。提供项目创建、详情查询、列表分页、信息编辑、软删除等 CRUD 能力，维护项目与部署环境的一对多关联关系，并承担项目级别的权限校验职责。采用 RESTful 接口对外暴露能力，数据持久化于 MySQL。项目作为系统的顶层业务实体，环境管理服务和部署编排服务均依赖项目的存在性校验。",
+  "overview": {
+    "description": "项目管理服务是CogniForge系统的业务核心模块，管理项目从创建到归档的全生命周期。提供项目的CRUD操作、项目信息查询与检索、项目与环境关联管理功能。作为部署编排和环境管理的基础数据源，确保项目信息的完整性和一致性。",
+    "dependencies": ["关系型数据库（MySQL）"],
+    "tech_stack": ["Java 17", "Spring Boot 3", "Spring Data JPA", "MySQL 8", "REST (JSON)"]
+  },
   "data_models": [
     {
-      "name": "projects",
+      "name": "project",
       "type": "table",
-      "description": "项目核心表，存储所有项目的元数据信息。每条记录代表一个独立的部署项目。使用逻辑删除（deleted_at 字段）避免误删导致关联数据失效。",
+      "description": "项目信息表，存储项目核心元数据。环境管理服务通过project_id外键关联至此表",
       "fields": [
-        { "name": "id", "type": "BIGINT", "description": "项目唯一标识，自增主键" },
-        { "name": "name", "type": "VARCHAR(255)", "description": "项目名称，唯一索引，不可为空" },
-        { "name": "description", "type": "TEXT", "description": "项目描述信息，可选" },
-        { "name": "created_by", "type": "VARCHAR(255)", "description": "创建者标识，用于权限追溯" },
-        { "name": "created_at", "type": "DATETIME", "description": "创建时间，默认 CURRENT_TIMESTAMP" },
-        { "name": "updated_at", "type": "DATETIME", "description": "最后更新时间，ON UPDATE CURRENT_TIMESTAMP" },
-        { "name": "deleted_at", "type": "DATETIME", "description": "逻辑删除时间，NULL 表示未删除" }
+        {"name": "id", "type": "int", "required": true, "description": "主键，自增项目ID"},
+        {"name": "name", "type": "string", "required": true, "description": "项目名称，唯一约束"},
+        {"name": "description", "type": "string", "required": false, "description": "项目描述信息"},
+        {"name": "created_at", "type": "datetime", "required": true, "description": "创建时间"},
+        {"name": "updated_at", "type": "datetime", "required": true, "description": "最后更新时间"}
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "CreateProject",
-      "endpoint": "POST /api/projects",
-      "description": "创建新的部署项目。校验项目名称唯一性，名称不可为空且不可重复，描述可选。创建成功后返回项目完整信息，状态码 201。",
+      "name": "创建项目",
+      "method": "POST",
+      "endpoint": "/api/projects",
+      "description": "创建新项目。校验项目名称唯一性和参数合法性，创建成功后返回项目完整信息",
       "parameters": [
-        { "name": "name", "type": "string", "description": "项目名称，必填，长度 1-255，全局唯一" },
-        { "name": "description", "type": "string", "description": "项目描述，选填" }
+        {"name": "name", "type": "string", "description": "项目名称，1-100字符，不能重复"},
+        {"name": "description", "type": "string", "description": "项目描述，最多500字符"}
+      ],
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "int",
+          "name": "string",
+          "description": "string",
+          "created_at": "datetime"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数校验失败（名称必填、超长或格式不合法）"},
+        {"code": 409, "message": "项目名称已存在，请更换项目名称"}
       ]
     },
     {
-      "name": "ListProjects",
-      "endpoint": "GET /api/projects",
-      "description": "获取所有未删除项目的列表，支持分页查询。返回数据包含项目总数和当前页的项目对象数组，默认每页 20 条。结果按创建时间倒序排列。",
+      "name": "查询项目列表",
+      "method": "GET",
+      "endpoint": "/api/projects",
+      "description": "分页查询项目列表，按创建时间倒序排列。支持分页参数控制返回数据量",
       "parameters": [
-        { "name": "page", "type": "integer", "description": "页码，从 1 开始，默认 1" },
-        { "name": "page_size", "type": "integer", "description": "每页条数，范围 1-100，默认 20" }
+        {"name": "page", "type": "int", "description": "页码，从1开始，默认1"},
+        {"name": "page_size", "type": "int", "description": "每页条数，默认20，最大100"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "items": "array<object>（{id:int, name:string, description:string, created_at:datetime}）",
+          "total": "int",
+          "page": "int"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "分页参数不合法（page或page_size小于1）"}
       ]
     },
     {
-      "name": "GetProject",
-      "endpoint": "GET /api/projects/{projectId}",
-      "description": "查询单个项目的详细信息。返回项目元数据及关联的环境数量概览。项目不存在或已逻辑删除时返回 404。",
+      "name": "查询项目详情",
+      "method": "GET",
+      "endpoint": "/api/projects/{id}",
+      "description": "根据项目ID查询单个项目的详细信息",
       "parameters": [
-        { "name": "projectId", "type": "integer", "description": "项目 ID，路径参数" }
+        {"name": "id", "type": "int（路径参数）", "description": "项目ID"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "int",
+          "name": "string",
+          "description": "string",
+          "created_at": "datetime"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "项目不存在，指定ID未找到对应项目"}
       ]
     },
     {
-      "name": "UpdateProject",
-      "endpoint": "PUT /api/projects/{projectId}",
-      "description": "编辑项目信息。可修改项目名称和描述。修改名称时校验唯一性，不允许与已有项目重名。仅更新传入的字段，未传字段保持原值。",
+      "name": "更新项目",
+      "method": "PUT",
+      "endpoint": "/api/projects/{id}",
+      "description": "更新项目名称和描述信息。名称变更时检查唯一性冲突",
       "parameters": [
-        { "name": "projectId", "type": "integer", "description": "项目 ID，路径参数" },
-        { "name": "name", "type": "string", "description": "项目名称，选填，修改时校验唯一性" },
-        { "name": "description", "type": "string", "description": "项目描述，选填" }
+        {"name": "id", "type": "int（路径参数）", "description": "项目ID"},
+        {"name": "name", "type": "string", "description": "项目名称（可选，不传则不更新）"},
+        {"name": "description", "type": "string", "description": "项目描述（可选，不传则不更新）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "int",
+          "name": "string",
+          "description": "string",
+          "created_at": "datetime",
+          "updated_at": "datetime"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数校验失败"},
+        {"code": 404, "message": "项目不存在"},
+        {"code": 409, "message": "修改后的项目名称与现有项目冲突"}
       ]
     },
     {
-      "name": "DeleteProject",
-      "endpoint": "DELETE /api/projects/{projectId}",
-      "description": "逻辑删除项目。将 deleted_at 字段置为当前时间。删除前校验项目下是否存在未删除的环境，若存在则拒绝删除并返回 409 Conflict。",
+      "name": "删除项目",
+      "method": "DELETE",
+      "endpoint": "/api/projects/{id}",
+      "description": "删除指定项目。系统将检查该项目下是否存在关联的部署环境，有关联环境时拒绝删除以防止数据不一致",
       "parameters": [
-        { "name": "projectId", "type": "integer", "description": "项目 ID，路径参数" }
+        {"name": "id", "type": "int（路径参数）", "description": "项目ID"}
+      ],
+      "response": {
+        "status": 204,
+        "body": {}
+      },
+      "error_codes": [
+        {"code": 404, "message": "项目不存在"},
+        {"code": 409, "message": "该项目下存在关联的部署环境，请先删除所有环境后再删除项目"}
       ]
     },
     {
-      "name": "ValidateProjectExistence",
-      "endpoint": "INTERNAL",
-      "description": "内部接口，供环境管理服务/部署编排服务校验项目是否存在且未删除。返回布尔值及项目基本信息，用于跨服务关联校验。",
+      "name": "查询项目环境列表",
+      "method": "GET",
+      "endpoint": "/api/projects/{id}/environments",
+      "description": "查询指定项目下关联的所有部署环境列表，返回环境摘要信息。数据来源于环境管理服务",
       "parameters": [
-        { "name": "projectId", "type": "integer", "description": "项目 ID" }
+        {"name": "id", "type": "int（路径参数）", "description": "项目ID"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "environments": "array<object>（{id:int, name:string, type:string, status:string, host:string, port:int}）"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "项目不存在"}
       ]
     }
   ],
-  "error_handling": "统一错误处理策略：\n1. 输入校验错误：name 为空或超过 255 字符时返回 400，错误码 INVALID_PROJECT_NAME；description 超过 65535 字符时返回 400，错误码 INVALID_DESCRIPTION；page 或 page_size 为负数时返回 400，错误码 INVALID_PAGINATION。\n2. 唯一性冲突：创建或更新时 name 与已有项目（含逻辑删除的）重复，返回 409，错误码 DUPLICATE_PROJECT_NAME。\n3. 资源不存在：GetProject/UpdateProject/DeleteProject 时 projectId 对应记录不存在或已逻辑删除，返回 404，错误码 PROJECT_NOT_FOUND。\n4. 依赖冲突：DeleteProject 时检查到该项目下存在未删除的环境记录，返回 409，错误码 PROJECT_HAS_ENVIRONMENTS。\n5. 权限拒绝：created_by 字段记录创建者，非创建者或无权限的请求返回 403，错误码 PERMISSION_DENIED。\n6. 数据库异常：MySQL 连接超时或写入失败时捕获异常，返回 500，错误码 DB_ERROR，同时记录错误日志用于排查。\n7. 并发控制：UpdateProject/DeleteProject 使用乐观锁（WHERE updated_at = 上次读取值），更新条数为 0 时返回 409，错误码 CONFLICT，提示客户端重新获取最新数据。\n8. 超时控制：数据库查询超时设为 5s，超时后返回 504，错误码 GATEWAY_TIMEOUT，避免请求长时间挂起。"
+  "error_handling": "项目管理服务采用分层错误处理策略：1）参数校验层——对请求参数进行非空校验、长度校验和格式校验，校验失败统一返回400 Bad Request，响应体包含field和message指明具体问题；2）业务逻辑层——项目名称唯一性校验通过数据库唯一索引保障，违反时返回409 Conflict并提示'项目名称已存在'；删除操作前检查项目是否有关联环境（查询环境管理服务或数据库关联记录），有环境关联时返回409 Conflict并提示先清理关联环境；查询不存在的项目ID返回404 Not Found；3）数据持久化层——Spring Data JPA提供通用数据访问，数据库连接异常、唯一约束违反等底层异常由全局异常处理器捕获并转换为用户友好的错误响应，不暴露内部技术细节；4）全局异常处理——所有未捕获异常统一返回500 Internal Server Error，服务端记录完整错误堆栈。所有错误响应统一采用格式：{\"error\": {\"code\": \"string错误码\", \"message\": \"string错误描述\"}}。"
 }
