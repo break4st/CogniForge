@@ -1,0 +1,157 @@
+{
+  "meta": {
+    "doc_id": "lld-SSH Execution Service-001",
+    "type": "lld",
+    "module": "SSH Execution Service",
+    "title": "LLD - SSH Execution Service",
+    "author": "design_agent",
+    "created": "2026-05-20 17:11"
+  },
+  "overview": {
+    "description": "SSH执行服务，负责与远程服务器建立安全连接并执行命令。作为内部微服务，提供SSH连接池管理与复用、远程命令执行与结果返回、文件安全传输（SCP/SFTP）、连接超时与重试机制、连接日志记录等功能。被 Deployment Orchestrator 用于部署流程中的远程文件夹创建、文件传输、脚本推送和远程执行，被 Environment Management Service 用于环境连接验证。服务无状态，所有连接参数由调用方传入，不持久化存储任何敏感信息。",
+    "dependencies": [],
+    "tech_stack": [
+      "Go",
+      "Gin / Go-Zero",
+      "golang.org/x/crypto/ssh",
+      "SCP / SFTP"
+    ]
+  },
+  "data_models": [
+    {
+      "name": "SSHConnectionPoolConfig",
+      "type": "config",
+      "description": "SSH连接池全局配置，控制连接池的行为参数，服务启动时加载",
+      "fields": [
+        {"name": "max_idle_connections", "type": "int", "required": true, "description": "最大空闲连接数，默认 10"},
+        {"name": "max_total_connections", "type": "int", "required": true, "description": "最大总连接数（含活跃连接），默认 50"},
+        {"name": "idle_timeout_seconds", "type": "int", "required": true, "description": "空闲连接超时关闭时间，默认 300"},
+        {"name": "connect_timeout_seconds", "type": "int", "required": true, "description": "建立 TCP/SSH 握手的超时时间，默认 10"},
+        {"name": "keepalive_interval_seconds", "type": "int", "required": true, "description": "SSH keepalive 心跳间隔，默认 30"}
+      ]
+    },
+    {
+      "name": "SSHExecutionResult",
+      "type": "struct",
+      "description": "SSH命令执行结果内部结构体，用于在服务内部传递执行结果",
+      "fields": [
+        {"name": "exit_code", "type": "int", "required": true, "description": "远程命令退出码，0 表示成功，非零表示错误"},
+        {"name": "stdout", "type": "string", "required": true, "description": "远程命令的标准输出内容"},
+        {"name": "stderr", "type": "string", "required": true, "description": "远程命令的错误输出内容"},
+        {"name": "execution_id", "type": "string", "required": true, "description": "执行记录唯一标识（UUID），用于日志追踪和调用方关联"},
+        {"name": "duration_ms", "type": "int", "required": false, "description": "命令执行耗时（毫秒），仅统计远程命令实际执行时间"}
+      ]
+    },
+    {
+      "name": "SSHConnectionPool",
+      "type": "store",
+      "description": "SSH连接池运行时状态（进程内内存管理），以 host:port 为键管理复用连接，支持按需创建、空闲回收和并发安全",
+      "fields": [
+        {"name": "pool_key", "type": "string", "required": true, "description": "连接池键值，格式为 {username}@{host}:{port}"},
+        {"name": "client", "type": "*ssh.Client", "required": true, "description": "golang.org/x/crypto/ssh 的客户端连接实例"},
+        {"name": "created_at", "type": "time.Time", "required": true, "description": "连接创建时间"},
+        {"name": "last_used_at", "type": "time.Time", "required": true, "description": "最近一次使用时间，用于空闲回收判断"}
+      ]
+    },
+    {
+      "name": "FileTransferResult",
+      "type": "struct",
+      "description": "文件传输结果内部结构体，用于 SCP/SFTP 传输后返回传输详情",
+      "fields": [
+        {"name": "success", "type": "bool", "required": true, "description": "传输是否成功"},
+        {"name": "bytes_transferred", "type": "int64", "required": true, "description": "实际传输的字节数"},
+        {"name": "target_path", "type": "string", "required": true, "description": "传输完成后的目标文件绝对路径"},
+        {"name": "duration_ms", "type": "int", "required": false, "description": "传输耗时（毫秒）"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "Execute SSH Command (Internal)",
+      "method": "POST",
+      "endpoint": "/api/internal/ssh/execute",
+      "description": "内部接口，在远程服务器上执行命令并返回结果。Deployment Orchestrator 通过此接口在部署流程中执行远程命令（创建版本文件夹、推送执行脚本、触发远程脚本执行等）。服务从连接池获取或创建 SSH 连接，发送命令并等待执行完成，超时后强制终止。",
+      "parameters": [
+        {"name": "host", "type": "string", "description": "远程服务器主机地址（IP 或域名），必填"},
+        {"name": "port", "type": "integer", "description": "SSH 端口号，通常为 22，必填"},
+        {"name": "username", "type": "string", "description": "SSH 登录用户名，必填"},
+        {"name": "private_key", "type": "string", "description": "SSH 私钥 PEM 内容（由 Key Management Service 解密后提供），必填，执行完毕后不会持久化存储"},
+        {"name": "command", "type": "string", "description": "待执行的远程命令，必填，支持多行命令以换行符分隔"},
+        {"name": "timeout_seconds", "type": "integer", "description": "命令执行超时时间（秒），必填，超时后发送 SIGKILL 强制终止进程并返回 error"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "exit_code": "integer",
+          "stdout": "string",
+          "stderr": "string",
+          "execution_id": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数校验失败，如必填字段缺失、port 超出范围或 timeout_seconds 小于 1"},
+        {"code": 401, "message": "SSH 认证失败，私钥无效或与服务器公钥不匹配"},
+        {"code": 408, "message": "连接超时或命令执行超时（超出 timeout_seconds），连接池回收该连接"},
+        {"code": 500, "message": "服务内部错误，如 SSH 握手失败、连接池异常、session 创建失败等"}
+      ]
+    },
+    {
+      "name": "Transfer File via SCP (Internal)",
+      "method": "POST",
+      "endpoint": "/api/internal/ssh/transfer",
+      "description": "内部接口，通过 SCP/SFTP 在部署服务本地与远程服务器之间传输文件。支持 upload（本地上传到远程）和 download（远程下载到本地）两种方向。Deployment Orchestrator 用于在部署流程中将可执行文件传输到远程服务器。",
+      "parameters": [
+        {"name": "host", "type": "string", "description": "远程服务器主机地址（IP 或域名），必填"},
+        {"name": "port", "type": "integer", "description": "SSH 端口号，通常为 22，必填"},
+        {"name": "username", "type": "string", "description": "SSH 登录用户名，必填"},
+        {"name": "private_key", "type": "string", "description": "SSH 私钥 PEM 内容，必填，执行完毕后不会持久化存储"},
+        {"name": "source_path", "type": "string", "description": "源文件路径，upload 方向为本地路径，download 方向为远程路径，必填"},
+        {"name": "target_path", "type": "string", "description": "目标文件路径，upload 方向为远程路径，download 方向为本地路径，必填"},
+        {"name": "direction", "type": "string", "description": "传输方向，枚举值：upload（本地上传到远程）或 download（远程下载到本地），必填"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "bytes_transferred": "integer",
+          "target_path": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数校验失败，如必填字段缺失或 direction 不是 upload/download"},
+        {"code": 401, "message": "SSH 认证失败，私钥无效或与服务器不匹配"},
+        {"code": 404, "message": "source_path 指向的文件不存在（下载方向），或目标路径的父目录不存在（上传方向）"},
+        {"code": 408, "message": "连接超时或文件传输超时"},
+        {"code": 413, "message": "文件大小超过服务限制（默认 500MB）"},
+        {"code": 507, "message": "远程磁盘空间不足（上传方向）"},
+        {"code": 500, "message": "服务内部错误，如 SCP/SFTP 会话创建失败"}
+      ]
+    },
+    {
+      "name": "Test SSH Connection (Internal)",
+      "method": "POST",
+      "endpoint": "/api/internal/ssh/test",
+      "description": "内部接口，测试与远程服务器的 SSH 连接是否可达。Environment Management Service 在环境配置完成后，通过此接口验证 SSH 连接参数的有效性。内部执行一条 echo 命令验证连通性后立即关闭连接。",
+      "parameters": [
+        {"name": "host", "type": "string", "description": "远程服务器主机地址，必填"},
+        {"name": "port", "type": "integer", "description": "SSH 端口号，必填"},
+        {"name": "username", "type": "string", "description": "SSH 登录用户名，必填"},
+        {"name": "private_key", "type": "string", "description": "SSH 私钥 PEM 内容，必填"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "message": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数校验失败"},
+        {"code": 401, "message": "SSH 认证失败"},
+        {"code": 408, "message": "连接超时"},
+        {"code": 500, "message": "服务内部错误"}
+      ]
+    }
+  ],
+  "error_handling": "所有内部接口统一返回 JSON 格式错误：{ code: int, message: string }。400 参数校验失败、401 SSH 认证失败、404 文件或路径不存在、408 连接或执行超时、413 文件大小超限、500 服务内部错误、507 磁盘空间不足。\n\n【SSH 连接池管理】\n连接池采用进程内 sync.Map + channel 实现，以 {username}@{host}:{port} 为键管理连接。获取连接时优先从池中取出空闲连接并发送 keepalive 心跳验证有效性，心跳失败则关闭该连接并创建新连接。连接使用完毕后归还池中而非关闭。空闲连接超过 idle_timeout_seconds（默认 300 秒）由后台 goroutine 定期扫描并关闭回收。最大连接数由 max_total_connections 控制，达到上限时请求阻塞等待（带超时）。sync.RWMutex 保证并发安全。\n\n【命令执行流程】\n1）解析请求参数，校验必填字段和取值范围（port 1-65535、timeout_seconds 1-3600）；2）从连接池获取或新建 SSH 连接（新建时执行 TCP 拨号 → SSH 握手 → 认证，步骤任一出错返回 401 或 500）；3）创建 ssh.Session，设置请求的超时上下文（context.WithTimeout）；4）组合 stdout 和 stderr 管道，通过 goroutine 并行读取以防死锁；5）session.Run(command) 同步等待命令执行完毕；6）生成 UUID 作为 execution_id，组装 SSHExecutionResult；7）将连接归还连接池（更新 last_used_at），返回响应；8）超时场景下 session.Signal(SIGKILL) 强制终止并关闭该连接。\n\n【文件传输流程】\nupload 方向：先校验本地 source_path 文件的可读性和大小，再通过 SCP 的 CopyFromRemote 对应方法（实际使用 SFTP 的 Open→io.Copy）将文件逐块传输到远程 target_path，每传输 64KB 更新 bytes_transferred。download 方向：先通过 SFTP 的 Stat 检查远程文件存在性和大小，再读取并写入本地 target_path。传输完成后校验两端文件大小。上传方向若远程磁盘空间不足（SCP 协议返回具体错误码）返回 507。\n\n【重试机制】\n可重试错误（网络抖动导致的 SSH 握手失败、瞬态超时）：自动重试最多 2 次，间隔指数退避（1 秒、2 秒）。不可重试错误（参数校验失败、私钥无效、文件不存在）：直接返回错误不重试。每次重试前关闭失效连接确保下次新建连接。\n\n【安全与日志】\nprivate_key 字段在任何日志输出中必须脱敏——日志中记录 key_hash（SHA256 指纹）而非密钥内容。所有 SSH 操作（连接建立/关闭、命令执行、文件传输）均记录结构化日志，包含：execution_id、host、command 摘要（截取前 128 字符）、exit_code、duration_ms。敏感信息（密钥内容、命令输出中的密码类文本）不在日志中明文记录。所有请求处理完毕后在内存中及时清除 private_key 引用，交由 GC 回收。\n\n【并发安全】\n连接池操作全程持有锁。同一 host:port 的多个并发请求共享同一连接（SSH 连接支持多 session 复用）。后台空闲回收 goroutine 每分钟扫描一次连接池，关闭 idle_timeout 超期的空闲连接。服务接收到 SIGTERM 信号时优雅关闭：停止接受新请求 → 遍历关闭连接池中所有活跃连接 → 等待进行中的请求完成（最多等待 30 秒）→ 退出。"
+}
