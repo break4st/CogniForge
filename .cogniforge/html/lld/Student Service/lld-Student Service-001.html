@@ -150,7 +150,7 @@
   <div><span class="badge accent">详细设计文档</span></div>
 </div>
 <h1><span>详细设计文档</span> LLD - Student Service</h1>
-<div class="meta">2026-05-20 11:24 &middot; 作者: design_agent</div>
+<div class="meta">2026-05-20 13:40 &middot; 作者: design_agent</div>
 
 <div class="section">
   <div class="section-header">
@@ -160,36 +160,24 @@
   <div class="section-body">
 
 <p>模块: Student Service</p>
-<p>基于 RESTful 架构的学生档案管理服务，对外提供学生信息的增删改查及搜索能力。采用分层设计：Controller 层处理 HTTP 请求与参数校验 → Service 层实现业务逻辑（学号去重、班级归属校验、搜索解析） → Repository 层封装数据库访问。数据库使用 MySQL/PostgreSQL，学生表作为核心持久化存储，学号字段建立唯一索引保证全局唯一。搜索功能通过数据库的 LIKE 模糊匹配实现（按学号或姓名），支持分页返回。与 Class Service 存在调用依赖：创建/更新学生时需验证 classId 对应的班级是否存在，删除学生时需通知 Class Service 更新班级人数缓存。</p>
+<p>负责学生领域核心业务，管理学生从入学到毕业全生命周期的信息维护，包括基本信息管理、学号唯一性校验、学生检索以及数据的导入导出。提供 7 个 REST API 作为 provider 供 API Gateway 调用；作为 consumer 依赖 Class Service 的班级查询接口与 Grade Service 的年级查询接口完成跨服务数据校验；在学生数据发生变更时向消息队列的 student.data.changed topic 发送事件通知，驱动 Statistics Service 异步更新统计结果。</p>
   </div>
 </div>
 
 <div class="section">
   <div class="section-header">
     <div class="icon" style="background:rgba(91,141,239,0.12)">🗄️</div>
-    <h2>数据模型 (5)</h2>
+    <h2>数据模型 (2)</h2>
   </div>
   <div class="section-body">
 
 <div class="model-item">
   <h3>student</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>bigint</td><td>学生 ID，自增主键，唯一标识</td></tr><tr><td>student_no</td><td>varchar(32)</td><td>学号，全局唯一，建立唯一索引</td></tr><tr><td>name</td><td>varchar(64)</td><td>学生姓名</td></tr><tr><td>gender</td><td>varchar(8)</td><td>性别：male / female</td></tr><tr><td>phone</td><td>varchar(20)</td><td>联系方式，手机号或座机号</td></tr><tr><td>class_id</td><td>bigint</td><td>所属班级 ID，外键关联 class 表，可为 null（未分配班级）</td></tr><tr><td>created_at</td><td>datetime</td><td>创建时间，自动填充当前时间</td></tr><tr><td>updated_at</td><td>datetime</td><td>更新时间，记录变更时间戳</td></tr><tr><td>deleted_at</td><td>datetime</td><td>删除时间，逻辑删除标记，非 null 表示已删除</td></tr></tbody></table>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>bigint</td><td>主键 ID，自增</td></tr><tr><td>name</td><td>varchar(50)</td><td>学生姓名</td></tr><tr><td>student_no</td><td>varchar(20)</td><td>学号，系统唯一，建立唯一索引 UK_STUDENT_NO</td></tr><tr><td>gender</td><td>varchar(10)</td><td>性别</td></tr><tr><td>birth_date</td><td>date</td><td>出生日期</td></tr><tr><td>phone</td><td>varchar(20)</td><td>联系方式</td></tr><tr><td>address</td><td>varchar(200)</td><td>家庭住址</td></tr><tr><td>grade_id</td><td>bigint</td><td>年级 ID，关联 Grade Service 年级表</td></tr><tr><td>class_id</td><td>bigint</td><td>班级 ID，关联 Class Service 班级表</td></tr><tr><td>enrollment_date</td><td>date</td><td>入学日期，创建记录时自动设为当前日期</td></tr><tr><td>created_at</td><td>datetime</td><td>创建时间</td></tr><tr><td>updated_at</td><td>datetime</td><td>最后更新时间</td></tr></tbody></table>
 </div>
 <div class="model-item">
-  <h3>StudentCreateRequest</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>name</td><td>string</td><td>学生姓名，必填，最长 64 字符</td></tr><tr><td>studentNo</td><td>string</td><td>学号，必填，最长 32 字符，不可重复</td></tr><tr><td>gender</td><td>string</td><td>性别，必填，枚举值 male / female</td></tr><tr><td>phone</td><td>string</td><td>联系方式，可选，最长 20 字符</td></tr><tr><td>classId</td><td>number</td><td>所属班级 ID，可选，需与 Class Service 校验有效性</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>StudentUpdateRequest</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>name</td><td>string</td><td>学生姓名，最长 64 字符</td></tr><tr><td>studentNo</td><td>string</td><td>学号，最长 32 字符，不可与已有记录重复（排除自身）</td></tr><tr><td>gender</td><td>string</td><td>性别，枚举值 male / female</td></tr><tr><td>phone</td><td>string</td><td>联系方式，最长 20 字符</td></tr><tr><td>classId</td><td>number</td><td>所属班级 ID，设为 null 表示取消班级归属</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>StudentResponse</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>学生 ID</td></tr><tr><td>name</td><td>string</td><td>学生姓名</td></tr><tr><td>studentNo</td><td>string</td><td>学号</td></tr><tr><td>gender</td><td>string</td><td>性别</td></tr><tr><td>phone</td><td>string</td><td>联系方式</td></tr><tr><td>classId</td><td>number | null</td><td>所属班级 ID</td></tr><tr><td>className</td><td>string</td><td>所属班级名称（关联查询 Class Service 填充）</td></tr><tr><td>createdAt</td><td>string</td><td>创建时间 ISO 8601</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>PaginatedResult</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>items</td><td>StudentResponse[]</td><td>当前页数据列表</td></tr><tr><td>page</td><td>number</td><td>当前页码</td></tr><tr><td>pageSize</td><td>number</td><td>每页条数</td></tr><tr><td>total</td><td>number</td><td>总记录数</td></tr><tr><td>totalPages</td><td>number</td><td>总页数</td></tr></tbody></table>
+  <h3>import_error_detail</h3>
+  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>row</td><td>integer</td><td>导入文件中出错的行号</td></tr><tr><td>student_no</td><td>string</td><td>该行学号</td></tr><tr><td>message</td><td>string</td><td>具体错误原因（如学号重复、字段格式错误、年级/班级不存在等）</td></tr></tbody></table>
 </div>
   </div>
 </div>
@@ -197,44 +185,69 @@
 <div class="section">
   <div class="section-header">
     <div class="icon" style="background:rgba(34,211,238,0.12)">🔌</div>
-    <h2>接口定义 (7)</h2>
+    <h2>接口定义 (12)</h2>
   </div>
   <div class="section-body">
 
 <div class="comp-item">
-  <h3>学生列表查询</h3>
-  <div class="comp-type">GET /api/students</div>
-  <p>分页查询学生列表，支持按关键词搜索学号或姓名、按班级筛选。条件之间为 AND 关系</p>
+  <h3>StudentInfoAPI</h3>
+  <div class="comp-type">GET /api/v1/students</div>
+  <p>（Provider）分页查询学生列表，支持按姓名（模糊搜索）、学号（精确匹配）、年级 ID、班级 ID 等多条件组合筛选。命中缓存则直接返回缓存结果；未命中则查询数据库后将结果写入缓存。</p>
 </div>
 <div class="comp-item">
-  <h3>学生详情查询</h3>
-  <div class="comp-type">GET /api/students/:id</div>
-  <p>根据 ID 获取单个学生的完整信息，包含班级名称。返回 404 当学生不存在</p>
+  <h3>StudentDetailAPI</h3>
+  <div class="comp-type">GET /api/v1/students/{id}</div>
+  <p>（Provider）根据 ID 获取单个学生的完整详细信息。命中缓存则直接返回；未命中则查询数据库后回写缓存。</p>
 </div>
 <div class="comp-item">
-  <h3>创建学生</h3>
-  <div class="comp-type">POST /api/students</div>
-  <p>新增一条学生档案记录。校验学号唯一性（学号重复返回 409）、班级 ID 有效性（调用 Class Service 校验，班级不存在返回 400）</p>
+  <h3>CreateStudentAPI</h3>
+  <div class="comp-type">POST /api/v1/students</div>
+  <p>（Provider）创建新学生记录。调用前先校验学号唯一性（查询 student_no 索引），若不唯一则返回 409 Conflict；校验 grade_id 是否存在（调用 GradeService.GradeDetailAPI）以及 class_id 是否属于该 grade（调用 ClassService.ClassDetailAPI）且班级未超容量上限；校验通过后写入数据库，清除相关缓存条目，并发送 student.data.changed 事件到 MQ。入学日期由服务端自动设为当前日期。</p>
 </div>
 <div class="comp-item">
-  <h3>更新学生</h3>
-  <div class="comp-type">PUT /api/students/:id</div>
-  <p>更新指定学生的基本信息。学号变更时校验唯一性（排除自身）。classId 变更时校验新班级的有效性</p>
+  <h3>UpdateStudentAPI</h3>
+  <div class="comp-type">PUT /api/v1/students/{id}</div>
+  <p>（Provider）更新学生信息，支持部分字段更新（PATCH 语义）。若涉及 grade_id/class_id 变更，需校验新年级/班级是否存在且容量未超限；更新成功后清除相关缓存条目，并发送 student.data.changed 事件到 MQ。</p>
 </div>
 <div class="comp-item">
-  <h3>删除学生</h3>
-  <div class="comp-type">DELETE /api/students/:id</div>
-  <p>逻辑删除指定学生的档案记录（设置 deleted_at 时间戳），不物理删除。删除成功需通知 Class Service 刷新该班级的学生人数缓存</p>
+  <h3>DeleteStudentAPI</h3>
+  <div class="comp-type">DELETE /api/v1/students/{id}</div>
+  <p>（Provider）根据 ID 删除学生记录。删除前校验学生是否存在；删除成功后清除缓存条目，并发送 student.data.changed 事件到 MQ。</p>
 </div>
 <div class="comp-item">
-  <h3>搜索学生</h3>
-  <div class="comp-type">GET /api/students/search</div>
-  <p>精简版搜索接口，不返回分页元信息，适用于下拉选择器等组件快速查找。keyword 为空时返回空列表</p>
+  <h3>StudentImportAPI</h3>
+  <div class="comp-type">POST /api/v1/students/import</div>
+  <p>（Provider）批量导入学生信息，接收 CSV/Excel 文件。逐行解析并校验：学号唯一性、必填字段完整性、年级/班级存在性。全部校验完成后再执行批量写入（事务内逐行 insert，不因单行失败回滚全部），最终返回导入统计。</p>
 </div>
 <div class="comp-item">
-  <h3>批量查询学生</h3>
-  <div class="comp-type">GET /api/students/batch</div>
-  <p>根据 ID 列表批量查询学生基本信息，用于被 Class Service / Statistics Service 内部调用获取学生数据</p>
+  <h3>StudentExportAPI</h3>
+  <div class="comp-type">GET /api/v1/students/export</div>
+  <p>（Provider）导出学生信息为 CSV/Excel 文件。支持按 grade_id 和 class_id 筛选导出范围，同步返回文件流。</p>
+</div>
+<div class="comp-item">
+  <h3>StudentEventTopic</h3>
+  <div class="comp-type">topic: student.data.changed</div>
+  <p>（Provider — 出站 MQ）当学生数据发生 created/updated/deleted 变更时，向消息队列的 student.data.changed topic 发送事件通知，供 Statistics Service 异步消费以更新统计结果。消息投递采用至少一次语义。</p>
+</div>
+<div class="comp-item">
+  <h3>GradeDetailAPI</h3>
+  <div class="comp-type">GET /api/v1/grades/{id}</div>
+  <p>（Consumer — Grade Service）根据 ID 获取年级详细信息，用于创建/更新学生时校验 grade_id 有效性</p>
+</div>
+<div class="comp-item">
+  <h3>GradeInfoAPI</h3>
+  <div class="comp-type">GET /api/v1/grades</div>
+  <p>（Consumer — Grade Service）分页查询年级列表，支持按学年和学段过滤</p>
+</div>
+<div class="comp-item">
+  <h3>ClassDetailAPI</h3>
+  <div class="comp-type">GET /api/v1/classes/{id}</div>
+  <p>（Consumer — Class Service）根据 ID 获取班级详细信息，用于创建/更新学生时校验 class_id 有效性以及班级容量是否已达上限</p>
+</div>
+<div class="comp-item">
+  <h3>ClassInfoAPI</h3>
+  <div class="comp-type">GET /api/v1/classes</div>
+  <p>（Consumer — Class Service）分页查询班级列表，支持按年级过滤</p>
 </div>
   </div>
 </div>
@@ -246,7 +259,7 @@
   </div>
   <div class="section-body">
 
-<p>全局统一返回标准 JSON 格式：{ code: number, message: string, details?: any }。4xx 错误携带具体校验提示：学生不存在返回 404（message: '学生不存在'），学号重复返回 409（message: '学号已存在'），班级无效返回 400（message: '指定的班级不存在'），参数格式错误返回 400（message: '参数错误' 并 details 标明具体字段）。5xx 错误统一返回 500（message: '系统内部错误'），完整错误栈记录到服务日志。逻辑删除的记录在列表查询和详情查询中均被过滤（WHERE deleted_at IS NULL），若通过 ID 查询到已逻辑删除的记录也返回 404。批量操作（batch 接口）中，单个 ID 不存在不整体失败，而是在返回结果中标记该 ID 对应的记录为 null。</p>
+<p>Student Service 统一返回 JSON 错误体 {&quot;code&quot;: &quot;错误码&quot;, &quot;message&quot;: &quot;错误描述&quot;}。1）学号重复时 CreateStudentAPI 返回 409 Conflict，错误码 'STUDENT_NO_DUPLICATE'。2）学生不存在时 StudentDetailAPI / UpdateStudentAPI / DeleteStudentAPI 返回 404 Not Found，错误码 'STUDENT_NOT_FOUND'。3）请求参数校验失败（如必填字段缺失、birth_date 格式错误）返回 400 Bad Request，错误码 'INVALID_PARAMETER'。4）引用的年级或班级不存在（via Grade Service / Class Service）返回 422 Unprocessable Entity，错误码 'REFERENCE_NOT_FOUND'，message 中指明具体引用类型和 ID。5）班级人数已达容量上限（创建或移动学生时）返回 422 Unprocessable Entity，错误码 'CLASS_CAPACITY_EXCEEDED'。6）导入文件格式不支持或超过 10MB 限制返回 400 Bad Request，错误码 'IMPORT_FILE_INVALID'。7）批量导入过程不因单行错误回滚整个事务，逐行记录错误到 errors 数组返回。8）调用下游服务（Grade/Class Service）超时阈值为 5 秒，超时或连接失败返回 503 Service Unavailable，错误码 'DEPENDENCY_TIMEOUT'。9）数据库操作异常返回 500 Internal Server Error，错误码 'DATABASE_ERROR'。</p>
   </div>
 </div>
 
