@@ -17,11 +17,20 @@ AGENT_SCHEMAS: dict[str, dict] = {
     },
     "sad": {
         "agent": "architect",
-        "hint": "系统概述、架构描述、组件列表、拓扑结构、数据流",
+        "hint": "系统概述、架构设计、组件列表、接口契约、数据流",
         "fields": (
-            "title, system_overview（系统概述）, architecture（架构描述）, "
-            "components: [{name, type（service/db/cache/mq等）, description, responsibilities: [string]}], "
-            "topology（拓扑描述）, data_flow（数据流描述）"
+            "title, "
+            "system_overview: {description（系统概述）, "
+            "roles: [{name（角色名）, permissions: [string（权限描述）]}]}, "
+            "architecture: {style（架构风格）, description（架构描述）, "
+            "layers: [{name（层名）, components: [string（组件名）]}], "
+            "connections: [{protocol（协议）}], "
+            "features: [string（架构特征）]}, "
+            "components: [{name, type（frontend/gateway/service/db/cache/mq）, "
+            "description, responsibilities: [string]}], "
+            "contracts: [{interface, provider, consumers: [string], "
+            "type（REST/gRPC/MQ）, endpoint, request, response, description}], "
+            "data_flow: [{name（流名称）, steps: [string（步骤）]}]"
         ),
     },
     "lld": {

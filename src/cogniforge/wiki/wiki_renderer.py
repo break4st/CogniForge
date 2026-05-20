@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -36,6 +37,7 @@ _SHARED_CSS = """
     line-height: 1.75; font-size: 15px;
     max-width: 860px; margin: 0 auto; padding: 48px 40px 80px;
   }
+  body:has(.page-layout) { max-width: none; margin: 0; padding: 0; }
   .top-bar {
     display: flex; align-items: center; justify-content: space-between;
     margin-bottom: 40px; padding-bottom: 24px;
@@ -130,6 +132,84 @@ _SHARED_CSS = """
   }
   .comp-resp { margin-top: 8px; font-size: 0.88em; }
   .comp-resp li { margin: 2px 0; }
+
+  /* ── Contract Groups ── */
+  .contract-group {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); margin-bottom: 12px; overflow: hidden;
+  }
+  .contract-group[open] { border-color: rgba(91,141,239,0.25); }
+  .contract-group summary {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 20px; cursor: pointer; user-select: none;
+    font-weight: 600; font-size: 0.95em; color: var(--c-heading);
+    background: rgba(255,255,255,0.015);
+  }
+  .contract-group summary:hover { background: rgba(255,255,255,0.03); }
+  .contract-group summary::-webkit-details-marker { display: none; }
+  .contract-group summary::before {
+    content: "›"; display: inline-block; font-size: 1.3em; font-weight: 400;
+    width: 16px; color: var(--c-muted); transition: transform 0.2s;
+  }
+  .contract-group[open] summary::before { transform: rotate(90deg); }
+  .cg-count {
+    font-size: 0.78em; font-weight: 500; color: var(--c-muted);
+    background: rgba(255,255,255,0.04); padding: 2px 10px; border-radius: 10px;
+  }
+  .contract-card {
+    padding: 16px 20px; border-top: 1px solid var(--c-border);
+  }
+  .contract-card:first-of-type { border-top: 1px solid var(--c-border); }
+  .cc-head {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .cc-head .cc-name { font-weight: 600; font-size: 0.93em; color: var(--c-heading); }
+  .method-badge {
+    font-family: monospace; font-size: 0.75em; font-weight: 700;
+    padding: 3px 8px; border-radius: 5px; white-space: nowrap;
+  }
+  .method-badge.get    { background: rgba(52,211,153,0.15);  color: var(--c-green); }
+  .method-badge.post   { background: rgba(91,141,239,0.15);  color: var(--c-accent); }
+  .method-badge.put    { background: rgba(251,191,36,0.12);  color: var(--c-amber); }
+  .method-badge.delete { background: rgba(248,113,113,0.12); color: var(--c-red); }
+  .method-badge.mq     { background: rgba(124,111,247,0.13); color: var(--c-accent2); }
+  .cc-endpoint {
+    font-family: monospace; font-size: 0.82em; color: var(--c-text);
+    background: rgba(255,255,255,0.03); padding: 2px 8px; border-radius: 4px;
+  }
+  .cc-type-tag {
+    font-size: 0.72em; font-weight: 600; padding: 3px 8px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    background: rgba(91,141,239,0.1); color: var(--c-accent);
+  }
+  .cc-meta {
+    font-size: 0.82em; color: var(--c-muted); margin-bottom: 6px;
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .cc-meta .cc-consumer {
+    font-size: 0.85em; color: var(--c-accent2);
+    background: rgba(124,111,247,0.08); padding: 1px 8px; border-radius: 4px;
+  }
+  .cc-desc { font-size: 0.85em; color: var(--c-muted); margin-bottom: 10px; }
+  .body-table {
+    width: 100%; border-collapse: collapse; font-size: 0.8em; margin: 6px 0 4px;
+  }
+  .body-table th {
+    text-align: left; padding: 5px 10px; font-weight: 600;
+    color: var(--c-muted); font-size: 0.85em; text-transform: uppercase;
+    letter-spacing: 0.4px; border-bottom: 2px solid var(--c-border);
+    background: rgba(255,255,255,0.015);
+  }
+  .body-table td {
+    padding: 4px 10px; border-bottom: 1px solid rgba(255,255,255,0.04);
+    color: var(--c-text);
+  }
+  .body-table .field-type { color: var(--c-accent); font-family: monospace; font-size: 0.9em; }
+  .body-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 2px;
+  }
   .model-item {
     background: var(--c-surface); border: 1px solid var(--c-border);
     border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
@@ -149,11 +229,277 @@ _SHARED_CSS = """
     margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--c-border);
     text-align: center; color: var(--c-muted); font-size: 0.8em;
   }
+  /* ── System Overview ── */
+  .overview-hero {
+    background: linear-gradient(135deg, rgba(124,111,247,0.08), rgba(91,141,239,0.05));
+    border: 1px solid rgba(124,111,247,0.18); border-radius: var(--radius);
+    padding: 24px 28px; margin-bottom: 24px;
+  }
+  .overview-hero .hero-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-accent2);
+    text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 10px;
+  }
+  .overview-hero p { font-size: 1.02em; line-height: 1.85; color: var(--c-text); }
+  .role-cards {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
+  }
+  .role-card {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 22px 20px; text-align: center;
+  }
+  .role-card .role-icon {
+    width: 48px; height: 48px; border-radius: 50%; margin: 0 auto 12px;
+    display: flex; align-items: center; justify-content: center; font-size: 1.3em;
+  }
+  .role-card .role-name {
+    font-size: 1em; font-weight: 700; color: var(--c-heading); margin-bottom: 10px;
+  }
+  .role-card .role-perms {
+    font-size: 0.84em; color: var(--c-muted); line-height: 1.7;
+    list-style: none; padding: 0;
+  }
+  .role-card .role-perms li { padding: 1px 0; }
+
+  /* ── Architecture Diagram ── */
+  .arch-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 24px 20px 20px; margin-bottom: 22px;
+  }
+  .arch-tier {
+    display: flex; align-items: center; margin-bottom: 4px;
+  }
+  .arch-tier-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0;
+    width: 52px; text-align: right; padding-right: 16px;
+  }
+  .arch-tier-boxes { display: flex; gap: 8px; flex: 1; flex-wrap: wrap; }
+  .arch-box {
+    border-radius: 8px; padding: 12px 16px; text-align: center;
+    font-weight: 600; font-size: 0.85em; flex: 1; min-width: 80px;
+  }
+  .arch-box.frontend {
+    background: rgba(34,211,238,0.12); border: 1px solid rgba(34,211,238,0.28);
+    color: var(--c-cyan);
+  }
+  .arch-box.gateway {
+    background: rgba(124,111,247,0.13); border: 1px solid rgba(124,111,247,0.3);
+    color: var(--c-accent2);
+  }
+  .arch-box.service {
+    background: rgba(91,141,239,0.1); border: 1px solid rgba(91,141,239,0.22);
+    color: var(--c-accent);
+  }
+  .arch-box.db {
+    background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.22);
+    color: var(--c-green);
+  }
+  .arch-box.cache {
+    background: rgba(251,191,36,0.09); border: 1px solid rgba(251,191,36,0.22);
+    color: var(--c-amber);
+  }
+  .arch-box.mq {
+    background: rgba(248,113,113,0.07); border: 1px solid rgba(248,113,113,0.18);
+    color: var(--c-red);
+  }
+  .arch-overview {
+    display: flex; align-items: center; gap: 0; margin-bottom: 20px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 8px; overflow: hidden;
+  }
+  .arch-ov-item {
+    flex: 1; text-align: center; padding: 16px 12px; position: relative;
+  }
+  .arch-ov-item .ov-count {
+    font-size: 1.8em; font-weight: 800; line-height: 1.1;
+  }
+  .arch-ov-item .ov-label {
+    font-size: 0.75em; color: var(--c-muted); margin-top: 4px;
+  }
+  .arch-ov-arrow {
+    font-size: 1.1em; color: var(--c-muted); flex-shrink: 0;
+    padding: 0 2px;
+  }
+  .arch-style-badge {
+    display: inline-flex; padding: 6px 16px; border-radius: 20px;
+    font-size: 0.85em; font-weight: 700; margin-bottom: 16px;
+    background: linear-gradient(135deg, rgba(124,111,247,0.15), rgba(91,141,239,0.1));
+    border: 1px solid rgba(124,111,247,0.25); color: var(--c-accent2);
+  }
+  .arch-features {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px;
+    padding-top: 16px; border-top: 1px solid var(--c-border);
+  }
+  .arch-feature-tag {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 14px; border-radius: 18px; font-size: 0.82em; font-weight: 500;
+    background: rgba(255,255,255,0.03); border: 1px solid var(--c-border);
+    color: var(--c-text);
+  }
+  .arch-feature-tag .dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  }
+  .arch-desc { margin-bottom: 18px; color: var(--c-text); line-height: 1.8; }
+
+  /* ── Topology ── */
+  .topo-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 24px 20px 20px; margin-bottom: 22px;
+  }
+  .topo-tier {
+    display: flex; align-items: stretch; margin-bottom: 2px;
+  }
+  .topo-tier-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0;
+    width: 52px; text-align: right; padding-right: 16px; padding-top: 12px;
+  }
+  .topo-tier-content { flex: 1; display: flex; flex-wrap: wrap; gap: 8px; }
+  .topo-node {
+    border-radius: 8px; padding: 10px 15px; text-align: center;
+    font-weight: 600; font-size: 0.83em; flex: 1; min-width: 80px;
+  }
+  .topo-node.frontend {
+    background: rgba(34,211,238,0.12); border: 1px solid rgba(34,211,238,0.28);
+    color: var(--c-cyan);
+  }
+  .topo-node.gateway {
+    background: rgba(124,111,247,0.13); border: 1px solid rgba(124,111,247,0.3);
+    color: var(--c-accent2);
+  }
+  .topo-node.service {
+    background: rgba(91,141,239,0.1); border: 1px solid rgba(91,141,239,0.22);
+    color: var(--c-accent);
+  }
+  .topo-node.db {
+    background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.22);
+    color: var(--c-green);
+  }
+  .topo-node.cache {
+    background: rgba(251,191,36,0.09); border: 1px solid rgba(251,191,36,0.22);
+    color: var(--c-amber);
+  }
+  .topo-node.mq {
+    background: rgba(248,113,113,0.07); border: 1px solid rgba(248,113,113,0.18);
+    color: var(--c-red);
+  }
+  .topo-connector {
+    display: flex; align-items: center; padding: 2px 0 2px 52px;
+    gap: 10px; flex-wrap: wrap;
+  }
+  .topo-connector-line {
+    flex: 1; min-width: 60px; display: flex; align-items: center; gap: 6px;
+    color: var(--c-muted); font-size: 0.75em; font-weight: 500;
+  }
+  .topo-connector-line::before {
+    content: ""; display: inline-block; width: 12px; height: 1px;
+    background: var(--c-border); flex-shrink: 0;
+  }
+  .topo-connector-line .proto {
+    color: var(--c-accent2); font-family: monospace; font-size: 0.9em;
+    background: rgba(124,111,247,0.08); padding: 1px 6px; border-radius: 4px;
+  }
+
+  /* ── Data Flow ── */
+  .flow-cards { display: flex; flex-direction: column; gap: 16px; }
+  .flow-card {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 20px 22px;
+  }
+  .flow-card-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+  }
+  .flow-card-header .flow-num {
+    width: 28px; height: 28px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.8em; font-weight: 700; flex-shrink: 0;
+  }
+  .flow-card-header .flow-name {
+    font-weight: 700; font-size: 0.95em; color: var(--c-heading);
+  }
+  .flow-steps {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+  }
+  .flow-step {
+    font-size: 0.82em; padding: 5px 10px; border-radius: 6px;
+    background: rgba(255,255,255,0.03); border: 1px solid var(--c-border);
+    color: var(--c-text); white-space: nowrap;
+  }
+  .flow-step.start  { border-color: rgba(52,211,153,0.3);  color: var(--c-green); }
+  .flow-step.mid    { border-color: rgba(91,141,239,0.25);  color: var(--c-accent); }
+  .flow-step.end    { border-color: rgba(124,111,247,0.3);  color: var(--c-accent2); }
+  .flow-arrow { color: var(--c-muted); font-size: 0.85em; flex-shrink: 0; }
+
   @media (max-width: 700px) {
     body { padding: 24px 16px 48px; }
     h1 { font-size: 1.6em; }
     .section-body { padding: 20px 16px; }
+    .role-cards { grid-template-columns: 1fr; }
+    .arch-overview { flex-wrap: wrap; }
+    .arch-ov-arrow { display: none; }
+    .arch-tier { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .arch-tier-label { width: auto; text-align: left; padding-right: 0; }
+    .arch-arrows { padding-left: 0; justify-content: flex-start; }
+    .arch-tier-boxes { width: 100%; }
+    .topo-tier { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .topo-tier-label { width: auto; text-align: left; padding-right: 0; padding-top: 0; }
+    .topo-connector { padding-left: 0; }
+    .flow-steps { flex-direction: column; align-items: flex-start; }
+    .flow-arrow { display: none; }
+    .cc-head { flex-direction: column; align-items: flex-start; gap: 6px; }
+    .cc-meta { flex-direction: column; align-items: flex-start; }
+    .page-layout { flex-direction: column; }
+    .sidebar { display: none; }
+    .sidebar.mobile-open { display: flex; }
+    .sidebar-toggle { display: flex; }
   }
+
+  /* ── Sidebar Layout ── */
+  .page-layout {
+    display: flex; min-height: 100vh;
+  }
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0;
+    width: 230px; overflow-y: auto;
+    background: var(--c-surface); border-right: 1px solid var(--c-border);
+    display: flex; flex-direction: column; padding: 24px 0;
+    z-index: 100;
+  }
+  .sidebar-header {
+    padding: 0 20px 20px; border-bottom: 1px solid var(--c-border); margin-bottom: 12px;
+  }
+  .sidebar-header .sid {
+    font-size: 0.72em; font-weight: 600; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .sidebar-header .stitle {
+    font-size: 0.95em; font-weight: 700; color: var(--c-heading);
+    margin-top: 4px; line-height: 1.3;
+  }
+  .sidebar-nav { flex: 1; padding: 0 12px; }
+  .sidebar-link {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; border-radius: 7px;
+    font-size: 0.86em; color: var(--c-muted); text-decoration: none;
+    margin-bottom: 2px; transition: all 0.15s;
+  }
+  .sidebar-link:hover { color: var(--c-text); background: rgba(255,255,255,0.03); }
+  .sidebar-link.active {
+    color: var(--c-accent); background: rgba(91,141,239,0.1);
+    font-weight: 600;
+  }
+  .sidebar-link .sl-icon { font-size: 1.05em; width: 20px; text-align: center; flex-shrink: 0; }
+  .sidebar-toggle {
+    display: none; position: fixed; top: 12px; left: 12px; z-index: 200;
+    width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--c-border);
+    background: var(--c-surface); color: var(--c-text); font-size: 1.2em;
+    cursor: pointer; align-items: center; justify-content: center;
+  }
+  .main-content {
+    margin-left: 230px; flex: 1; min-width: 0;
+    max-width: 860px; padding: 48px 40px 80px;
+  }
+  html { scroll-behavior: smooth; }
   @media print {
     body { background: #fff; color: #222; }
     .section-body, .req-item, .story-item { background: #fff; border: 1px solid #ddd; }
@@ -187,9 +533,10 @@ _PAGE_END = """
 </html>"""
 
 
-def _section_header(icon: str, title: str, bg_color: str) -> str:
+def _section_header(icon: str, title: str, bg_color: str, sid: str = "") -> str:
+    id_attr = f' id="{sid}"' if sid else ""
     return (
-        f'<div class="section">\n'
+        f'<div class="section"{id_attr}>\n'
         f'  <div class="section-header">\n'
         f'    <div class="icon" style="background:{bg_color}">{icon}</div>\n'
         f'    <h2>{_esc(title)}</h2>\n'
@@ -347,65 +694,605 @@ def _render_prd(d: dict) -> str:
     return "\n".join(parts)
 
 
+def _render_overview_section(data) -> str:
+    parts = []
+    if isinstance(data, dict):
+        desc = data.get("description", "")
+        roles = data.get("roles", [])
+        if desc:
+            parts.append(
+                '<div class="overview-hero">'
+                '<div class="hero-label">系统定位</div>'
+                f"<p>{_esc(desc)}</p>"
+                "</div>"
+            )
+        if roles:
+            role_colors = {
+                "管理员": ("rgba(124,111,247,0.15)", "#c4b5fd"),
+                "老师":   ("rgba(91,141,239,0.15)", "#93c5fd"),
+                "学生":   ("rgba(52,211,153,0.15)", "#6ee7b7"),
+            }
+            role_icons = {"管理员": "👤", "老师": "👩‍🏫", "学生": "🎓"}
+            cards = []
+            for r in roles:
+                name = r.get("name", "")
+                perms_list = r.get("permissions", [])
+                bg, color = role_colors.get(name, ("rgba(255,255,255,0.04)", "var(--c-muted)"))
+                icon = role_icons.get(name, "👤")
+                perms_html = "".join(f"<li>{_esc(p)}</li>" for p in perms_list)
+                cards.append(
+                    '<div class="role-card">'
+                    f'<div class="role-icon" style="background:{bg};color:{color}">{icon}</div>'
+                    f'<div class="role-name">{_esc(name)}</div>'
+                    f'<ul class="role-perms">{perms_html}</ul>'
+                    "</div>"
+                )
+            parts.append(f'<div class="role-cards">{"".join(cards)}</div>')
+        if not desc and not roles:
+            parts.append("<p>暂无概述</p>")
+    else:
+        # Legacy string — plain text fallback
+        text = str(data) if data else ""
+        if text:
+            parts.append(f"<p>{_esc(text)}</p>")
+    return "\n".join(parts)
+
+
+def _render_architecture_section(data, components: list) -> str:
+    parts = []
+    features = []
+    desc_text = ""
+    style = ""
+    layers = []
+    connections = []
+
+    if isinstance(data, dict):
+        desc_text = data.get("description", "")
+        style = data.get("style", "")
+        features = data.get("features", [])
+        layers = data.get("layers", [])
+        connections = data.get("connections", [])
+    else:
+        desc_text = str(data) if data else ""
+
+    # Style badge + description
+    if style:
+        parts.append(f'<div class="arch-style-badge">{_esc(style)}</div>')
+    if desc_text:
+        parts.append(f'<div class="arch-desc">{_esc(desc_text)}</div>')
+
+    # Layered diagram with component names + protocol labels
+    if layers:
+        diag_parts = []
+        css_map = {
+            "frontend": "frontend", "gateway": "gateway", "service": "service",
+            "db": "db", "cache": "cache", "mq": "mq",
+        }
+        for idx, layer in enumerate(layers):
+            layer_name = layer.get("name", "")
+            layer_comps = layer.get("components", [])
+            boxes = []
+            for comp_name in layer_comps:
+                css_cls = "service"
+                for c in components:
+                    if c.get("name") == comp_name:
+                        css_cls = css_map.get(c.get("type", ""), "service")
+                        break
+                boxes.append(
+                    f'<div class="topo-node {css_cls}">{_esc(comp_name)}</div>'
+                )
+            if boxes:
+                diag_parts.append(
+                    '<div class="topo-tier">'
+                    f'<div class="topo-tier-label">{_esc(layer_name)}</div>'
+                    f'<div class="topo-tier-content">{"".join(boxes)}</div>'
+                    '</div>'
+                )
+            if idx < len(layers) - 1 and idx < len(connections):
+                conn = connections[idx]
+                proto = conn.get("protocol", "")
+                proto_lines = [f'<div class="topo-connector-line"><span class="proto">{_esc(proto)}</span></div>']
+                diag_parts.append(
+                    '<div class="topo-connector">'
+                    f'{"".join(proto_lines)}'
+                    '</div>'
+                )
+
+        parts.append(f'<div class="topo-diagram">{"".join(diag_parts)}</div>')
+
+    # Feature tags
+    if features:
+        color_map = {
+            "微服务": "var(--c-accent2)", "API Gateway": "var(--c-accent)",
+            "关系型数据库": "var(--c-green)", "Redis": "var(--c-amber)",
+            "消息队列": "var(--c-red)", "RESTful": "var(--c-cyan)",
+            "独立部署": "var(--c-accent)",
+        }
+        tags = []
+        for f in features:
+            color = "var(--c-muted)"
+            for key, c in color_map.items():
+                if key in f:
+                    color = c
+                    break
+            tags.append(
+                f'<span class="arch-feature-tag">'
+                f'<span class="dot" style="background:{color}"></span>'
+                f'{_esc(f)}'
+                f'</span>'
+            )
+        if tags:
+            parts.append(f'<div class="arch-features">{"".join(tags)}</div>')
+    elif not isinstance(data, dict) and desc_text:
+        # Legacy string — regex feature extraction
+        feature_map = [
+            (r"微服务", "微服务架构", "var(--c-accent2)"),
+            (r"API Gateway", "API Gateway", "var(--c-accent)"),
+            (r"关系型数据库", "关系型数据库", "var(--c-green)"),
+            (r"Redis|缓存", "Redis 缓存", "var(--c-amber)"),
+            (r"消息队列", "消息队列", "var(--c-red)"),
+            (r"RESTful", "RESTful API", "var(--c-cyan)"),
+            (r"独立部署", "独立部署演进", "var(--c-accent)"),
+        ]
+        tags = []
+        for pattern, label, color in feature_map:
+            if re.search(pattern, desc_text):
+                tags.append(
+                    f'<span class="arch-feature-tag">'
+                    f'<span class="dot" style="background:{color}"></span>'
+                    f'{label}'
+                    f'</span>'
+                )
+        if tags:
+            parts.append(f'<div class="arch-features">{"".join(tags)}</div>')
+
+    if not parts:
+        parts.append("<p>暂无架构描述</p>")
+
+    return "\n".join(parts)
+
+
+def _render_topology_section(data, components: list) -> str:
+    parts = []
+
+    if isinstance(data, dict):
+        desc = data.get("description", "")
+        layers = data.get("layers", [])
+        connections = data.get("connections", [])
+        if desc:
+            parts.append(f'<div class="arch-desc">{_esc(desc)}</div>')
+
+        # Build topology diagram from structured layers + connections
+        diag_parts = []
+        css_map = {
+            "frontend": "frontend", "gateway": "gateway", "service": "service",
+            "db": "db", "cache": "cache", "mq": "mq",
+        }
+        for idx, layer in enumerate(layers):
+            layer_name = layer.get("name", "")
+            layer_comps = layer.get("components", [])
+            boxes = []
+            for comp_name in layer_comps:
+                # Match to component type for CSS class
+                css_cls = "service"
+                for c in components:
+                    if c.get("name") == comp_name:
+                        css_cls = css_map.get(c.get("type", ""), "service")
+                        break
+                boxes.append(
+                    f'<div class="topo-node {css_cls}">{_esc(comp_name)}</div>'
+                )
+            if boxes:
+                diag_parts.append(
+                    '<div class="topo-tier">'
+                    f'<div class="topo-tier-label">{_esc(layer_name)}</div>'
+                    f'<div class="topo-tier-content">{"".join(boxes)}</div>'
+                    '</div>'
+                )
+            # Connection row after this layer (except last)
+            if idx < len(layers) - 1 and idx < len(connections):
+                conn = connections[idx]
+                proto = conn.get("protocol", "")
+                proto_lines = [f'<div class="topo-connector-line"><span class="proto">{_esc(proto)}</span></div>']
+                diag_parts.append(
+                    '<div class="topo-connector">'
+                    f'{"".join(proto_lines)}'
+                    '</div>'
+                )
+
+        if diag_parts:
+            parts.append(f'<div class="topo-diagram">{"".join(diag_parts)}</div>')
+        if not diag_parts and not desc:
+            parts.append("<p>暂无拓扑数据</p>")
+    else:
+        # Legacy string — plain text fallback + component-based diagram
+        text = str(data) if data else ""
+        if text:
+            parts.append(f'<div class="arch-desc">{_esc(text)}</div>')
+
+        grouped: dict[str, list] = {}
+        for c in components:
+            t = c.get("type", "")
+            grouped.setdefault(t, []).append(c)
+
+        tier_defs = [
+            ("接入层", ["frontend"]),
+            ("网关层", ["gateway"]),
+            ("服务层", ["service"]),
+            ("数据层", ["db", "cache", "mq"]),
+        ]
+        proto_defs = [
+            ["HTTPS / TLS"],
+            ["REST / JSON", "REST / JSON", "REST / JSON", "REST / JSON"],
+            ["SQL", "SQL / Redis Proto", "AMQP / MQTT"],
+        ]
+
+        diag_parts = []
+        for idx, (label, keys) in enumerate(tier_defs):
+            items = []
+            for k in keys:
+                items.extend(grouped.get(k, []))
+            if not items:
+                continue
+            css_map_s = {
+                "frontend": "frontend", "gateway": "gateway", "service": "service",
+                "db": "db", "cache": "cache", "mq": "mq",
+            }
+            boxes = []
+            for c in items:
+                css_cls = css_map_s.get(c.get("type", ""), "service")
+                boxes.append(
+                    f'<div class="topo-node {css_cls}">{_esc(c.get("name", ""))}</div>'
+                )
+            diag_parts.append(
+                '<div class="topo-tier">'
+                f'<div class="topo-tier-label">{label}</div>'
+                f'<div class="topo-tier-content">{"".join(boxes)}</div>'
+                '</div>'
+            )
+            if idx < len(proto_defs):
+                proto_lines = []
+                for proto in proto_defs[idx]:
+                    proto_lines.append(
+                        f'<div class="topo-connector-line"><span class="proto">{_esc(proto)}</span></div>'
+                    )
+                diag_parts.append(
+                    '<div class="topo-connector">'
+                    f'{"".join(proto_lines)}'
+                    '</div>'
+                )
+
+        if diag_parts:
+            parts.append(f'<div class="topo-diagram">{"".join(diag_parts)}</div>')
+        if not diag_parts:
+            return f"<p>{_esc(text)}</p>" if text else "<p>暂无拓扑数据</p>"
+
+    return "\n".join(parts)
+
+
+def _render_dataflow_section(data) -> str:
+    if not data:
+        return "<p>暂无数据流描述</p>"
+
+    if isinstance(data, list):
+        # Structured — array of {name, steps[]}
+        schemes = [
+            ("rgba(52,211,153,0.15)", "var(--c-green)"),
+            ("rgba(91,141,239,0.15)", "var(--c-accent)"),
+            ("rgba(251,191,36,0.12)", "var(--c-amber)"),
+            ("rgba(124,111,247,0.15)", "var(--c-accent2)"),
+        ]
+        cards = []
+        for idx, flow in enumerate(data):
+            name = flow.get("name", f"Flow {idx + 1}")
+            steps = flow.get("steps", [])
+            bg, color = schemes[idx % len(schemes)]
+            step_htmls = []
+            for si, step in enumerate(steps):
+                css = "start" if si == 0 else ("end" if si == len(steps) - 1 else "mid")
+                step_htmls.append(f'<span class="flow-step {css}">{_esc(step)}</span>')
+                if si < len(steps) - 1:
+                    step_htmls.append('<span class="flow-arrow">→</span>')
+            cards.append(
+                '<div class="flow-card">'
+                '<div class="flow-card-header">'
+                f'<div class="flow-num" style="background:{bg};color:{color}">{idx + 1}</div>'
+                f'<div class="flow-name">{_esc(name)}</div>'
+                '</div>'
+                f'<div class="flow-steps">{"".join(step_htmls)}</div>'
+                '</div>'
+            )
+        return f'<div class="flow-cards">{"".join(cards)}</div>'
+
+    # Legacy string — plain text fallback
+    return f"<p>{_esc(str(data))}</p>"
+
+
+# ---------------------------------------------------------------------------
+# Sidebar-aware page wrappers
+# ---------------------------------------------------------------------------
+
+_SIDEBAR_SCRIPT = """
+<script>
+(function() {
+  var links = document.querySelectorAll('.sidebar-link');
+  var sections = [];
+  links.forEach(function(l) { var s = document.getElementById(l.getAttribute('href').slice(1)); if (s) sections.push([s, l]); });
+  function update() {
+    var top = window.scrollY + 80;
+    var active = null;
+    sections.forEach(function(p) { if (p[0].offsetTop <= top) active = p[1]; });
+    links.forEach(function(l) { l.classList.remove('active'); });
+    if (active) active.classList.add('active');
+  }
+  window.addEventListener('scroll', update, {passive: true});
+  update();
+
+  var toggle = document.getElementById('sidebar-toggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function() { sidebar.classList.toggle('mobile-open'); });
+  }
+})();
+</script>
+"""
+
+
+def _render_sidebar(doc_id: str, title: str, sections: list) -> str:
+    """Generate sidebar nav HTML. sections: list of (id, icon, label)."""
+    links = []
+    for sid, icon, label in sections:
+        links.append(
+            f'<a href="#{sid}" class="sidebar-link">'
+            f'<span class="sl-icon">{icon}</span>{_esc(label)}'
+            f'</a>'
+        )
+    return (
+        '<nav class="sidebar" id="sidebar">'
+        '<div class="sidebar-header">'
+        f'<div class="sid">{_esc(doc_id)}</div>'
+        f'<div class="stitle">{_esc(title)}</div>'
+        '</div>'
+        f'<div class="sidebar-nav">{"".join(links)}</div>'
+        '</nav>'
+    )
+
+
+def _page_start_sidebar(title: str, doc_id: str, badge_label: str,
+                        created: str, author: str, sections: list) -> str:
+    """Page start with sidebar layout. sections: list of (id, icon, label)."""
+    sidebar_html = _render_sidebar(doc_id, title, sections)
+    return (
+        f"<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n"
+        f"<meta charset=\"UTF-8\">\n"
+        f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+        f"<title>{_esc(title)} — {_esc(doc_id)}</title>\n"
+        f"<style>{_SHARED_CSS}</style>\n"
+        f"</head>\n<body>\n"
+        f"<div class=\"page-layout\">\n"
+        + sidebar_html
+        + '<button id="sidebar-toggle" class="sidebar-toggle" aria-label="菜单">☰</button>\n'
+        + '<div class="main-content">\n'
+        f'<div class="top-bar">\n'
+        f'  <div class="doc-id">{_esc(doc_id)}</div>\n'
+        f'  <div><span class="badge accent">{_esc(badge_label)}</span></div>\n'
+        f'</div>\n'
+        f'<h1><span>{_esc(badge_label)}</span> {_esc(title)}</h1>\n'
+        f'<div class="meta">{_esc(created)} &middot; 作者: {_esc(author)}</div>\n'
+    )
+
+
+_PAGE_END_SIDEBAR = (
+    '<div class="footer">CogniForge 文档驱动系统</div>\n'
+    "</div>\n"  # .main-content
+    "</div>\n"  # .page-layout
+    + _SIDEBAR_SCRIPT
+    + "</body>\n</html>"
+)
+
+
+def _render_contracts_section(contracts: list) -> str:
+    """Render contracts grouped by provider with collapsible groups."""
+    if not contracts:
+        return ""
+
+    # Group by provider
+    from collections import OrderedDict
+    groups: dict[str, list] = OrderedDict()
+    for c in contracts:
+        provider = c.get("provider", "Other")
+        groups.setdefault(provider, []).append(c)
+
+    parts = []
+    for provider, items in groups.items():
+        cards = []
+        for c in items:
+            ctype = c.get("type", "REST")
+            endpoint = c.get("endpoint", "")
+            # Extract HTTP method for badge
+            method = ""
+            ep_path = endpoint
+            parts_ep = endpoint.split(" ", 1)
+            if len(parts_ep) == 2 and parts_ep[0] in ("GET", "POST", "PUT", "DELETE", "PATCH"):
+                method = parts_ep[0]
+                ep_path = parts_ep[1]
+            elif ctype == "MQ":
+                method = "MQ"
+
+            consumers = c.get("consumers", [])
+            consumers_html = " ".join(
+                f'<span class="cc-consumer">{_esc(x)}</span>' for x in consumers
+            )
+
+            # Build request body table
+            req_body = c.get("request", {}).get("body", {})
+            req_html = ""
+            if isinstance(req_body, dict) and req_body:
+                rows = ""
+                for k, v in req_body.items():
+                    rows += (
+                        f'<tr><td>{_esc(k)}</td>'
+                        f'<td class="field-type">{_esc(v)}</td></tr>'
+                    )
+                req_html = (
+                    '<div class="body-label">Request</div>'
+                    '<table class="body-table"><thead><tr>'
+                    '<th>字段</th><th>类型</th></tr></thead>'
+                    f'<tbody>{rows}</tbody></table>'
+                )
+
+            # Build response body table
+            resp_body = c.get("response", {}).get("body", {})
+            resp_html = ""
+            if isinstance(resp_body, dict) and resp_body:
+                rows = ""
+                for k, v in resp_body.items():
+                    rows += (
+                        f'<tr><td>{_esc(k)}</td>'
+                        f'<td class="field-type">{_esc(v)}</td></tr>'
+                    )
+                resp_html = (
+                    '<div class="body-label">Response</div>'
+                    '<table class="body-table"><thead><tr>'
+                    '<th>字段</th><th>类型</th></tr></thead>'
+                    f'<tbody>{rows}</tbody></table>'
+                )
+
+            method_cls = method.lower() if method else ""
+            cards.append(
+                '<div class="contract-card">'
+                '<div class="cc-head">'
+                + (f'<span class="method-badge {method_cls}">{_esc(method)}</span>' if method else "")
+                + f'<span class="cc-endpoint">{_esc(ep_path)}</span>'
+                + f'<span class="cc-type-tag">{_esc(ctype)}</span>'
+                + f'<span class="cc-name">{_esc(c.get("interface", ""))}</span>'
+                '</div>'
+                f'<div class="cc-desc">{_esc(c.get("description", ""))}</div>'
+                + (f'<div class="cc-meta">→ {consumers_html}</div>' if consumers_html else "")
+                + req_html + resp_html
+                + '</div>'
+            )
+
+        parts.append(
+            '<details class="contract-group" open>'
+            f'<summary>{_esc(provider)} <span class="cg-count">{len(items)}</span></summary>'
+            f'{"".join(cards)}'
+            '</details>'
+        )
+
+    return "\n".join(parts)
+
+
 def _render_sad(d: dict) -> str:
     m = d.get("meta", {})
-    parts = [_page_start(
-        m.get("title", "SAD"), m.get("doc_id", ""), "系统架构文档",
-        m.get("created", ""), m.get("author", "architect_agent"),
-    )]
-    parts.append(_section_header("📄", "系统概述", "rgba(124,111,247,0.12)"))
-    parts.append(f"<p>{_esc(d.get('system_overview', ''))}</p>")
-    parts.append(_SECTION_FOOT)
-    parts.append(_section_header("🏗️", "架构设计", "rgba(91,141,239,0.12)"))
-    parts.append(f"<p>{_esc(d.get('architecture', ''))}</p>")
-    parts.append(_SECTION_FOOT)
+    title = m.get("title", "SAD")
+    doc_id = m.get("doc_id", "")
     comps = d.get("components", [])
-    parts.append(_section_header("🧩", f"组件设计 ({len(comps)})", "rgba(34,211,238,0.12)"))
+    contracts = d.get("contracts", [])
+
+    # Build section list for sidebar (topology merged into architecture)
+    sections = [
+        ("overview", "📄", "系统概述"),
+        ("architecture", "🏗️", "架构设计"),
+        ("components", "🧩", f"组件设计 ({len(comps)})"),
+    ]
+    if contracts:
+        sections.append(("contracts", "🔗", f"接口契约 ({len(contracts)})"))
+    if d.get("data_flow"):
+        sections.append(("dataflow", "📊", "数据流"))
+
+    parts = [_page_start_sidebar(
+        title, doc_id, "系统架构文档",
+        m.get("created", ""), m.get("author", "architect_agent"),
+        sections,
+    )]
+    overview_text = d.get("system_overview", "")
+    parts.append(_section_header("📄", "系统概述", "rgba(124,111,247,0.12)", "overview"))
+    parts.append(_render_overview_section(overview_text))
+    parts.append(_SECTION_FOOT)
+
+    # Architecture → includes topology layers + protocols
+    arch_data = d.get("architecture", "")
+    parts.append(_section_header("🏗️", "架构设计", "rgba(91,141,239,0.12)", "architecture"))
+    parts.append(_render_architecture_section(arch_data, comps))
+    parts.append(_SECTION_FOOT)
+
+    # Components → grouped by architecture layers
+    parts.append(_section_header("🧩", f"组件设计 ({len(comps)})", "rgba(34,211,238,0.12)", "components"))
     if comps:
+        # Build layer lookup from architecture data
+        layer_for: dict[str, str] = {}
+        if isinstance(arch_data, dict):
+            for layer in arch_data.get("layers", []):
+                for cname in layer.get("components", []):
+                    layer_for[cname] = layer.get("name", "")
+
+        # Group components by layer
+        grouped_comps: dict[str, list] = {}
+        unlayered: list = []
         for c in comps:
-            items = "".join(f"<li>{_esc(r)}</li>" for r in c.get("responsibilities", []))
+            cname = c.get("name", "")
+            lname = layer_for.get(cname, "")
+            if lname:
+                grouped_comps.setdefault(lname, []).append(c)
+            else:
+                unlayered.append(c)
+
+        # Render groups (preserve layer order from architecture)
+        type_icons = {
+            "frontend": "🖥️", "gateway": "🔀", "service": "⚙️",
+            "db": "🗄️", "cache": "⚡", "mq": "📨",
+        }
+        layer_order = list(dict.fromkeys(layer_for.values()))  # unique, insertion order
+        for lname in layer_order:
+            items = grouped_comps.get(lname, [])
+            if not items:
+                continue
+            cards = []
+            for c in items:
+                items_html = "".join(f"<li>{_esc(r)}</li>" for r in c.get("responsibilities", []))
+                ctype = c.get("type", "")
+                icon = type_icons.get(ctype, "📦")
+                cards.append(
+                    f'<div class="comp-item">\n'
+                    f'  <h3>{icon} {_esc(c.get("name", ""))}</h3>\n'
+                    f'  <div class="comp-type">{_esc(ctype)}</div>\n'
+                    f'  <p>{_esc(c.get("description", ""))}</p>\n'
+                    f'  <ul class="comp-resp">{items_html}</ul>\n'
+                    f'</div>'
+                )
+            if cards:
+                parts.append(
+                    '<details class="contract-group" open>'
+                    f'<summary>{_esc(lname)} <span class="cg-count">{len(cards)}</span></summary>'
+                    f'{"".join(cards)}'
+                    '</details>'
+                )
+
+        # Any components not in any layer
+        for c in unlayered:
+            items_html = "".join(f"<li>{_esc(r)}</li>" for r in c.get("responsibilities", []))
+            ctype = c.get("type", "")
+            icon = type_icons.get(ctype, "📦")
             parts.append(
                 f'<div class="comp-item">\n'
-                f'  <h3>{_esc(c.get("name", ""))}</h3>\n'
-                f'  <div class="comp-type">{_esc(c.get("type", ""))}</div>\n'
+                f'  <h3>{icon} {_esc(c.get("name", ""))}</h3>\n'
+                f'  <div class="comp-type">{_esc(ctype)}</div>\n'
                 f'  <p>{_esc(c.get("description", ""))}</p>\n'
-                f'  <ul class="comp-resp">{items}</ul>\n'
+                f'  <ul class="comp-resp">{items_html}</ul>\n'
                 f'</div>'
             )
     parts.append(_SECTION_FOOT)
-    contracts = d.get("contracts", [])
+
     if contracts:
-        parts.append(_section_header("🔗", f"接口契约 ({len(contracts)})", "rgba(52,211,153,0.12)"))
-        for c in contracts:
-            provider = _esc(c.get("provider", ""))
-            consumers = ", ".join(_esc(x) for x in c.get("consumers", []))
-            endpoint = _esc(c.get("endpoint", ""))
-            desc = _esc(c.get("description", ""))
-            req_body = c.get("request", {}).get("body", {})
-            resp_body = c.get("response", {}).get("body", {})
-            req_fields = ", ".join(f"{k}: {v}" for k, v in req_body.items()) if isinstance(req_body, dict) else ""
-            resp_fields = ", ".join(f"{k}: {v}" for k, v in resp_body.items()) if isinstance(resp_body, dict) else ""
-            parts.append(
-                f'<div class="comp-item">\n'
-                f'  <h3>{_esc(c.get("interface",""))} <span class="comp-type">{_esc(c.get("type","REST"))}</span></h3>\n'
-                f'  <p><strong>Provider:</strong> {provider}</p>\n'
-                f'  <p><strong>Consumers:</strong> {consumers}</p>\n'
-                f'  <p><strong>Endpoint:</strong> <code>{endpoint}</code></p>\n'
-                f'  <p>{desc}</p>\n'
-                f'  {f"<p><strong>Request body:</strong> {{{req_fields}}}</p>" if req_fields else ""}\n'
-                f'  {f"<p><strong>Response body:</strong> {{{resp_fields}}}</p>" if resp_fields else ""}\n'
-                f'</div>'
-            )
-        parts.append(_SECTION_FOOT)
-    if d.get("topology"):
-        parts.append(_section_header("🔗", "拓扑结构", "rgba(52,211,153,0.12)"))
-        parts.append(f"<p>{_esc(d['topology'])}</p>")
+        parts.append(_section_header("🔗", f"接口契约 ({len(contracts)})", "rgba(52,211,153,0.12)", "contracts"))
+        parts.append(_render_contracts_section(contracts))
         parts.append(_SECTION_FOOT)
     if d.get("data_flow"):
-        parts.append(_section_header("📊", "数据流", "rgba(251,191,36,0.12)"))
-        parts.append(f"<p>{_esc(d['data_flow'])}</p>")
+        parts.append(_section_header("📊", "数据流", "rgba(251,191,36,0.12)", "dataflow"))
+        parts.append(_render_dataflow_section(d["data_flow"]))
         parts.append(_SECTION_FOOT)
-    parts.append(_PAGE_END)
+    parts.append(_PAGE_END_SIDEBAR)
     return "\n".join(parts)
 
 
