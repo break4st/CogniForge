@@ -1,0 +1,115 @@
+{
+  "meta": {
+    "doc_id": "lld-SSH执行代理-001",
+    "type": "lld",
+    "module": "SSH执行代理",
+    "title": "LLD - SSH执行代理",
+    "author": "design_agent",
+    "created": "2026-05-20 16:10"
+  },
+  "overview": "SSH执行代理是一个无REST接口的后台工作服务，通过AMQP消费部署编排服务投递至 deployment.tasks 主题的 DeploymentTaskMessage，在远程服务器上执行完整的部署操作。内部处理流程：1) 接收到任务消息后进行反序列化与参数校验；2) 使用消息中携带的服务器地址、端口、用户名、SSH私钥建立 SSH 安全连接；3) 在远程服务器创建版本文件夹（路径格式 /opt/deploy/{version}/）；4) 通过 SCP/SFTP 将 artifact_path 对应的可执行文件传输至远程版本文件夹；5) 自动生成启动脚本 start.sh（包含设置可执行权限、后台运行、输出重定向、PID 记录等逻辑）并写入远程服务器；6) 通过 SSH remote exec 执行启动脚本；7) 整个过程中边执行边通过 deployment.logs 主题回写 DeploymentLogMessage（type=log 实时日志行、type=status_change 状态变更），供部署编排服务消费后推送 WebSocket 及更新数据库。支持并行消费多个部署任务，每个任务独占一个 SSH 连接，任务完成后自动关闭连接。连接中断或执行失败时自动回写 ERROR 级别日志与 failure 状态，不阻塞其他任务。",
+  "data_models": [
+    {
+      "name": "DeploymentTaskMessage",
+      "type": "mq",
+      "description": "部署任务消息结构（消费端引用定义）。由部署编排服务发送至消息队列 deployment.tasks 主题，SSH执行代理作为消费者接收。消息中包含 SSH 连接参数、解密后的私钥、文件路径和版本号，是 SSH执行代理 所有操作的输入数据。消息持久化，消费确认前不会丢失。",
+      "fields": [
+        { "name": "task_id", "type": "string (UUID)", "description": "任务唯一标识，UUID v4，用于消费者幂等去重" },
+        { "name": "deployment_id", "type": "integer", "description": "部署记录ID，用于回写状态和日志时的关联标识" },
+        { "name": "project_id", "type": "integer", "description": "所属项目ID" },
+        { "name": "server_host", "type": "string", "description": "远程服务器IP地址或域名" },
+        { "name": "server_port", "type": "integer", "description": "SSH连接端口号" },
+        { "name": "username", "type": "string", "description": "SSH登录用户名" },
+        { "name": "ssh_private_key", "type": "string", "description": "解密后的SSH私钥明文内容（消息队列内部网络传输，不经过公网）" },
+        { "name": "ssh_passphrase", "type": "string", "description": "密钥口令，无口令时为 null" },
+        { "name": "artifact_path", "type": "string", "description": "可执行文件在共享存储中的路径，SSH执行代理通过此路径读取文件内容用于传输" },
+        { "name": "version", "type": "string", "description": "版本号，用于远程服务器创建版本文件夹名，如 v1.0.0" }
+      ]
+    },
+    {
+      "name": "DeploymentLogMessage",
+      "type": "mq",
+      "description": "日志回写消息结构（生产端引用定义）。SSH执行代理在部署执行过程中发送至消息队列 deployment.logs 主题，供部署编排服务消费处理。支持两种消息类型：log（单行日志）和 status_change（状态变更）。每条消息按产生顺序发送，sequence 从0开始递增。",
+      "fields": [
+        { "name": "type", "type": "string", "description": "消息类型，枚举值：log / status_change" },
+        { "name": "deployment_id", "type": "integer", "description": "关联的部署记录ID" },
+        { "name": "sequence", "type": "integer", "description": "日志行序号（type=log 时有效），从0开始递增，同一 deployment_id 下连续递增" },
+        { "name": "log_line", "type": "string", "description": "日志行内容（type=log 时有效），格式为 [时间戳] [级别] 消息" },
+        { "name": "level", "type": "string", "description": "日志级别（type=log 时有效），枚举值：INFO / WARN / ERROR" },
+        { "name": "status", "type": "string", "description": "部署状态（type=status_change 时有效），枚举值：running / success / failure" },
+        { "name": "error_message", "type": "string", "description": "错误信息（type=status_change 且 status=failure 时有效），记录失败根因" },
+        { "name": "timestamp", "type": "string (ISO8601)", "description": "消息产生时间，如 2026-05-20T16:10:00.000Z" }
+      ]
+    },
+    {
+      "name": "StartupScriptTemplate",
+      "type": "config",
+      "description": "自动生成的启动脚本模板。SSH执行代理在执行部署时根据此模板生成 start.sh 脚本，写入远程服务器版本文件夹后执行。模板包含以下固定逻辑：进入工作目录、设置可执行权限、后台启动进程、将 stdout/stderr 重定向至日志文件、记录 PID、等待进程启动确认。",
+      "fields": [
+        { "name": "script_name", "type": "string", "description": "脚本文件名，固定值 start.sh" },
+        { "name": "deploy_base_path", "type": "string", "description": "远程服务器部署根目录，固定 /opt/deploy" },
+        { "name": "script_body", "type": "string", "description": "脚本内容模板，运行时将 {version} 和 {artifact_name} 替换为实际值。逻辑：cd 版本目录 → chmod +x 可执行文件 → nohup ./可执行文件 > app.log 2>&1 & → echo $! > pid.txt → sleep 2 → 校验进程存活" }
+      ]
+    },
+    {
+      "name": "SshConnectionConfig",
+      "type": "internal",
+      "description": "SSH连接配置。每次部署任务从 DeploymentTaskMessage 解析出完整的连接参数，建立独立连接。连接使用 SSH-2 协议，优先使用密钥认证，密钥口令可选。支持连接超时（默认15s）和会话超时（默认300s）控制。",
+      "fields": [
+        { "name": "host", "type": "string", "description": "远程服务器地址" },
+        { "name": "port", "type": "integer", "description": "SSH端口" },
+        { "name": "username", "type": "string", "description": "登录用户名" },
+        { "name": "private_key", "type": "string", "description": "RSA/ECDSA 私钥明文" },
+        { "name": "passphrase", "type": "string", "description": "私钥口令，无口令时为 null" },
+        { "name": "connect_timeout", "type": "integer", "description": "连接超时秒数，默认 15" },
+        { "name": "session_timeout", "type": "integer", "description": "会话超时秒数，默认 300" }
+      ]
+    },
+    {
+      "name": "RemoteCommandResult",
+      "type": "internal",
+      "description": "远程命令执行结果。记录在远程服务器上执行单条命令的退出码、标准输出和标准错误输出，用于判断命令执行是否成功并记录日志。",
+      "fields": [
+        { "name": "exit_code", "type": "integer", "description": "命令退出码，0 表示成功，非0 表示失败" },
+        { "name": "stdout", "type": "string", "description": "标准输出内容" },
+        { "name": "stderr", "type": "string", "description": "标准错误内容" },
+        { "name": "exec_duration_ms", "type": "integer", "description": "命令执行耗时（毫秒）" }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "ConsumeDeploymentTask",
+      "endpoint": "INTERNAL (MQ consumer) — deployment.tasks",
+      "description": "内部消费者，订阅消息队列 deployment.tasks 主题。接收部署编排服务投递的 DeploymentTaskMessage，执行完整的远程部署流程。处理步骤：1) 反序列化消息为 DeploymentTaskMessage；2) 发送 type=status_change status=running 至 deployment.logs 通知状态变更；3) 根据 server_host/server_port/username/ssh_private_key 建立 SSH 连接（超时15s）；4) 执行 mkdir -p /opt/deploy/{version} 创建版本文件夹；5) 通过 SFTP 将 artifact_path 文件传输至远程 /opt/deploy/{version}/；6) 远程写入 start.sh 启动脚本（包含 chmod +x、nohup 启动、PID 记录等）；7) 远程执行 chmod +x /opt/deploy/{version}/start.sh && /opt/deploy/{version}/start.sh；8) 校验进程启动状态（ps 检查）；9) 成功后发送 type=status_change status=success；10) 任一环节失败发送 type=status_change status=failure 及 error_message。每执行一个步骤前/后发送 type=log 报告进度。消息消费确认方式：步骤7执行完成（即脚本已启动）后手动 ack 消息。",
+      "parameters": [
+        { "name": "message:task_id", "type": "string", "description": "任务唯一标识，用于幂等去重，重复的 task_id 直接 ack 丢弃" },
+        { "name": "message:deployment_id", "type": "integer", "description": "部署记录ID，日志和状态回写的关联键" },
+        { "name": "message:project_id", "type": "integer", "description": "项目ID，日志记录用" },
+        { "name": "message:server_host", "type": "string", "description": "远程服务器地址" },
+        { "name": "message:server_port", "type": "integer", "description": "SSH端口" },
+        { "name": "message:username", "type": "string", "description": "SSH登录用户名" },
+        { "name": "message:ssh_private_key", "type": "string", "description": "解密后的SSH私钥内容" },
+        { "name": "message:ssh_passphrase", "type": "string", "description": "密钥口令" },
+        { "name": "message:artifact_path", "type": "string", "description": "可执行文件路径" },
+        { "name": "message:version", "type": "string", "description": "版本号" }
+      ]
+    },
+    {
+      "name": "ReportDeploymentLog",
+      "endpoint": "INTERNAL (MQ producer) — deployment.logs",
+      "description": "内部生产者，由 ConsumeDeploymentTask 流程中触发。在执行部署的各个阶段发送日志行和状态变更至 deployment.logs 主题。每次发送包含当前操作的日志行（INFO 级别报告进度、WARN 级别报告警告、ERROR 级别报告失败），以及在关键里程碑（开始执行、完成、失败）发送 status_change 消息。sequence 从0开始随每个 log 消息递增，保证日志有序性。发送失败时不影响部署执行（降级记录本地日志），但状态变更消息发送失败视为严重事件（可能导致前端无法感知部署完成，此时在本地重试至多3次）。",
+      "parameters": [
+        { "name": "message:type", "type": "string", "description": "消息类型，log 或 status_change" },
+        { "name": "message:deployment_id", "type": "integer", "description": "部署记录ID" },
+        { "name": "message:sequence", "type": "integer", "description": "日志行序号（type=log 时必填）" },
+        { "name": "message:log_line", "type": "string", "description": "日志行内容（type=log 时必填）" },
+        { "name": "message:level", "type": "string", "description": "日志级别（type=log 时必填），INFO / WARN / ERROR" },
+        { "name": "message:status", "type": "string", "description": "部署状态（type=status_change 时必填），running / success / failure" },
+        { "name": "message:error_message", "type": "string", "description": "错误信息（type=status_change 且 status=failure 时必填）" },
+        { "name": "message:timestamp", "type": "string", "description": "消息产生时间，ISO8601 格式" }
+      ]
+    }
+  ],
+  "error_handling": "统一错误处理策略，所有异常捕获后通过 deployment.logs 回写 ERROR 日志和 failure 状态：\n1. MQ消息反序列化失败：ConsumeDeploymentTask 接收的消息 JSON 格式错误或字段缺失，记录错误日志并 nack 消息（requeue=false 直接丢弃或投递死信队列），错误码 MSG_DESERIALIZE_FAILED。\n2. MQ消费重试：消息处理抛出异常时 nack 并 requeue，最多重试3次，超过3次后投递死信队列人工排查，错误码 MSG_RETRY_EXCEEDED。\n3. SSH连接失败：连接远程服务器时网络不可达、端口未开放或连接超时（15s），回写 ERROR 日志并发送 type=status_change status=failure error_message=SSH_CONNECTION_FAILED，释放连接资源，错误码 SSH_CONNECTION_FAILED。\n4. SSH认证失败：私钥格式错误、用户名错误、密钥不匹配导致认证拒绝，回写 ERROR 日志（不暴露私钥内容）并发送 failure，错误码 SSH_AUTH_FAILED。\n5. 版本文件夹创建失败：远程 mkdir 命令返回非0，磁盘空间不足或权限不足，回写 ERROR 日志并发送 failure 及错误输出内容，错误码 REMOTE_MKDIR_FAILED。\n6. 文件传输失败：SFTP 上传时源文件不存在、传输中断或磁盘空间不足，回写 ERROR 日志并发送 failure，错误码 FILE_TRANSFER_FAILED。\n7. 源文件不可读：artifact_path 指定的文件在本地不存在或无读取权限，回写 ERROR 日志并发送 failure，错误码 ARTIFACT_NOT_FOUND。\n8. 启动脚本写入失败：远程 echo/cat 写入 start.sh 失败，回写 ERROR 日志并发送 failure，错误码 SCRIPT_WRITE_FAILED。\n9. 启动脚本执行失败：远程执行 start.sh 返回非0退出码，回写 ERROR 日志并发送 failure 附带 stderr 内容，错误码 SCRIPT_EXEC_FAILED。\n10. 进程启动确认失败：执行 start.sh 后等待2s通过 ps 检查不到目标进程，回写 WARN 日志（不判定为 failure，因部分应用启动较慢），发送 status=success 但附带 WARN 日志，错误码 PROCESS_START_WARN。\n11. SSH会话超时：单次 SSH 命令执行超过 session_timeout(300s) 未返回，断开连接并发送 failure，错误码 SSH_SESSION_TIMEOUT。\n12. SSH连接意外断开：执行命令过程中 SSH 连接被远程关闭或网络中断，尝试重连1次，重连失败则发送 failure，错误码 SSH_CONNECTION_LOST。\n13. 日志发送失败：ReportDeploymentLog 发送至 MQ 时连接异常，降级处理（重试3次，间隔500ms），不影响主流程继续执行。status_change 消息发送失败时重试3次，仍失败则记录本地日志告警，错误码 LOG_SEND_FAILED。\n14. 并发控制：同一 deployment_id 重复消费时通过 task_id 幂等去重（维护内存中的已处理 task_id 集合，定期清理过期记录），避免重复部署。\n15. 优雅关闭：收到 SIGTERM 时停止消费新消息，等待正在执行的 SSH 任务完成（最多等待 30s），超时未完成的标记为 failure 后退出，防止部署任务悬空，错误码 SHUTDOWN_TIMEOUT。"
+}
