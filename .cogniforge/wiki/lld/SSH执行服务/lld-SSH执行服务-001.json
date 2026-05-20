@@ -1,0 +1,148 @@
+{
+  "meta": {
+    "doc_id": "lld-SSH执行服务-001",
+    "type": "lld",
+    "module": "SSH执行服务",
+    "title": "LLD - SSH执行服务",
+    "author": "design_agent",
+    "created": "2026-05-20 16:33"
+  },
+  "overview": {
+    "description": "SSH执行服务是CogniForge远程服务器操作的核心引擎，负责与远程服务器建立SSH连接并执行三大类操作：1）连接测试——验证SSH连接配置（主机、端口、用户名、密钥）是否可用并返回延迟；2）远程命令执行——在远程服务器上执行Shell命令（创建目录、执行部署脚本等），返回标准输出、标准错误和退出码；3）文件传输——通过SCP/SFTP将可执行文件上传到远程服务器指定目录，支持大文件分片传输。通过连接池管理SSH会话，减少重复握手开销，支持并发连接复用。",
+    "dependencies": [],
+    "tech_stack": ["Java 17", "Spring Boot 3", "Apache MINA SSHD / JSch", "连接池（池化管理）", "SCP/SFTP协议", "REST (JSON)"]
+  },
+  "data_models": [
+    {
+      "name": "ssh_connection_config",
+      "type": "config",
+      "description": "SSH连接池全局配置，通过application.yml或配置中心加载，控制连接池大小、超时、重试等参数",
+      "fields": [
+        {"name": "pool.max_total", "type": "int", "required": true, "description": "连接池最大连接数（按(host:port:username)三元组分组），默认20"},
+        {"name": "pool.max_idle", "type": "int", "required": true, "description": "连接池最大空闲连接数，默认5"},
+        {"name": "pool.min_idle", "type": "int", "required": true, "description": "连接池最小空闲连接数，默认1"},
+        {"name": "pool.max_wait_ms", "type": "int", "required": true, "description": "获取连接的最大等待时间（毫秒），默认5000"},
+        {"name": "connect_timeout_ms", "type": "int", "required": true, "description": "SSH TCP连接超时（毫秒），默认10000"},
+        {"name": "auth_timeout_ms", "type": "int", "required": true, "description": "SSH认证超时（毫秒），默认15000"},
+        {"name": "command_timeout_ms", "type": "int", "required": true, "description": "命令执行超时（毫秒），默认60000"},
+        {"name": "upload_timeout_ms", "type": "int", "required": true, "description": "文件上传超时（毫秒），默认300000"},
+        {"name": "retry_count", "type": "int", "required": true, "description": "连接失败重试次数，默认2"},
+        {"name": "retry_interval_ms", "type": "int", "required": true, "description": "重试间隔（毫秒），默认1000"}
+      ]
+    },
+    {
+      "name": "ssh_session_pool",
+      "type": "store",
+      "description": "SSH会话池运行时状态，管理按(host:port:username)三元组分组的SSH会话连接。每个池化Session在闲置超时后自动关闭释放，请求时先尝试复用空闲会话，无空闲则创建新连接（不超过max_total限制）",
+      "fields": [
+        {"name": "pool_key", "type": "string", "required": true, "description": "连接池分组键，格式为username@host:port"},
+        {"name": "session", "type": "SSH Session对象", "required": true, "description": "SSH会话实例，封装了底层的Socket连接和认证状态"},
+        {"name": "last_used_at", "type": "datetime", "required": true, "description": "最近一次使用时间，用于空闲超时检测"},
+        {"name": "idle_timeout_ms", "type": "int", "required": true, "description": "空闲超时阈值，超过此时间未使用则关闭释放"}
+      ]
+    },
+    {
+      "name": "ssh_command_result",
+      "type": "struct",
+      "description": "远程命令执行结果封装，包含退出码、标准输出和标准错误输出",
+      "fields": [
+        {"name": "success", "type": "bool", "required": true, "description": "命令执行是否成功（退出码为0且无连接错误）"},
+        {"name": "stdout", "type": "string", "required": true, "description": "命令的标准输出内容"},
+        {"name": "stderr", "type": "string", "required": true, "description": "命令的标准错误输出内容"},
+        {"name": "exit_code", "type": "int", "required": true, "description": "命令退出码，0表示成功，非0表示执行异常"}
+      ]
+    },
+    {
+      "name": "ssh_upload_result",
+      "type": "struct",
+      "description": "文件上传操作结果封装，包含上传成功标志、文件大小和远程路径",
+      "fields": [
+        {"name": "success", "type": "bool", "required": true, "description": "文件上传是否成功"},
+        {"name": "file_size", "type": "int", "required": true, "description": "上传文件的实际大小（字节数）"},
+        {"name": "remote_path", "type": "string", "required": true, "description": "文件在远程服务器的存储路径"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "连接测试接口",
+      "method": "POST",
+      "endpoint": "/api/ssh/test-connection",
+      "description": "测试SSH连接到远程服务器是否可用。接收目标服务器的主机地址、端口、用户名和SSH私钥，建立TCP连接并进行SSH握手认证。测试完成后立即断开连接（不入池），返回连接成功状态和延迟毫秒数。供环境管理服务的'测试环境连接'接口（POST /api/environments/{id}/test-connection）内部调用",
+      "parameters": [
+        {"name": "host", "type": "string", "description": "远程服务器主机地址（IP或域名）"},
+        {"name": "port", "type": "int", "description": "SSH端口号，默认22"},
+        {"name": "username", "type": "string", "description": "SSH登录用户名"},
+        {"name": "ssh_key", "type": "string", "description": "SSH私钥内容（PEM格式，包含-----BEGIN OPENSSH PRIVATE KEY-----等完整内容）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "bool",
+          "message": "string",
+          "latency_ms": "int"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数校验失败（必填字段host/port/username/ssh_key缺失或格式不合法）"},
+        {"code": 502, "message": "SSH连接失败——目标主机不可达、认证失败、端口未开放或SSH协议不兼容"}
+      ]
+    },
+    {
+      "name": "SSH远程执行接口",
+      "method": "POST",
+      "endpoint": "/api/ssh/execute",
+      "description": "在远程服务器上执行Shell命令（用于创建目录、执行部署脚本等）。复用连接池中的SSH会话以减少重复握手开销，同一(host:port:username)连接连续执行多条命令时共享同一会话。支持自定义命令超时时间。供部署编排服务的部署流程编排层在执行脚本步骤调用",
+      "parameters": [
+        {"name": "host", "type": "string", "description": "远程服务器主机地址（IP或域名）"},
+        {"name": "port", "type": "int", "description": "SSH端口号，默认22"},
+        {"name": "username", "type": "string", "description": "SSH登录用户名"},
+        {"name": "ssh_key", "type": "string", "description": "SSH私钥内容（PEM格式）"},
+        {"name": "command", "type": "string", "description": "需要执行的Shell命令内容"},
+        {"name": "timeout", "type": "int", "description": "命令执行超时时间（秒），默认60，超过此时长将终止命令执行"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "bool",
+          "stdout": "string",
+          "stderr": "string",
+          "exit_code": "int"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数校验失败（必填字段缺失或格式不合法）"},
+        {"code": 502, "message": "SSH连接或命令执行失败——目标主机不可达、认证失败、会话异常中断"},
+        {"code": 504, "message": "命令执行超时——命令执行时间超过指定的timeout参数仍未返回"}
+      ]
+    },
+    {
+      "name": "文件传输接口",
+      "method": "POST",
+      "endpoint": "/api/ssh/upload",
+      "description": "通过SCP/SFTP将可执行文件上传到远程服务器指定目录。支持大文件分片传输，接收文件内容的Base64编码数据并在远程服务器指定路径写入。上传前自动检查并创建remote_path的父目录（如目标目录不存在则自动创建）。供部署编排服务的部署流程编排层在上传文件步骤调用",
+      "parameters": [
+        {"name": "host", "type": "string", "description": "远程服务器主机地址（IP或域名）"},
+        {"name": "port", "type": "int", "description": "SSH端口号，默认22"},
+        {"name": "username", "type": "string", "description": "SSH登录用户名"},
+        {"name": "ssh_key", "type": "string", "description": "SSH私钥内容（PEM格式）"},
+        {"name": "remote_path", "type": "string", "description": "远程服务器上的文件存储路径（含文件名），如/app/deploy/v1.0.0/app.jar"},
+        {"name": "file_content", "type": "binary（Base64编码传输，支持分片）", "description": "上传文件的二进制内容，以Base64编码后通过JSON body传输。大文件由客户端分片后依次调用本接口传输，服务端按remote_path追加写入"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "bool",
+          "file_size": "int",
+          "remote_path": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数校验失败（必填字段缺失、file_content格式不合法或空内容）"},
+        {"code": 502, "message": "文件上传失败——SSH连接异常、SFTP协议错误、远程磁盘空间不足或权限拒绝"},
+        {"code": 504, "message": "文件上传超时——大文件传输超过指定超时时间（默认300秒）"}
+      ]
+    }
+  ],
+  "error_handling": "SSH执行服务采用分层错误处理策略：1）参数校验层——三个接口对host、port、username、ssh_key四个连接参数统一校验，以及command和remote_path等业务参数的非空校验，host格式（IP地址或域名）和port范围（1-65535）校验，校验失败统一返回400 Bad Request并指明具体问题字段；2）连接管理层——连接池获取会话时如果达到max_total上限且等待超过max_wait_ms则返回502并提示连接池已满；SSH连接建立失败（TCP超时、认证拒绝、协议不兼容）时记录错误详情并返回502；空闲连接检测到会话异常（连接断开、超时关闭）时自动从池中移除并关闭释放，下次请求重新建立新连接；3）命令执行层——命令执行时设置channel级别的timeout（由请求参数timeout控制），超时后强制关闭channel并记录执行上下文（已执行命令内容、执行时长），返回504 Timeout；命令执行后读取exit_code，非0退出码不视为异常——success字段置false并将exit_code、stdout、stderr一起返回给调用方由调用方决定处理策略；4）文件传输层——文件上传前检查remote_path父目录是否存在，不存在则自动mkdir -p创建；上传过程捕获SFTP协议异常（Permission denied导致写入失败、No space left on device磁盘满、连接中断），返回502并记录具体失败原因；大文件分片传输时每片写入后立即flush确保数据落盘，避免最后flush失败导致文件损坏；5）全局异常处理——所有未捕获异常统一返回500 Internal Server Error，服务端记录完整错误堆栈。所有错误响应统一采用格式：{\"error\": {\"code\": \"string错误码\", \"message\": \"string错误描述\"}}。"
+}
