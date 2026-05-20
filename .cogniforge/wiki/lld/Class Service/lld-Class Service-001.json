@@ -5,164 +5,123 @@
     "module": "Class Service",
     "title": "LLD - Class Service",
     "author": "design_agent",
-    "created": "2026-05-20 13:41"
+    "created": "2026-05-20 13:50"
   },
-  "overview": "负责班级领域业务，管理班级的新建、调整与解散，维护班级-年级层级关系，支持班主任指派与班级学生名单查询。提供 4 个 REST API 作为 provider 供 API Gateway 和 Student Service 调用；作为 consumer 依赖 Grade Service 的年级查询接口完成年级存在性校验，依赖 Student Service 的学生信息接口获取班级学生名单。provider 接口严格遵循 SAD 定义的契约签名。",
+  "overview": "班级信息管理服务，负责班级的创建维护及学生分配管理。作为微服务架构中的领域服务之一，通过 REST 内部接口对外提供班级信息 CRUD 及学生名单查询能力，消费者为 API Gateway 和 Student Service。服务内部职责包括：1）班级的创建、编辑和删除；2）按条件（年级、名称）分页查询班级列表，列表项中 student_count 通过统计关联学生数实时计算；3）班级下学生名单的分页查询（直接查询共享数据库的 students 表，按 class_id 筛选）；4）班级-年级关联关系的维护（创建/更新时设置 grade_id 需调用 Grade Service 接口 GET /internal/grades/{id}/exists 校验年级存在性）；5）班级存在性校验（供 Student Service 在分配学生时调用）。本服务不处理认证鉴权——该职责由 API Gateway 统一负责。数据存储采用关系型数据库，班级信息主表为 classes，关联年级 ID（grade_id）引用 Grade Service 侧的年级数据（通过应用层校验保证引用完整性）。班级下学生名单通过查询共享的 students 表获得，按 class_id 过滤。",
   "data_models": [
     {
-      "name": "class",
+      "name": "classes",
       "type": "table",
-      "description": "班级信息主表，存储班级核心数据。按 (grade_id, name) 建立联合唯一索引确保同年级内班级名称不重复。student_count 不在此表持久化，通过查询 Student Service 实时获取。",
+      "description": "班级基本信息主表，存储所有班级的核心属性。grade_id 为关联年级的外键，通过应用层调用 Grade Service 校验年级存在性，数据库层面不设外键约束以保持服务间松耦合。student_count 不作为持久化字段，查询时通过 COUNT 聚合 students 表实时计算。",
       "fields": [
-        {"name": "id", "type": "bigint", "description": "主键 ID，自增"},
-        {"name": "name", "type": "varchar(50)", "description": "班级名称"},
-        {"name": "grade_id", "type": "bigint", "description": "所属年级 ID，关联 Grade Service 年级表"},
-        {"name": "head_teacher", "type": "varchar(50)", "description": "班主任姓名，可为空"},
-        {"name": "capacity", "type": "int", "description": "班级容量上限，默认 50"},
-        {"name": "created_at", "type": "datetime", "description": "创建时间"},
-        {"name": "updated_at", "type": "datetime", "description": "最后更新时间"}
+        { "name": "id", "type": "BIGINT", "description": "主键，自增，班级唯一标识" },
+        { "name": "name", "type": "VARCHAR(100)", "description": "班级名称，必填" },
+        { "name": "grade_id", "type": "BIGINT", "description": "所属年级 ID，可为 null，引用 Grade Service 的年级数据" },
+        { "name": "description", "type": "VARCHAR(500)", "description": "班级描述，可为 null" },
+        { "name": "created_at", "type": "DATETIME", "description": "记录创建时间，默认 CURRENT_TIMESTAMP" },
+        { "name": "updated_at", "type": "DATETIME", "description": "记录更新时间，默认 CURRENT_TIMESTAMP，ON UPDATE CURRENT_TIMESTAMP" }
       ]
     },
     {
-      "name": "class_list_item",
-      "type": "api",
-      "description": "班级列表查询（ClassInfoAPI）返回的单个班级对象结构",
+      "name": "idx_grade_id",
+      "type": "index",
+      "description": "年级 ID 索引，用于按年级筛选班级时加速查询",
       "fields": [
-        {"name": "id", "type": "integer", "description": "班级 ID"},
-        {"name": "name", "type": "string", "description": "班级名称"},
-        {"name": "grade_id", "type": "integer", "description": "所属年级 ID"},
-        {"name": "head_teacher", "type": "string", "description": "班主任姓名"},
-        {"name": "student_count", "type": "integer", "description": "班级当前在籍学生人数，通过查询 Student Service 获得"},
-        {"name": "capacity", "type": "integer", "description": "班级容量上限"}
+        { "name": "grade_id", "type": "INDEX", "description": "年级 ID 索引" }
+      ]
+    },
+    {
+      "name": "idx_name",
+      "type": "index",
+      "description": "班级名称索引，用于按名称模糊搜索时加速查询",
+      "fields": [
+        { "name": "name", "type": "INDEX", "description": "班级名称索引" }
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "ClassInfoAPI",
-      "endpoint": "GET /api/v1/classes",
-      "description": "（Provider）分页查询班级列表，支持按年级过滤。返回列表中的每条记录包含 id、name、grade_id、head_teacher、student_count、capacity 字段。student_count 通过查询 Student Service 的 StudentInfoAPI（filter by class_id）获取各班级实时学生人数。命中缓存则直接返回；未命中则查询数据库后回写缓存。缓存 key 格式：class:list:{grade_id}:{page}:{page_size}。",
+      "name": "班级管理内部接口（创建）",
+      "endpoint": "POST /internal/classes",
+      "description": "创建班级记录。接收班级名称、可选年级 ID 和可选描述。核心校验规则：1）name 为必填字段，缺失时返回 422；2）如提供了 grade_id，需调用 Grade Service 接口 GET /internal/grades/{id}/exists 校验年级存在性，年级不存在时返回 422 Unprocessable Entity。创建成功返回 201 及完整班级信息（含自动生成的 id 和 created_at）。",
       "parameters": [
-        {"name": "grade_id", "type": "integer", "in": "query", "required": false, "description": "按年级过滤班级"},
-        {"name": "page", "type": "integer", "in": "query", "required": false, "description": "页码，默认 1"},
-        {"name": "page_size", "type": "integer", "in": "query", "required": false, "description": "每页条数，默认 20，最大 100"}
+        { "name": "name", "type": "string", "description": "班级名称，必填" },
+        { "name": "grade_id", "type": "number (optional)", "description": "所属年级 ID，选填，提供时需校验年级存在性" },
+        { "name": "description", "type": "string (optional)", "description": "班级描述，选填" }
       ],
-      "response": {
-        "status": 200,
-        "body": {
-          "total": "integer 班级总数",
-          "items": "array 班级对象列表，每项包含 id/name/grade_id/head_teacher/student_count/capacity"
-        }
-      }
+      "contract_ref": "SAD contracts - 班级管理内部接口（创建）(provider: Class Service)"
     },
     {
-      "name": "ClassDetailAPI",
-      "endpoint": "GET /api/v1/classes/{id}",
-      "description": "（Provider）根据 ID 获取班级详细信息。student_count 通过查询 Student Service 的 StudentInfoAPI（filter by class_id）获取当前在籍人数。命中缓存则直接返回；未命中则查询数据库后回写缓存。缓存 key 格式：class:detail:{id}。",
+      "name": "班级管理内部接口（更新）",
+      "endpoint": "PUT /internal/classes/{id}",
+      "description": "更新指定班级的信息。可修改字段：名称、年级 ID、描述。核心校验规则：1）路径参数 id 对应的班级不存在时返回 404；2）如提供了 grade_id，需调用 Grade Service 接口 GET /internal/grades/{id}/exists 校验年级存在性，年级不存在时返回 422；3）至少提供一个可修改字段，全空时返回 422。更新成功返回 200 及更新后的班级信息（含 updated_at 时间戳）。",
       "parameters": [
-        {"name": "id", "type": "integer", "in": "path", "required": true, "description": "班级 ID"}
+        { "name": "id", "type": "number", "description": "班级 ID，路径参数" },
+        { "name": "name", "type": "string (optional)", "description": "班级名称，选填" },
+        { "name": "grade_id", "type": "number (optional)", "description": "所属年级 ID，选填，提供时需校验年级存在性" },
+        { "name": "description", "type": "string (optional)", "description": "班级描述，选填" }
       ],
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "integer 班级 ID",
-          "name": "string 班级名称",
-          "grade_id": "integer 所属年级 ID",
-          "head_teacher": "string 班主任姓名",
-          "student_count": "integer 班级学生人数",
-          "capacity": "integer 班级容量上限"
-        }
-      }
+      "contract_ref": "SAD contracts - 班级管理内部接口（更新）(provider: Class Service)"
     },
     {
-      "name": "CreateClassAPI",
-      "endpoint": "POST /api/v1/classes",
-      "description": "（Provider）创建新班级。先校验 grade_id 存在性（调用 GradeService.GradeDetailAPI），若年级不存在则拒绝并返回 422；再校验同年级内班级名称是否重复（查询 class 表 (grade_id, name) 唯一索引），若重复返回 409；校验通过后写入数据库，清除班级列表缓存。",
+      "name": "班级管理内部接口（删除）",
+      "endpoint": "DELETE /internal/classes/{id}",
+      "description": "删除指定班级记录。路径参数 id 对应的班级不存在时返回 404；删除成功返回 204 No Content，无响应体。注意：删除班级时，关联该班级的学生不会自动删除——class_id 仅置空逻辑由 Student Service 自行处理，本服务只负责删除班级记录本身。",
       "parameters": [
-        {"name": "name", "type": "string", "in": "body", "required": true, "description": "班级名称"},
-        {"name": "grade_id", "type": "integer", "in": "body", "required": true, "description": "所属年级 ID"},
-        {"name": "head_teacher", "type": "string", "in": "body", "required": false, "description": "班主任姓名"},
-        {"name": "capacity", "type": "integer", "in": "body", "required": false, "description": "班级容量上限，不传则默认为 50"}
+        { "name": "id", "type": "number", "description": "班级 ID，路径参数" }
       ],
-      "response": {
-        "status": 201,
-        "body": {"id": "integer 新创建的班级 ID"}
-      }
+      "contract_ref": "SAD contracts - 班级管理内部接口（删除）(provider: Class Service)"
     },
     {
-      "name": "ClassStudentsAPI",
-      "endpoint": "GET /api/v1/classes/{id}/students",
-      "description": "（Provider）查询指定班级的学生名单。先校验班级是否存在（查 class 表），不存在则返回 404。存在则调用 StudentService.StudentInfoAPI 并传入 class_id 过滤条件，获取该班级全部在籍学生列表，将其作为 students 数组返回。返回的学生对象包含学生完整档案信息（id、name、student_no、gender、birth_date、phone、address、grade_id、class_id、enrollment_date）。",
+      "name": "班级管理内部接口（列表）",
+      "endpoint": "GET /internal/classes",
+      "description": "按条件分页查询班级列表。支持按年级 ID（精确匹配）和班级名称（模糊匹配）筛选。分页参数 page 默认 1，page_size 默认 20，最大 page_size 不超过 100。返回结果中 student_count 通过 COUNT 聚合 students 表中 class_id 等于当前班级 ID 的记录数实时计算。响应中包含 total 总数、当前页码、每页条数及 items 数组。",
       "parameters": [
-        {"name": "id", "type": "integer", "in": "path", "required": true, "description": "班级 ID"}
+        { "name": "grade_id", "type": "number (optional)", "description": "按年级筛选，精确匹配" },
+        { "name": "name", "type": "string (optional)", "description": "按名称模糊搜索" },
+        { "name": "page", "type": "number (optional)", "description": "页码，默认 1" },
+        { "name": "page_size", "type": "number (optional)", "description": "每页条数，默认 20，最大 100" }
       ],
-      "response": {
-        "status": 200,
-        "body": {
-          "class_id": "integer 班级 ID",
-          "students": "array 班级学生列表，每项为学生完整信息对象"
-        }
-      }
+      "contract_ref": "SAD contracts - 班级管理内部接口（列表）(provider: Class Service)"
     },
     {
-      "name": "StudentDetailAPI",
-      "endpoint": "GET /api/v1/students/{id}",
-      "description": "（Consumer — Student Service）根据 ID 获取单个学生的完整详细信息。Class Service 在 ClassStudentsAPI 中通过该接口获取班级内单名学生的详细信息（当需要精确单条查询时使用）。",
+      "name": "班级管理内部接口（详情）",
+      "endpoint": "GET /internal/classes/{id}",
+      "description": "查询指定班级的详细信息。返回结果包含班级全部字段（id、name、grade_id、student_count、description、created_at、updated_at），其中 student_count 通过 COUNT 聚合 students 表中 class_id 等于当前班级 ID 的记录数实时计算。班级不存在时返回 404。",
       "parameters": [
-        {"name": "id", "type": "integer", "in": "path", "required": true, "description": "学生 ID"}
+        { "name": "id", "type": "number", "description": "班级 ID，路径参数" }
       ],
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "integer 学生 ID",
-          "name": "string 学生姓名",
-          "student_no": "string 学号",
-          "gender": "string 性别",
-          "birth_date": "string 出生日期",
-          "phone": "string 联系方式",
-          "address": "string 家庭住址",
-          "grade_id": "integer 年级 ID",
-          "class_id": "integer 班级 ID",
-          "enrollment_date": "string 入学日期"
-        }
-      }
+      "contract_ref": "SAD contracts - 班级管理内部接口（详情）(provider: Class Service)"
     },
     {
-      "name": "GradeDetailAPI",
-      "endpoint": "GET /api/v1/grades/{id}",
-      "description": "（Consumer — Grade Service）根据 ID 获取年级详细信息，用于 CreateClassAPI 创建班级时校验 grade_id 的有效性。",
+      "name": "班级管理内部接口（班级学生名单）",
+      "endpoint": "GET /internal/classes/{id}/students",
+      "description": "查询指定班级下的学生名单。通过查询共享数据库的 students 表，按 class_id 过滤出属于该班级的学生记录，分页返回。返回字段包含学生的 id、name、student_no、contact_phone、contact_email。注意：此接口只返回基本信息，不包含班级名称等冗余字段（由 API Gateway 负责组装）。班级不存在时返回 404。分页参数 page 默认 1，page_size 默认 20，最大 100。",
       "parameters": [
-        {"name": "id", "type": "integer", "in": "path", "required": true, "description": "年级 ID"}
+        { "name": "id", "type": "number", "description": "班级 ID，路径参数" },
+        { "name": "page", "type": "number (optional)", "description": "页码，默认 1" },
+        { "name": "page_size", "type": "number (optional)", "description": "每页条数，默认 20，最大 100" }
       ],
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "integer 年级 ID",
-          "name": "string 年级名称",
-          "stage": "string 学段（小学/初中/高中）",
-          "academic_year": "string 所属学年",
-          "class_count": "integer 年级下班级数量"
-        }
-      }
+      "contract_ref": "SAD contracts - 班级管理内部接口（班级学生名单）(provider: Class Service)"
     },
     {
-      "name": "GradeInfoAPI",
-      "endpoint": "GET /api/v1/grades",
-      "description": "（Consumer — Grade Service）分页查询年级列表，支持按学年和学段过滤。Class Service 在需要按年级维度获取班级统计信息时使用。",
+      "name": "班级存在性校验",
+      "endpoint": "GET /internal/classes/{id}/exists",
+      "description": "校验指定班级是否存在。Student Service 在创建或更新学生时，若请求中包含 class_id，需调用此接口校验目标班级是否存在。本接口返回班级存在状态（exists 布尔值）以及班级的基本信息（id、name）。注意：即使班级被逻辑删除（如有），也应按实际数据库状态返回，不存在则 exists 为 false。",
       "parameters": [
-        {"name": "academic_year", "type": "string", "in": "query", "required": false, "description": "按学年过滤"},
-        {"name": "stage", "type": "string", "in": "query", "required": false, "description": "按学段过滤（小学/初中/高中）"},
-        {"name": "page", "type": "integer", "in": "query", "required": false, "description": "页码"},
-        {"name": "page_size", "type": "integer", "in": "query", "required": false, "description": "每页条数"}
+        { "name": "id", "type": "number", "description": "班级 ID，路径参数" }
       ],
-      "response": {
-        "status": 200,
-        "body": {
-          "total": "integer 年级总数",
-          "items": "array 年级列表"
-        }
-      }
+      "contract_ref": "SAD contracts - 班级存在性校验 (provider: Class Service, consumer: Student Service)"
+    },
+    {
+      "name": "年级存在性校验（consumer）",
+      "endpoint": "GET /internal/grades/{id}/exists",
+      "description": "Class Service 在创建或更新班级时，若请求中包含 grade_id，需调用此接口校验目标年级是否存在。调用方式：HTTP GET 请求 Grade Service。响应中 exists 为 true 时年级存在，为 false 时年级不存在，此时 Class Service 应返回 422 Unprocessable Entity 并提示年级不存在。此接口定义在 SAD 中，本处引用以说明调用依赖。",
+      "parameters": [
+        { "name": "id", "type": "number", "description": "年级 ID，路径参数" }
+      ],
+      "contract_ref": "SAD contracts - 年级存在性校验 (provider: Grade Service, consumer: Class Service)"
     }
   ],
-  "error_handling": "Class Service 统一返回 JSON 错误体 {\"code\": \"错误码\", \"message\": \"错误描述\"}。1) 班级不存在时 ClassDetailAPI / ClassStudentsAPI 返回 404 Not Found，错误码 'CLASS_NOT_FOUND'。2) 创建班级时同年级内班级名称重复返回 409 Conflict，错误码 'CLASS_NAME_DUPLICATE'。3) 引用的年级不存在（via GradeService.GradeDetailAPI）返回 422 Unprocessable Entity，错误码 'GRADE_NOT_FOUND'。4) 请求参数校验失败（如 name/grade_id 缺失、page/page_size 格式错误）返回 400 Bad Request，错误码 'INVALID_PARAMETER'。5) 调用下游服务（Student Service / Grade Service）超时阈值为 5 秒，超时或连接失败返回 503 Service Unavailable，错误码 'DEPENDENCY_TIMEOUT'。6) 数据库操作异常返回 500 Internal Server Error，错误码 'DATABASE_ERROR'。"
+  "error_handling": "Class Service 按以下规则处理异常：1）班级不存在——按 id 查询/更新/删除时记录不存在，返回 404 Not Found，响应体为 {\"error\": \"not_found\", \"message\": \"班级不存在\"}；2）年级不存在——创建/更新时 grade_id 指向不存在的年级，返回 422 Unprocessable Entity，响应体为 {\"error\": \"validation_error\", \"message\": \"年级不存在\", \"field\": \"grade_id\"}；3）必填字段缺失——创建时缺少 name 字段，返回 422，响应体为 {\"error\": \"validation_error\", \"message\": \"班级名称不能为空\", \"field\": \"name\"}；4）更新时无有效字段——所有字段均为空，返回 422，响应体为 {\"error\": \"validation_error\", \"message\": \"至少需要提供一个待更新字段\"}；5）分页参数越界——page_size 超过 100 时截断为 100，page 小于 1 时重置为 1，不返回错误；6）下游依赖超时——调用 Grade Service 年级存在性校验接口超过 5 秒未响应时，当前操作失败，返回 502 Bad Gateway，响应体为 {\"error\": \"upstream_error\", \"message\": \"年级服务不可用\"}。所有操作记录结构化日志，包含请求路径、方法、耗时、操作人（由 API Gateway 在请求头传递的用户标识）和操作结果状态，日志级别：正常操作 INFO，业务校验失败 WARN，系统异常 ERROR。"
 }
