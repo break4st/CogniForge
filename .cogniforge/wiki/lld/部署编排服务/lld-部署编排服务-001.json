@@ -1,0 +1,476 @@
+{
+  "meta": {
+    "doc_id": "lld-部署编排服务-001",
+    "type": "lld",
+    "module": "部署编排服务",
+    "title": "LLD - 部署编排服务",
+    "author": "design_agent",
+    "created": "2026-05-20 16:08"
+  },
+  "overview": "部署编排服务作为自动化部署系统的调度中枢，负责编排完整的部署生命周期。接收来自 API网关 转发的部署请求后，调用项目管理服务的 ValidateProjectExistence 校验项目存在性，从环境管理服务获取目标环境的服务器连接参数与解密后的SSH凭证，在 MySQL 创建部署记录（初始状态 pending），组装完整部署任务包发送至消息队列 deployment.tasks 主题，由 SSH执行代理 异步消费执行。部署过程中持续消费 SSH执行代理 回写至 deployment.logs 主题的日志行与状态变更消息：日志行写入 deployment_logs 表同时通过 WebSocket 实时推送至前端，状态变更同步更新 deployments 表 status/started_at/finished_at 字段。同时提供 REST 接口 GetDeploymentLogs 支持轮询拉取历史日志（配合 offset 偏移量实现增量获取），用于 WebSocket 断线后的日志恢复。使用 Redis 缓存活跃部署的 WebSocket 会话映射，支持服务重启后的会话恢复。版本号命名规则强制约束为 ^[a-zA-Z0-9._-]+$，确保远程服务器创建目录时的兼容性。",
+  "data_models": [
+    {
+      "name": "deployments",
+      "type": "table",
+      "description": "部署记录主表，存储每次部署操作的核心元数据。每行对应一次部署操作，记录从创建到完成的完整状态演变历史。project_id 与 environments 表间接关联，即使环境后续被逻辑删除，部署记录仍保留当时的环境ID快照用于历史追溯。status 按照 pending → running → success/failure 单向流转，不允许状态回退。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "BIGINT",
+          "description": "部署记录唯一标识，自增主键"
+        },
+        {
+          "name": "project_id",
+          "type": "BIGINT",
+          "description": "所属项目ID，外键关联 projects.id，用于项目维度查询与统计，不可为空"
+        },
+        {
+          "name": "environment_id",
+          "type": "BIGINT",
+          "description": "目标环境ID，外键关联 environments.id，记录部署时的环境选择，不可为空"
+        },
+        {
+          "name": "artifact_path",
+          "type": "VARCHAR(1024)",
+          "description": "可执行文件路径，如 /data/packages/app-v1.0.0.tar.gz，用于SSH传输时的源文件路径"
+        },
+        {
+          "name": "version",
+          "type": "VARCHAR(255)",
+          "description": "版本号，如 v1.0.0、release-20260520，用于远程服务器创建版本文件夹，创建后不可修改"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(50)",
+          "description": "部署状态枚举：pending（等待执行）/ running（执行中）/ success（完成）/ failure（失败），默认 pending"
+        },
+        {
+          "name": "created_by",
+          "type": "VARCHAR(255)",
+          "description": "部署触发者标识，从JWT令牌中提取，用于操作追溯"
+        },
+        {
+          "name": "started_at",
+          "type": "DATETIME",
+          "description": "部署开始执行时间，SSH执行代理确认开始工作（status→running）时更新，NULL表示尚未开始"
+        },
+        {
+          "name": "finished_at",
+          "type": "DATETIME",
+          "description": "部署完成时间，status 变为 success/failure 时更新，NULL表示未结束"
+        },
+        {
+          "name": "error_message",
+          "type": "TEXT",
+          "description": "部署失败时的错误信息，status=failure 时必填，成功时为 NULL"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME",
+          "description": "创建时间，默认 CURRENT_TIMESTAMP"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME",
+          "description": "最后更新时间，ON UPDATE CURRENT_TIMESTAMP"
+        }
+      ]
+    },
+    {
+      "name": "deployment_logs",
+      "type": "table",
+      "description": "部署日志明细表，存储每次部署过程产生的全部日志行。每条日志通过 sequence 序号（从0递增）支持偏移量拉取，前端通过 GetDeploymentLogs 接口的 offset 参数实现增量获取。SSH执行代理回写的日志行按接收顺序写入，先写入磁盘再推送WebSocket，保证断线重连后通过 REST 接口可补齐缺失日志。日志保留最近30天，由定时任务清理过期数据。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "BIGINT",
+          "description": "日志行唯一标识，自增主键"
+        },
+        {
+          "name": "deployment_id",
+          "type": "BIGINT",
+          "description": "所属部署记录ID，外键关联 deployments.id，联合索引 (deployment_id, sequence)"
+        },
+        {
+          "name": "sequence",
+          "type": "INT",
+          "description": "日志行序号，从0开始递增，同一 deployment_id 下唯一。作为 GetDeploymentLogs offset 参数的基础值"
+        },
+        {
+          "name": "log_line",
+          "type": "TEXT",
+          "description": "单行日志内容，格式为 [时间戳] [级别] 消息，如 [2026-05-20 16:08:30] [INFO] 开始创建版本文件夹"
+        },
+        {
+          "name": "level",
+          "type": "VARCHAR(20)",
+          "description": "日志级别枚举：INFO（信息）/ WARN（警告）/ ERROR（错误），用于前端着色展示"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME",
+          "description": "写入时间，默认 CURRENT_TIMESTAMP"
+        }
+      ]
+    },
+    {
+      "name": "DeploymentTaskMessage",
+      "type": "mq",
+      "description": "部署任务消息结构，由部署编排服务发送至消息队列 deployment.tasks 主题，供SSH执行代理消费。消息包含SSH执行所需全部参数：服务器连接信息、解密后的SSH凭证、文件路径和版本号。消息持久化至队列，消费者确认消费前不会丢失。",
+      "fields": [
+        {
+          "name": "task_id",
+          "type": "string (UUID)",
+          "description": "任务唯一标识，UUID v4，用于消费者幂等去重"
+        },
+        {
+          "name": "deployment_id",
+          "type": "integer",
+          "description": "部署记录ID，用于回写状态和日志时的关联标识"
+        },
+        {
+          "name": "project_id",
+          "type": "integer",
+          "description": "所属项目ID"
+        },
+        {
+          "name": "server_host",
+          "type": "string",
+          "description": "远程服务器IP地址或域名"
+        },
+        {
+          "name": "server_port",
+          "type": "integer",
+          "description": "SSH连接端口号"
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "description": "SSH登录用户名"
+        },
+        {
+          "name": "ssh_private_key",
+          "type": "string",
+          "description": "解密后的SSH私钥明文内容（消息队列内部网络传输，不经过公网）"
+        },
+        {
+          "name": "ssh_passphrase",
+          "type": "string",
+          "description": "密钥口令，无口令时为 null"
+        },
+        {
+          "name": "artifact_path",
+          "type": "string",
+          "description": "可执行文件在部署编排服务可访问存储中的路径"
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "description": "版本号，用于远程服务器创建版本文件夹名"
+        }
+      ]
+    },
+    {
+      "name": "DeploymentLogMessage",
+      "type": "mq",
+      "description": "日志回写消息结构，由SSH执行代理发送至消息队列 deployment.logs 主题，供部署编排服务消费处理。支持两种消息类型：log（日志行）和 status_change（状态变更）。消息按部署记录ID分区有序，保证同一部署的日志和状态按产生顺序处理。",
+      "fields": [
+        {
+          "name": "type",
+          "type": "string",
+          "description": "消息类型，枚举值：log / status_change"
+        },
+        {
+          "name": "deployment_id",
+          "type": "integer",
+          "description": "关联的部署记录ID"
+        },
+        {
+          "name": "sequence",
+          "type": "integer",
+          "description": "日志行序号（type=log 时有效），从0开始递增"
+        },
+        {
+          "name": "log_line",
+          "type": "string",
+          "description": "日志行内容（type=log 时有效）"
+        },
+        {
+          "name": "level",
+          "type": "string",
+          "description": "日志级别（type=log 时有效），枚举值：INFO / WARN / ERROR"
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "description": "部署状态（type=status_change 时有效），枚举值：running / success / failure"
+        },
+        {
+          "name": "error_message",
+          "type": "string",
+          "description": "错误信息（type=status_change 且 status=failure 时有效）"
+        },
+        {
+          "name": "timestamp",
+          "type": "string (ISO8601)",
+          "description": "消息产生时间，如 2026-05-20T16:08:30.000Z"
+        }
+      ]
+    },
+    {
+      "name": "WebSocketLogMessage",
+      "type": "ws",
+      "description": "WebSocket 服务端推送消息结构。服务端通过持久连接向前端推送三类消息：log（日志行）、status（状态变更）、final（部署结束）。前端根据 type 字段区分处理。",
+      "fields": [
+        {
+          "name": "type",
+          "type": "string",
+          "description": "消息类型，枚举值：log / status / final"
+        },
+        {
+          "name": "deployment_id",
+          "type": "integer",
+          "description": "关联的部署记录ID"
+        },
+        {
+          "name": "sequence",
+          "type": "integer",
+          "description": "日志行序号（type=log 时有效），与 deployment_logs 表的 sequence 一致"
+        },
+        {
+          "name": "log_line",
+          "type": "string",
+          "description": "日志行内容（type=log 时有效），包含时间戳和级别前缀"
+        },
+        {
+          "name": "level",
+          "type": "string",
+          "description": "日志级别（type=log 时有效），INFO / WARN / ERROR"
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "description": "当前部署状态（type=status/final 时有效），枚举值：running / success / failure"
+        },
+        {
+          "name": "error_message",
+          "type": "string",
+          "description": "错误信息（type=final 且 status=failure 时有效）"
+        },
+        {
+          "name": "timestamp",
+          "type": "string (ISO8601)",
+          "description": "消息产生时间"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "TriggerDeployment",
+      "endpoint": "POST /api/projects/{projectId}/deployments",
+      "description": "触发一键部署，异步执行。请求处理流程：1) 校验 projectId 对应的项目存在（调用项目管理服务 ValidateProjectExistence）；2) 校验 environment_id 对应环境存在且已配置SSH密钥（调用环境管理服务 GetEnvironment + GetSSHKeyInfo）；3) 校验 version 格式符合 ^[a-zA-Z0-9._-]+$；4) 从环境管理服务获取解密后的SSH私钥；5) 在 deployments 表创建记录（status=pending）；6) 组装 DeploymentTaskMessage 发送至消息队列 deployment.tasks 主题；7) 返回202及部署记录ID。全部同步校验通过后才写入数据库和发送MQ，任一校验失败均不创建记录。",
+      "parameters": [
+        {
+          "name": "path:projectId",
+          "type": "integer",
+          "description": "项目ID，路径参数"
+        },
+        {
+          "name": "body:environment_id",
+          "type": "integer",
+          "description": "目标环境ID，必填，须存在且 has_ssh_key=true"
+        },
+        {
+          "name": "body:artifact_path",
+          "type": "string",
+          "description": "可执行文件路径，必填，长度 1-1024"
+        },
+        {
+          "name": "body:version",
+          "type": "string",
+          "description": "版本号，必填，须匹配正则 ^[a-zA-Z0-9._-]+$，长度 1-255，用于远程服务器创建版本文件夹"
+        }
+      ],
+      "response": {
+        "status": 202,
+        "body": {
+          "deployment_id": {
+            "type": "integer",
+            "description": "部署记录ID"
+          },
+          "status": {
+            "type": "string",
+            "description": "初始状态，pending"
+          },
+          "created_at": {
+            "type": "datetime",
+            "description": "创建时间"
+          }
+        }
+      }
+    },
+    {
+      "name": "GetDeploymentLogs",
+      "endpoint": "GET /api/projects/{projectId}/deployments/{depId}/logs",
+      "description": "拉取部署过程的实时日志（配合WebSocket实现实时推送）。根据 offset 参数从 deployment_logs 表查询 sequence >= offset 的日志行，按 sequence 升序返回。每次最多返回100行（避免单次响应过大），客户端可通过 next_offset 连续轮询直至 finished=true。WebSocket 断线重连场景：客户端记录最后收到的 sequence，重连后调用本接口传入该 sequence 作为 offset 即可补齐缺失日志。部署未结束时 finished=false，客户端应继续轮询或等待 WebSocket 推送。",
+      "parameters": [
+        {
+          "name": "path:projectId",
+          "type": "integer",
+          "description": "项目ID，路径参数"
+        },
+        {
+          "name": "path:depId",
+          "type": "integer",
+          "description": "部署记录ID，路径参数"
+        },
+        {
+          "name": "query:offset",
+          "type": "integer",
+          "description": "日志偏移量，从0开始，默认0，表示从第几条日志开始拉取"
+        }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "logs": {
+            "type": "array",
+            "item_type": "string",
+            "description": "日志行列表，每行字符串格式：[时间戳] [级别] 消息内容"
+          },
+          "next_offset": {
+            "type": "integer",
+            "description": "下一次请求的偏移量，等于当前 offset + 返回行数"
+          },
+          "finished": {
+            "type": "boolean",
+            "description": "部署是否已结束，true 表示 status 已变为 success 或 failure"
+          }
+        }
+      }
+    },
+    {
+      "name": "DeploymentLogWebSocket",
+      "endpoint": "WS /ws/projects/{projectId}/deployments/{depId}/logs",
+      "description": "WebSocket 实时日志推送端点。前端通过原生 WebSocket 客户端建立持久连接，服务端持续推送部署过程中的日志行及状态变更。推送的 JSON 消息结构见 data_models 中的 WebSocketLogMessage 定义。连接生命周期：建立时服务端将连接注册至 Redis（key=deployment:ws:{depId}），推送期间按日志产生顺序逐条发送，部署完成（status=success/failure）后推送 final 类型消息并主动关闭连接。服务重启时 Redis 中的连接映射失效，前端应监听 onclose 事件并在重连后调用 GetDeploymentLogs 补齐缺失数据。",
+      "parameters": [
+        {
+          "name": "path:projectId",
+          "type": "integer",
+          "description": "项目ID，路径参数"
+        },
+        {
+          "name": "path:depId",
+          "type": "integer",
+          "description": "部署记录ID，路径参数"
+        }
+      ]
+    },
+    {
+      "name": "HandleDeploymentLogMessage",
+      "endpoint": "INTERNAL (MQ consumer)",
+      "description": "内部消费者，订阅消息队列 deployment.logs 主题。消费 SSH执行代理 回写的 DeploymentLogMessage。处理逻辑：type=log 时写入 deployment_logs 表 → 从 Redis 读取 depId 对应的 WebSocket 连接 → 构造 WebSocketLogMessage 推送至前端；type=status_change 时更新 deployments 表 status 字段（running 时设 started_at，success/failure 时设 finished_at）→ 推送 status/final 类型 WebSocket 消息 → status=failure 时写入 error_message。消息处理失败时进入死信队列，最多重试3次。",
+      "parameters": [
+        {
+          "name": "message:type",
+          "type": "string",
+          "description": "消息类型，log 或 status_change"
+        },
+        {
+          "name": "message:deployment_id",
+          "type": "integer",
+          "description": "部署记录ID"
+        },
+        {
+          "name": "message:sequence",
+          "type": "integer",
+          "description": "日志行序号（type=log 时有效）"
+        },
+        {
+          "name": "message:log_line",
+          "type": "string",
+          "description": "日志行内容（type=log 时有效）"
+        },
+        {
+          "name": "message:level",
+          "type": "string",
+          "description": "日志级别（type=log 时有效）"
+        },
+        {
+          "name": "message:status",
+          "type": "string",
+          "description": "部署状态（type=status_change 时有效）"
+        },
+        {
+          "name": "message:error_message",
+          "type": "string",
+          "description": "错误信息（type=status_change 且 status=failure 时有效）"
+        },
+        {
+          "name": "message:timestamp",
+          "type": "string",
+          "description": "消息产生时间"
+        }
+      ]
+    },
+    {
+      "name": "SendDeploymentTask",
+      "endpoint": "INTERNAL (MQ producer)",
+      "description": "内部生产者，由 TriggerDeployment 流程触发。在部署记录创建成功后，将完整任务包发送至消息队列 deployment.tasks 主题。任务包结构见 data_models 中的 DeploymentTaskMessage 定义。发送时设置消息持久化标志和 TTL（24小时），确保消息不会丢失也不会被过期丢弃。发送失败时回滚部署记录（标记为 failure 并记录错误信息），返回502给前端。",
+      "parameters": [
+        {
+          "name": "message:task_id",
+          "type": "string",
+          "description": "任务唯一标识，UUID v4"
+        },
+        {
+          "name": "message:deployment_id",
+          "type": "integer",
+          "description": "部署记录ID"
+        },
+        {
+          "name": "message:project_id",
+          "type": "integer",
+          "description": "项目ID"
+        },
+        {
+          "name": "message:server_host",
+          "type": "string",
+          "description": "远程服务器地址"
+        },
+        {
+          "name": "message:server_port",
+          "type": "integer",
+          "description": "SSH端口"
+        },
+        {
+          "name": "message:username",
+          "type": "string",
+          "description": "SSH登录用户名"
+        },
+        {
+          "name": "message:ssh_private_key",
+          "type": "string",
+          "description": "解密后的SSH私钥内容"
+        },
+        {
+          "name": "message:ssh_passphrase",
+          "type": "string",
+          "description": "密钥口令，无口令时为 null"
+        },
+        {
+          "name": "message:artifact_path",
+          "type": "string",
+          "description": "可执行文件路径"
+        },
+        {
+          "name": "message:version",
+          "type": "string",
+          "description": "版本号"
+        }
+      ]
+    }
+  ],
+  "error_handling": "统一错误处理策略：\n1. 项目不存在：TriggerDeployment 时 projectId 对应项目不存在或已逻辑删除，返回 404，错误码 PROJECT_NOT_FOUND。\n2. 环境不存在：TriggerDeployment 时 environment_id 对应环境不存在、已逻辑删除或不属于该项目，返回 404，错误码 ENVIRONMENT_NOT_FOUND。\n3. SSH密钥未配置：TriggerDeployment 时目标环境的 has_ssh_key=false，返回 400，错误码 SSH_KEY_NOT_CONFIGURED。\n4. SSH密钥解密失败：TriggerDeployment 时从环境管理服务获取SSH密钥时解密失败，返回 500，错误码 SSH_KEY_DECRYPT_FAILED，记录错误日志人工介入。\n5. 版本号格式校验失败：TriggerDeployment 时 version 不匹配正则 ^[a-zA-Z0-9._-]+$ 或长度为0，返回 400，错误码 INVALID_VERSION_FORMAT。\n6. artifact_path 校验失败：TriggerDeployment 时 artifact_path 为空或超过1024字符，返回 400，错误码 INVALID_ARTIFACT_PATH。\n7. environment_id 校验失败：TriggerDeployment 时 environment_id 为空或非正整数，返回 400，错误码 INVALID_ENVIRONMENT_ID。\n8. MQ发送失败：TriggerDeployment 时将任务包发送至 deployment.tasks 时连接异常或写入超时，回滚部署记录（标记为 failure 记录错误信息），返回 502，错误码 MQ_SEND_FAILED。\n9. MQ消费异常：HandleDeploymentLogMessage 消费 deployment.logs 消息时处理失败，将消息投递至死信队列，最多重试3次，超过后记录异常日志人工排查。\n10. 部署记录不存在：GetDeploymentLogs 时 depId 对应部署记录不存在，返回 404，错误码 DEPLOYMENT_NOT_FOUND。\n11. 数据库异常：MySQL 查询或写入失败时捕获异常，返回 500，错误码 DB_ERROR，同时记录错误日志用于排查。\n12. Redis异常：WebSocket 会话管理写入 Redis 失败时降级处理（不阻断日志推送），仅记录错误日志，不影响核心部署流程。\n13. WebSocket推送失败：HandleDeploymentLogMessage 向前端推送 WebSocket 消息时连接已断开，从 Redis 移除该连接映射，日志仍正常写入 deployment_logs 表，前端重连后可调用 GetDeploymentLogs 补齐。\n14. 超时控制：数据库查询超时设为 5s，MQ 发送超时设为 3s，超时后返回 504，错误码 GATEWAY_TIMEOUT。"
+}
