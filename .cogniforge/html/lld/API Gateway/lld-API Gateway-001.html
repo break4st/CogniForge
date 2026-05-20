@@ -150,7 +150,7 @@
   <div><span class="badge accent">详细设计文档</span></div>
 </div>
 <h1><span>详细设计文档</span> LLD - API Gateway</h1>
-<div class="meta">2026-05-20 13:39 &middot; 作者: design_agent</div>
+<div class="meta">2026-05-20 13:49 &middot; 作者: design_agent</div>
 
 <div class="section">
   <div class="section-header">
@@ -160,127 +160,180 @@
   <div class="section-body">
 
 <p>模块: API Gateway</p>
-<p>系统的统一入口，负责请求路由、身份认证、权限校验、流量控制与请求日志记录。所有客户端请求必须经过 API Gateway 才能访问后端微服务。Gateway 对外暴露 AuthVerifyAPI（登录认证），其余请求按路由规则转发至 Student Service、Class Service、Grade Service、Statistics Service。采用过滤器链模式处理横切关注点：CORS → 请求日志 → 限流 → JWT 鉴权（除登录接口）→ 路由转发 → 响应封装。</p>
+<p>API Gateway 是系统的统一入口层，采用网关路由模式，所有客户端请求（来自 Web UI）统一经过 Gateway 进行路由转发。核心职责包括：1）请求路由——将外部 REST 请求转发至对应后端微服务（Student Service、Class Service、Grade Service、Statistics Service）的内部接口；2）身份认证——处理用户登录并签发 JWT Token，对受保护接口进行 Token 校验与角色鉴权；3）限流与访问控制——按用户角色（admin/teacher/student）控制接口访问权限；4）协议转换——统一请求/响应格式，将内部服务的数据拼装组合（如学生列表中的 class_name 从班级服务关联获取）后返回给前端。Gateway 本身不包含业务逻辑，所有业务处理委托给下游微服务。</p>
   </div>
 </div>
 
 <div class="section">
   <div class="section-header">
     <div class="icon" style="background:rgba(91,141,239,0.12)">🗄️</div>
-    <h2>数据模型 (4)</h2>
+    <h2>数据模型 (0)</h2>
   </div>
   <div class="section-body">
 
-<div class="model-item">
-  <h3>RouteRule</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>path_pattern</td><td>string</td><td>路由路径匹配模式，如 /api/v1/students/**</td></tr><tr><td>method</td><td>string</td><td>HTTP 方法（GET/POST/PUT/DELETE），* 表示任意方法</td></tr><tr><td>target_service</td><td>string</td><td>目标微服务名称（student-service/class-service/grade-service/statistics-service）</td></tr><tr><td>target_path</td><td>string</td><td>转发至目标服务的实际路径，支持路径变量替换</td></tr><tr><td>require_auth</td><td>boolean</td><td>是否要求 JWT 认证</td></tr><tr><td>allowed_roles</td><td>array</td><td>允许访问的角色列表，为空则不限制</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>RateLimitConfig</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>key</td><td>string</td><td>限流键（如 client_ip、user_id、path）</td></tr><tr><td>max_requests</td><td>integer</td><td>时间窗口内最大请求数</td></tr><tr><td>window_seconds</td><td>integer</td><td>时间窗口大小（秒）</td></tr><tr><td>burst</td><td>integer</td><td>突发允许的额外请求数</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>JwtPayload</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>user_id</td><td>integer</td><td>用户 ID</td></tr><tr><td>username</td><td>string</td><td>用户名</td></tr><tr><td>role</td><td>string</td><td>用户角色</td></tr><tr><td>iat</td><td>integer</td><td>Token 签发时间戳</td></tr><tr><td>exp</td><td>integer</td><td>Token 过期时间戳</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>AccessLog</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>request_id</td><td>string</td><td>请求唯一标识（UUID）</td></tr><tr><td>timestamp</td><td>string</td><td>请求到达时间</td></tr><tr><td>method</td><td>string</td><td>HTTP 方法</td></tr><tr><td>path</td><td>string</td><td>请求路径</td></tr><tr><td>status_code</td><td>integer</td><td>响应状态码</td></tr><tr><td>latency_ms</td><td>integer</td><td>请求处理耗时（毫秒）</td></tr><tr><td>client_ip</td><td>string</td><td>客户端 IP</td></tr><tr><td>user_id</td><td>integer</td><td>认证用户 ID，未认证为 null</td></tr><tr><td>target_service</td><td>string</td><td>路由目标服务</td></tr><tr><td>response_size</td><td>integer</td><td>响应体大小（字节）</td></tr></tbody></table>
-</div>
   </div>
 </div>
 
 <div class="section">
   <div class="section-header">
     <div class="icon" style="background:rgba(34,211,238,0.12)">🔌</div>
-    <h2>接口定义 (17)</h2>
+    <h2>接口定义 (22)</h2>
   </div>
   <div class="section-body">
 
 <div class="comp-item">
-  <h3>AuthVerifyAPI</h3>
-  <div class="comp-type">POST /api/v1/auth/login</div>
-  <p>（Provider）用户登录认证接口，由 API Gateway 直接处理。接收用户名与密码，校验通过后签发 JWT Token 并返回用户角色。该接口不经过 JWT 鉴权过滤器。</p>
+  <h3>用户登录认证</h3>
+  <div class="comp-type">POST /api/auth/login</div>
+  <p>用户登录认证接口，接收用户名、密码和角色，校验身份后签发 JWT Token 返回。Token 有效期通过 expires_in 字段指定，后续请求需在 Authorization Header 中携带 Bearer token。此接口为 Gateway 自身处理，不转发至下游服务。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>username</td><td>string</td><td>用户名</td></tr><tr><td>password</td><td>string</td><td>密码</td></tr><tr><td>role</td><td>string</td><td>角色枚举: admin|teacher|student</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>StudentInfoAPI</h3>
-  <div class="comp-type">GET /api/v1/students</div>
-  <p>（路由转发 → Student Service）分页查询学生列表，支持按姓名、学号、年级、班级等多条件组合筛选</p>
+  <h3>学生创建</h3>
+  <div class="comp-type">POST /api/students</div>
+  <p>创建新的学生信息。Gateway 接收请求后校验 Token 和角色权限（仅 admin），将请求体透传转发至 Student Service 内部接口 POST /internal/students，响应原路返回。学号 student_no 全局唯一性校验由 Student Service 负责。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>name</td><td>string</td><td>学生姓名，必填</td></tr><tr><td>student_no</td><td>string</td><td>学号，全局唯一，必填</td></tr><tr><td>contact_phone</td><td>string</td><td>联系电话，必填</td></tr><tr><td>contact_email</td><td>string</td><td>联系邮箱，必填</td></tr><tr><td>class_id</td><td>number</td><td>所属班级 ID，选填</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>StudentDetailAPI</h3>
-  <div class="comp-type">GET /api/v1/students/{id}</div>
-  <p>（路由转发 → Student Service）根据 ID 获取单个学生的完整详细信息</p>
+  <h3>学生更新</h3>
+  <div class="comp-type">PUT /api/students/{id}</div>
+  <p>更新指定学生的信息。Gateway 校验权限后转发至 PUT /internal/students/{id}。仅可修改姓名、联系方式、班级等非学号字段。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>学生 ID，路径参数</td></tr><tr><td>name</td><td>string</td><td>学生姓名，选填</td></tr><tr><td>contact_phone</td><td>string</td><td>联系电话，选填</td></tr><tr><td>contact_email</td><td>string</td><td>联系邮箱，选填</td></tr><tr><td>class_id</td><td>number</td><td>所属班级 ID，选填</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>CreateStudentAPI</h3>
-  <div class="comp-type">POST /api/v1/students</div>
-  <p>（路由转发 → Student Service）创建新学生记录，学号必须唯一</p>
+  <h3>学生删除</h3>
+  <div class="comp-type">DELETE /api/students/{id}</div>
+  <p>删除指定学生信息。Gateway 校验权限后转发至 DELETE /internal/students/{id}。仅 admin 角色可操作。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>学生 ID，路径参数</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>UpdateStudentAPI</h3>
-  <div class="comp-type">PUT /api/v1/students/{id}</div>
-  <p>（路由转发 → Student Service）更新学生信息，支持部分字段更新</p>
+  <h3>学生列表查询</h3>
+  <div class="comp-type">GET /api/students</div>
+  <p>按条件分页查询学生列表。Gateway 将查询参数透传转发至 GET /internal/students。响应结果中需要回填 class_name 字段，Gateway 根据 items 中的 class_id 批量调用 Class Service 内部接口 GET /internal/classes/{id} 获取班级名称后组装返回。支持姓名、学号、班级模糊匹配。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>name</td><td>string</td><td>按姓名筛选，选填</td></tr><tr><td>student_no</td><td>string</td><td>按学号筛选，选填</td></tr><tr><td>class_id</td><td>number</td><td>按班级筛选，选填</td></tr><tr><td>page</td><td>number</td><td>页码，默认 1，选填</td></tr><tr><td>page_size</td><td>number</td><td>每页条数，默认 20，选填</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>DeleteStudentAPI</h3>
-  <div class="comp-type">DELETE /api/v1/students/{id}</div>
-  <p>（路由转发 → Student Service）根据 ID 删除学生记录</p>
+  <h3>学生详情查询</h3>
+  <div class="comp-type">GET /api/students/{id}</div>
+  <p>查询指定学生的详细信息。Gateway 转发至 GET /internal/students/{id}，根据返回的 class_id 调用 GET /internal/classes/{id} 回填 class_name 后返回。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>学生 ID，路径参数</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>StudentImportAPI</h3>
-  <div class="comp-type">POST /api/v1/students/import</div>
-  <p>（路由转发 → Student Service）批量导入学生信息，支持 CSV/Excel 文件上传，Gateway 不做解包直接转发二进制流</p>
+  <h3>学生分班</h3>
+  <div class="comp-type">PUT /api/students/{id}/class</div>
+  <p>将学生分配到指定班级。Gateway 转发请求至 Student Service 内部接口 PUT /internal/students/{id}（更新 class_id），同时 Gateway 需先调用 Class Service 内部接口 GET /internal/classes/{id}/exists 校验班级存在性，若班级不存在则返回 404。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>学生 ID，路径参数</td></tr><tr><td>class_id</td><td>number</td><td>目标班级 ID</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>StudentExportAPI</h3>
-  <div class="comp-type">GET /api/v1/students/export</div>
-  <p>（路由转发 → Student Service）导出学生信息为 CSV/Excel 文件</p>
+  <h3>班级创建</h3>
+  <div class="comp-type">POST /api/classes</div>
+  <p>创建新的班级信息。Gateway 校验权限后转发至 POST /internal/classes。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>name</td><td>string</td><td>班级名称，必填</td></tr><tr><td>grade_id</td><td>number</td><td>所属年级 ID，选填</td></tr><tr><td>description</td><td>string</td><td>班级描述，选填</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>ClassInfoAPI</h3>
-  <div class="comp-type">GET /api/v1/classes</div>
-  <p>（路由转发 → Class Service）分页查询班级列表，支持按年级过滤</p>
+  <h3>班级更新</h3>
+  <div class="comp-type">PUT /api/classes/{id}</div>
+  <p>更新指定班级的信息。Gateway 校验权限后转发至 PUT /internal/classes/{id}。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>班级 ID，路径参数</td></tr><tr><td>name</td><td>string</td><td>班级名称，选填</td></tr><tr><td>grade_id</td><td>number</td><td>所属年级 ID，选填</td></tr><tr><td>description</td><td>string</td><td>班级描述，选填</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>ClassDetailAPI</h3>
-  <div class="comp-type">GET /api/v1/classes/{id}</div>
-  <p>（路由转发 → Class Service）根据 ID 获取班级详细信息，包括班主任和学生人数</p>
+  <h3>班级删除</h3>
+  <div class="comp-type">DELETE /api/classes/{id}</div>
+  <p>删除指定班级信息。Gateway 校验权限后转发至 DELETE /internal/classes/{id}。仅 admin 角色可操作。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>班级 ID，路径参数</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>CreateClassAPI</h3>
-  <div class="comp-type">POST /api/v1/classes</div>
-  <p>（路由转发 → Class Service）创建新班级</p>
+  <h3>班级列表查询</h3>
+  <div class="comp-type">GET /api/classes</div>
+  <p>按条件分页查询班级列表。Gateway 将查询参数透传转发至 GET /internal/classes。响应结果中需要回填 grade_name 字段，Gateway 根据 items 中的 grade_id 调用 Grade Service 内部接口查询年级名称后组装返回。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>grade_id</td><td>number</td><td>按年级筛选，选填</td></tr><tr><td>name</td><td>string</td><td>按名称模糊搜索，选填</td></tr><tr><td>page</td><td>number</td><td>页码，默认 1，选填</td></tr><tr><td>page_size</td><td>number</td><td>每页条数，默认 20，选填</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>ClassStudentsAPI</h3>
-  <div class="comp-type">GET /api/v1/classes/{id}/students</div>
-  <p>（路由转发 → Class Service）查询指定班级的学生名单</p>
+  <h3>班级详情查询</h3>
+  <div class="comp-type">GET /api/classes/{id}</div>
+  <p>查询指定班级的详细信息。Gateway 转发至 GET /internal/classes/{id}，根据返回的 grade_id 调用 Grade Service 内部接口回填 grade_name 后返回。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>班级 ID，路径参数</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>GradeInfoAPI</h3>
-  <div class="comp-type">GET /api/v1/grades</div>
-  <p>（路由转发 → Grade Service）分页查询年级列表，支持按学年和学段过滤</p>
+  <h3>班级学生名单查询</h3>
+  <div class="comp-type">GET /api/classes/{id}/students</div>
+  <p>查询指定班级下的学生名单。Gateway 转发至 GET /internal/classes/{id}/students。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>班级 ID，路径参数</td></tr><tr><td>page</td><td>number</td><td>页码，默认 1，选填</td></tr><tr><td>page_size</td><td>number</td><td>每页条数，默认 20，选填</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>GradeDetailAPI</h3>
-  <div class="comp-type">GET /api/v1/grades/{id}</div>
-  <p>（路由转发 → Grade Service）根据 ID 获取年级详细信息</p>
+  <h3>年级创建</h3>
+  <div class="comp-type">POST /api/grades</div>
+  <p>创建新的年级信息。Gateway 校验权限后转发至 POST /internal/grades。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>name</td><td>string</td><td>年级名称，必填</td></tr><tr><td>description</td><td>string</td><td>年级描述，选填</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>CreateGradeAPI</h3>
-  <div class="comp-type">POST /api/v1/grades</div>
-  <p>（路由转发 → Grade Service）创建新年级</p>
+  <h3>年级更新</h3>
+  <div class="comp-type">PUT /api/grades/{id}</div>
+  <p>更新指定年级的信息。Gateway 校验权限后转发至 PUT /internal/grades/{id}。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>年级 ID，路径参数</td></tr><tr><td>name</td><td>string</td><td>年级名称，选填</td></tr><tr><td>description</td><td>string</td><td>年级描述，选填</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>StatisticsAPI</h3>
-  <div class="comp-type">GET /api/v1/statistics/overview</div>
-  <p>（路由转发 → Statistics Service）获取统计概览数据，支持按学生/班级/年级维度查看</p>
+  <h3>年级列表查询</h3>
+  <div class="comp-type">GET /api/grades</div>
+  <p>分页查询年级列表。Gateway 转发至 GET /internal/grades。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>page</td><td>number</td><td>页码，默认 1，选填</td></tr><tr><td>page_size</td><td>number</td><td>每页条数，默认 20，选填</td></tr></tbody></table>
 </div>
 <div class="comp-item">
-  <h3>StatisticsExportAPI</h3>
-  <div class="comp-type">GET /api/v1/statistics/export</div>
-  <p>（路由转发 → Statistics Service）导出统计报表，支持 CSV/PDF 格式</p>
+  <h3>年级详情查询</h3>
+  <div class="comp-type">GET /api/grades/{id}</div>
+  <p>查询指定年级的详细信息。Gateway 转发至内部接口查询年级数据。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>年级 ID，路径参数</td></tr></tbody></table>
+</div>
+<div class="comp-item">
+  <h3>年级班级结构查询</h3>
+  <div class="comp-type">GET /api/grades/{id}/classes</div>
+  <p>查询指定年级下的班级结构列表。Gateway 转发至 GET /internal/grades/{id}/classes。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>年级 ID，路径参数</td></tr></tbody></table>
+</div>
+<div class="comp-item">
+  <h3>学习数据录入</h3>
+  <div class="comp-type">POST /api/statistics/records</div>
+  <p>录入学生的学习数据记录（成绩）。Gateway 校验权限后转发至 POST /internal/statistics/records。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>student_id</td><td>number</td><td>学生 ID，必填</td></tr><tr><td>subject</td><td>string</td><td>科目名称，必填</td></tr><tr><td>score</td><td>number</td><td>分数，必填</td></tr><tr><td>record_date</td><td>string</td><td>记录日期（date 格式），必填</td></tr><tr><td>remarks</td><td>string</td><td>备注，选填</td></tr></tbody></table>
+</div>
+<div class="comp-item">
+  <h3>学生统计查询</h3>
+  <div class="comp-type">GET /api/statistics/students/{id}</div>
+  <p>查询指定学生的学习统计信息，按科目汇总。Gateway 转发至 GET /internal/statistics/students/{id}。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>学生 ID，路径参数</td></tr><tr><td>start_date</td><td>string</td><td>统计开始日期，选填</td></tr><tr><td>end_date</td><td>string</td><td>统计结束日期，选填</td></tr></tbody></table>
+</div>
+<div class="comp-item">
+  <h3>班级统计查询</h3>
+  <div class="comp-type">GET /api/statistics/classes/{id}</div>
+  <p>查询指定班级的统计汇总数据。Gateway 转发至 GET /internal/statistics/classes/{id}。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>班级 ID，路径参数</td></tr><tr><td>subject</td><td>string</td><td>按科目筛选，选填</td></tr><tr><td>start_date</td><td>string</td><td>统计开始日期，选填</td></tr><tr><td>end_date</td><td>string</td><td>统计结束日期，选填</td></tr></tbody></table>
+</div>
+<div class="comp-item">
+  <h3>年级统计查询</h3>
+  <div class="comp-type">GET /api/statistics/grades/{id}</div>
+  <p>查询指定年级的统计汇总数据。Gateway 转发至 GET /internal/statistics/grades/{id}。</p>
+  
+  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>number</td><td>年级 ID，路径参数</td></tr><tr><td>subject</td><td>string</td><td>按科目筛选，选填</td></tr><tr><td>start_date</td><td>string</td><td>统计开始日期，选填</td></tr><tr><td>end_date</td><td>string</td><td>统计结束日期，选填</td></tr></tbody></table>
 </div>
   </div>
 </div>
@@ -292,7 +345,7 @@
   </div>
   <div class="section-body">
 
-<p>API Gateway 采用过滤器链统一处理异常：1）JWT 校验失败或 Token 过期返回 401 Unauthorized，响应体包含错误码 'AUTH_TOKEN_INVALID'。2）权限不足（角色不匹配路由白名单）返回 403 Forbidden，错误码 'AUTH_FORBIDDEN'。3）请求超出限流阈值返回 429 Too Many Requests，响应头附加 Retry-After 指示重试等待秒数。4）后端服务熔断开启或连接超时（超时阈值 10 秒）返回 504 Gateway Timeout。5）后端服务返回 5xx 时 Gateway 透传状态码并记录错误日志，不修改下游响应体。6）请求体超过 10MB 返回 413 Payload Too Large。所有异常统一封装为 {&quot;code&quot;: &quot;错误码&quot;, &quot;message&quot;: &quot;错误描述&quot;} 格式。每个请求生成唯一 request_id（UUID），贯穿请求链路，便于日志关联与问题追踪。</p>
+<p>API Gateway 作为统一入口，需在网关层统一处理以下异常场景：1）认证异常——请求未携带 Token 或 Token 过期/无效时，返回 401 Unauthorized，响应体为 {&quot;error&quot;: &quot;unauthorized&quot;, &quot;message&quot;: &quot;无效或过期的 Token&quot;}；2）鉴权异常——Token 有效但角色无权限访问接口时，返回 403 Forbidden；3）参数校验异常——请求体缺少必填字段或字段格式非法时，返回 422 Unprocessable Entity，返回具体字段错误信息；4）资源不存在——下游服务返回 404 时，Gateway 透传返回 404，不擅自篡改错误信息；5）下游超时——调用后端微服务超过 10 秒未响应时，Gateway 熔断并返回 504 Gateway Timeout；6）下游不可用——后端服务返回 5xx 时，Gateway 统一返回 502 Bad Gateway，避免暴露内部错误详情；7）限流——单 IP 超过 QPS 阈值（暂定 100/s）时，返回 429 Too Many Requests；8）跨域——统一配置 CORS 头，允许 Web UI 所在域名的跨域请求。所有异常情况均需记录结构化日志，包含请求路径、方法、状态码、耗时和用户标识。</p>
   </div>
 </div>
 
