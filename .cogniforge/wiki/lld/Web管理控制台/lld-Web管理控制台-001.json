@@ -5,193 +5,311 @@
     "module": "Web管理控制台",
     "title": "LLD - Web管理控制台",
     "author": "design_agent",
-    "created": "2026-05-20 16:05"
+    "created": "2026-05-20 16:27"
   },
-  "overview": "基于SPA的浏览器端管理界面，提供项目管理、环境配置、部署触发、日志查看等交互功能。前端采用 SPA 架构，通过 REST API 与后端服务交互，使用 WebSocket 实现部署日志实时推送。整个控制台围绕「项目 → 环境 → 部署」三层模型组织页面结构。",
+  "overview": {
+    "description": "用户交互界面，提供项目管理、环境配置、部署操作和状态查看等功能。作为系统的展示层，通过API网关与后端业务服务通信，并通过WebSocket接收实时部署进度推送。采用前后端分离的单页应用架构。",
+    "dependencies": ["API网关", "文件存储", "部署编排服务"],
+    "tech_stack": ["Vue 3", "TypeScript", "Pinia（状态管理）", "Vue Router", "WebSocket", "SCSS"]
+  },
   "data_models": [
     {
       "name": "Project",
       "type": "interface",
-      "description": "项目数据结构，对应项目管理服务 CreateProject/ListProjects 响应",
+      "description": "项目信息",
       "fields": [
-        { "name": "id", "type": "number", "description": "项目唯一标识" },
-        { "name": "name", "type": "string", "description": "项目名称" },
-        { "name": "description", "type": "string", "description": "项目描述" },
-        { "name": "created_at", "type": "string (ISO8601)", "description": "创建时间" }
+        {"name": "id", "type": "number", "required": true, "description": "项目唯一标识"},
+        {"name": "name", "type": "string", "required": true, "description": "项目名称"},
+        {"name": "description", "type": "string", "required": false, "description": "项目描述"},
+        {"name": "created_at", "type": "string", "required": true, "description": "创建时间（ISO 8601）"}
       ]
     },
     {
       "name": "Environment",
       "type": "interface",
-      "description": "部署环境数据结构，对应环境管理服务 CreateEnvironment 响应",
+      "description": "部署环境信息",
       "fields": [
-        { "name": "id", "type": "number", "description": "环境唯一标识" },
-        { "name": "name", "type": "string", "description": "环境显示名称，如 测试线" },
-        { "name": "tag", "type": "string", "description": "环境标签，test/canary/production" },
-        { "name": "server_host", "type": "string", "description": "远程服务器 IP 或域名" },
-        { "name": "server_port", "type": "number", "description": "SSH 端口" },
-        { "name": "username", "type": "string", "description": "SSH 登录用户名" },
-        { "name": "created_at", "type": "string (ISO8601)", "description": "创建时间" }
+        {"name": "id", "type": "number", "required": true, "description": "环境唯一标识"},
+        {"name": "project_id", "type": "number", "required": true, "description": "所属项目ID"},
+        {"name": "name", "type": "string", "required": true, "description": "环境名称"},
+        {"name": "type", "type": "string", "required": true, "description": "环境类型：test/staging/production"},
+        {"name": "host", "type": "string", "required": true, "description": "远程服务器地址"},
+        {"name": "port", "type": "number", "required": true, "description": "SSH端口"},
+        {"name": "status", "type": "string", "required": true, "description": "连接状态：connected/disconnected/unknown"},
+        {"name": "created_at", "type": "string", "required": false, "description": "创建时间"}
       ]
     },
     {
-      "name": "SSHKeyConfig",
+      "name": "EnvironmentForm",
       "type": "interface",
-      "description": "SSH密钥配置数据，对应环境管理服务 ConfigureSSHKey 请求体",
+      "description": "环境创建/编辑表单数据（不含返回的id和status）",
       "fields": [
-        { "name": "private_key", "type": "string", "description": "SSH 私钥内容（传输时加密）" },
-        { "name": "passphrase", "type": "string", "description": "密钥口令（可选）" }
+        {"name": "project_id", "type": "number", "required": true, "description": "所属项目ID"},
+        {"name": "name", "type": "string", "required": true, "description": "环境名称"},
+        {"name": "type", "type": "string", "required": true, "description": "环境类型"},
+        {"name": "host", "type": "string", "required": true, "description": "远程服务器地址"},
+        {"name": "port", "type": "number", "required": true, "description": "SSH端口"},
+        {"name": "ssh_key", "type": "string", "required": true, "description": "SSH密钥内容（加密传输）"},
+        {"name": "username", "type": "string", "required": true, "description": "SSH登录用户名"}
       ]
     },
     {
-      "name": "Deployment",
+      "name": "DeploymentRecord",
       "type": "interface",
-      "description": "部署记录数据结构，对应部署编排服务 TriggerDeployment 响应",
+      "description": "部署任务记录",
       "fields": [
-        { "name": "deployment_id", "type": "number", "description": "部署记录 ID" },
-        { "name": "status", "type": "string", "description": "部署状态，pending/running/success/failure" },
-        { "name": "created_at", "type": "string (ISO8601)", "description": "创建时间" }
+        {"name": "deployment_id", "type": "number", "required": true, "description": "部署任务ID"},
+        {"name": "project_id", "type": "number", "required": true, "description": "项目ID"},
+        {"name": "environment_id", "type": "number", "required": true, "description": "目标环境ID"},
+        {"name": "version", "type": "string", "required": true, "description": "部署版本号"},
+        {"name": "status", "type": "string", "required": true, "description": "状态：pending/running/success/failed"},
+        {"name": "created_at", "type": "string", "required": true, "description": "创建时间"},
+        {"name": "completed_at", "type": "string", "required": false, "description": "完成时间"}
       ]
     },
     {
-      "name": "DeploymentLog",
+      "name": "DeploymentStatus",
       "type": "interface",
-      "description": "部署日志数据结构，对应 GetDeploymentLogs 响应",
+      "description": "部署实时状态（WebSocket推送及状态轮询）",
       "fields": [
-        { "name": "logs", "type": "string[]", "description": "日志行列表" },
-        { "name": "next_offset", "type": "number", "description": "下次请求的日志偏移量" },
-        { "name": "finished", "type": "boolean", "description": "部署是否已结束" }
+        {"name": "deployment_id", "type": "number", "required": true, "description": "部署任务ID"},
+        {"name": "status", "type": "string", "required": true, "description": "当前状态：running/success/failed"},
+        {"name": "progress", "type": "number", "required": true, "description": "进度百分比0-100"},
+        {"name": "current_step", "type": "string", "required": true, "description": "当前执行步骤描述"},
+        {"name": "logs", "type": "array<string>", "required": true, "description": "部署日志行列表"}
+      ]
+    },
+    {
+      "name": "FileUploadResult",
+      "type": "interface",
+      "description": "文件上传结果",
+      "fields": [
+        {"name": "file_id", "type": "number", "required": true, "description": "文件唯一标识"},
+        {"name": "file_url", "type": "string", "required": true, "description": "文件访问URL"},
+        {"name": "file_size", "type": "number", "required": true, "description": "文件大小（字节）"},
+        {"name": "md5", "type": "string", "required": true, "description": "文件MD5校验值"}
       ]
     },
     {
       "name": "PaginatedResponse",
       "type": "interface",
-      "description": "通用分页响应结构，对应 ListProjects 响应模式",
+      "description": "通用分页响应结构",
       "fields": [
-        { "name": "total", "type": "number", "description": "数据总数" },
-        { "name": "items", "type": "array", "description": "当前页数据列表" }
+        {"name": "items", "type": "array<object>", "required": true, "description": "数据项列表"},
+        {"name": "total", "type": "number", "required": true, "description": "总记录数"},
+        {"name": "page", "type": "number", "required": true, "description": "当前页码"},
+        {"name": "page_size", "type": "number", "required": false, "description": "每页条数"}
       ]
     },
     {
-      "name": "DeploymentTriggerParams",
+      "name": "WebSocketEvent",
       "type": "interface",
-      "description": "触发部署的请求参数，对应 TriggerDeployment 请求体",
+      "description": "WebSocket推送事件结构",
       "fields": [
-        { "name": "environment_id", "type": "number", "description": "目标环境 ID" },
-        { "name": "artifact_path", "type": "string", "description": "可执行文件路径" },
-        { "name": "version", "type": "string", "description": "版本号" }
+        {"name": "event", "type": "string", "required": true, "description": "事件类型：progress/log/complete"},
+        {"name": "data", "type": "object", "required": true, "description": "事件数据，progress含step/percentage，log含message/level，complete含status/summary"}
       ]
     },
     {
-      "name": "EnvironmentFormData",
-      "type": "interface",
-      "description": "新建环境表单数据，对应 CreateEnvironment 请求体",
-      "fields": [
-        { "name": "name", "type": "string", "description": "环境名称" },
-        { "name": "tag", "type": "string", "description": "环境标签" },
-        { "name": "server_host", "type": "string", "description": "服务器地址" },
-        { "name": "server_port", "type": "number", "description": "SSH 端口" },
-        { "name": "username", "type": "string", "description": "SSH 登录用户名" }
-      ]
-    },
-    {
-      "name": "AppState",
+      "name": "AppStore",
       "type": "store",
-      "description": "前端全局应用状态",
+      "description": "前端全局状态管理",
       "fields": [
-        { "name": "currentProject", "type": "Project | null", "description": "当前选中的项目" },
-        { "name": "projectList", "type": "Project[]", "description": "项目列表缓存" },
-        { "name": "loading", "type": "Record<string, boolean>", "description": "按页面维度的加载状态" },
-        { "name": "errors", "type": "Record<string, string>", "description": "按页面维度的错误信息" },
-        { "name": "deployments", "type": "Record<number, Deployment>", "description": "部署记录缓存（key 为 deployment_id）" }
+        {"name": "currentProject", "type": "Project | null", "required": false, "description": "当前选中的项目"},
+        {"name": "projectList", "type": "Project[]", "required": true, "description": "项目列表"},
+        {"name": "environmentList", "type": "Environment[]", "required": true, "description": "当前项目的环境列表"},
+        {"name": "activeDeployments", "type": "Map<number, DeploymentStatus>", "required": true, "description": "进行中的部署任务状态映射"},
+        {"name": "loading", "type": "Record<string, boolean>", "required": true, "description": "各模块加载状态"},
+        {"name": "error", "type": "string | null", "required": false, "description": "全局错误信息"}
+      ]
+    },
+    {
+      "name": "ApiError",
+      "type": "interface",
+      "description": "API错误响应结构",
+      "fields": [
+        {"name": "code", "type": "number", "required": true, "description": "HTTP状态码"},
+        {"name": "message", "type": "string", "required": true, "description": "错误描述"},
+        {"name": "details", "type": "string", "required": false, "description": "详细错误信息"}
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "PageProjectList",
-      "endpoint": "/",
-      "description": "项目列表首页。渲染所有项目的表格/卡片列表，提供创建项目入口和项目搜索/分页。调用 ListProjects 接口加载数据。",
+      "name": "项目列表页",
+      "method": "frontend",
+      "endpoint": "/projects",
+      "description": "展示所有项目列表，支持分页浏览，提供创建项目入口",
       "parameters": [
-        { "name": "page", "type": "number", "description": "页码，默认 1" },
-        { "name": "page_size", "type": "number", "description": "每页条数，默认 20" }
+        {"name": "page", "type": "number", "description": "当前页码，默认1"},
+        {"name": "page_size", "type": "number", "description": "每页条数，默认10"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "items": "array<Project>",
+          "total": "number",
+          "page": "number"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "未登录或登录已过期"},
+        {"code": 403, "message": "无权限查看项目列表"}
       ]
     },
     {
-      "name": "PageCreateProject",
-      "endpoint": "/projects/new",
-      "description": "创建项目表单页。收集项目名称和描述，提交时调用 CreateProject 接口。创建成功后跳转至项目详情页。",
-      "parameters": [
-        { "name": "name", "type": "string", "description": "项目名称（必填）" },
-        { "name": "description", "type": "string", "description": "项目描述（选填）" }
+      "name": "创建项目页",
+      "method": "frontend",
+      "endpoint": "/projects/create",
+      "description": "提供表单填写项目名称和描述，提交后调用项目管理服务创建项目",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "number",
+          "name": "string",
+          "description": "string",
+          "created_at": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "表单验证失败（项目名称为必填）"},
+        {"code": 409, "message": "项目名称已存在"}
       ]
     },
     {
-      "name": "PageProjectDetail",
-      "endpoint": "/projects/:projectId",
-      "description": "项目详情页。展示项目基本信息、环境列表、部署历史。提供环境管理入口和触发部署入口。",
+      "name": "项目详情页",
+      "method": "frontend",
+      "endpoint": "/projects/:id",
+      "description": "展示单个项目的详细信息，包括关联的环境列表和部署历史概览",
       "parameters": [
-        { "name": "projectId", "type": "number", "description": "项目 ID（路径参数）" }
+        {"name": "id", "type": "number", "description": "项目ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "number",
+          "name": "string",
+          "description": "string",
+          "created_at": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "项目不存在"},
+        {"code": 403, "message": "无权限查看该项目"}
       ]
     },
     {
-      "name": "PageEnvironmentList",
-      "endpoint": "/projects/:projectId/environments",
-      "description": "环境管理列表页。展示指定项目的所有部署环境，提供新建环境和配置 SSH 密钥的入口。",
+      "name": "环境列表页",
+      "method": "frontend",
+      "endpoint": "/projects/:id/environments",
+      "description": "管理指定项目的部署环境，展示环境列表和连接状态，提供添加/编辑/删除操作",
       "parameters": [
-        { "name": "projectId", "type": "number", "description": "项目 ID（路径参数）" }
+        {"name": "id", "type": "number", "description": "项目ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "environments": "array<Environment>"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "项目不存在"},
+        {"code": 403, "message": "无权限管理环境"}
       ]
     },
     {
-      "name": "PageCreateEnvironment",
-      "endpoint": "/projects/:projectId/environments/new",
-      "description": "新建环境表单页。收集服务器连接参数，提交时调用 CreateEnvironment 接口。创建成功后可选跳转至 SSH 密钥配置。",
+      "name": "创建环境页",
+      "method": "frontend",
+      "endpoint": "/projects/:id/environments/create",
+      "description": "提供环境配置表单（名称、类型、主机、端口、SSH密钥、用户名），提交后创建环境并测试连接",
       "parameters": [
-        { "name": "projectId", "type": "number", "description": "项目 ID（路径参数）" },
-        { "name": "name", "type": "string", "description": "环境名称（必填）" },
-        { "name": "tag", "type": "string", "description": "环境标签（必填）" },
-        { "name": "server_host", "type": "string", "description": "服务器地址（必填）" },
-        { "name": "server_port", "type": "number", "description": "SSH 端口（必填，默认 22）" },
-        { "name": "username", "type": "string", "description": "SSH 用户名（必填）" }
+        {"name": "id", "type": "number", "description": "项目ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "number",
+          "name": "string",
+          "type": "string",
+          "host": "string",
+          "port": "number",
+          "status": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "表单验证失败（必填项缺失或格式错误）"},
+        {"code": 422, "message": "SSH连接测试失败（主机不可达或密钥无效）"}
       ]
     },
     {
-      "name": "PageConfigureSSHKey",
-      "endpoint": "/projects/:projectId/environments/:envId/ssh-key",
-      "description": "SSH 密钥配置页。上传私钥文件或粘贴私钥内容，可选填写口令。提交时调用 ConfigureSSHKey 接口。",
+      "name": "部署执行页",
+      "method": "frontend",
+      "endpoint": "/projects/:id/deploy",
+      "description": "部署操作主页面。选择目标环境、上传可执行文件、填写版本号和部署脚本，触发一键部署",
       "parameters": [
-        { "name": "projectId", "type": "number", "description": "项目 ID（路径参数）" },
-        { "name": "envId", "type": "number", "description": "环境 ID（路径参数）" }
+        {"name": "id", "type": "number", "description": "项目ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "environments": "array<Environment>"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "部署参数验证失败"},
+        {"code": 404, "message": "项目或环境不存在"},
+        {"code": 413, "message": "上传文件超过大小限制"}
       ]
     },
     {
-      "name": "PageTriggerDeployment",
-      "endpoint": "/projects/:projectId/deployments/new",
-      "description": "触发部署页。选择目标环境、填写可执行文件路径和版本号，提交时调用 TriggerDeployment 接口。",
+      "name": "部署进度页",
+      "method": "frontend",
+      "endpoint": "/deployments/:id",
+      "description": "展示单次部署的实时进度、步骤详情和日志输出，通过WebSocket实时更新状态",
       "parameters": [
-        { "name": "projectId", "type": "number", "description": "项目 ID（路径参数）" },
-        { "name": "environment_id", "type": "number", "description": "目标环境 ID（必填）" },
-        { "name": "artifact_path", "type": "string", "description": "可执行文件路径（必填）" },
-        { "name": "version", "type": "string", "description": "版本号（必填）" }
+        {"name": "id", "type": "number", "description": "部署任务ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "deployment_id": "number",
+          "status": "string",
+          "progress": "number",
+          "current_step": "string",
+          "logs": "array<string>"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "部署任务不存在"},
+        {"code": 410, "message": "部署任务已过期或已被清理"}
       ]
     },
     {
-      "name": "PageDeploymentDetail",
-      "endpoint": "/projects/:projectId/deployments/:depId",
-      "description": "部署详情页。展示部署状态和实时日志。页面加载时通过 GetDeploymentLogs 轮询或 WebSocket 接收日志，部署完成后展示最终结果。",
+      "name": "部署历史页",
+      "method": "frontend",
+      "endpoint": "/projects/:id/history",
+      "description": "按项目分页查看部署历史记录，展示每次部署的版本、环境、状态和时间",
       "parameters": [
-        { "name": "projectId", "type": "number", "description": "项目 ID（路径参数）" },
-        { "name": "depId", "type": "number", "description": "部署记录 ID（路径参数）" }
-      ]
-    },
-    {
-      "name": "LayoutSidebar",
-      "endpoint": "/_layout/sidebar",
-      "description": "全局侧边栏导航组件。从 ListProjects 加载项目列表，支持项目间切换。点击项目名称导航至该项目详情页。当前选中项目高亮显示。",
-      "parameters": [
-        { "name": "activeProjectId", "type": "number", "description": "当前选中项目 ID" }
+        {"name": "id", "type": "number", "description": "项目ID（路径参数）"},
+        {"name": "page", "type": "number", "description": "当前页码，默认1"},
+        {"name": "page_size", "type": "number", "description": "每页条数，默认10"},
+        {"name": "environment_id", "type": "number", "description": "按环境筛选（可选）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "items": "array<DeploymentRecord>",
+          "total": "number",
+          "page": "number",
+          "page_size": "number"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "项目不存在"},
+        {"code": 403, "message": "无权限查看部署历史"}
       ]
     }
   ],
-  "error_handling": "统一错误处理策略：\n1. API 错误：所有 HTTP 请求通过统一的封装层发起，非 2xx/3xx 响应统一捕获后解包错误体 { code, message }，通过全局 Store 按页面维度记录错误信息，页面组件从 Store 读取并展示错误提示。\n2. 网络异常：请求超时或断网时捕获网络错误，展示「网络连接异常，请检查网络后重试」的 Toast 提示，不影响其他页面状态。\n3. 表单校验：前端在提交前对必填字段、格式（端口号范围、版本号格式）进行校验，校验失败时对应字段下方展示红色提示文字，不发起请求。\n4. WebSocket 异常：连接断开时自动重连（指数退避，最大间隔 30s），重连期间展示「连接断开，正在重连...」提示条；重连成功后自动恢复日志显示。\n5. 部署失败：部署状态变为 failure 时，在部署详情页以红色横幅展示失败原因，同时标记部署记录状态为失败，日志区保留最终日志供排查。\n6. 空状态处理：列表无数据时展示空状态占位图与引导文案（如「暂无项目，点击创建」），避免页面空白。\n7. 全局兜底：未捕获异常通过 window.onerror 捕获并上报，同时在页面顶部展示全局错误条「系统异常，请刷新页面重试」。"
+  "error_handling": "前端统一错误处理策略：1）所有API请求通过axios拦截器统一捕获HTTP错误，4xx错误展示用户友好的提示消息，5xx错误展示'服务器异常，请稍后重试'；2）网络断连时展示断网提示条，自动重连后恢复；3）表单提交前进行字段校验（必填项、格式、范围），校验不通过时在表单项旁展示具体错误文案；4）WebSocket连接异常时自动重连，指数退避（1s/2s/4s/8s，最大30s），重连期间展示'连接中...'状态提示；5）文件上传进度条展示实时上传百分比，上传失败保留已填表单数据并提供重新上传按钮；6）全局错误边界（ErrorBoundary）捕获未预期组件异常，避免白屏，展示'页面出错了，请刷新重试'。"
 }
