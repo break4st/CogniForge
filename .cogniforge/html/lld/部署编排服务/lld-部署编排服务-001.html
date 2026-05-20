@@ -490,126 +490,91 @@
 </style>
 </head>
 <body>
+<div class="page-layout">
+<nav class="sidebar" id="sidebar"><div class="sidebar-header"><div class="sid">lld-部署编排服务-001</div><div class="stitle">LLD - 部署编排服务</div></div><div class="sidebar-nav"><a href="#overview" class="sidebar-link"><span class="sl-icon">📄</span>概述</a><a href="#models" class="sidebar-link"><span class="sl-icon">🗄️</span>数据模型 (3)</a><a href="#interfaces" class="sidebar-link"><span class="sl-icon">🔌</span>接口定义 (4)</a><a href="#errors" class="sidebar-link"><span class="sl-icon">⚠️</span>错误处理</a></div></nav><button id="sidebar-toggle" class="sidebar-toggle" aria-label="菜单">☰</button>
+<div class="main-content">
 <div class="top-bar">
   <div class="doc-id">lld-部署编排服务-001</div>
   <div><span class="badge accent">详细设计文档</span></div>
 </div>
 <h1><span>详细设计文档</span> LLD - 部署编排服务</h1>
-<div class="meta">2026-05-20 16:08 &middot; 作者: design_agent</div>
+<div class="meta">2026-05-20 16:33 &middot; 作者: design_agent</div>
 
-<div class="section">
+<div class="section" id="overview">
   <div class="section-header">
     <div class="icon" style="background:rgba(124,111,247,0.12)">📄</div>
     <h2>概述</h2>
   </div>
   <div class="section-body">
 
-<p>模块: 部署编排服务</p>
-<p>部署编排服务作为自动化部署系统的调度中枢，负责编排完整的部署生命周期。接收来自 API网关 转发的部署请求后，调用项目管理服务的 ValidateProjectExistence 校验项目存在性，从环境管理服务获取目标环境的服务器连接参数与解密后的SSH凭证，在 MySQL 创建部署记录（初始状态 pending），组装完整部署任务包发送至消息队列 deployment.tasks 主题，由 SSH执行代理 异步消费执行。部署过程中持续消费 SSH执行代理 回写至 deployment.logs 主题的日志行与状态变更消息：日志行写入 deployment_logs 表同时通过 WebSocket 实时推送至前端，状态变更同步更新 deployments 表 status/started_at/finished_at 字段。同时提供 REST 接口 GetDeploymentLogs 支持轮询拉取历史日志（配合 offset 偏移量实现增量获取），用于 WebSocket 断线后的日志恢复。使用 Redis 缓存活跃部署的 WebSocket 会话映射，支持服务重启后的会话恢复。版本号命名规则强制约束为 ^[a-zA-Z0-9._-]+$，确保远程服务器创建目录时的兼容性。</p>
+<div class="arch-style-badge" style="margin-bottom:12px">模块: 部署编排服务</div>
+<div class="arch-desc">部署编排服务是CogniForge一键部署流程的核心调度模块，负责接收部署触发请求并编排完整的部署流程：创建版本化部署目录、通过SSH执行服务在远程服务器创建目录结构、通过文件传输接口上传可执行文件、生成执行脚本、执行部署脚本，同时跟踪部署进度并通过WebSocket实时推送状态到前端。支持部署历史查询和版本回滚。</div>
+<div style="margin-bottom:12px"><span style="font-size:0.82em;color:var(--c-muted)">依赖: </span><span class="cc-consumer" style="margin:2px">关系型数据库（MySQL）</span><span class="cc-consumer" style="margin:2px">SSH执行服务</span><span class="cc-consumer" style="margin:2px">文件存储</span></div>
+<div style="margin-bottom:8px"><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Java 17</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Spring Boot 3</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Spring Data JPA</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>MySQL 8</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>WebSocket (STOMP)</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>REST (JSON)</span></div>
   </div>
 </div>
 
-<div class="section">
+<div class="section" id="models">
   <div class="section-header">
     <div class="icon" style="background:rgba(91,141,239,0.12)">🗄️</div>
-    <h2>数据模型 (5)</h2>
+    <h2>数据模型 (3)</h2>
   </div>
   <div class="section-body">
 
-<div class="model-item">
-  <h3>deployments</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>BIGINT</td><td>部署记录唯一标识，自增主键</td></tr><tr><td>project_id</td><td>BIGINT</td><td>所属项目ID，外键关联 projects.id，用于项目维度查询与统计，不可为空</td></tr><tr><td>environment_id</td><td>BIGINT</td><td>目标环境ID，外键关联 environments.id，记录部署时的环境选择，不可为空</td></tr><tr><td>artifact_path</td><td>VARCHAR(1024)</td><td>可执行文件路径，如 /data/packages/app-v1.0.0.tar.gz，用于SSH传输时的源文件路径</td></tr><tr><td>version</td><td>VARCHAR(255)</td><td>版本号，如 v1.0.0、release-20260520，用于远程服务器创建版本文件夹，创建后不可修改</td></tr><tr><td>status</td><td>VARCHAR(50)</td><td>部署状态枚举：pending（等待执行）/ running（执行中）/ success（完成）/ failure（失败），默认 pending</td></tr><tr><td>created_by</td><td>VARCHAR(255)</td><td>部署触发者标识，从JWT令牌中提取，用于操作追溯</td></tr><tr><td>started_at</td><td>DATETIME</td><td>部署开始执行时间，SSH执行代理确认开始工作（status→running）时更新，NULL表示尚未开始</td></tr><tr><td>finished_at</td><td>DATETIME</td><td>部署完成时间，status 变为 success/failure 时更新，NULL表示未结束</td></tr><tr><td>error_message</td><td>TEXT</td><td>部署失败时的错误信息，status=failure 时必填，成功时为 NULL</td></tr><tr><td>created_at</td><td>DATETIME</td><td>创建时间，默认 CURRENT_TIMESTAMP</td></tr><tr><td>updated_at</td><td>DATETIME</td><td>最后更新时间，ON UPDATE CURRENT_TIMESTAMP</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>deployment_logs</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td>BIGINT</td><td>日志行唯一标识，自增主键</td></tr><tr><td>deployment_id</td><td>BIGINT</td><td>所属部署记录ID，外键关联 deployments.id，联合索引 (deployment_id, sequence)</td></tr><tr><td>sequence</td><td>INT</td><td>日志行序号，从0开始递增，同一 deployment_id 下唯一。作为 GetDeploymentLogs offset 参数的基础值</td></tr><tr><td>log_line</td><td>TEXT</td><td>单行日志内容，格式为 [时间戳] [级别] 消息，如 [2026-05-20 16:08:30] [INFO] 开始创建版本文件夹</td></tr><tr><td>level</td><td>VARCHAR(20)</td><td>日志级别枚举：INFO（信息）/ WARN（警告）/ ERROR（错误），用于前端着色展示</td></tr><tr><td>created_at</td><td>DATETIME</td><td>写入时间，默认 CURRENT_TIMESTAMP</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>DeploymentTaskMessage</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>task_id</td><td>string (UUID)</td><td>任务唯一标识，UUID v4，用于消费者幂等去重</td></tr><tr><td>deployment_id</td><td>integer</td><td>部署记录ID，用于回写状态和日志时的关联标识</td></tr><tr><td>project_id</td><td>integer</td><td>所属项目ID</td></tr><tr><td>server_host</td><td>string</td><td>远程服务器IP地址或域名</td></tr><tr><td>server_port</td><td>integer</td><td>SSH连接端口号</td></tr><tr><td>username</td><td>string</td><td>SSH登录用户名</td></tr><tr><td>ssh_private_key</td><td>string</td><td>解密后的SSH私钥明文内容（消息队列内部网络传输，不经过公网）</td></tr><tr><td>ssh_passphrase</td><td>string</td><td>密钥口令，无口令时为 null</td></tr><tr><td>artifact_path</td><td>string</td><td>可执行文件在部署编排服务可访问存储中的路径</td></tr><tr><td>version</td><td>string</td><td>版本号，用于远程服务器创建版本文件夹名</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>DeploymentLogMessage</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>type</td><td>string</td><td>消息类型，枚举值：log / status_change</td></tr><tr><td>deployment_id</td><td>integer</td><td>关联的部署记录ID</td></tr><tr><td>sequence</td><td>integer</td><td>日志行序号（type=log 时有效），从0开始递增</td></tr><tr><td>log_line</td><td>string</td><td>日志行内容（type=log 时有效）</td></tr><tr><td>level</td><td>string</td><td>日志级别（type=log 时有效），枚举值：INFO / WARN / ERROR</td></tr><tr><td>status</td><td>string</td><td>部署状态（type=status_change 时有效），枚举值：running / success / failure</td></tr><tr><td>error_message</td><td>string</td><td>错误信息（type=status_change 且 status=failure 时有效）</td></tr><tr><td>timestamp</td><td>string (ISO8601)</td><td>消息产生时间，如 2026-05-20T16:08:30.000Z</td></tr></tbody></table>
-</div>
-<div class="model-item">
-  <h3>WebSocketLogMessage</h3>
-  <table><thead><tr><th>字段</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>type</td><td>string</td><td>消息类型，枚举值：log / status / final</td></tr><tr><td>deployment_id</td><td>integer</td><td>关联的部署记录ID</td></tr><tr><td>sequence</td><td>integer</td><td>日志行序号（type=log 时有效），与 deployment_logs 表的 sequence 一致</td></tr><tr><td>log_line</td><td>string</td><td>日志行内容（type=log 时有效），包含时间戳和级别前缀</td></tr><tr><td>level</td><td>string</td><td>日志级别（type=log 时有效），INFO / WARN / ERROR</td></tr><tr><td>status</td><td>string</td><td>当前部署状态（type=status/final 时有效），枚举值：running / success / failure</td></tr><tr><td>error_message</td><td>string</td><td>错误信息（type=final 且 status=failure 时有效）</td></tr><tr><td>timestamp</td><td>string (ISO8601)</td><td>消息产生时间</td></tr></tbody></table>
-</div>
+<details class="contract-group" open><summary>数据库表 <span class="cg-count">3</span></summary><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗄️ deployment</h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署任务主表，记录每次部署的核心信息。通过project_id和environment_id分别关联项目和环境。version字段用于标识版本，支持回滚时按版本查找部署目录</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>主键，自增部署任务ID</td></tr><tr><td>project_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>所属项目ID，外键关联project表</td></tr><tr><td>environment_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>目标环境ID，外键关联environment表</td></tr><tr><td>version <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>部署版本号（如v1.0.0或日期格式YYYYMMDD-序列号）</td></tr><tr><td>file_url <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>可执行文件存储地址URL</td></tr><tr><td>deploy_script <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>部署脚本内容（Shell脚本）</td></tr><tr><td>status <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>部署状态：pending（待执行）/running（执行中）/success（成功）/failed（失败），默认pending</td></tr><tr><td>progress <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>整体部署进度百分比，0-100，默认0</td></tr><tr><td>current_step</td><td class="field-type">string</td><td>当前执行的步骤名称，如create_remote_dir/upload_file/generate_script/execute_script</td></tr><tr><td>rollback_from</td><td class="field-type">int</td><td>回滚来源部署ID，如果本次部署是回滚操作则记录原始部署ID</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">datetime</td><td>部署任务创建时间</td></tr><tr><td>updated_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">datetime</td><td>部署状态最后更新时间</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗄️ deployment_step</h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署步骤明细表，记录一次部署中的各个子步骤执行情况，用于前端进度条展示和失败定位</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>主键，自增步骤ID</td></tr><tr><td>deployment_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>所属部署任务ID，外键关联deployment表</td></tr><tr><td>step_name <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>步骤名称：create_remote_dir/upload_file/generate_script/execute_script</td></tr><tr><td>status <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>步骤状态：pending/running/success/failed，默认pending</td></tr><tr><td>started_at</td><td class="field-type">datetime</td><td>步骤开始执行时间</td></tr><tr><td>completed_at</td><td class="field-type">datetime</td><td>步骤完成时间</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗄️ deployment_log</h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署日志表，记录部署过程中的所有日志输出，用于前端实时日志显示和部署后排查问题</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>主键，自增日志ID</td></tr><tr><td>deployment_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">int</td><td>所属部署任务ID，外键关联deployment表</td></tr><tr><td>message <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>日志消息内容</td></tr><tr><td>level <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>日志级别：info/warn/error</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">datetime</td><td>日志记录时间</td></tr></tbody></table></div></details>
   </div>
 </div>
 
-<div class="section">
+<div class="section" id="interfaces">
   <div class="section-header">
     <div class="icon" style="background:rgba(34,211,238,0.12)">🔌</div>
-    <h2>接口定义 (5)</h2>
+    <h2>接口定义 (4)</h2>
   </div>
   <div class="section-body">
 
-<div class="comp-item">
-  <h3>TriggerDeployment</h3>
-  <div class="comp-type">POST /api/projects/{projectId}/deployments</div>
-  <p>触发一键部署，异步执行。请求处理流程：1) 校验 projectId 对应的项目存在（调用项目管理服务 ValidateProjectExistence）；2) 校验 environment_id 对应环境存在且已配置SSH密钥（调用环境管理服务 GetEnvironment + GetSSHKeyInfo）；3) 校验 version 格式符合 ^[a-zA-Z0-9._-]+$；4) 从环境管理服务获取解密后的SSH私钥；5) 在 deployments 表创建记录（status=pending）；6) 组装 DeploymentTaskMessage 发送至消息队列 deployment.tasks 主题；7) 返回202及部署记录ID。全部同步校验通过后才写入数据库和发送MQ，任一校验失败均不创建记录。</p>
-  <p><strong>Response:</strong> {deployment_id: {'type': 'integer', 'description': '部署记录ID'}, status: {'type': 'string', 'description': '初始状态，pending'}, created_at: {'type': 'datetime', 'description': '创建时间'}}</p>
-  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>path:projectId</td><td>integer</td><td>项目ID，路径参数</td></tr><tr><td>body:environment_id</td><td>integer</td><td>目标环境ID，必填，须存在且 has_ssh_key=true</td></tr><tr><td>body:artifact_path</td><td>string</td><td>可执行文件路径，必填，长度 1-1024</td></tr><tr><td>body:version</td><td>string</td><td>版本号，必填，须匹配正则 ^[a-zA-Z0-9._-]+$，长度 1-255，用于远程服务器创建版本文件夹</td></tr></tbody></table>
-</div>
-<div class="comp-item">
-  <h3>GetDeploymentLogs</h3>
-  <div class="comp-type">GET /api/projects/{projectId}/deployments/{depId}/logs</div>
-  <p>拉取部署过程的实时日志（配合WebSocket实现实时推送）。根据 offset 参数从 deployment_logs 表查询 sequence &gt;= offset 的日志行，按 sequence 升序返回。每次最多返回100行（避免单次响应过大），客户端可通过 next_offset 连续轮询直至 finished=true。WebSocket 断线重连场景：客户端记录最后收到的 sequence，重连后调用本接口传入该 sequence 作为 offset 即可补齐缺失日志。部署未结束时 finished=false，客户端应继续轮询或等待 WebSocket 推送。</p>
-  <p><strong>Response:</strong> {logs: {'type': 'array', 'item_type': 'string', 'description': '日志行列表，每行字符串格式：[时间戳] [级别] 消息内容'}, next_offset: {'type': 'integer', 'description': '下一次请求的偏移量，等于当前 offset + 返回行数'}, finished: {'type': 'boolean', 'description': '部署是否已结束，true 表示 status 已变为 success 或 failure'}}</p>
-  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>path:projectId</td><td>integer</td><td>项目ID，路径参数</td></tr><tr><td>path:depId</td><td>integer</td><td>部署记录ID，路径参数</td></tr><tr><td>query:offset</td><td>integer</td><td>日志偏移量，从0开始，默认0，表示从第几条日志开始拉取</td></tr></tbody></table>
-</div>
-<div class="comp-item">
-  <h3>DeploymentLogWebSocket</h3>
-  <div class="comp-type">WS /ws/projects/{projectId}/deployments/{depId}/logs</div>
-  <p>WebSocket 实时日志推送端点。前端通过原生 WebSocket 客户端建立持久连接，服务端持续推送部署过程中的日志行及状态变更。推送的 JSON 消息结构见 data_models 中的 WebSocketLogMessage 定义。连接生命周期：建立时服务端将连接注册至 Redis（key=deployment:ws:{depId}），推送期间按日志产生顺序逐条发送，部署完成（status=success/failure）后推送 final 类型消息并主动关闭连接。服务重启时 Redis 中的连接映射失效，前端应监听 onclose 事件并在重连后调用 GetDeploymentLogs 补齐缺失数据。</p>
-  
-  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>path:projectId</td><td>integer</td><td>项目ID，路径参数</td></tr><tr><td>path:depId</td><td>integer</td><td>部署记录ID，路径参数</td></tr></tbody></table>
-</div>
-<div class="comp-item">
-  <h3>HandleDeploymentLogMessage</h3>
-  <div class="comp-type">INTERNAL (MQ consumer)</div>
-  <p>内部消费者，订阅消息队列 deployment.logs 主题。消费 SSH执行代理 回写的 DeploymentLogMessage。处理逻辑：type=log 时写入 deployment_logs 表 → 从 Redis 读取 depId 对应的 WebSocket 连接 → 构造 WebSocketLogMessage 推送至前端；type=status_change 时更新 deployments 表 status 字段（running 时设 started_at，success/failure 时设 finished_at）→ 推送 status/final 类型 WebSocket 消息 → status=failure 时写入 error_message。消息处理失败时进入死信队列，最多重试3次。</p>
-  
-  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>message:type</td><td>string</td><td>消息类型，log 或 status_change</td></tr><tr><td>message:deployment_id</td><td>integer</td><td>部署记录ID</td></tr><tr><td>message:sequence</td><td>integer</td><td>日志行序号（type=log 时有效）</td></tr><tr><td>message:log_line</td><td>string</td><td>日志行内容（type=log 时有效）</td></tr><tr><td>message:level</td><td>string</td><td>日志级别（type=log 时有效）</td></tr><tr><td>message:status</td><td>string</td><td>部署状态（type=status_change 时有效）</td></tr><tr><td>message:error_message</td><td>string</td><td>错误信息（type=status_change 且 status=failure 时有效）</td></tr><tr><td>message:timestamp</td><td>string</td><td>消息产生时间</td></tr></tbody></table>
-</div>
-<div class="comp-item">
-  <h3>SendDeploymentTask</h3>
-  <div class="comp-type">INTERNAL (MQ producer)</div>
-  <p>内部生产者，由 TriggerDeployment 流程触发。在部署记录创建成功后，将完整任务包发送至消息队列 deployment.tasks 主题。任务包结构见 data_models 中的 DeploymentTaskMessage 定义。发送时设置消息持久化标志和 TTL（24小时），确保消息不会丢失也不会被过期丢弃。发送失败时回滚部署记录（标记为 failure 并记录错误信息），返回502给前端。</p>
-  
-  <table><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>message:task_id</td><td>string</td><td>任务唯一标识，UUID v4</td></tr><tr><td>message:deployment_id</td><td>integer</td><td>部署记录ID</td></tr><tr><td>message:project_id</td><td>integer</td><td>项目ID</td></tr><tr><td>message:server_host</td><td>string</td><td>远程服务器地址</td></tr><tr><td>message:server_port</td><td>integer</td><td>SSH端口</td></tr><tr><td>message:username</td><td>string</td><td>SSH登录用户名</td></tr><tr><td>message:ssh_private_key</td><td>string</td><td>解密后的SSH私钥内容</td></tr><tr><td>message:ssh_passphrase</td><td>string</td><td>密钥口令，无口令时为 null</td></tr><tr><td>message:artifact_path</td><td>string</td><td>可执行文件路径</td></tr><tr><td>message:version</td><td>string</td><td>版本号</td></tr></tbody></table>
-</div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge post">POST</span><span class="cc-endpoint">/api/deployments</span><span class="cc-name">部署触发接口</span></div><div class="cc-desc">触发一键部署任务。接收项目的部署参数后，创建version化部署目录并开始编排完整的部署流程（创建远程目录→上传文件→生成脚本→执行脚本），返回部署任务ID供前端轮询状态。部署流程异步执行，立即返回202</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>project_id</td><td class="field-type">int</td><td>所属项目ID</td></tr><tr><td>environment_id</td><td class="field-type">int</td><td>目标环境ID</td></tr><tr><td>version</td><td class="field-type">string</td><td>部署版本号</td></tr><tr><td>file_url</td><td class="field-type">string</td><td>可执行文件存储地址URL</td></tr><tr><td>deploy_script</td><td class="field-type">string</td><td>部署脚本内容（Shell脚本）</td></tr></tbody></table><div class="body-label">Response 202</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>deployment_id</td><td class="field-type">int</td></tr><tr><td>status</td><td class="field-type">string（pending）</td></tr><tr><td>created_at</td><td class="field-type">datetime</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>请求参数校验失败（必填字段缺失或格式不合法）</td></tr><tr><td>404</td><td>指定project_id的项目或environment_id的环境不存在</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/deployments/{id}/status</span><span class="cc-name">部署状态查询接口</span></div><div class="cc-desc">查询指定部署任务的当前状态、进度百分比、当前执行步骤和实时日志列表。供API网关路由后的前端轮询调用</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td class="field-type">int（路径参数）</td><td>部署任务ID</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>deployment_id</td><td class="field-type">int</td></tr><tr><td>status</td><td class="field-type">string（running/success/failed）</td></tr><tr><td>progress</td><td class="field-type">int（0-100）</td></tr><tr><td>current_step</td><td class="field-type">string</td></tr><tr><td>logs</td><td class="field-type">array&lt;string&gt;</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>404</td><td>部署任务不存在，指定ID未找到对应部署记录</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/deployments/history</span><span class="cc-name">部署历史查询接口</span></div><div class="cc-desc">按项目分页查询部署历史记录列表，按创建时间倒序排列。支持按环境ID过滤，返回的items中包含每次部署的摘要信息</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>project_id</td><td class="field-type">int</td><td>项目ID过滤条件</td></tr><tr><td>environment_id</td><td class="field-type">int（可选）</td><td>环境ID过滤条件（可选）</td></tr><tr><td>page</td><td class="field-type">int</td><td>页码，从1开始</td></tr><tr><td>page_size</td><td class="field-type">int</td><td>每页条数</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>items</td><td class="field-type">array&lt;object&gt;</td></tr><tr><td>total</td><td class="field-type">int</td></tr><tr><td>page</td><td class="field-type">int</td></tr><tr><td>page_size</td><td class="field-type">int</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>分页参数或过滤条件不合法</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge ws">WS</span><span class="cc-endpoint">/api/deployments/{id}/ws</span><span class="cc-name">部署状态推送接口</span></div><div class="cc-desc">通过WebSocket实时推送部署进度和日志到Web管理控制台。前端连接后服务端主动推送progress事件（步骤名和百分比）、log事件（日志消息和级别）和complete事件（最终状态和摘要）</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td class="field-type">int（路径参数）</td><td>部署任务ID</td></tr></tbody></table><div class="body-label">Response 101</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>protocol</td><td class="field-type">websocket</td></tr><tr><td>message_type</td><td class="field-type">JSON</td></tr><tr><td>events</td><td class="field-type">['progress: {step, percentage}', 'log: {message, level}', 'complete: {status, summary}']</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>404</td><td>部署任务不存在</td></tr><tr><td>400</td><td>WebSocket握手失败或连接参数错误</td></tr></tbody></table></div>
   </div>
 </div>
 
-<div class="section">
+<div class="section" id="errors">
   <div class="section-header">
     <div class="icon" style="background:rgba(251,191,36,0.12)">⚠️</div>
     <h2>错误处理</h2>
   </div>
   <div class="section-body">
 
-<p>统一错误处理策略：
-1. 项目不存在：TriggerDeployment 时 projectId 对应项目不存在或已逻辑删除，返回 404，错误码 PROJECT_NOT_FOUND。
-2. 环境不存在：TriggerDeployment 时 environment_id 对应环境不存在、已逻辑删除或不属于该项目，返回 404，错误码 ENVIRONMENT_NOT_FOUND。
-3. SSH密钥未配置：TriggerDeployment 时目标环境的 has_ssh_key=false，返回 400，错误码 SSH_KEY_NOT_CONFIGURED。
-4. SSH密钥解密失败：TriggerDeployment 时从环境管理服务获取SSH密钥时解密失败，返回 500，错误码 SSH_KEY_DECRYPT_FAILED，记录错误日志人工介入。
-5. 版本号格式校验失败：TriggerDeployment 时 version 不匹配正则 ^[a-zA-Z0-9._-]+$ 或长度为0，返回 400，错误码 INVALID_VERSION_FORMAT。
-6. artifact_path 校验失败：TriggerDeployment 时 artifact_path 为空或超过1024字符，返回 400，错误码 INVALID_ARTIFACT_PATH。
-7. environment_id 校验失败：TriggerDeployment 时 environment_id 为空或非正整数，返回 400，错误码 INVALID_ENVIRONMENT_ID。
-8. MQ发送失败：TriggerDeployment 时将任务包发送至 deployment.tasks 时连接异常或写入超时，回滚部署记录（标记为 failure 记录错误信息），返回 502，错误码 MQ_SEND_FAILED。
-9. MQ消费异常：HandleDeploymentLogMessage 消费 deployment.logs 消息时处理失败，将消息投递至死信队列，最多重试3次，超过后记录异常日志人工排查。
-10. 部署记录不存在：GetDeploymentLogs 时 depId 对应部署记录不存在，返回 404，错误码 DEPLOYMENT_NOT_FOUND。
-11. 数据库异常：MySQL 查询或写入失败时捕获异常，返回 500，错误码 DB_ERROR，同时记录错误日志用于排查。
-12. Redis异常：WebSocket 会话管理写入 Redis 失败时降级处理（不阻断日志推送），仅记录错误日志，不影响核心部署流程。
-13. WebSocket推送失败：HandleDeploymentLogMessage 向前端推送 WebSocket 消息时连接已断开，从 Redis 移除该连接映射，日志仍正常写入 deployment_logs 表，前端重连后可调用 GetDeploymentLogs 补齐。
-14. 超时控制：数据库查询超时设为 5s，MQ 发送超时设为 3s，超时后返回 504，错误码 GATEWAY_TIMEOUT。</p>
+<p>部署编排服务采用分层错误处理策略：1）参数校验层——部署触发接口对project_id、environment_id、version、file_url、deploy_script五个必填字段进行非空校验，校验失败返回400 Bad Request并指明具体问题字段；2）部署流程编排层——部署任务创建后异步执行编排流程，任一子步骤失败（如远程目录创建失败、文件上传失败、脚本执行返回非零退出码）则标记整体部署状态为failed并记录失败步骤和错误日志，不阻塞后续清理流程；编排流程遇到SSH执行服务调用失败（网络超时、连接拒绝）时标记对应步骤为failed并终止后续步骤，返回错误日志说明下游服务异常信息；3）跨服务调用层——对SSH执行服务的远程执行接口（POST /api/ssh/execute）和文件传输接口（POST /api/ssh/upload）设置30秒超时，超时或连接失败则捕获异常并将部署状态标记为failed，同时记录完整错误日志到deployment_log表供排查；4）数据库层——deployment表通过project_id和environment_id建立外键索引保障数据完整性，deployment_step和deployment_log通过deployment_id建立外键索引并设置级联删除，当部署记录被删除时关联的步骤和日志自动清除；5）WebSocket推送层——WebSocket连接中断时服务端记录断连日志，前端可重新建立连接后通过部署状态查询接口（GET /api/deployments/{id}/status）获取断连期间的状态变更和日志补齐，确保前端状态不丢失；6）全局异常处理——所有未捕获异常统一返回500 Internal Server Error，服务端记录完整错误堆栈。所有错误响应统一采用格式：{&quot;error&quot;: {&quot;code&quot;: &quot;string错误码&quot;, &quot;message&quot;: &quot;string错误描述&quot;}}。</p>
   </div>
 </div>
 
-
 <div class="footer">CogniForge 文档驱动系统</div>
+</div>
+</div>
+
+<script>
+(function() {
+  var links = document.querySelectorAll('.sidebar-link');
+  var sections = [];
+  links.forEach(function(l) { var s = document.getElementById(l.getAttribute('href').slice(1)); if (s) sections.push([s, l]); });
+  function update() {
+    var top = window.scrollY + 80;
+    var active = null;
+    sections.forEach(function(p) { if (p[0].offsetTop <= top) active = p[1]; });
+    links.forEach(function(l) { l.classList.remove('active'); });
+    if (active) active.classList.add('active');
+  }
+  window.addEventListener('scroll', update, {passive: true});
+  update();
+
+  var toggle = document.getElementById('sidebar-toggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function() { sidebar.classList.toggle('mobile-open'); });
+  }
+})();
+</script>
 </body>
 </html>
