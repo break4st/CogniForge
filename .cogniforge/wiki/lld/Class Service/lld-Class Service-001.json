@@ -1,0 +1,199 @@
+{
+  "meta": {
+    "doc_id": "lld-Class Service-001",
+    "type": "lld",
+    "module": "Class Service",
+    "title": "LLD - Class Service",
+    "author": "design_agent",
+    "created": "2026-05-20 11:25"
+  },
+  "overview": "基于 RESTful 架构的班级信息管理服务，对外提供班级的增删改查、班级成员管理及班级-年级归属关系维护能力。采用分层设计：Controller 层处理 HTTP 请求与参数校验 → Service 层实现业务逻辑（班级名称去重、班级人数上限校验、学生归属关系维护） → Repository 层封装数据库访问。数据库使用 MySQL/PostgreSQL，核心表为 class（班级信息）和 class_student（班级-学生归属关系），class 表通过 grade_id 外键关联 grade 表维护班级-年级层级，class_student 表维护多对多的学生归属关系（一对多语义：一个学生在同一时间只应属于一个班级，由业务层保证）。班级成员查询需关联 student 表获取学生基本信息，并联动缓存层（Redis）缓存成员列表和班级人数，降低关联查询压力。与 Student Service 存在调用依赖：删除班级时需校验班级下是否仍有学生（防止数据孤儿）；新增/移除班级成员时需校验学生 ID 有效性（调用 Student Service）。",
+  "data_models": [
+    {
+      "name": "class",
+      "type": "table",
+      "fields": [
+        { "name": "id", "type": "bigint", "description": "班级 ID，自增主键，唯一标识" },
+        { "name": "name", "type": "varchar(128)", "description": "班级名称，如'三年级一班'，同年级下名称不可重复，建立联合唯一索引 (grade_id, name)" },
+        { "name": "grade_id", "type": "bigint", "description": "所属年级 ID，外键关联 grade 表，不可为空" },
+        { "name": "head_teacher", "type": "varchar(64)", "description": "班主任姓名，可选" },
+        { "name": "max_students", "type": "int", "description": "班级最大学生人数，默认 50，用于人数上限校验" },
+        { "name": "description", "type": "varchar(256)", "description": "班级描述/备注，可选" },
+        { "name": "created_at", "type": "datetime", "description": "创建时间，自动填充当前时间" },
+        { "name": "updated_at", "type": "datetime", "description": "更新时间，记录变更时间戳" },
+        { "name": "deleted_at", "type": "datetime", "description": "删除时间，逻辑删除标记，非 null 表示已删除" }
+      ]
+    },
+    {
+      "name": "class_student",
+      "type": "table",
+      "fields": [
+        { "name": "id", "type": "bigint", "description": "关系 ID，自增主键" },
+        { "name": "class_id", "type": "bigint", "description": "班级 ID，外键关联 class 表" },
+        { "name": "student_id", "type": "bigint", "description": "学生 ID，外键关联 student 表" },
+        { "name": "joined_at", "type": "datetime", "description": "加入班级时间，自动填充" },
+        { "name": "deleted_at", "type": "datetime", "description": "删除时间，逻辑删除标记，移除班级时设置此字段" }
+      ]
+    },
+    {
+      "name": "ClassCreateRequest",
+      "type": "struct",
+      "fields": [
+        { "name": "name", "type": "string", "description": "班级名称，必填，最长 128 字符，同年级下不可重复" },
+        { "name": "gradeId", "type": "number", "description": "所属年级 ID，必填，需与 Grade Service 校验有效性" },
+        { "name": "headTeacher", "type": "string", "description": "班主任姓名，可选，最长 64 字符" },
+        { "name": "maxStudents", "type": "number", "description": "班级最大人数，可选，默认 50" },
+        { "name": "description", "type": "string", "description": "班级描述，可选，最长 256 字符" }
+      ]
+    },
+    {
+      "name": "ClassUpdateRequest",
+      "type": "struct",
+      "fields": [
+        { "name": "name", "type": "string", "description": "班级名称，最长 128 字符，同年级下不可重复（排除自身）" },
+        { "name": "gradeId", "type": "number", "description": "所属年级 ID，变更时校验新年级有效性及名称唯一性" },
+        { "name": "headTeacher", "type": "string", "description": "班主任姓名" },
+        { "name": "maxStudents", "type": "number", "description": "班级最大人数，调整后若低于当前人数则拒绝更新" },
+        { "name": "description", "type": "string", "description": "班级描述" }
+      ]
+    },
+    {
+      "name": "ClassResponse",
+      "type": "struct",
+      "fields": [
+        { "name": "id", "type": "number", "description": "班级 ID" },
+        { "name": "name", "type": "string", "description": "班级名称" },
+        { "name": "gradeId", "type": "number", "description": "所属年级 ID" },
+        { "name": "gradeName", "type": "string", "description": "所属年级名称（关联 Grade Service 查询填充）" },
+        { "name": "headTeacher", "type": "string", "description": "班主任姓名" },
+        { "name": "maxStudents", "type": "number", "description": "班级最大人数" },
+        { "name": "studentCount", "type": "number", "description": "当前在班学生数（从 class_student 表统计或从缓存读取）" },
+        { "name": "description", "type": "string", "description": "班级描述" },
+        { "name": "createdAt", "type": "string", "description": "创建时间 ISO 8601" }
+      ]
+    },
+    {
+      "name": "ClassStudentResponse",
+      "type": "struct",
+      "fields": [
+        { "name": "studentId", "type": "number", "description": "学生 ID" },
+        { "name": "name", "type": "string", "description": "学生姓名" },
+        { "name": "studentNo", "type": "string", "description": "学号" },
+        { "name": "gender", "type": "string", "description": "性别" },
+        { "name": "joinedAt", "type": "string", "description": "加入班级时间 ISO 8601" }
+      ]
+    },
+    {
+      "name": "PaginatedResult",
+      "type": "struct",
+      "fields": [
+        { "name": "items", "type": "object[]", "description": "当前页数据列表" },
+        { "name": "page", "type": "number", "description": "当前页码" },
+        { "name": "pageSize", "type": "number", "description": "每页条数" },
+        { "name": "total", "type": "number", "description": "总记录数" },
+        { "name": "totalPages", "type": "number", "description": "总页数" }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "班级列表查询",
+      "endpoint": "GET /api/classes",
+      "description": "分页查询班级列表，支持按年级筛选和关键词搜索班级名称。条件之间为 AND 关系",
+      "parameters": [
+        { "name": "page", "type": "number", "description": "页码，从 1 开始，默认 1" },
+        { "name": "pageSize", "type": "number", "description": "每页条数，默认 20，最大 100" },
+        { "name": "keyword", "type": "string", "description": "搜索关键词，在 name 字段上做 LIKE '%keyword%' 模糊匹配，可选" },
+        { "name": "gradeId", "type": "number", "description": "按年级 ID 精确筛选，可选" }
+      ]
+    },
+    {
+      "name": "班级详情查询",
+      "endpoint": "GET /api/classes/:id",
+      "description": "根据 ID 获取单个班级的详细信息，包含年级名称和当前学生人数。返回 404 当班级不存在",
+      "parameters": [
+        { "name": "id", "type": "number", "description": "班级 ID（路径参数）" }
+      ]
+    },
+    {
+      "name": "创建班级",
+      "endpoint": "POST /api/classes",
+      "description": "新增一条班级记录。校验名称在同年级下的唯一性（重复返回 409）、gradeId 有效性（调用 Grade Service 校验，年级不存在返回 400）",
+      "parameters": [
+        { "name": "name", "type": "string", "description": "班级名称，必填" },
+        { "name": "gradeId", "type": "number", "description": "所属年级 ID，必填" },
+        { "name": "headTeacher", "type": "string", "description": "班主任姓名，可选" },
+        { "name": "maxStudents", "type": "number", "description": "最大人数，可选，默认 50" },
+        { "name": "description", "type": "string", "description": "班级描述，可选" }
+      ]
+    },
+    {
+      "name": "更新班级",
+      "endpoint": "PUT /api/classes/:id",
+      "description": "更新指定班级的基本信息。名称变更时校验同年级下唯一性（排除自身）。gradeId 变更时校验新年级有效性。maxStudents 调低后若低于当前在班人数则拒绝更新",
+      "parameters": [
+        { "name": "id", "type": "number", "description": "班级 ID（路径参数）" },
+        { "name": "name", "type": "string", "description": "班级名称" },
+        { "name": "gradeId", "type": "number", "description": "所属年级 ID" },
+        { "name": "headTeacher", "type": "string", "description": "班主任姓名" },
+        { "name": "maxStudents", "type": "number", "description": "最大人数" },
+        { "name": "description", "type": "string", "description": "班级描述" }
+      ]
+    },
+    {
+      "name": "删除班级",
+      "endpoint": "DELETE /api/classes/:id",
+      "description": "逻辑删除指定班级（设置 deleted_at 时间戳），不物理删除。删除前校验班级下是否仍有学生（class_student 中 deleted_at IS NULL 的记录），若有学生则拒绝删除返回 409",
+      "parameters": [
+        { "name": "id", "type": "number", "description": "班级 ID（路径参数）" }
+      ]
+    },
+    {
+      "name": "班级成员列表查询",
+      "endpoint": "GET /api/classes/:id/students",
+      "description": "分页查询指定班级的成员列表，需关联 student 表获取学生基本信息（姓名、学号、性别）。优先从缓存读取，缓存未命中则查 DB 并回填缓存",
+      "parameters": [
+        { "name": "id", "type": "number", "description": "班级 ID（路径参数）" },
+        { "name": "page", "type": "number", "description": "页码，从 1 开始，默认 1" },
+        { "name": "pageSize", "type": "number", "description": "每页条数，默认 20，最大 100" }
+      ]
+    },
+    {
+      "name": "添加班级成员",
+      "endpoint": "POST /api/classes/:id/students",
+      "description": "将一个学生分配到指定班级。校验学生 ID 有效性（调用 Student Service，不存在返回 400），校验该学生是否已在其他班级（同一学生在 class_student 中只能有一条未删除记录，如果已有则先移出旧班级再加入新班级），校验班级人数是否已达上限（拒绝返回 409）。操作成功后清除班级成员列表缓存",
+      "parameters": [
+        { "name": "id", "type": "number", "description": "班级 ID（路径参数）" },
+        { "name": "studentId", "type": "number", "description": "学生 ID，必填" }
+      ]
+    },
+    {
+      "name": "移除班级成员",
+      "endpoint": "DELETE /api/classes/:id/students/:studentId",
+      "description": "将指定学生从班级中移除（逻辑删除 class_student 中对应的记录，设置 deleted_at）。校验该学生是否确实在当前班级中（不存在返回 404）。操作成功后清除班级成员列表缓存",
+      "parameters": [
+        { "name": "id", "type": "number", "description": "班级 ID（路径参数）" },
+        { "name": "studentId", "type": "number", "description": "学生 ID（路径参数）" }
+      ]
+    },
+    {
+      "name": "搜索班级",
+      "endpoint": "GET /api/classes/search",
+      "description": "精简版搜索接口，不返回分页元信息，适用于下拉选择器等组件快速查找。keyword 为空时返回空列表",
+      "parameters": [
+        { "name": "keyword", "type": "string", "description": "搜索关键词，在班级名称上做 LIKE 模糊匹配，必填" },
+        { "name": "gradeId", "type": "number", "description": "按年级 ID 可选筛选，仅搜索该年级下的班级" },
+        { "name": "limit", "type": "number", "description": "返回条数上限，默认 10，最大 50" }
+      ]
+    },
+    {
+      "name": "获取班级人数统计",
+      "endpoint": "GET /api/classes/statistics/headcount",
+      "description": "按班级维度统计各班级当前在班人数（按年级分组可供前端展示）。用于学习统计模块和 Web UI 仪表盘展示。优先返回缓存数据",
+      "parameters": [
+        { "name": "gradeId", "type": "number", "description": "按年级筛选，可选；不传则返回所有班级" }
+      ]
+    }
+  ],
+  "error_handling": "全局统一返回标准 JSON 格式：{ code: number, message: string, details?: any }。4xx 错误携带具体校验提示：班级不存在返回 404（message: '班级不存在'），班级名称在同年级下重复返回 409（message: '该年级下已存在同名班级'），年级无效返回 400（message: '指定的年级不存在'），学生不存在返回 400（message: '指定的学生不存在'），班级人数已达上限返回 409（message: '班级人数已达上限，无法添加新成员'），班级下仍有学生时拒绝删除返回 409（message: '班级下仍有学生，请先移除所有学生后再删除'），参数格式错误返回 400（message: '参数错误' 并 details 标明具体字段）。5xx 错误统一返回 500（message: '系统内部错误'），完整错误栈记录到服务日志。逻辑删除的记录在列表查询和详情查询中均被过滤（WHERE deleted_at IS NULL）。class_student 关系表采用逻辑删除，同一学生加入新班级前自动逻辑删除旧归属记录，保证一个学生同时只属于一个班级的业务约束。缓存操作（Redis）失败时降级为直接查询数据库，不阻塞正常业务流程。"
+}
