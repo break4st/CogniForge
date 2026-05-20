@@ -133,10 +133,16 @@ LLD_MODULES_FOUND = "  SAD 定义了 {count} 个模块: {modules}"
 LLD_AUTO_ALL_CHOICE = "让 Agent 自动生成全部 {count} 个模块的 LLD"
 LLD_PROGRESS = "正在生成 LLD: {module}"
 
+WBS_CHOICE_TITLE = "WBS（techlead agent）— 选择任务分解方式"
+WBS_CHOICE_AUTO = "让 Agent 基于已有设计文档自主分解任务"
+WBS_CHOICE_MANUAL = "我自己描述任务分解"
+WBS_AUTO_PROMPT = "基于已批准的 PRD、SAD 和 LLD 文档，自动分解工作包，包括任务依赖关系和优先级。不需要反问用户。"
+
 # Mapping: step -> (title, auto_label, manual_label, auto_prompt)
 DESIGN_STEP_CHOICES: dict[str, tuple[str, str, str, str]] = {
     "sad": (SAD_CHOICE_TITLE, SAD_CHOICE_AUTO, SAD_CHOICE_MANUAL, SAD_AUTO_PROMPT),
     "lld": (LLD_CHOICE_TITLE, LLD_CHOICE_AUTO, LLD_CHOICE_MANUAL, LLD_AUTO_PROMPT),
+    "wbs": (WBS_CHOICE_TITLE, WBS_CHOICE_AUTO, WBS_CHOICE_MANUAL, WBS_AUTO_PROMPT),
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
