@@ -427,20 +427,23 @@ class Repl:
                     result = agent.run(input_data)
                 finally:
                     spinner.stop()
-                _print_lld_result(mod_name, result)
+                self._print_lld_result(mod_name, result)
                 results.append(result)
             else:
                 # Parallel within layer
                 max_w = min(len(group), 4)
+                batch_start = counter + 1
+                batch_end = counter + len(group)
+                counter = batch_end
+                click.echo(
+                    f"\n  [{C_AMBER}{batch_start}-{batch_end}/{total}{C_RESET}] "
+                    f"并行生成 {len(group)} 个 {label} 模块 ..."
+                )
+
                 with ThreadPoolExecutor(max_workers=max_w) as executor:
                     future_map: dict = {}
                     for comp in group:
-                        counter += 1
                         mod_name = comp.get("name", "unknown")
-                        click.echo(
-                            f"\n  [{C_AMBER}{counter}/{total}{C_RESET}] "
-                            + LLD_PROGRESS.format(module=mod_name)
-                        )
                         input_data = {
                             "module": mod_name,
                             "title": f"LLD - {mod_name}",
@@ -449,14 +452,40 @@ class Repl:
                         future = executor.submit(agent.run, input_data)
                         future_map[future] = mod_name
 
-                    for future in as_completed(future_map):
-                        mod_name = future_map[future]
-                        try:
-                            result = future.result()
-                        except Exception as e:
-                            result = {"status": "failed", "message": str(e)}
-                        _print_lld_result(mod_name, result)
-                        results.append(result)
+                    pending: set[str] = set(future_map.values())
+                    completed = 0
+                    total_in = len(group)
+
+                    def _progress_msg() -> str:
+                        if not pending:
+                            return f"全部 {total_in} 个模块已完成"
+                        waiting = ", ".join(sorted(pending)[:3])
+                        if len(pending) > 3:
+                            waiting += f" ... +{len(pending)-3}"
+                        return (
+                            f"已完成 {completed}/{total_in}"
+                            f"  |  等待: {waiting}"
+                        )
+
+                    spinner = Spinner(_progress_msg())
+                    spinner.start()
+                    try:
+                        for future in as_completed(future_map):
+                            mod_name = future_map[future]
+                            pending.discard(mod_name)
+                            try:
+                                result = future.result()
+                            except Exception as e:
+                                result = {"status": "failed", "message": str(e)}
+                            completed += 1
+                            spinner.message = _progress_msg()
+                            spinner.stop()
+                            self._print_lld_result(mod_name, result)
+                            results.append(result)
+                            if pending:
+                                spinner.start()
+                    finally:
+                        spinner.stop()
 
         # Summary
         success_count = sum(1 for r in results if r.get("status") == "success")
