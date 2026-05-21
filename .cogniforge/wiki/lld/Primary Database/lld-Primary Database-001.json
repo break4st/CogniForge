@@ -2,338 +2,206 @@
   "meta": {
     "doc_id": "lld-Primary Database-001",
     "type": "lld",
+    "module_type": "ModuleType.DATABASE",
     "module": "Primary Database",
     "title": "LLD - Primary Database",
     "author": "design_agent",
-    "created": "2026-05-20 17:15"
+    "created": "2026-05-21 09:50"
   },
   "overview": {
-    "description": "主数据库（PostgreSQL 15+），作为系统唯一持久化数据源，存储所有业务数据。为 Project Management Service、Environment Management Service、Deployment Orchestrator、Key Management Service、Audit Service 提供结构化数据存取能力。采用 schema 分层隔离不同业务域，支持事务 ACID 保证，所有表使用 UUID 主键和 TIMESTAMPTZ 时间戳。",
+    "description": "MySQL 8.0主数据库，存储项目信息、环境配置、密钥元数据、部署记录和审计日志等持久化数据。作为系统的单点真相源（Single Source of Truth），为所有微服务提供ACID事务保障和结构化数据存储能力。",
     "dependencies": [],
-    "tech_stack": ["PostgreSQL 15+"]
+    "tech_stack": ["MySQL 8.0"]
   },
   "data_models": [
     {
-      "name": "users",
-      "type": "table",
-      "description": "系统用户表，存储用户账号和认证信息。每个用户有唯一 username 和 email，支持角色权限控制",
-      "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "用户唯一标识，主键，默认 gen_random_uuid()"},
-        {"name": "username", "type": "VARCHAR(64)", "required": true, "description": "用户名，唯一约束，长度 2-64 字符"},
-        {"name": "email", "type": "VARCHAR(255)", "required": true, "description": "用户邮箱，唯一约束"},
-        {"name": "password_hash", "type": "VARCHAR(255)", "required": true, "description": "bcrypt 密码哈希值"},
-        {"name": "role", "type": "VARCHAR(32)", "required": true, "description": "用户角色枚举：admin / developer / viewer，默认 viewer"},
-        {"name": "status", "type": "VARCHAR(16)", "required": true, "description": "用户状态枚举：active / disabled，默认 active"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "创建时间，默认 NOW()"},
-        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": true, "description": "更新时间，默认 NOW()"}
-      ]
-    },
-    {
       "name": "projects",
       "type": "table",
-      "description": "项目表，存储项目基本信息。一个项目可关联多个部署环境和多组 SSH 密钥，支持归档操作",
+      "ownership": "canonical",
+      "description": "项目信息表，存储项目的核心信息。由Project Management Service负责此表的读写操作。",
       "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "项目唯一标识，主键，默认 gen_random_uuid()"},
-        {"name": "name", "type": "VARCHAR(128)", "required": true, "description": "项目名称，唯一约束"},
-        {"name": "description", "type": "TEXT", "required": false, "description": "项目描述信息"},
-        {"name": "created_by", "type": "UUID", "required": true, "description": "创建者用户 ID，外键关联 users.id"},
-        {"name": "status", "type": "VARCHAR(16)", "required": true, "description": "项目状态枚举：active / archived，默认 active"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "创建时间，默认 NOW()"},
-        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": true, "description": "更新时间，默认 NOW()"}
+        {"name": "id", "type": "bigint", "required": true, "description": "项目ID，自增主键"},
+        {"name": "name", "type": "varchar(255)", "required": true, "description": "项目名称，全局唯一"},
+        {"name": "description", "type": "text", "required": false, "description": "项目描述"},
+        {"name": "created_at", "type": "datetime", "required": true, "description": "创建时间"},
+        {"name": "updated_at", "type": "datetime", "required": true, "description": "更新时间"}
+      ],
+      "indexes": [
+        {"name": "PRIMARY", "type": "BTREE", "fields": ["id"], "unique": true},
+        {"name": "uk_name", "type": "BTREE", "fields": ["name"], "unique": true},
+        {"name": "idx_created_at", "type": "BTREE", "fields": ["created_at"], "unique": false}
       ]
     },
     {
       "name": "environments",
       "type": "table",
-      "description": "部署环境配置表，存储每个项目的目标部署环境连接参数。一个项目可包含多个环境（如 production、staging、testing），每个环境关联一组 SSH 密钥",
+      "ownership": "canonical",
+      "description": "部署环境配置表，存储每个环境的连接参数和类型信息，通过project_id与项目关联。由Environment Management Service负责此表的读写操作。",
       "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "环境唯一标识，主键，默认 gen_random_uuid()"},
-        {"name": "project_id", "type": "UUID", "required": true, "description": "所属项目 ID，外键关联 projects.id，CASCADE 删除"},
-        {"name": "name", "type": "VARCHAR(64)", "required": true, "description": "环境名称，同项目内唯一，如 production / staging / testing"},
-        {"name": "ssh_host", "type": "VARCHAR(255)", "required": true, "description": "SSH 目标主机地址（IP 或域名）"},
-        {"name": "ssh_port", "type": "INTEGER", "required": true, "description": "SSH 端口号，默认 22，范围 1-65535"},
-        {"name": "ssh_user", "type": "VARCHAR(64)", "required": true, "description": "SSH 登录用户名"},
-        {"name": "ssh_key_id", "type": "UUID", "required": true, "description": "关联 SSH 密钥 ID，外键关联 ssh_keys.id"},
-        {"name": "deploy_path", "type": "VARCHAR(512)", "required": true, "description": "远程服务器部署绝对路径"},
-        {"name": "status", "type": "VARCHAR(16)", "required": true, "description": "环境状态枚举：active / inactive，默认 active"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "创建时间，默认 NOW()"},
-        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": true, "description": "更新时间，默认 NOW()"}
+        {"name": "id", "type": "bigint", "required": true, "description": "环境ID，自增主键"},
+        {"name": "project_id", "type": "bigint", "required": true, "description": "所属项目ID，外键关联projects表"},
+        {"name": "name", "type": "varchar(255)", "required": true, "description": "环境名称，同一项目内唯一"},
+        {"name": "type", "type": "enum('test','gray','production')", "required": true, "description": "环境类型：test-测试线，gray-灰度线，production-正式线"},
+        {"name": "host", "type": "varchar(255)", "required": true, "description": "远程主机地址（IP或域名）"},
+        {"name": "port", "type": "int", "required": true, "description": "SSH端口号，默认22"},
+        {"name": "username", "type": "varchar(128)", "required": true, "description": "SSH登录用户名"},
+        {"name": "created_at", "type": "datetime", "required": true, "description": "创建时间"},
+        {"name": "updated_at", "type": "datetime", "required": true, "description": "更新时间"}
+      ],
+      "indexes": [
+        {"name": "PRIMARY", "type": "BTREE", "fields": ["id"], "unique": true},
+        {"name": "idx_project_id", "type": "BTREE", "fields": ["project_id"], "unique": false},
+        {"name": "uk_project_env", "type": "BTREE", "fields": ["project_id", "name"], "unique": true},
+        {"name": "idx_created_at", "type": "BTREE", "fields": ["created_at"], "unique": false}
       ]
     },
     {
-      "name": "ssh_keys",
+      "name": "environment_keys",
       "type": "table",
-      "description": "SSH 密钥表，存储加密后的 SSH 密钥对。密钥内容在写入前由 Key Management Service 使用 AES-256 加密，数据库仅存储密文",
+      "ownership": "canonical",
+      "description": "SSH密钥元数据表，存储每个环境关联的SSH密钥加密信息和指纹。密钥内容经AES-256-GCM加密后存储，通过env_id与环境关联。由Key Management Service负责此表的读写操作。",
       "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "密钥唯一标识，主键，默认 gen_random_uuid()"},
-        {"name": "name", "type": "VARCHAR(128)", "required": true, "description": "密钥名称，用于管理界面展示"},
-        {"name": "key_type", "type": "VARCHAR(16)", "required": true, "description": "密钥算法类型：rsa / ed25519 / ecdsa"},
-        {"name": "public_key", "type": "TEXT", "required": true, "description": "公钥内容（AES-256-GCM 加密存储）"},
-        {"name": "private_key", "type": "TEXT", "required": true, "description": "私钥内容（AES-256-GCM 加密存储）"},
-        {"name": "fingerprint", "type": "VARCHAR(64)", "required": true, "description": "密钥 MD5 指纹，用于密钥识别和验证"},
-        {"name": "passphrase", "type": "TEXT", "required": false, "description": "密钥加密口令（AES-256-GCM 加密存储），仅密钥受口令保护时填写"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "创建时间，默认 NOW()"},
-        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": true, "description": "更新时间，默认 NOW()"}
+        {"name": "id", "type": "bigint", "required": true, "description": "密钥ID，自增主键"},
+        {"name": "env_id", "type": "bigint", "required": true, "description": "环境ID，外键关联environments表，每个环境最多一条记录"},
+        {"name": "key_type", "type": "enum('rsa','ed25519')", "required": true, "description": "密钥类型：rsa或ed25519"},
+        {"name": "encrypted_key", "type": "text", "required": true, "description": "AES-256-GCM加密后的SSH私钥内容（Base64编码存储）"},
+        {"name": "fingerprint", "type": "varchar(255)", "required": true, "description": "密钥指纹，用于标识和验证密钥"},
+        {"name": "created_at", "type": "datetime", "required": true, "description": "创建时间"},
+        {"name": "updated_at", "type": "datetime", "required": true, "description": "更新时间"}
+      ],
+      "indexes": [
+        {"name": "PRIMARY", "type": "BTREE", "fields": ["id"], "unique": true},
+        {"name": "uk_env_id", "type": "BTREE", "fields": ["env_id"], "unique": true},
+        {"name": "idx_env_id", "type": "BTREE", "fields": ["env_id"], "unique": false}
       ]
     },
     {
       "name": "deployments",
       "type": "table",
-      "description": "部署记录表，存储每次部署任务的完整生命周期信息。一个部署记录关联一个项目和一个环境，记录从创建到完成的完整状态变迁",
+      "ownership": "canonical",
+      "description": "部署任务记录表，存储每次部署的元数据和状态变化。由Deployment Orchestrator负责此表的读写操作，SSH Execution Service通过MQ间接更新状态。",
       "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "部署唯一标识，主键，默认 gen_random_uuid()"},
-        {"name": "project_id", "type": "UUID", "required": true, "description": "所属项目 ID，外键关联 projects.id"},
-        {"name": "environment_id", "type": "UUID", "required": true, "description": "目标环境 ID，外键关联 environments.id"},
-        {"name": "version", "type": "VARCHAR(64)", "required": true, "description": "部署版本号，如 v1.2.3 或 commit SHA"},
-        {"name": "status", "type": "VARCHAR(16)", "required": true, "description": "部署状态枚举：pending / running / success / failed / rolled_back，默认 pending"},
-        {"name": "task_id", "type": "VARCHAR(64)", "required": true, "description": "异步任务追踪 ID，用于 WebSocket 实时日志频道匹配"},
-        {"name": "created_by", "type": "UUID", "required": true, "description": "发起部署的用户 ID，外键关联 users.id"},
-        {"name": "started_at", "type": "TIMESTAMPTZ", "required": false, "description": "部署开始执行时间，进入 running 状态时记录"},
-        {"name": "completed_at", "type": "TIMESTAMPTZ", "required": false, "description": "部署完成时间，进入 success / failed / rolled_back 状态时记录"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "创建时间，默认 NOW()"},
-        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": true, "description": "更新时间，默认 NOW()"}
+        {"name": "id", "type": "bigint", "required": true, "description": "部署任务ID，自增主键"},
+        {"name": "project_id", "type": "bigint", "required": true, "description": "项目ID，关联projects表"},
+        {"name": "environment_id", "type": "bigint", "required": true, "description": "目标环境ID，关联environments表"},
+        {"name": "version", "type": "varchar(64)", "required": true, "description": "版本号，如 v1.2.3"},
+        {"name": "artifact_path", "type": "varchar(512)", "required": true, "description": "可执行文件路径或下载URL"},
+        {"name": "description", "type": "varchar(1024)", "required": false, "description": "部署说明"},
+        {"name": "status", "type": "enum('pending','running','success','failed')", "required": true, "description": "部署状态：pending-待执行，running-执行中，success-成功，failed-失败"},
+        {"name": "progress", "type": "int", "required": true, "description": "进度百分比0-100，默认0"},
+        {"name": "created_at", "type": "datetime", "required": true, "description": "创建时间"},
+        {"name": "started_at", "type": "datetime", "required": false, "description": "开始部署时间"},
+        {"name": "finished_at", "type": "datetime", "required": false, "description": "部署完成时间"}
+      ],
+      "indexes": [
+        {"name": "PRIMARY", "type": "BTREE", "fields": ["id"], "unique": true},
+        {"name": "idx_project_id", "type": "BTREE", "fields": ["project_id"], "unique": false},
+        {"name": "idx_environment_id", "type": "BTREE", "fields": ["environment_id"], "unique": false},
+        {"name": "idx_status", "type": "BTREE", "fields": ["status"], "unique": false},
+        {"name": "idx_created_at", "type": "BTREE", "fields": ["created_at"], "unique": false}
       ]
     },
     {
       "name": "deployment_logs",
       "type": "table",
-      "description": "部署执行日志表，存储部署过程中的实时日志流水。日志量较大，按 deployment_id 索引查询，按月分区存储",
+      "ownership": "canonical",
+      "description": "部署日志表，记录部署执行过程中产生的详细操作日志。由Deployment Orchestrator在接收SSH执行日志后写入此表。",
       "fields": [
-        {"name": "id", "type": "BIGSERIAL", "required": true, "description": "日志记录自增 ID，主键"},
-        {"name": "deployment_id", "type": "UUID", "required": true, "description": "关联部署 ID，外键关联 deployments.id，CASCADE 删除"},
-        {"name": "level", "type": "VARCHAR(8)", "required": true, "description": "日志级别枚举：info / warn / error / debug"},
-        {"name": "message", "type": "TEXT", "required": true, "description": "日志内容文本"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "日志产生时间，默认 NOW()"}
+        {"name": "id", "type": "bigint", "required": true, "description": "日志ID，自增主键"},
+        {"name": "deployment_id", "type": "bigint", "required": true, "description": "部署任务ID，关联deployments表"},
+        {"name": "level", "type": "enum('info','warn','error')", "required": true, "description": "日志级别：info-信息，warn-警告，error-错误"},
+        {"name": "message", "type": "text", "required": true, "description": "日志内容"},
+        {"name": "created_at", "type": "datetime", "required": true, "description": "日志记录时间"}
+      ],
+      "indexes": [
+        {"name": "PRIMARY", "type": "BTREE", "fields": ["id"], "unique": true},
+        {"name": "idx_deployment_id", "type": "BTREE", "fields": ["deployment_id"], "unique": false},
+        {"name": "idx_created_at", "type": "BTREE", "fields": ["created_at"], "unique": false}
       ]
     },
     {
       "name": "audit_logs",
       "type": "table",
-      "description": "审计日志表，记录全系统所有关键操作的审计追踪信息。采用只写追加模式（append-only），不允许 UPDATE 和 DELETE，保证审计链路不可篡改",
+      "ownership": "canonical",
+      "description": "审计日志表，记录系统中所有关键操作的审计轨迹。由Audit Service在API Gateway调用后将操作信息写入此表。",
       "fields": [
-        {"name": "log_id", "type": "UUID", "required": true, "description": "审计日志唯一标识，主键，默认 gen_random_uuid()"},
-        {"name": "action", "type": "VARCHAR(128)", "required": true, "description": "操作行为标识，如 create_project / trigger_deployment / import_key"},
-        {"name": "actor", "type": "VARCHAR(255)", "required": true, "description": "操作者标识，记录执行操作的用户名或服务账号名称"},
-        {"name": "resource_type", "type": "VARCHAR(64)", "required": true, "description": "操作资源类型枚举：project / deployment / key / environment / user"},
-        {"name": "resource_id", "type": "VARCHAR(36)", "required": true, "description": "操作资源 UUID 标识"},
-        {"name": "detail", "type": "JSONB", "required": false, "description": "操作详情 JSON 对象，记录操作前后的关键数据变更"},
-        {"name": "result", "type": "VARCHAR(16)", "required": true, "description": "操作结果枚举：success / failure"},
-        {"name": "failure_reason", "type": "TEXT", "required": false, "description": "操作失败原因描述，仅 result 为 failure 时填写"},
-        {"name": "source_ip", "type": "VARCHAR(45)", "required": false, "description": "请求来源 IP 地址（IPv4 或 IPv6）"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "审计日志记录时间，默认 NOW()"}
+        {"name": "id", "type": "bigint", "required": true, "description": "审计日志ID，自增主键"},
+        {"name": "user_id", "type": "bigint", "required": true, "description": "操作用户ID"},
+        {"name": "username", "type": "varchar(255)", "required": true, "description": "操作用户名"},
+        {"name": "action_type", "type": "varchar(50)", "required": true, "description": "操作类型：create|update|delete|deploy|test|login"},
+        {"name": "resource_type", "type": "varchar(50)", "required": true, "description": "资源类型：project|environment|key|deployment"},
+        {"name": "resource_id", "type": "bigint", "required": true, "description": "操作资源ID"},
+        {"name": "resource_name", "type": "varchar(255)", "required": false, "description": "操作资源名称，便于快速识别"},
+        {"name": "detail", "type": "json", "required": false, "description": "操作详情JSON，记录请求关键字段和变更内容"},
+        {"name": "ip_address", "type": "varchar(45)", "required": true, "description": "请求来源IP地址，支持IPv4和IPv6"},
+        {"name": "result", "type": "varchar(20)", "required": true, "description": "操作结果：success|failure"},
+        {"name": "created_at", "type": "datetime", "required": true, "description": "审计日志记录时间"}
+      ],
+      "indexes": [
+        {"name": "PRIMARY", "type": "BTREE", "fields": ["id"], "unique": true},
+        {"name": "idx_user_id", "type": "BTREE", "fields": ["user_id"], "unique": false},
+        {"name": "idx_action_type", "type": "BTREE", "fields": ["action_type"], "unique": false},
+        {"name": "idx_resource_type", "type": "BTREE", "fields": ["resource_type"], "unique": false},
+        {"name": "idx_created_at", "type": "BTREE", "fields": ["created_at"], "unique": false}
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "User Repository",
+      "name": "MySQL Connection Pool",
       "method": "INTERNAL",
-      "endpoint": "/internal/db/users",
-      "description": "用户数据存取接口，提供用户信息的创建、查询、更新能力。由 API Gateway（用户管理）和 Project Management Service（项目创建者关联）调用",
+      "endpoint": "mysql://primary-database:3306/cogniforge",
+      "description": "MySQL数据库连接池接口。所有微服务通过该接口建立到主数据库的连接，执行SQL操作。连接池参数由各服务的数据库客户端配置管理，包括最大连接数（默认20）、连接超时（默认5秒）、空闲连接回收时间等。",
       "parameters": [
-        {"name": "CreateUser", "type": "func(user)", "description": "创建新用户记录，username 和 email 唯一约束冲突返回 409"},
-        {"name": "GetUserByID", "type": "func(id UUID)", "description": "按用户 ID 查询用户信息，不存在返回 nil"},
-        {"name": "GetUserByUsername", "type": "func(username string)", "description": "按用户名查询用户信息，用于登录认证"},
-        {"name": "GetUserByEmail", "type": "func(email string)", "description": "按邮箱查询用户信息"},
-        {"name": "ListUsers", "type": "func(page, pageSize int, filters)", "description": "分页查询用户列表，支持按角色和状态筛选"},
-        {"name": "UpdateUser", "type": "func(id UUID, updates)", "description": "更新用户信息（角色、状态、邮箱等），返回更新后记录"},
-        {"name": "DeleteUser", "type": "func(id UUID)", "description": "软删除用户（设置 status=disabled），保留审计关联"}
+        {"name": "host", "type": "string", "description": "数据库主机地址，容器内服务间访问使用 service name: primary-database"},
+        {"name": "port", "type": "integer", "description": "MySQL服务端口，默认3306"},
+        {"name": "database", "type": "string", "description": "数据库名称，默认cogniforge"},
+        {"name": "user", "type": "string", "description": "数据库连接用户名，各服务使用独立的数据库账户以支持最小权限原则"},
+        {"name": "password", "type": "string", "description": "数据库连接密码，通过环境变量注入，禁止硬编码"},
+        {"name": "charset", "type": "string", "description": "字符集，默认 utf8mb4"},
+        {"name": "pool_size", "type": "integer", "description": "连接池最大连接数，默认20"},
+        {"name": "pool_recycle", "type": "integer", "description": "连接回收时间（秒），默认3600"},
+        {"name": "pool_pre_ping", "type": "boolean", "description": "连接使用前是否执行探活检测，默认true"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "id": "UUID",
-          "username": "string",
-          "email": "string",
-          "role": "string",
-          "status": "string",
-          "created_at": "datetime"
+          "connection_id": "bigint",
+          "server_version": "string",
+          "connected": "boolean"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "参数校验失败，如用户名/邮箱格式无效、角色不在枚举范围"},
-        {"code": 409, "message": "唯一约束冲突：用户名或邮箱已存在"},
-        {"code": 500, "message": "数据库操作失败（连接异常、写入超时）"}
+        {"code": 2001, "message": "数据库连接超时（默认5秒）"},
+        {"code": 2002, "message": "数据库认证失败：用户名或密码错误"},
+        {"code": 2003, "message": "数据库不可达：主机地址错误或网络不可达"},
+        {"code": 1045, "message": "访问被拒绝：用户权限不足"}
       ]
     },
     {
-      "name": "Project Repository",
+      "name": "Transaction Management",
       "method": "INTERNAL",
-      "endpoint": "/internal/db/projects",
-      "description": "项目数据存取接口，提供项目信息的完整 CRUD 操作。由 Project Management Service 调用",
+      "endpoint": "MySQL Transaction (InnoDB)",
+      "description": "InnoDB事务管理接口。提供ACID事务保障，支持自动提交模式和显式事务控制（BEGIN/COMMIT/ROLLBACK）。默认隔离级别为READ COMMITTED，满足各服务对事务隔离性和并发性能的综合需求。",
       "parameters": [
-        {"name": "CreateProject", "type": "func(project)", "description": "创建新项目记录，name 唯一约束冲突返回 409"},
-        {"name": "GetProjectByID", "type": "func(id UUID)", "description": "按项目 ID 查询项目详情，包含创建者信息"},
-        {"name": "ListProjects", "type": "func(page, pageSize int, filters)", "description": "分页查询项目列表，支持按名称模糊搜索和状态筛选"},
-        {"name": "UpdateProject", "type": "func(id UUID, updates)", "description": "更新项目信息（名称、描述、状态），返回更新后记录"},
-        {"name": "ArchiveProject", "type": "func(id UUID)", "description": "归档项目（设置 status=archived），级联环境变为 inactive"}
+        {"name": "isolation_level", "type": "string", "description": "事务隔离级别：READ COMMITTED（默认）| REPEATABLE READ | SERIALIZABLE"},
+        {"name": "auto_commit", "type": "boolean", "description": "是否启用自动提交模式，默认true"},
+        {"name": "timeout", "type": "integer", "description": "事务超时时间（秒），默认30，超时后自动回滚"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "id": "UUID",
-          "name": "string",
-          "description": "string",
-          "created_by": "UUID",
-          "status": "string",
-          "created_at": "datetime",
-          "updated_at": "datetime"
+          "transaction_id": "bigint",
+          "committed": "boolean",
+          "affected_rows": "integer"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "参数校验失败，如项目名称长度为空或超过 128 字符"},
-        {"code": 404, "message": "指定项目 ID 不存在"},
-        {"code": 409, "message": "项目名称已存在"},
-        {"code": 500, "message": "数据库操作失败"}
-      ]
-    },
-    {
-      "name": "Environment Repository",
-      "method": "INTERNAL",
-      "endpoint": "/internal/db/environments",
-      "description": "部署环境配置存取接口，提供环境信息的完整 CRUD 操作。由 Environment Management Service 调用",
-      "parameters": [
-        {"name": "CreateEnvironment", "type": "func(env)", "description": "创建新环境配置，同项目内 name 唯一"},
-        {"name": "GetEnvironmentByID", "type": "func(id UUID)", "description": "按环境 ID 查询环境详情，包含关联 SSH 密钥信息"},
-        {"name": "ListEnvironmentsByProject", "type": "func(projectID UUID)", "description": "查询指定项目的所有环境列表"},
-        {"name": "UpdateEnvironment", "type": "func(id UUID, updates)", "description": "更新环境配置（SSH 参数、部署路径、状态等）"},
-        {"name": "DeleteEnvironment", "type": "func(id UUID)", "description": "删除环境配置，检查无关联部署记录后执行物理删除"},
-        {"name": "TestConnection", "type": "func(id UUID)", "description": "查询环境连接参数用于 SSH 连通性测试（非持久化操作）"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "UUID",
-          "project_id": "UUID",
-          "name": "string",
-          "ssh_host": "string",
-          "ssh_port": "integer",
-          "ssh_user": "string",
-          "ssh_key_id": "UUID",
-          "deploy_path": "string",
-          "status": "string",
-          "created_at": "datetime"
-        }
-      },
-      "error_codes": [
-        {"code": 400, "message": "参数校验失败，如 SSH 端口不在 1-65535 范围、部署路径非绝对路径"},
-        {"code": 404, "message": "指定环境 ID 或项目 ID 不存在"},
-        {"code": 409, "message": "同项目内环境名称重复"},
-        {"code": 500, "message": "数据库操作失败"}
-      ]
-    },
-    {
-      "name": "SSH Key Repository",
-      "method": "INTERNAL",
-      "endpoint": "/internal/db/ssh_keys",
-      "description": "SSH 密钥存取接口，提供密钥对的创建、查询和删除能力。密钥内容由 Key Management Service 加密后写入，数据库不处理加解密逻辑",
-      "parameters": [
-        {"name": "CreateSSHKey", "type": "func(key)", "description": "存储加密后的 SSH 密钥对，name 唯一约束冲突返回 409"},
-        {"name": "GetSSHKeyByID", "type": "func(id UUID)", "description": "查询密钥元信息和加密后的密钥内容"},
-        {"name": "ListSSHKeys", "type": "func(page, pageSize int)", "description": "分页查询密钥列表（仅返回元信息，不返回密钥内容）"},
-        {"name": "DeleteSSHKey", "type": "func(id UUID)", "description": "删除 SSH 密钥记录，检查无关联环境后执行物理删除"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "UUID",
-          "name": "string",
-          "key_type": "string",
-          "fingerprint": "string",
-          "created_at": "datetime"
-        }
-      },
-      "error_codes": [
-        {"code": 400, "message": "参数校验失败，如密钥类型不在枚举范围"},
-        {"code": 404, "message": "指定密钥 ID 不存在"},
-        {"code": 409, "message": "密钥名称已存在"},
-        {"code": 500, "message": "数据库操作失败"}
-      ]
-    },
-    {
-      "name": "Deployment Repository",
-      "method": "INTERNAL",
-      "endpoint": "/internal/db/deployments",
-      "description": "部署记录存取接口，提供部署任务的创建、状态更新和查询能力。由 Deployment Orchestrator 在全流程中调用",
-      "parameters": [
-        {"name": "CreateDeployment", "type": "func(deployment)", "description": "创建新部署记录，初始状态为 pending"},
-        {"name": "GetDeploymentByID", "type": "func(id UUID)", "description": "查询部署记录详情，包含关联项目和环境信息"},
-        {"name": "GetDeploymentByTaskID", "type": "func(taskID string)", "description": "按异步任务 ID 查询部署记录，用于 WebSocket 频道绑定"},
-        {"name": "ListDeployments", "type": "func(projectID UUID, page, pageSize int, filters)", "description": "分页查询部署记录列表，支持按状态、环境和时间范围筛选"},
-        {"name": "UpdateDeploymentStatus", "type": "func(id UUID, status, startedAt, completedAt)", "description": "更新部署状态和时间戳，状态转换需遵循状态机约束"},
-        {"name": "AppendDeploymentLog", "type": "func(deploymentID UUID, level, message string)", "description": "追加部署日志记录，用于实时日志推送"},
-        {"name": "GetDeploymentLogs", "type": "func(deploymentID UUID, offset int)", "description": "查询部署日志流，支持 offset 增量拉取"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "UUID",
-          "project_id": "UUID",
-          "environment_id": "UUID",
-          "version": "string",
-          "status": "string",
-          "task_id": "string",
-          "created_by": "UUID",
-          "started_at": "datetime",
-          "completed_at": "datetime",
-          "created_at": "datetime"
-        }
-      },
-      "error_codes": [
-        {"code": 400, "message": "参数校验失败或状态转换不符合状态机规则（如从 success 转为 running）"},
-        {"code": 404, "message": "指定部署记录不存在"},
-        {"code": 500, "message": "数据库操作失败"}
-      ]
-    },
-    {
-      "name": "Audit Log Repository",
-      "method": "INTERNAL",
-      "endpoint": "/internal/db/audit_logs",
-      "description": "审计日志存取接口，提供审计记录的写入和查询能力。所有服务通过 Audit Service 写入审计日志，本接口为 Audit Service 的底层存储实现",
-      "parameters": [
-        {"name": "InsertAuditLog", "type": "func(log)", "description": "追加写入审计日志记录，同步返回 log_id 和 created_at"},
-        {"name": "GetAuditLogByID", "type": "func(logID UUID)", "description": "按日志 ID 查询单条审计日志完整详情"},
-        {"name": "QueryAuditLogs", "type": "func(filters, page, pageSize)", "description": "多维度组合条件查询审计日志列表，支持按操作、操作者、资源类型、时间范围筛选，结果按 created_at 降序排列"},
-        {"name": "CountAuditLogs", "type": "func(filters)", "description": "统计符合筛选条件的审计日志总数，用于分页 total 计算"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "log_id": "UUID",
-          "action": "string",
-          "actor": "string",
-          "resource_type": "string",
-          "resource_id": "string",
-          "detail": "object",
-          "result": "string",
-          "failure_reason": "string",
-          "source_ip": "string",
-          "created_at": "datetime"
-        }
-      },
-      "error_codes": [
-        {"code": 400, "message": "查询参数校验失败，如时间范围格式不正确、分页参数越界"},
-        {"code": 404, "message": "指定日志 ID 不存在"},
-        {"code": 500, "message": "数据库查询或写入失败"}
-      ]
-    },
-    {
-      "name": "Health Check",
-      "method": "GET",
-      "endpoint": "/health/db",
-      "description": "数据库连通性健康检查。向 PostgreSQL 发送 SELECT 1 探活查询，用于网关层和服务发现组件的健康监测",
-      "parameters": [],
-      "response": {
-        "status": 200,
-        "body": {
-          "status": "string",
-          "latency_ms": "integer"
-        }
-      },
-      "error_codes": [
-        {"code": 503, "message": "数据库连接不可用，连接池耗尽或数据库实例宕机"}
+        {"code": 1213, "message": "死锁检测到，事务被回滚，需重试"},
+        {"code": 1205, "message": "锁等待超时（默认50秒），事务被回滚"},
+        {"code": 1062, "message": "唯一键冲突：违反UNIQUE约束，写入已存在的重复值"}
       ]
     }
   ],
-  "error_handling": "主数据库作为系统持久化层，所有错误由上层 Service 层封装处理，数据库层仅保证错误码和错误信息的准确传递。\n\n(1)连接管理 — 使用连接池（max_open_conns=50, max_idle_conns=25, conn_max_lifetime=30min）。连接超时统一设置为 5s，写入超时 10s，查询超时 30s。超时错误返回 code=500 及 message='database operation timeout'。连接池耗尽时返回 code=503 及 message='database connection pool exhausted'。\n\n(2)约束冲突 — 唯一约束（如 username、email、project name、environment name）冲突时返回 code=409 及明确冲突字段名，如 'project name already exists'。外键约束违反（如引用的项目 ID 不存在）返回 code=400 及 'referenced resource not found'。NOT NULL 约束违反由 ORM 层在参数校验阶段拦截。\n\n(3)事务管理 — 涉及多表写操作（如创建项目同时写入审计日志、级联删除环境及其关联部署）使用数据库事务保证原子性。事务执行失败自动 ROLLBACK，返回 code=500。事务隔离级别使用 READ COMMITTED。Deployment Orchestrator 的状态更新操作使用悲观锁（SELECT FOR UPDATE）防止并发状态覆盖。\n\n(4)数据完整性 — 所有表主键使用 UUID v4 避免自增 ID 暴露业务量。TIMESTAMPTZ 类型统一使用 UTC 时区存储，应用层负责时区转换。JSONB 字段在写入时由数据库层校验 JSON 合法性，格式无效返回 400。BIGSERIAL 类型用于日志流水表的主键生成。\n\n(5)索引策略 — users(username, email) 建立唯一索引；projects(name) 建立唯一索引；environments(project_id, name) 建立联合唯一索引；deployments(project_id, created_at) 建立复合索引，task_id 建立唯一索引；deployment_logs(deployment_id, created_at) 建立复合索引；audit_logs(created_at) 建立索引支持分区裁剪，(resource_type, resource_id) 建立复合索引支持资源维度查询。\n\n(6)分区策略 — audit_logs 表按 created_at 月分区（RANGE PARTITION BY created_at），每月自动创建新分区。deployment_logs 表按 created_at 月分区。超出当前分区的写入由应用层校验拒绝。\n\n(7)NULL 策略 — 所有 JSONB 字段存储空值时使用 NULL 而非 '{}'，便于分区裁剪和索引优化。可选时间字段（started_at、completed_at）在状态未到达前为 NULL。条件为非必填字段在无值时使用 NULL。"
+  "error_handling": "1）连接层错误：数据库连接超时（5秒阈值）或连接池耗尽时，各微服务应实现连接重试机制（最多3次，指数退避），重试耗尽后返回500，响应体包含请求ID。2）查询超时：单条SQL查询超过默认5秒阈值时中断并记录慢查询日志，通过slow_query_log_file定位性能瓶颈。3）死锁错误（MySQL Error 1213）：InnoDB自动检测死锁并回滚受影响的事务，业务层需实现重试逻辑（至少1次）。4）唯一键冲突（MySQL Error 1062）：由服务层校验后捕获，转换为409 Conflict响应，不暴露数据库内部错误细节。5）约束违反：外键约束失败时返回相关错误码，服务层捕获后转换为404（引用的父记录不存在）或409（存在关联子记录禁止删除）。6）字段截断/类型不匹配：由FastAPI Pydantic模型在请求入口层校验，避免非法数据写入数据库。7）数据完整性保障：所有关键写操作均在事务中执行，事务失败时自动回滚保证数据一致性。所有数据库错误统一记录到各服务的应用日志，不向客户端暴露原始SQL错误信息。"
 }
