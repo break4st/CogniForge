@@ -1641,28 +1641,24 @@ def _render_lld(d: dict) -> str:
             f'模块: {_esc(module)}</div>'
         )
 
-    if isinstance(overview, dict):
-        desc = overview.get("description", "")
-        deps = overview.get("dependencies", [])
-        tech = overview.get("tech_stack", [])
-        if desc:
-            parts.append(f'<div class="arch-desc">{_esc(desc)}</div>')
-        if deps:
-            tags = "".join(
-                f'<span class="cc-consumer" style="margin:2px">{_esc(dep)}</span>'
-                for dep in deps
-            )
-            parts.append(f'<div style="margin-bottom:12px"><span style="font-size:0.82em;color:var(--c-muted)">依赖: </span>{tags}</div>')
-        if tech:
-            tags = "".join(
-                f'<span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>{_esc(t)}</span>'
-                for t in tech
-            )
-            parts.append(f'<div style="margin-bottom:8px">{tags}</div>')
-    else:
-        ov_text = str(overview) if overview else ""
-        if ov_text:
-            parts.append(f"<p>{_esc(ov_text)}</p>")
+    overview = overview if isinstance(overview, dict) else {}
+    desc = overview.get("description", "")
+    deps = overview.get("dependencies", [])
+    tech = overview.get("tech_stack", [])
+    if desc:
+        parts.append(f'<div class="arch-desc">{_esc(desc)}</div>')
+    if deps:
+        tags = "".join(
+            f'<span class="cc-consumer" style="margin:2px">{_esc(dep)}</span>'
+            for dep in deps
+        )
+        parts.append(f'<div style="margin-bottom:12px"><span style="font-size:0.82em;color:var(--c-muted)">依赖: </span>{tags}</div>')
+    if tech:
+        tags = "".join(
+            f'<span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>{_esc(t)}</span>'
+            for t in tech
+        )
+        parts.append(f'<div style="margin-bottom:8px">{tags}</div>')
     parts.append(_SECTION_FOOT)
 
     # ═══════════════════════════════════════════════════════════
@@ -2400,14 +2396,6 @@ def _render_lld(d: dict) -> str:
         for iface in ifaces:
             endpoint = iface.get("endpoint", "")
             method = iface.get("method", "")
-            # Auto-extract method from endpoint if not explicitly set
-            if not method:
-                ep_parts = endpoint.split(" ", 1)
-                if len(ep_parts) == 2 and ep_parts[0] in ("GET", "POST", "PUT", "DELETE", "PATCH"):
-                    method = ep_parts[0]
-                    endpoint = ep_parts[1]
-                elif endpoint == "INTERNAL":
-                    method = "INTERNAL"
 
             method_cls = method.lower() if method else ""
 

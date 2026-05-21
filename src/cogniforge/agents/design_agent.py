@@ -1,4 +1,4 @@
-"""Design Agent - MDE Agent for detailed design (LLD v2)"""
+"""Design Agent - MDE Agent for detailed design"""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ _SCHEMA_DATA_MODELS = """\
       "fields": [
         {{"name": "字段名", "type": "类型", "required": true, "description": "说明"}}
       ],
-      // ownership=canonical 且 type=table 时可加:
+      // type=table 时必须:
       "indexes": [
         {{"name": "索引名", "unique": false, "columns": ["列名"]}}
       ]
@@ -52,7 +52,7 @@ _SCHEMA_INTERFACES = """\
     {{
       "name": "接口名称",
       "method": "GET|POST|PUT|DELETE|INTERNAL|MQ|WS|frontend",
-      "endpoint": "/api/...（不含 HTTP 方法前缀）",
+      "endpoint": "/api/...（不含 HTTP 方法前缀，method 与 endpoint 必须分别填写）",
       "description": "接口说明",
       "parameters": [
         {{"name": "参数名", "type": "类型", "description": "说明"}}
@@ -78,7 +78,7 @@ _SCHEMA_ERROR = """\
     ]
   }}"""
 
-# ── New v2 sections, conditional on module_type ──
+# ── Module-type-specific sections ──
 
 _SCHEMA_DOMAIN_OBJECTS = """\
   "domain_objects": [
@@ -315,7 +315,7 @@ _SCHEMA_INFRA = """\
 """
 
 # ---------------------------------------------------------------------------
-# Ownership rules per module_type — extended for v2
+# Ownership rules per module_type
 # ---------------------------------------------------------------------------
 
 _OWNERSHIP_RULES: dict[str, str] = {
@@ -340,7 +340,7 @@ _OWNERSHIP_RULES: dict[str, str] = {
 - 服务内部专用的 config/struct 使用 ownership=owned
 - 接口 response body 必须完整展开字段，不写 {}
 
-额外章节要求 (v2 新增):
+额外章节要求:
   domain_objects: ★ 核心——定义本服务的领域实体/DTO/值对象/枚举
     - entity: 业务实体，标注每个属性的 source (db透传/computed/input/derived)
     - dto: 请求/响应 DTO 的字段和校验约束
@@ -364,7 +364,7 @@ _OWNERSHIP_RULES: dict[str, str] = {
 - 不可以写 {} 或"参考下游服务"——前端开发者只读你的 LLD
 - 在 description 中注明 routes_to 指向哪个下游服务
 
-额外章节要求 (v2 新增):
+额外章节要求:
   route_table: 每个 path pattern → upstream 映射，完整列出
   middleware_chain: 请求经过的中间件序列（顺序敏感）
   auth_policy: 公开端点、认证方式、角色-路径映射矩阵、Token 策略
@@ -377,7 +377,7 @@ _OWNERSHIP_RULES: dict[str, str] = {
 - interfaces 的 method 使用 frontend，endpoint 填写路由路径
 - 写明每个页面调用的 API endpoint
 
-额外章节要求 (v2 新增):
+额外章节要求:
   component_tree: ★ 核心——页面组件树及每个组件的接口定义
     - 每个组件: name, path, props (name+type+required+description)
     - events (事件名+payload_type) 和 state (状态字段名+类型+说明)
@@ -393,7 +393,7 @@ _OWNERSHIP_RULES: dict[str, str] = {
 - 所有模型使用 ownership=owned（Redis key 模式、MQ 队列定义等中间件数据结构）
 - 不定义业务数据库表
 
-额外章节要求 (v2 新增)——按子类型选择:
+额外章节要求——按子类型选择:
   消息队列 (RabbitMQ/...):
     topology: exchanges + queues + bindings + producer/consumer 映射
     message_contracts: 每条消息的 schema、必填字段、大小上限
@@ -408,7 +408,7 @@ _OWNERSHIP_RULES: dict[str, str] = {
 
 
 class DesignAgent(BaseAgent):
-    """Design Agent (MDE) — delegates to Claude Code to generate LLD JSON (v2)."""
+    """Design Agent (MDE) — delegates to Claude Code to generate LLD JSON."""
 
     def run(self, input_data: dict) -> dict:
         try:
@@ -434,7 +434,7 @@ class DesignAgent(BaseAgent):
             conditional_schema = _build_conditional_schema(module_type)
 
             prompt = (
-                f"根据以下数据创建一份详细设计文档 (LLD v2)，以 JSON 格式输出并写入:\n\n"
+                f"根据以下数据创建一份详细设计文档 (LLD)，以 JSON 格式输出并写入:\n\n"
                 f"输出路径: {json_path}\n"
                 f"JSON 结构:\n"
                 f"{_SCHEMA_BASE}\n"
@@ -464,7 +464,7 @@ class DesignAgent(BaseAgent):
                 f"3. 接口契约约束:\n"
                 f"   - provider 契约: 你必须实现这些接口，response body 字段名与类型不可修改\n"
                 f"   - consumer 契约: 引用这些接口的确切 endpoint 与字段，不要自造变体\n"
-                f"4. v2 新增章节（domain_objects, service_contracts, business_rules 等）必须完整填写\n"
+                f"4. 各模块类型要求的章节必须完整填写，不可省略\n"
                 f"5. domain_objects 中 entity 的每个 attribute 必须标注 source\n"
                 f"6. service_contracts 中每个 method 必须有 precondition/postcondition/exceptions\n"
                 f"7. 使用中文、只写 JSON 不写 HTML、完成后回复确认"
