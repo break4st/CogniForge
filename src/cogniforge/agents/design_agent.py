@@ -512,6 +512,17 @@ class DesignAgent(BaseAgent):
         except Exception as e:
             return self.format_result(status="failed", message=str(e))
 
+    # SAD component type → ModuleType mapping
+    _SAD_TYPE_MAP: dict[str, str] = {
+        "database": ModuleType.DATABASE,
+        "cache": ModuleType.INFRASTRUCTURE,
+        "mq": ModuleType.INFRASTRUCTURE,
+        "infrastructure": ModuleType.INFRASTRUCTURE,
+        "service": ModuleType.SERVICE,
+        "gateway": ModuleType.GATEWAY,
+        "frontend": ModuleType.FRONTEND,
+    }
+
     def _resolve_module_type(self, module: str) -> str:
         sad_docs = self.wiki_system.list_documents(DocumentType.SAD)
         if not sad_docs:
@@ -522,10 +533,8 @@ class DesignAgent(BaseAgent):
         components = sad_data.get("components", [])
         my_comp = next((c for c in components if c.get("name") == module), None)
         if my_comp:
-            try:
-                return ModuleType(my_comp.get("type", "service"))
-            except ValueError:
-                return ModuleType.SERVICE
+            sad_type = my_comp.get("type", "service")
+            return self._SAD_TYPE_MAP.get(sad_type, ModuleType.SERVICE)
         return ModuleType.SERVICE
 
     def _build_contract_context(self, module: str, module_type: str = "service") -> str:

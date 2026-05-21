@@ -348,14 +348,42 @@ class Repl:
         except Exception:
             return []
 
+    @staticmethod
+    def _lld_layer(comp: dict) -> int:
+        """Return dependency layer for topological sort.
+        Layer 0 (infra/db) → 1 (services) → 2 (gateway) → 3 (frontend)."""
+        ctype = comp.get("type", "service")
+        if ctype in ("database", "cache", "mq", "infrastructure"):
+            return 0
+        if ctype == "service":
+            return 1
+        if ctype == "gateway":
+            return 2
+        if ctype == "frontend":
+            return 3
+        return 1  # fallback to service layer
+
+    _LAYER_LABELS = {0: "基础设施", 1: "业务服务", 2: "网关", 3: "前端"}
+
     def _exec_lld_auto_all(self, modules: list[dict]) -> str:
-        """Generate LLD for all modules sequentially, then show approval menu."""
-        total = len(modules)
+        """Generate LLD for all modules in dependency-layered order."""
+        # Topological sort: infra/db first, frontend last
+        ordered = sorted(modules, key=self._lld_layer)
+        total = len(ordered)
         results = []
         agent = self.agents.get("design")
-        for i, comp in enumerate(modules, 1):
+        current_layer = -1
+
+        for i, comp in enumerate(ordered, 1):
+            layer = self._lld_layer(comp)
+            if layer != current_layer:
+                current_layer = layer
+                label = self._LAYER_LABELS.get(layer, f"Layer {layer}")
+                click.echo(
+                    C_DIM + f"\n  ══ Layer {layer}: {label} ══" + C_RESET
+                )
+
             mod_name = comp.get("name", "unknown")
-            click.echo(C_DIM + f"\n  {STEP_SEPARATOR}" + C_RESET)
             click.echo(
                 f"\n  [{C_AMBER}{i}/{total}{C_RESET}] "
                 + LLD_PROGRESS.format(module=mod_name)
