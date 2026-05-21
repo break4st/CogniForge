@@ -2,71 +2,88 @@
   "meta": {
     "doc_id": "lld-API网关-001",
     "type": "lld",
+    "module_type": "ModuleType.GATEWAY",
     "module": "API网关",
     "title": "LLD - API网关",
     "author": "design_agent",
-    "created": "2026-05-20 16:28"
+    "created": "2026-05-21 11:00"
   },
   "overview": {
-    "description": "API网关是CogniForge系统的统一入口层，部署于Web管理控制台与后端业务服务之间，负责处理所有外部HTTP请求。核心功能包括：用户身份认证（JWT令牌颁发与校验）、接口级权限校验、请求路由和负载均衡、流量控制（滑动窗口限流）、操作日志记录。作为系统边界守卫，API网关对前端屏蔽后端服务拓扑细节，提供统一的认证鉴权和请求入口。",
-    "dependencies": ["项目管理服务", "环境管理服务", "部署编排服务"],
-    "tech_stack": ["Go", "Gin/Go HTTP Router", "JWT", "Redis（令牌黑名单/限流计数器）", "MySQL（用户/日志）", "Prometheus（请求指标）"]
+    "description": "基于Spring Cloud Gateway构建的统一API入口，作为系统所有外部请求的唯一接入点。负责将前端HTTP/WebSocket请求按路由规则转发至对应的业务服务，并在转发前完成JWT令牌校验、RBAC权限校验、接口级限流与熔断保护、全量请求日志记录。对外暴露统一REST API契约和WebSocket端点，对下游服务通过服务发现进行负载均衡路由。",
+    "dependencies": [
+      "项目管理服务",
+      "环境管理服务",
+      "密钥管理服务",
+      "部署编排服务",
+      "审计服务",
+      "Redis"
+    ],
+    "tech_stack": [
+      "Java 17",
+      "Spring Boot 3.x + Spring Cloud",
+      "Spring Cloud Gateway",
+      "Redis 7.x"
+    ]
   },
   "data_models": [
     {
-      "name": "sys_user",
-      "type": "table",
-      "description": "系统用户账号表，存储用户认证信息和角色",
-      "fields": [
-        {"name": "id", "type": "int", "required": true, "description": "主键，自增用户ID"},
-        {"name": "username", "type": "string", "required": true, "description": "用户名，唯一索引"},
-        {"name": "password_hash", "type": "string", "required": true, "description": "密码哈希值（bcrypt）"},
-        {"name": "role", "type": "string", "required": true, "description": "用户角色：admin/developer/viewer"},
-        {"name": "status", "type": "string", "required": true, "description": "用户状态：active/disabled"},
-        {"name": "created_at", "type": "datetime", "required": true, "description": "创建时间"},
-        {"name": "updated_at", "type": "datetime", "required": true, "description": "更新时间"}
-      ]
-    },
-    {
-      "name": "api_route_config",
+      "name": "RouteRule",
       "type": "config",
-      "description": "API路由配置表，定义请求到后端服务的映射规则",
+      "ownership": "owned",
+      "description": "网关路由规则表，定义外部请求到下游服务的映射关系，每条规则包含路由ID、目标服务名、路径断言、过滤器链和熔断配置。配置存储在网关自身配置文件中（application.yml / Nacos），运行时由Spring Cloud Gateway路由表加载。",
       "fields": [
-        {"name": "route_id", "type": "int", "required": true, "description": "路由规则ID"},
-        {"name": "path", "type": "string", "required": true, "description": "请求路径模式（支持{param}占位符）"},
-        {"name": "method", "type": "string", "required": true, "description": "HTTP方法：GET/POST/PUT/DELETE"},
-        {"name": "target_service", "type": "string", "required": true, "description": "目标后端服务名称"},
-        {"name": "target_path", "type": "string", "required": true, "description": "目标后端服务路径"},
-        {"name": "auth_required", "type": "bool", "required": true, "description": "是否需要认证"},
-        {"name": "rate_limit", "type": "int", "required": true, "description": "限流阈值（次/分钟）"}
+        {"name": "id", "type": "string", "required": true, "description": "路由规则唯一标识，格式为 route_{service}_{serial}"},
+        {"name": "target_service", "type": "string", "required": true, "description": "下游目标服务名（如 project-service, environment-service, key-service, deployment-service, audit-service）"},
+        {"name": "path_pattern", "type": "string", "required": true, "description": "路径匹配表达式（如 /api/projects/**）"},
+        {"name": "methods", "type": "Array<string>", "required": false, "description": "允许的HTTP方法列表，为空表示允许所有方法"},
+        {"name": "filters", "type": "Array<string>", "required": false, "description": "应用到此路由的过滤器链（如 JwtAuthFilter, RateLimitFilter, RequestLogFilter）"},
+        {"name": "circuit_breaker_enabled", "type": "boolean", "required": true, "description": "是否启用熔断保护"},
+        {"name": "timeout_ms", "type": "integer", "required": false, "description": "转发超时时间（毫秒），默认5000"}
       ]
     },
     {
-      "name": "rate_limit_config",
+      "name": "RateLimitConfig",
       "type": "config",
-      "description": "流量控制规则配置，基于Redis滑动窗口计数器实现限流",
+      "ownership": "owned",
+      "description": "接口级限流配置，基于Redis + RequestRateLimiter过滤器实现令牌桶算法。每条配置针对一个路由或一组API定义QPS上限和突发流量容量，运行时从Redis加载或通过配置中心动态更新。",
       "fields": [
-        {"name": "rule_id", "type": "int", "required": true, "description": "限流规则ID"},
-        {"name": "route_pattern", "type": "string", "required": true, "description": "匹配的路由路径模式"},
-        {"name": "max_requests", "type": "int", "required": true, "description": "时间窗口内最大请求数"},
-        {"name": "window_seconds", "type": "int", "required": true, "description": "时间窗口大小（秒）"},
-        {"name": "enabled", "type": "bool", "required": true, "description": "规则是否启用"}
+        {"name": "route_id", "type": "string", "required": true, "description": "关联的路由规则ID"},
+        {"name": "replenish_rate", "type": "integer", "required": true, "description": "令牌桶补充速率（每秒补充的令牌数），对应稳定QPS上限"},
+        {"name": "burst_capacity", "type": "integer", "required": true, "description": "令牌桶容量，对应突发流量的最大QPS"},
+        {"name": "key_resolver", "type": "string", "required": true, "description": "限流key解析策略（IP / USER / URL），用于区分不同的限流维度"},
+        {"name": "enabled", "type": "boolean", "required": true, "description": "是否启用限流"}
       ]
     },
     {
-      "name": "access_log",
-      "type": "table",
-      "description": "API访问日志表，记录所有经过网关的请求信息",
+      "name": "AuthWhitelist",
+      "type": "config",
+      "ownership": "owned",
+      "description": "认证白名单配置，定义无需JWT令牌校验即可公开访问的路径列表（如登录接口、静态资源等）。配置存储在网关配置文件中，启动时加载到JwtAuthFilter的跳过列表。",
       "fields": [
-        {"name": "id", "type": "int", "required": true, "description": "主键，自增日志ID"},
-        {"name": "user_id", "type": "int", "required": false, "description": "操作用户ID（未认证请求为null）"},
+        {"name": "path_pattern", "type": "string", "required": true, "description": "无需认证的路径匹配表达式（如 /api/auth/login, /api/auth/refresh, /actuator/health）"},
+        {"name": "description", "type": "string", "required": false, "description": "白名单条目说明"}
+      ]
+    },
+    {
+      "name": "AccessLog",
+      "type": "store",
+      "ownership": "owned",
+      "description": "网关请求访问日志记录，每次经过网关的请求将被结构化记录。日志通过Spring Cloud Gateway的GlobalFilter采集，异步写入日志文件或发送到审计服务持久化。",
+      "fields": [
+        {"name": "trace_id", "type": "string", "required": true, "description": "全链路追踪ID（UUID），跨服务传递用于日志关联"},
+        {"name": "method", "type": "string", "required": true, "description": "HTTP请求方法"},
         {"name": "path", "type": "string", "required": true, "description": "请求路径"},
-        {"name": "method", "type": "string", "required": true, "description": "HTTP方法"},
-        {"name": "ip", "type": "string", "required": true, "description": "客户端IP地址"},
-        {"name": "status_code", "type": "int", "required": true, "description": "响应状态码"},
-        {"name": "latency_ms", "type": "int", "required": true, "description": "请求处理耗时（毫秒）"},
-        {"name": "request_time", "type": "datetime", "required": true, "description": "请求时间"},
-        {"name": "user_agent", "type": "string", "required": false, "description": "客户端User-Agent"}
+        {"name": "query_params", "type": "string", "required": false, "description": "URL查询参数（JSON格式）"},
+        {"name": "user_id", "type": "integer", "required": false, "description": "经过认证的用户ID，未认证请求为空"},
+        {"name": "username", "type": "string", "required": false, "description": "经过认证的用户名"},
+        {"name": "source_ip", "type": "string", "required": true, "description": "客户端IP地址"},
+        {"name": "user_agent", "type": "string", "required": false, "description": "客户端User-Agent"},
+        {"name": "target_service", "type": "string", "required": true, "description": "路由目标服务名称"},
+        {"name": "request_body", "type": "text", "required": false, "description": "请求体内容（可截断，最大4KB）"},
+        {"name": "response_status", "type": "integer", "required": true, "description": "响应HTTP状态码"},
+        {"name": "response_body", "type": "text", "required": false, "description": "响应体内容（可截断，最大4KB）"},
+        {"name": "duration_ms", "type": "integer", "required": true, "description": "请求处理耗时（毫秒）"},
+        {"name": "timestamp", "type": "datetime", "required": true, "description": "请求时间"}
       ]
     }
   ],
@@ -75,243 +92,677 @@
       "name": "用户登录",
       "method": "POST",
       "endpoint": "/api/auth/login",
-      "description": "用户登录认证，验证用户名和密码，认证成功返回JWT访问令牌",
+      "description": "用户登录认证接口（白名单路径，无需JWT令牌）。网关直接处理登录请求，校验用户名密码后签发JWT访问令牌（access_token）和刷新令牌（refresh_token）。登录成功后返回令牌和用户基本信息。",
       "parameters": [
         {"name": "username", "type": "string", "description": "用户名"},
-        {"name": "password", "type": "string", "description": "密码"}
+        {"name": "password", "type": "string", "description": "密码（明文传输，建议后续启用HTTPS加密）"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "token": "string（JWT令牌）",
-          "user": "object（{id:int, username:string, role:string}）"
+          "code": "integer",
+          "message": "string",
+          "data.access_token": "string",
+          "data.refresh_token": "string",
+          "data.token_type": "string",
+          "data.expires_in": "integer",
+          "data.user.id": "integer",
+          "data.user.username": "string",
+          "data.user.role": "string"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "请求参数缺失（用户名或密码为空）"},
-        {"code": 401, "message": "用户名或密码错误"},
-        {"code": 429, "message": "登录频率过高，请稍后重试"}
+        {"code": 400, "message": "请求参数缺失（username 或 password 为空）"},
+        {"code": 401, "message": "用户名或密码错误"}
       ]
     },
     {
-      "name": "用户登出",
+      "name": "令牌刷新",
       "method": "POST",
-      "endpoint": "/api/auth/logout",
-      "description": "用户登出，将当前JWT令牌加入Redis黑名单使其立即失效",
+      "endpoint": "/api/auth/refresh",
+      "description": "刷新JWT访问令牌（白名单路径，无需JWT令牌）。使用refresh_token换取新的access_token，原refresh_token同时失效。",
       "parameters": [
-        {"name": "Authorization", "type": "string（Header）", "description": "Bearer令牌，格式：Bearer <token>"}
+        {"name": "refresh_token", "type": "string", "description": "登录时下发的刷新令牌"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "message": "string（登出成功提示）"
+          "code": "integer",
+          "message": "string",
+          "data.access_token": "string",
+          "data.refresh_token": "string",
+          "data.token_type": "string",
+          "data.expires_in": "integer"
         }
       },
       "error_codes": [
-        {"code": 401, "message": "未提供有效的认证令牌"}
+        {"code": 400, "message": "refresh_token 参数缺失"},
+        {"code": 401, "message": "刷新令牌无效或已过期"}
       ]
     },
     {
-      "name": "获取当前用户信息",
+      "name": "获取当前用户",
       "method": "GET",
       "endpoint": "/api/auth/current-user",
-      "description": "获取当前登录用户的基本信息和角色",
-      "parameters": [
-        {"name": "Authorization", "type": "string（Header）", "description": "Bearer令牌"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "int",
-          "username": "string",
-          "role": "string",
-          "status": "string"
-        }
-      },
-      "error_codes": [
-        {"code": 401, "message": "未认证或令牌已过期"}
-      ]
-    },
-    {
-      "name": "健康检查",
-      "method": "GET",
-      "endpoint": "/api/health",
-      "description": "网关及后端服务健康状态检查，返回各依赖服务的连通性",
+      "description": "获取当前登录用户的基本信息和权限。网关从JWT令牌中解析用户信息并返回，不向下游服务转发。",
       "parameters": [],
       "response": {
         "status": 200,
         "body": {
-          "status": "string（ok/degraded/down）",
-          "services": "object（{service_name: status}）"
+          "code": "integer",
+          "message": "string",
+          "data.id": "integer",
+          "data.username": "string",
+          "data.role": "string",
+          "data.permissions": "Array<string>"
         }
       },
       "error_codes": [
-        {"code": 503, "message": "网关或后端服务不可用"}
+        {"code": 401, "message": "JWT令牌缺失或已过期"}
+      ]
+    },
+    {
+      "name": "用户退出登录",
+      "method": "POST",
+      "endpoint": "/api/auth/logout",
+      "description": "用户退出登录，将当前JWT令牌加入黑名单（Redis），使令牌立即失效。",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "integer",
+          "message": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "JWT令牌缺失或已过期"}
+      ]
+    },
+    {
+      "name": "项目列表查询",
+      "method": "GET",
+      "endpoint": "/api/projects",
+      "description": "分页查询当前用户可见的项目列表。网关校验JWT和权限后路由到项目管理服务（routes_to: 项目管理服务）。支持按关键字模糊搜索和分页参数。",
+      "parameters": [
+        {"name": "keyword", "type": "string", "description": "搜索关键字（匹配项目名称），可选"},
+        {"name": "page", "type": "integer", "description": "页码，从1开始，默认1"},
+        {"name": "size", "type": "integer", "description": "每页条数，默认20"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "integer",
+          "message": "string",
+          "data.items": "Array<object>",
+          "data.total": "integer",
+          "data.page": "integer",
+          "data.size": "integer"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数校验失败（page/size 格式错误）"},
+        {"code": 401, "message": "JWT令牌缺失或已过期"},
+        {"code": 403, "message": "无权限访问项目列表"}
       ]
     },
     {
       "name": "创建项目",
       "method": "POST",
       "endpoint": "/api/projects",
-      "description": "创建新项目（路由至项目管理服务），需认证且具有developer及以上权限",
+      "description": "创建新项目。网关校验JWT和权限后路由到项目管理服务（routes_to: 项目管理服务）。",
       "parameters": [
-        {"name": "Authorization", "type": "string（Header）", "description": "Bearer令牌"},
-        {"name": "name", "type": "string", "description": "项目名称"},
-        {"name": "description", "type": "string", "description": "项目描述"}
-      ],
-      "response": {
-        "status": 201,
-        "body": {
-          "id": "int",
-          "name": "string",
-          "description": "string",
-          "created_at": "datetime"
-        }
-      },
-      "error_codes": [
-        {"code": 400, "message": "请求参数校验失败"},
-        {"code": 401, "message": "未认证"},
-        {"code": 403, "message": "权限不足，需要developer及以上角色"},
-        {"code": 502, "message": "后端服务不可达"}
-      ]
-    },
-    {
-      "name": "查询项目列表",
-      "method": "GET",
-      "endpoint": "/api/projects",
-      "description": "分页查询项目列表（路由至项目管理服务），需认证",
-      "parameters": [
-        {"name": "Authorization", "type": "string（Header）", "description": "Bearer令牌"},
-        {"name": "page", "type": "int", "description": "页码，从1开始"},
-        {"name": "page_size", "type": "int", "description": "每页条数"}
+        {"name": "name", "type": "string", "description": "项目名称（必填，唯一）"},
+        {"name": "description", "type": "string", "description": "项目描述（可选）"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "items": "array<object>",
-          "total": "int",
-          "page": "int"
+          "code": "integer",
+          "message": "string",
+          "data.id": "integer",
+          "data.name": "string",
+          "data.description": "string",
+          "data.created_at": "string"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "分页参数不合法"},
-        {"code": 401, "message": "未认证"},
-        {"code": 502, "message": "后端服务不可达"}
+        {"code": 400, "message": "参数校验失败（name 为必填项）"},
+        {"code": 401, "message": "JWT令牌缺失或已过期"},
+        {"code": 403, "message": "无权限创建项目"},
+        {"code": 409, "message": "项目名称已存在"}
+      ]
+    },
+    {
+      "name": "获取项目详情",
+      "method": "GET",
+      "endpoint": "/api/projects/{projectId}",
+      "description": "获取指定项目的详细信息。网关校验JWT和权限后路由到项目管理服务（routes_to: 项目管理服务）。",
+      "parameters": [
+        {"name": "projectId", "type": "integer", "description": "项目ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "integer",
+          "message": "string",
+          "data.id": "integer",
+          "data.name": "string",
+          "data.description": "string",
+          "data.created_at": "string",
+          "data.updated_at": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "JWT令牌缺失或已过期"},
+        {"code": 403, "message": "无权限访问该项目"},
+        {"code": 404, "message": "项目不存在"}
+      ]
+    },
+    {
+      "name": "更新项目",
+      "method": "PUT",
+      "endpoint": "/api/projects/{projectId}",
+      "description": "更新指定项目的信息。网关校验JWT和权限后路由到项目管理服务（routes_to: 项目管理服务）。",
+      "parameters": [
+        {"name": "projectId", "type": "integer", "description": "项目ID（路径参数）"},
+        {"name": "name", "type": "string", "description": "新的项目名称（可选）"},
+        {"name": "description", "type": "string", "description": "新的项目描述（可选）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "integer",
+          "message": "string",
+          "data.id": "integer",
+          "data.name": "string",
+          "data.description": "string",
+          "data.updated_at": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数校验失败"},
+        {"code": 401, "message": "JWT令牌缺失或已过期"},
+        {"code": 403, "message": "无权限修改该项目"},
+        {"code": 404, "message": "项目不存在"},
+        {"code": 409, "message": "项目名称已被其他项目使用"}
+      ]
+    },
+    {
+      "name": "删除项目",
+      "method": "DELETE",
+      "endpoint": "/api/projects/{projectId}",
+      "description": "删除指定项目（逻辑删除）。网关校验JWT和权限后路由到项目管理服务（routes_to: 项目管理服务）。项目删除后其关联的环境配置仍保留但标记为已删除项目。",
+      "parameters": [
+        {"name": "projectId", "type": "integer", "description": "项目ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "integer",
+          "message": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "JWT令牌缺失或已过期"},
+        {"code": 403, "message": "无权限删除该项目"},
+        {"code": 404, "message": "项目不存在"}
+      ]
+    },
+    {
+      "name": "切换项目上下文",
+      "method": "POST",
+      "endpoint": "/api/projects/{projectId}/switch",
+      "description": "切换当前操作的上下文项目。网关校验JWT和权限后路由到项目管理服务（routes_to: 项目管理服务）。返回目标项目的完整信息及其关联的部署环境列表，网关在响应中设置当前项目的缓存标识。",
+      "parameters": [
+        {"name": "projectId", "type": "integer", "description": "目标项目ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "integer",
+          "message": "string",
+          "data.project.id": "integer",
+          "data.project.name": "string",
+          "data.project.description": "string",
+          "data.environments": "Array<object>"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "JWT令牌缺失或已过期"},
+        {"code": 403, "message": "无权限访问该项目"},
+        {"code": 404, "message": "项目不存在"}
+      ]
+    },
+    {
+      "name": "环境列表查询",
+      "method": "GET",
+      "endpoint": "/api/projects/{projectId}/environments",
+      "description": "查询指定项目下的所有部署环境配置列表。网关校验JWT和权限后路由到环境管理服务（routes_to: 环境管理服务）。",
+      "parameters": [
+        {"name": "projectId", "type": "integer", "description": "项目ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "integer",
+          "message": "string",
+          "data": "Array<object>"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "JWT令牌缺失或已过期"},
+        {"code": 403, "message": "无权限访问该项目"},
+        {"code": 404, "message": "项目不存在"}
       ]
     },
     {
       "name": "创建部署环境",
       "method": "POST",
-      "endpoint": "/api/environments",
-      "description": "创建部署环境并配置SSH连接信息（路由至环境管理服务），需认证且具有developer及以上权限",
+      "endpoint": "/api/projects/{projectId}/environments",
+      "description": "为指定项目创建新的部署环境配置。网关校验JWT和权限后路由到环境管理服务（routes_to: 环境管理服务）。",
       "parameters": [
-        {"name": "Authorization", "type": "string（Header）", "description": "Bearer令牌"},
-        {"name": "project_id", "type": "int", "description": "所属项目ID"},
-        {"name": "name", "type": "string", "description": "环境名称"},
-        {"name": "type", "type": "string（test/staging/production）", "description": "环境类型"},
-        {"name": "host", "type": "string", "description": "服务器主机地址"},
-        {"name": "port", "type": "int", "description": "SSH端口号"},
-        {"name": "ssh_key", "type": "string（加密传输）", "description": "SSH私钥内容"},
-        {"name": "username", "type": "string", "description": "SSH登录用户名"}
+        {"name": "projectId", "type": "integer", "description": "项目ID（路径参数）"},
+        {"name": "name", "type": "string", "description": "环境名称（必填，如 production, staging, testing）"},
+        {"name": "server_host", "type": "string", "description": "目标服务器主机地址（必填，IP或域名）"},
+        {"name": "server_port", "type": "integer", "description": "SSH端口号（必填，默认22）"},
+        {"name": "deploy_path", "type": "string", "description": "部署路径（必填，服务器上的绝对路径）"},
+        {"name": "key_id", "type": "integer", "description": "关联的SSH密钥ID（必填）"}
       ],
       "response": {
-        "status": 201,
+        "status": 200,
         "body": {
-          "id": "int",
-          "name": "string",
-          "type": "string",
-          "host": "string",
-          "port": "int",
-          "status": "string"
+          "code": "integer",
+          "message": "string",
+          "data.id": "integer",
+          "data.name": "string",
+          "data.server_host": "string",
+          "data.server_port": "integer",
+          "data.deploy_path": "string",
+          "data.key_id": "integer",
+          "data.project_id": "integer"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "请求参数校验失败或环境类型不合法"},
-        {"code": 401, "message": "未认证"},
-        {"code": 403, "message": "权限不足"},
-        {"code": 502, "message": "后端服务不可达"}
+        {"code": 400, "message": "参数校验失败（必填项缺失或格式错误）"},
+        {"code": 401, "message": "JWT令牌缺失或已过期"},
+        {"code": 403, "message": "无权限操作该项目"},
+        {"code": 404, "message": "项目或SSH密钥不存在"}
+      ]
+    },
+    {
+      "name": "获取环境详情",
+      "method": "GET",
+      "endpoint": "/api/environments/{environmentId}",
+      "description": "获取指定部署环境的详细信息。网关校验JWT和权限后路由到环境管理服务（routes_to: 环境管理服务）。",
+      "parameters": [
+        {"name": "environmentId", "type": "integer", "description": "环境ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "integer",
+          "message": "string",
+          "data.id": "integer",
+          "data.name": "string",
+          "data.server_host": "string",
+          "data.server_port": "integer",
+          "data.deploy_path": "string",
+          "data.key_id": "integer",
+          "data.project_id": "integer",
+          "data.created_at": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "JWT令牌缺失或已过期"},
+        {"code": 403, "message": "无权限访问该环境"},
+        {"code": 404, "message": "环境不存在"}
+      ]
+    },
+    {
+      "name": "更新部署环境",
+      "method": "PUT",
+      "endpoint": "/api/environments/{environmentId}",
+      "description": "更新指定部署环境的配置信息。网关校验JWT和权限后路由到环境管理服务（routes_to: 环境管理服务）。",
+      "parameters": [
+        {"name": "environmentId", "type": "integer", "description": "环境ID（路径参数）"},
+        {"name": "name", "type": "string", "description": "环境名称（可选）"},
+        {"name": "server_host", "type": "string", "description": "服务器主机地址（可选）"},
+        {"name": "server_port", "type": "integer", "description": "SSH端口号（可选）"},
+        {"name": "deploy_path", "type": "string", "description": "部署路径（可选）"},
+        {"name": "key_id", "type": "integer", "description": "关联的SSH密钥ID（可选）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "integer",
+          "message": "string",
+          "data.id": "integer",
+          "data.name": "string",
+          "data.server_host": "string",
+          "data.server_port": "integer",
+          "data.deploy_path": "string",
+          "data.key_id": "integer",
+          "data.project_id": "integer",
+          "data.updated_at": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数校验失败"},
+        {"code": 401, "message": "JWT令牌缺失或已过期"},
+        {"code": 403, "message": "无权限修改该环境"},
+        {"code": 404, "message": "环境不存在"}
+      ]
+    },
+    {
+      "name": "删除部署环境",
+      "method": "DELETE",
+      "endpoint": "/api/environments/{environmentId}",
+      "description": "删除指定部署环境配置。网关校验JWT和权限后路由到环境管理服务（routes_to: 环境管理服务）。",
+      "parameters": [
+        {"name": "environmentId", "type": "integer", "description": "环境ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "integer",
+          "message": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "JWT令牌缺失或已过期"},
+        {"code": 403, "message": "无权限删除该环境"},
+        {"code": 404, "message": "环境不存在"}
+      ]
+    },
+    {
+      "name": "SSH密钥列表查询",
+      "method": "GET",
+      "endpoint": "/api/keys",
+      "description": "查询当前用户已上传的所有SSH密钥元数据列表。网关校验JWT和权限后路由到密钥管理服务（routes_to: 密钥管理服务）。返回的密钥信息仅包含元数据（名称、指纹），不含私钥内容。",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "integer",
+          "message": "string",
+          "data": "Array<object>"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "JWT令牌缺失或已过期"}
+      ]
+    },
+    {
+      "name": "上传SSH密钥",
+      "method": "POST",
+      "endpoint": "/api/keys",
+      "description": "上传SSH密钥对。网关校验JWT和权限后路由到密钥管理服务（routes_to: 密钥管理服务）。私钥将在服务端进行AES加密后存储，公钥用于计算指纹。",
+      "parameters": [
+        {"name": "name", "type": "string", "description": "密钥名称（必填，用于标识）"},
+        {"name": "public_key", "type": "string", "description": "SSH公钥内容（必填）"},
+        {"name": "private_key", "type": "string", "description": "SSH私钥内容（必填，传输后加密存储）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "integer",
+          "message": "string",
+          "data.id": "integer",
+          "data.name": "string",
+          "data.fingerprint": "string",
+          "data.created_at": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数校验失败（name/public_key/private_key 为必填项）"},
+        {"code": 401, "message": "JWT令牌缺失或已过期"},
+        {"code": 409, "message": "密钥名称已存在"}
+      ]
+    },
+    {
+      "name": "删除SSH密钥",
+      "method": "DELETE",
+      "endpoint": "/api/keys/{keyId}",
+      "description": "删除指定SSH密钥。网关校验JWT和权限后路由到密钥管理服务（routes_to: 密钥管理服务）。如果密钥已被环境关联引用，则拒绝删除。",
+      "parameters": [
+        {"name": "keyId", "type": "integer", "description": "密钥ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "integer",
+          "message": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "JWT令牌缺失或已过期"},
+        {"code": 403, "message": "无权限删除该密钥"},
+        {"code": 404, "message": "密钥不存在"},
+        {"code": 409, "message": "密钥已被环境关联引用，无法删除"}
       ]
     },
     {
       "name": "触发部署",
       "method": "POST",
       "endpoint": "/api/deployments",
-      "description": "触发一键部署任务（路由至部署编排服务），需认证且具有developer及以上权限",
+      "description": "创建并触发新的部署任务。网关校验JWT和权限后路由到部署编排服务（routes_to: 部署编排服务）。部署任务创建后立即异步执行，前端通过 WebSocket 接口实时接收进度推送。",
       "parameters": [
-        {"name": "Authorization", "type": "string（Header）", "description": "Bearer令牌"},
-        {"name": "project_id", "type": "int", "description": "项目ID"},
-        {"name": "environment_id", "type": "int", "description": "目标环境ID"},
-        {"name": "version", "type": "string", "description": "部署版本号"},
-        {"name": "file_url", "type": "string", "description": "部署文件下载地址"},
-        {"name": "deploy_script", "type": "string", "description": "部署执行脚本内容"}
-      ],
-      "response": {
-        "status": 202,
-        "body": {
-          "deployment_id": "int",
-          "status": "string（pending）",
-          "created_at": "datetime"
-        }
-      },
-      "error_codes": [
-        {"code": 400, "message": "请求参数校验失败"},
-        {"code": 401, "message": "未认证"},
-        {"code": 403, "message": "权限不足"},
-        {"code": 502, "message": "后端服务不可达"}
-      ]
-    },
-    {
-      "name": "查询部署状态",
-      "method": "GET",
-      "endpoint": "/api/deployments/{id}/status",
-      "description": "查询指定部署任务的当前状态和进度（路由至部署编排服务），需认证",
-      "parameters": [
-        {"name": "Authorization", "type": "string（Header）", "description": "Bearer令牌"},
-        {"name": "id", "type": "int（路径参数）", "description": "部署任务ID"}
+        {"name": "project_id", "type": "integer", "description": "项目ID（必填）"},
+        {"name": "environment_id", "type": "integer", "description": "目标部署环境ID（必填）"},
+        {"name": "file_url", "type": "string", "description": "部署包文件下载URL（必填）"},
+        {"name": "version", "type": "string", "description": "部署版本号（必填，用于标记本次部署）"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "deployment_id": "int",
-          "status": "string（running/success/failed）",
-          "progress": "int（0-100）",
-          "current_step": "string",
-          "logs": "array<string>"
+          "code": "integer",
+          "message": "string",
+          "data.deployment_id": "integer",
+          "data.status": "string",
+          "data.created_at": "string"
         }
       },
       "error_codes": [
-        {"code": 401, "message": "未认证"},
+        {"code": 400, "message": "参数校验失败（必填项缺失）"},
+        {"code": 401, "message": "JWT令牌缺失或已过期"},
+        {"code": 403, "message": "无权限执行部署操作"},
+        {"code": 404, "message": "项目或环境不存在"}
+      ]
+    },
+    {
+      "name": "获取部署详情",
+      "method": "GET",
+      "endpoint": "/api/deployments/{deploymentId}",
+      "description": "获取指定部署任务的详细信息，包括状态、进度、关联的项目和环境、以及执行日志。网关校验JWT和权限后路由到部署编排服务（routes_to: 部署编排服务）。",
+      "parameters": [
+        {"name": "deploymentId", "type": "integer", "description": "部署任务ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "integer",
+          "message": "string",
+          "data.id": "integer",
+          "data.project_id": "integer",
+          "data.environment_id": "integer",
+          "data.status": "string",
+          "data.version": "string",
+          "data.progress": "integer",
+          "data.logs": "Array<string>",
+          "data.created_at": "string",
+          "data.updated_at": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "JWT令牌缺失或已过期"},
+        {"code": 403, "message": "无权限查看该部署任务"},
+        {"code": 404, "message": "部署任务不存在"}
+      ]
+    },
+    {
+      "name": "部署历史列表",
+      "method": "GET",
+      "endpoint": "/api/projects/{projectId}/deployments",
+      "description": "查询指定项目的部署历史记录，支持按环境和状态筛选和分页浏览。网关校验JWT和权限后路由到部署编排服务（routes_to: 部署编排服务）。",
+      "parameters": [
+        {"name": "projectId", "type": "integer", "description": "项目ID（路径参数）"},
+        {"name": "environment_id", "type": "integer", "description": "按部署环境筛选（可选）"},
+        {"name": "status", "type": "string", "description": "按部署状态筛选（可选，取值: pending / running / completed / failed）"},
+        {"name": "page", "type": "integer", "description": "页码，从1开始，默认1"},
+        {"name": "size", "type": "integer", "description": "每页条数，默认20"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "integer",
+          "message": "string",
+          "data.items": "Array<object>",
+          "data.total": "integer",
+          "data.page": "integer",
+          "data.size": "integer"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "JWT令牌缺失或已过期"},
+        {"code": 403, "message": "无权限访问该项目"},
+        {"code": 404, "message": "项目不存在"}
+      ]
+    },
+    {
+      "name": "部署进度查询",
+      "method": "GET",
+      "endpoint": "/api/deployments/{deploymentId}/progress",
+      "description": "获取指定部署任务的当前进度数据。前端在WebSocket连接建立前或WebSocket离线时通过此接口轮询获取最新进度。网关校验JWT和权限后路由到部署编排服务（routes_to: 部署编排服务）。",
+      "parameters": [
+        {"name": "deploymentId", "type": "integer", "description": "部署任务ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "integer",
+          "message": "string",
+          "data.deployment_id": "integer",
+          "data.status": "string",
+          "data.progress": "integer",
+          "data.logs": "Array<string>"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "JWT令牌缺失或已过期"},
+        {"code": 404, "message": "部署任务不存在"}
+      ]
+    },
+    {
+      "name": "审计日志查询",
+      "method": "GET",
+      "endpoint": "/api/audit-logs",
+      "description": "分页查询系统审计日志。仅管理员角色可访问。网关校验JWT和RBAC权限后路由到审计服务（routes_to: 审计服务）。支持按操作类型、操作人、时间范围进行筛选。",
+      "parameters": [
+        {"name": "action_type", "type": "string", "description": "操作类型筛选（可选，如 create_project, deploy_application）"},
+        {"name": "operator", "type": "string", "description": "操作人用户名筛选（可选）"},
+        {"name": "start_time", "type": "string", "description": "开始时间筛选（可选，ISO 8601格式）"},
+        {"name": "end_time", "type": "string", "description": "结束时间筛选（可选，ISO 8601格式）"},
+        {"name": "page", "type": "integer", "description": "页码，从1开始，默认1"},
+        {"name": "size", "type": "integer", "description": "每页条数，默认20"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "integer",
+          "message": "string",
+          "data.items": "Array<object>",
+          "data.total": "integer",
+          "data.page": "integer",
+          "data.size": "integer"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "JWT令牌缺失或已过期"},
+        {"code": 403, "message": "无审计日志访问权限（仅管理员）"}
+      ]
+    },
+    {
+      "name": "部署进度WebSocket推送",
+      "method": "GET",
+      "endpoint": "/ws/deployments/{deploymentId}",
+      "description": "通过WebSocket协议实时推送部署任务进度到前端。客户端通过HTTP Upgrade握手建立连接，网关校验JWT令牌后代理至部署编排服务的WebSocket端点（routes_to: 部署编排服务）。连接建立后服务端主动推送事件消息，事件类型包括: progress（进度更新）、log（日志输出）、complete（部署完成）、error（部署失败）。",
+      "parameters": [
+        {"name": "deploymentId", "type": "integer", "description": "部署任务ID（路径参数）"}
+      ],
+      "response": {
+        "status": 101,
+        "body": {
+          "event": "string",
+          "data": "object"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "JWT令牌缺失或已过期（WebSocket握手阶段返回）"},
         {"code": 404, "message": "部署任务不存在"},
-        {"code": 502, "message": "后端服务不可达"}
-      ]
-    },
-    {
-      "name": "查询部署历史",
-      "method": "GET",
-      "endpoint": "/api/deployments/history",
-      "description": "按项目分页查询部署历史记录列表（路由至部署编排服务），需认证",
-      "parameters": [
-        {"name": "Authorization", "type": "string（Header）", "description": "Bearer令牌"},
-        {"name": "project_id", "type": "int", "description": "项目ID"},
-        {"name": "environment_id", "type": "int（可选）", "description": "环境ID过滤条件"},
-        {"name": "page", "type": "int", "description": "页码"},
-        {"name": "page_size", "type": "int", "description": "每页条数"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "items": "array<object>",
-          "total": "int",
-          "page": "int",
-          "page_size": "int"
-        }
-      },
-      "error_codes": [
-        {"code": 400, "message": "分页参数不合法"},
-        {"code": 401, "message": "未认证"},
-        {"code": 502, "message": "后端服务不可达"}
+        {"code": 502, "message": "WebSocket代理到下游服务失败"}
       ]
     }
   ],
-  "error_handling": "API网关采用分层错误处理策略：1）请求校验层——校验请求参数合法性、HTTP方法匹配和Content-Type，校验失败返回400 Bad Request，响应体包含error_code和message字段；2）认证鉴权层——JWT令牌校验（签名验证+过期检查+Redis黑名单检查）失败返回401 Unauthorized，权限不足返回403 Forbidden；3）限流层——基于Redis滑动窗口计数器实现，超过阈值返回429 Too Many Requests，响应头携带Retry-After字段指示重试时间；4）路由转发层——后端服务连接超时（5秒）或连接拒绝时返回502 Bad Gateway，响应体携带后端服务名称便于排查；5）全局异常捕获——所有未捕获异常统一返回500 Internal Server Error，日志记录完整堆栈但不将内部细节暴露给客户端。所有错误响应统一格式：{\"error\": {\"code\": \"string错误码\", \"message\": \"string错误描述\", \"request_id\": \"string请求追踪ID\"}}，其中request_id与access_log中的日志ID对应，便于问题追溯。"
+  "error_handling": {
+    "strategy": "网关采用GlobalFilter拦截所有请求异常，统一按错误类型分类处理。认证/授权错误由JwtAuthFilter在网关层直接拦截返回；下游服务返回的错误由网关透传并统一封装为标准响应格式；限流触发时由RequestRateLimiter过滤器直接返回429状态码；熔断器触发时返回503状态码。所有错误响应统一使用三层结构: code（业务码）、error（简短错误名）、detail（详细描述，生产环境可脱敏）。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "400",
+        "name": "请求参数错误",
+        "description": "请求参数校验失败。网关对必需参数缺失、格式错误等直接返回400，不转发到下游服务。detail字段中说明具体哪个参数不合法。"
+      },
+      {
+        "code": "401",
+        "name": "认证失败",
+        "description": "JWT令牌缺失、过期或无效。JwtAuthFilter在网关层直接拦截并返回401，响应头设置 WWW-Authenticate: Bearer。前端应捕获401并跳转至登录页或触发令牌刷新流程。"
+      },
+      {
+        "code": "403",
+        "name": "权限不足",
+        "description": "JWT令牌有效但当前用户无权限访问目标资源或执行操作。网关层通过RBAC过滤器校验用户角色权限，校验失败时直接返回403，detail字段说明所需权限。"
+      },
+      {
+        "code": "404",
+        "name": "资源不存在",
+        "description": "请求的目标资源不存在。网关本身的路由表找不到匹配路径时返回404；路由到下游服务后，下游服务返回的资源不存在错误由网关透传返回404。"
+      },
+      {
+        "code": "409",
+        "name": "资源冲突",
+        "description": "创建或更新资源时发生唯一键冲突（如项目名称重复、密钥名称重复）。网关透传下游服务返回的409响应。"
+      },
+      {
+        "code": "429",
+        "name": "请求限流",
+        "description": "请求频率超过接口限流阈值。由RequestRateLimiter过滤器在网关层直接返回429，响应头设置 Retry-After 建议重试时间（秒）。限流key按接口配置使用IP或用户ID维度。"
+      },
+      {
+        "code": "500",
+        "name": "下游服务内部错误",
+        "description": "下游业务服务返回5xx错误时的统一透传。网关捕获下游服务HTTP 500响应后封装为标准错误格式返回，detail字段下游服务错误信息在生产环境脱敏为 「服务内部错误，请稍后重试」。"
+      },
+      {
+        "code": "502",
+        "name": "网关代理错误",
+        "description": "网关无法连接到下游服务（服务未注册或网络不可达）。网关直接返回502，detail为「目标服务不可达」，同时触发告警通知运维。"
+      },
+      {
+        "code": "503",
+        "name": "服务不可用（熔断）",
+        "description": "下游服务连续超时或错误率超过阈值，熔断器（Spring Cloud Circuit Breaker）开启后直接返回503，detail为「服务暂不可用，请稍后重试」。熔断器进入半开状态后定期探测下游服务健康状态。"
+      },
+      {
+        "code": "504",
+        "name": "网关超时",
+        "description": "请求转发到下游服务超过路由配置的超时时间（默认5000ms）。网关返回504，detail中注明超时的目标服务名和超时时间。"
+      }
+    ]
+  }
 }
