@@ -1,0 +1,958 @@
+{
+  "meta": {
+    "doc_id": "sad-001",
+    "type": "sad",
+    "title": "一键自动化部署系统 - 软件架构设计",
+    "author": "architect_agent",
+    "created": "2026-05-21 17:19"
+  },
+  "system_overview": {
+    "description": "一键自动化部署系统是一个支持多项目、多环境、安全连接的远程部署管理平台。运维工程师可通过Web界面完成从项目创建、环境配置到一键部署、版本回滚的全流程操作。系统基于B/S架构，采用前后端分离设计，通过SSH协议安全连接远程服务器，实现部署任务的自动化编排和执行。",
+    "roles": [
+      {
+        "name": "运维工程师",
+        "permissions": [
+          "查看和管理项目列表",
+          "配置和管理部署环境（测试线/灰度线/正式线）",
+          "上传部署文件并触发一键部署",
+          "查看部署日志和实时状态",
+          "执行版本回滚操作",
+          "查看部署历史记录"
+        ]
+      },
+      {
+        "name": "项目经理",
+        "permissions": [
+          "创建、编辑、删除项目",
+          "查看所有项目状态和部署概览",
+          "配置项目级别的环境参数"
+        ]
+      },
+      {
+        "name": "系统管理员",
+        "permissions": [
+          "管理系统用户和权限",
+          "查看全平台操作审计日志",
+          "配置全局系统参数",
+          "管理SSH密钥存储"
+        ]
+      }
+    ]
+  },
+  "architecture": {
+    "style": "分层微服务架构（Layered Microservices）",
+    "description": "系统采用前后端分离的分层微服务架构。前端为单页应用，通过API网关统一接入后端服务。后端按业务领域拆分为多个独立微服务，每个服务职责单一、独立部署。服务间通过REST API同步通信或消息队列异步解耦。数据层采用关系数据库持久化业务数据，缓存层提升查询性能。SSH密钥等敏感信息使用加密存储。",
+    "layers": [
+      {
+        "name": "展示层（Presentation Layer）",
+        "components": [
+          "Web管理控制台"
+        ]
+      },
+      {
+        "name": "网关层（Gateway Layer）",
+        "components": [
+          "API网关"
+        ]
+      },
+      {
+        "name": "服务层（Service Layer）",
+        "components": [
+          "项目管理服务",
+          "环境管理服务",
+          "部署编排服务",
+          "SSH连接管理服务",
+          "版本管理服务",
+          "审计日志服务"
+        ]
+      },
+      {
+        "name": "数据层（Data Layer）",
+        "components": [
+          "PostgreSQL主数据库",
+          "Redis缓存",
+          "加密密钥存储",
+          "文件存储",
+          "消息队列"
+        ]
+      },
+      {
+        "name": "基础设施层（Infrastructure Layer）",
+        "components": [
+          "远程服务器集群",
+          "SSH连接池",
+          "部署执行环境"
+        ]
+      }
+    ],
+    "connections": [
+      {
+        "protocol": "HTTPS / REST / WebSocket"
+      },
+      {
+        "protocol": "REST / gRPC"
+      },
+      {
+        "protocol": "PostgreSQL TCP / Redis TCP / AMQP"
+      },
+      {
+        "protocol": "SSH / SFTP / SCP"
+      }
+    ],
+    "features": [
+      "前后端分离，API网关统一入口",
+      "微服务化，按业务领域拆分",
+      "异步任务编排，部署过程可观测",
+      "敏感信息加密存储",
+      "SSH连接池复用，提升部署效率",
+      "版本快照管理，支持快速回滚",
+      "操作全流程审计日志",
+      "水平可扩展，各服务可独立扩容"
+    ]
+  },
+  "tech_stack": {
+    "backend": {
+      "language": "Python",
+      "framework": "FastAPI"
+    },
+    "frontend": {
+      "framework": "Vue.js 3",
+      "ui_library": "Element Plus"
+    },
+    "database": "PostgreSQL 15",
+    "cache": "Redis 7",
+    "mq": "RabbitMQ",
+    "deploy_protocol": "SSH / SFTP / SCP",
+    "api_style": "RESTful + WebSocket"
+  },
+  "components": [
+    {
+      "name": "Web管理控制台",
+      "type": "frontend",
+      "description": "基于Vue.js 3构建的单页应用，整合项目管理、环境配置、部署触发、实时日志展示和监控仪表盘等所有前端功能于一体，提供完整的可视化操作界面。",
+      "responsibilities": [
+        "提供用户登录和认证界面",
+        "项目CRUD操作界面",
+        "环境配置管理界面",
+        "文件上传和一键部署触发",
+        "部署日志实时展示（WebSocket）",
+        "部署历史与版本回滚界面",
+        "系统监控仪表盘"
+      ]
+    },
+    {
+      "name": "API网关",
+      "type": "gateway",
+      "description": "统一API入口，负责请求路由、认证鉴权、限流熔断、请求日志记录。将前端请求转发到对应的后端微服务，并支持WebSocket连接用于实时日志推送。",
+      "responsibilities": [
+        "统一API路由和负载均衡",
+        "JWT令牌认证与权限校验",
+        "请求速率限制和熔断保护",
+        "跨域请求处理",
+        "API版本管理",
+        "请求响应日志记录"
+      ]
+    },
+    {
+      "name": "项目管理服务",
+      "type": "service",
+      "description": "核心业务服务之一，管理项目的全生命周期。每个项目包含基本信息、关联的环境配置、部署历史等。",
+      "responsibilities": [
+        "项目的创建、编辑、删除和查询",
+        "项目与环境配置的关联管理",
+        "项目列表与状态展示",
+        "项目级别权限控制",
+        "项目部署统计信息聚合"
+      ]
+    },
+    {
+      "name": "环境管理服务",
+      "type": "service",
+      "description": "管理部署环境的配置信息，包括服务器连接参数、环境类型、部署路径等。支持多套环境的独立配置。",
+      "responsibilities": [
+        "环境配置的CRUD操作",
+        "环境类型管理（测试/灰度/正式）",
+        "服务器连接参数管理",
+        "环境与项目的关联管理",
+        "连接可用性测试验证"
+      ]
+    },
+    {
+      "name": "部署编排服务",
+      "type": "service",
+      "description": "部署流程的核心编排引擎，负责接收部署请求、拆解部署步骤、调度各服务协同工作，并通过WebSocket实时反馈部署状态。",
+      "responsibilities": [
+        "接收部署请求并创建部署任务",
+        "部署步骤拆解和编排",
+        "通过消息队列异步分发子任务",
+        "协调SSH连接和远程执行",
+        "部署状态实时更新和推送",
+        "部署日志采集和存储",
+        "部署超时和异常处理"
+      ]
+    },
+    {
+      "name": "SSH连接管理服务",
+      "type": "service",
+      "description": "负责管理与远程服务器的SSH安全连接，包括密钥管理、连接池维护、远程命令执行。",
+      "responsibilities": [
+        "SSH密钥的安全存储和管理",
+        "SSH连接池的创建和复用",
+        "远程目录创建（版本文件夹）",
+        "文件传输（SCP/SFTP上传部署包）",
+        "远程执行脚本生成和运行",
+        "连接健康检查和断线重连"
+      ]
+    },
+    {
+      "name": "版本管理服务",
+      "type": "service",
+      "description": "管理部署版本的全生命周期，包括版本创建、历史追溯、版本回滚等。",
+      "responsibilities": [
+        "部署版本的自动创建和命名",
+        "版本元数据管理（时间戳、版本号、变更说明）",
+        "部署历史记录查询和展示",
+        "版本回滚操作执行",
+        "版本清理策略管理"
+      ]
+    },
+    {
+      "name": "审计日志服务",
+      "type": "service",
+      "description": "记录系统所有操作行为，提供可追溯的审计轨迹，满足安全和合规要求。",
+      "responsibilities": [
+        "用户操作行为记录",
+        "部署操作全流程日志",
+        "敏感操作告警通知",
+        "日志查询和导出",
+        "日志存储和归档策略"
+      ]
+    },
+    {
+      "name": "PostgreSQL主数据库",
+      "type": "database",
+      "description": "系统主数据库，存储项目、环境、用户、部署记录、审计日志等所有业务数据的持久化存储。",
+      "responsibilities": [
+        "业务数据持久化存储",
+        "事务性数据一致性保证",
+        "数据备份和恢复",
+        "慢查询优化和索引管理"
+      ]
+    },
+    {
+      "name": "Redis缓存",
+      "type": "infrastructure",
+      "description": "提供高性能缓存服务，用于部署状态实时推送、会话管理、数据缓存等场景。",
+      "responsibilities": [
+        "部署实时状态缓存和Pub/Sub",
+        "用户会话信息缓存",
+        "频繁查询数据的缓存加速",
+        "分布式锁支持"
+      ]
+    },
+    {
+      "name": "加密密钥存储",
+      "type": "database",
+      "description": "专门用于安全存储SSH私钥等敏感凭证的加密存储模块，采用AES-256加密算法，密钥与数据分离存储。",
+      "responsibilities": [
+        "SSH私钥的安全加密存储",
+        "密钥访问权限控制",
+        "密钥使用审计记录",
+        "密钥轮换和过期管理"
+      ]
+    },
+    {
+      "name": "消息队列",
+      "type": "infrastructure",
+      "description": "基于RabbitMQ的异步消息中间件，用于部署任务的异步分发和服务间解耦，确保部署任务的可靠传递和处理。",
+      "responsibilities": [
+        "部署任务异步消息分发",
+        "服务间事件通知",
+        "任务重试和死信处理",
+        "削峰填谷，平滑处理突发部署请求"
+      ]
+    },
+    {
+      "name": "文件存储",
+      "type": "infrastructure",
+      "description": "部署文件（部署包、脚本等）的持久化存储，支持本地文件系统或对象存储。",
+      "responsibilities": [
+        "部署上传文件的临时存储",
+        "部署包的版本化归档",
+        "文件访问权限控制",
+        "存储空间管理和清理"
+      ]
+    },
+    {
+      "name": "远程服务器集群",
+      "type": "infrastructure",
+      "description": "部署目标远程服务器群组，按环境类型（测试/灰度/正式）划分为多个服务器组，承载实际部署的应用服务运行。",
+      "responsibilities": [
+        "承载部署应用的运行环境",
+        "接收SSH安全连接",
+        "执行远程部署脚本和命令",
+        "提供应用服务运行状态"
+      ]
+    },
+    {
+      "name": "SSH连接池",
+      "type": "infrastructure",
+      "description": "预创建和维护的SSH连接复用池，减少频繁建立和断开SSH连接的开销，提升部署效率。",
+      "responsibilities": [
+        "SSH连接的预创建和预热",
+        "连接复用和回收管理",
+        "连接健康检测和自动修复",
+        "连接数上限控制和排队"
+      ]
+    },
+    {
+      "name": "部署执行环境",
+      "type": "infrastructure",
+      "description": "远程服务器上的部署执行上下文，包括版本目录结构、部署脚本模板、服务启停管理等运行环境。",
+      "responsibilities": [
+        "维护标准版本目录结构",
+        "提供部署脚本模板",
+        "管理服务启停和状态检查",
+        "记录部署执行的本地日志"
+      ]
+    }
+  ],
+  "contracts": [
+    {
+      "interface": "用户认证接口",
+      "provider": "API网关",
+      "consumers": [
+        "Web管理控制台"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/v1/auth/login",
+      "request": {
+        "body": {
+          "username": {
+            "type": "string",
+            "description": "用户名"
+          },
+          "password": {
+            "type": "string",
+            "description": "密码"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "access_token": {
+            "type": "string",
+            "description": "JWT访问令牌"
+          },
+          "token_type": {
+            "type": "string",
+            "description": "令牌类型（bearer）"
+          },
+          "expires_in": {
+            "type": "integer",
+            "description": "过期时间（秒）"
+          },
+          "user": {
+            "type": "object",
+            "description": "用户基本信息",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "username": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "description": "用户登录认证，验证用户名密码后返回JWT令牌。所有后续请求需要在Authorization头携带此令牌。"
+    },
+    {
+      "interface": "项目列表查询接口",
+      "provider": "项目管理服务",
+      "consumers": [
+        "API网关"
+      ],
+      "type": "REST",
+      "endpoint": "GET /api/v1/projects",
+      "request": {
+        "query_params": {
+          "page": {
+            "type": "integer",
+            "description": "页码，默认1",
+            "required": false
+          },
+          "page_size": {
+            "type": "integer",
+            "description": "每页数量，默认20",
+            "required": false
+          },
+          "keyword": {
+            "type": "string",
+            "description": "搜索关键词",
+            "required": false
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "total": {
+            "type": "integer",
+            "description": "项目总数"
+          },
+          "items": {
+            "type": "array",
+            "description": "项目列表",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "environment_count": {
+                  "type": "integer"
+                },
+                "last_deploy_time": {
+                  "type": "string",
+                  "format": "datetime"
+                },
+                "status": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "description": "分页查询当前用户有权限访问的项目列表，支持按关键词搜索。"
+    },
+    {
+      "interface": "项目创建接口",
+      "provider": "项目管理服务",
+      "consumers": [
+        "API网关"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/v1/projects",
+      "request": {
+        "body": {
+          "name": {
+            "type": "string",
+            "description": "项目名称"
+          },
+          "description": {
+            "type": "string",
+            "description": "项目描述",
+            "required": false
+          },
+          "environments": {
+            "type": "array",
+            "description": "关联的环境ID列表",
+            "required": false
+          }
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "id": {
+            "type": "integer",
+            "description": "创建成功的项目ID"
+          },
+          "name": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "datetime"
+          }
+        }
+      },
+      "description": "创建新项目，项目经理权限以上可操作。"
+    },
+    {
+      "interface": "环境配置查询接口",
+      "provider": "环境管理服务",
+      "consumers": [
+        "API网关"
+      ],
+      "type": "REST",
+      "endpoint": "GET /api/v1/environments",
+      "request": {
+        "query_params": {
+          "project_id": {
+            "type": "integer",
+            "description": "所属项目ID",
+            "required": true
+          },
+          "type": {
+            "type": "string",
+            "description": "环境类型过滤（test/gray/prod）",
+            "required": false
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "description": "环境类型：test/gray/prod"
+                },
+                "server_host": {
+                  "type": "string"
+                },
+                "server_port": {
+                  "type": "integer"
+                },
+                "deploy_path": {
+                  "type": "string"
+                },
+                "connection_status": {
+                  "type": "string",
+                  "description": "online/offline/unknown"
+                }
+              }
+            }
+          }
+        }
+      },
+      "description": "查询指定项目下的所有环境配置列表，支持按环境类型过滤。"
+    },
+    {
+      "interface": "SSH连接测试接口",
+      "provider": "环境管理服务",
+      "consumers": [
+        "API网关"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/v1/environments/{env_id}/test-connection",
+      "request": {
+        "path_params": {
+          "env_id": {
+            "type": "integer",
+            "description": "环境ID"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "success": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "latency_ms": {
+            "type": "integer",
+            "description": "连接延迟（毫秒）"
+          }
+        }
+      },
+      "description": "测试指定环境的SSH连接是否可用。由环境管理服务内部调用SSH连接管理服务执行实际测试。"
+    },
+    {
+      "interface": "一键部署触发接口",
+      "provider": "部署编排服务",
+      "consumers": [
+        "API网关"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/v1/deployments",
+      "request": {
+        "body": {
+          "project_id": {
+            "type": "integer",
+            "description": "目标项目ID"
+          },
+          "environment_id": {
+            "type": "integer",
+            "description": "目标环境ID"
+          },
+          "file_name": {
+            "type": "string",
+            "description": "部署包文件名"
+          },
+          "description": {
+            "type": "string",
+            "description": "部署说明",
+            "required": false
+          }
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "task_id": {
+            "type": "string",
+            "description": "部署任务ID（UUID）"
+          },
+          "status": {
+            "type": "string",
+            "description": "初始状态：pending"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "datetime"
+          }
+        }
+      },
+      "description": "触发一键部署流程。服务端异步执行，返回task_id用于后续状态查询和日志订阅。"
+    },
+    {
+      "interface": "部署实时日志推送",
+      "provider": "部署编排服务",
+      "consumers": [
+        "Web管理控制台"
+      ],
+      "type": "WebSocket",
+      "endpoint": "ws://host/api/ws/deploy/{task_id}",
+      "request": {
+        "path_params": {
+          "task_id": {
+            "type": "string",
+            "description": "部署任务ID"
+          }
+        }
+      },
+      "response": {
+        "body": {
+          "event": {
+            "type": "string",
+            "description": "事件类型：log/status/error/complete"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "datetime"
+          },
+          "data": {
+            "type": "object",
+            "description": "根据事件类型包含日志内容、状态更新或错误信息"
+          }
+        }
+      },
+      "description": "通过WebSocket长连接实时推送指定部署任务的执行日志和状态变更。客户端需在连接时携带JWT令牌进行身份验证。"
+    },
+    {
+      "interface": "部署历史查询接口",
+      "provider": "版本管理服务",
+      "consumers": [
+        "API网关"
+      ],
+      "type": "REST",
+      "endpoint": "GET /api/v1/deployments/history",
+      "request": {
+        "query_params": {
+          "project_id": {
+            "type": "integer",
+            "description": "项目ID",
+            "required": true
+          },
+          "environment_id": {
+            "type": "integer",
+            "description": "环境ID",
+            "required": false
+          },
+          "page": {
+            "type": "integer",
+            "description": "页码",
+            "required": false
+          },
+          "page_size": {
+            "type": "integer",
+            "description": "每页数量",
+            "required": false
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "total": {
+            "type": "integer"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "task_id": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "environment_name": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "deployer": {
+                  "type": "string"
+                },
+                "deploy_time": {
+                  "type": "string",
+                  "format": "datetime"
+                },
+                "duration_seconds": {
+                  "type": "integer"
+                },
+                "description": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "description": "分页查询指定项目或环境的部署历史记录。"
+    },
+    {
+      "interface": "版本回滚接口",
+      "provider": "版本管理服务",
+      "consumers": [
+        "部署编排服务"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/v1/versions/rollback",
+      "request": {
+        "body": {
+          "project_id": {
+            "type": "integer",
+            "description": "项目ID"
+          },
+          "environment_id": {
+            "type": "integer",
+            "description": "环境ID"
+          },
+          "target_version": {
+            "type": "string",
+            "description": "目标回滚版本标识"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "task_id": {
+            "type": "string",
+            "description": "回滚任务ID"
+          },
+          "status": {
+            "type": "string",
+            "description": "初始状态"
+          },
+          "rollback_from": {
+            "type": "string",
+            "description": "回滚前版本"
+          },
+          "rollback_to": {
+            "type": "string",
+            "description": "回滚目标版本"
+          }
+        }
+      },
+      "description": "执行版本回滚操作，由部署编排服务在接收到回滚请求后调用版本管理服务获取目标版本快照，再调度SSH连接管理服务执行远程回滚脚本。"
+    },
+    {
+      "interface": "部署任务异步分发",
+      "provider": "消息队列",
+      "consumers": [
+        "SSH连接管理服务"
+      ],
+      "type": "MQ",
+      "endpoint": "exchange: deploy.tasks / routing_key: deploy.file_transfer",
+      "request": {
+        "body": {
+          "task_id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "description": "操作类型：file_transfer/script_exec/rollback"
+          },
+          "environment_id": {
+            "type": "integer"
+          },
+          "file_path": {
+            "type": "string",
+            "description": "部署包路径",
+            "required": false
+          },
+          "target_path": {
+            "type": "string",
+            "description": "远程目标路径"
+          },
+          "version": {
+            "type": "string",
+            "description": "版本号"
+          }
+        }
+      },
+      "response": {
+        "body": {
+          "task_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "执行结果：success/failed"
+          },
+          "output": {
+            "type": "string",
+            "description": "命令执行输出"
+          },
+          "error": {
+            "type": "string",
+            "description": "错误信息",
+            "required": false
+          }
+        }
+      },
+      "description": "部署编排服务通过消息队列将文件传输和脚本执行任务异步分发给SSH连接管理服务，实现解耦和削峰。"
+    },
+    {
+      "interface": "审计事件推送",
+      "provider": "消息队列",
+      "consumers": [
+        "审计日志服务"
+      ],
+      "type": "MQ",
+      "endpoint": "exchange: audit.events / routing_key: audit.*",
+      "request": {
+        "body": {
+          "event_type": {
+            "type": "string",
+            "description": "事件类型（deploy/rollback/create/delete等）"
+          },
+          "actor": {
+            "type": "string",
+            "description": "操作人用户名"
+          },
+          "actor_id": {
+            "type": "integer"
+          },
+          "action": {
+            "type": "string",
+            "description": "操作描述"
+          },
+          "target_type": {
+            "type": "string",
+            "description": "目标对象类型（project/environment/deployment）"
+          },
+          "target_id": {
+            "type": "integer"
+          },
+          "result": {
+            "type": "string",
+            "description": "操作结果（success/failure）"
+          },
+          "ip_address": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "datetime"
+          }
+        }
+      },
+      "response": {
+        "body": {
+          "received": {
+            "type": "boolean"
+          },
+          "log_id": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "各微服务在处理操作前后通过消息队列异步发送审计事件到审计日志服务，确保审计记录不阻塞主业务流程。"
+    }
+  ],
+  "data_flow": [
+    {
+      "name": "一键部署流程",
+      "steps": [
+        "用户在前端选择目标项目和部署环境",
+        "前端上传部署包并点击一键部署按钮",
+        "API网关接收请求并转发到部署编排服务",
+        "部署编排服务创建部署任务，返回task_id",
+        "部署编排服务通过消息队列异步分发文件传输任务",
+        "SSH连接管理服务从连接池获取或新建SSH连接",
+        "SSH服务通过SCP/SFTP将部署包传输到远程服务器",
+        "SSH服务在远程服务器创建版本文件夹（如 /deploy/releases/v1.0.0_20260521）",
+        "SSH服务在远程服务器生成并执行部署脚本",
+        "部署编排服务通过WebSocket实时推送执行日志到前端",
+        "部署完成后，版本管理服务记录版本元数据",
+        "前端展示部署结果，包括成功/失败、耗时、日志摘要"
+      ]
+    },
+    {
+      "name": "版本回滚流程",
+      "steps": [
+        "用户在前端选择目标项目、环境和历史版本",
+        "前端发起回滚请求到API网关",
+        "部署编排服务接收回滚请求并创建回滚任务",
+        "部署编排服务查询版本管理服务获取目标版本的部署快照",
+        "部署编排服务通过消息队列分发回滚任务给SSH连接管理服务",
+        "SSH连接管理服务连接远程服务器",
+        "在远程服务器执行回滚脚本：停止当前服务，恢复目标版本文件，重新启动服务",
+        "部署编排服务通过WebSocket推送回滚实时日志",
+        "版本管理服务记录回滚操作到历史",
+        "审计日志服务记录回滚操作",
+        "前端展示回滚结果，验证服务状态"
+      ]
+    },
+    {
+      "name": "项目与环境配置流程",
+      "steps": [
+        "用户在前端创建新项目并填写项目信息",
+        "API网关转发请求到项目管理服务",
+        "项目管理服务验证并持久化项目数据到PostgreSQL",
+        "用户在项目下创建部署环境，选择环境类型（测试/灰度/正式）",
+        "用户上传SSH密钥配置服务器连接信息",
+        "SSH连接管理服务加密存储密钥并返回指纹",
+        "环境管理服务保存环境配置并关联到项目",
+        "用户触发连接测试，环境管理服务通过SSH服务验证连接",
+        "前端展示连接状态（成功/失败）",
+        "配置完成后，项目和环境即可用于部署流程"
+      ]
+    },
+    {
+      "name": "审计日志记录流程",
+      "steps": [
+        "用户在前端执行任意操作（创建/部署/回滚等）",
+        "各微服务在处理操作前/后发送审计事件到消息队列",
+        "审计日志服务通过消息队列异步接收审计事件",
+        "审计日志服务持久化审计记录到PostgreSQL",
+        "审计记录包含：操作人、操作类型、操作时间、目标对象、请求IP、操作结果",
+        "管理员可在前端查询和导出审计日志"
+      ]
+    }
+  ]
+}
