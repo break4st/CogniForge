@@ -44,6 +44,29 @@ class AgentRole(str, Enum):
     DEVOPS = "devops"
 
 
+class ModuleType(str, Enum):
+    """组件/模块类型 —— SAD 和 LLD 共用同一枚举值，无需映射。
+
+    SAD 的 ``components[].type`` 和 LLD 的 ``meta.module_type`` 使用相同值。
+    ``cache`` 和 ``mq`` 类组件在 SAD 中 type 填 ``infrastructure``。
+
+    Only ``database`` modules may use ``ownership=canonical`` on ``type=table`` models.
+    """
+
+    DATABASE = "database"
+    SERVICE = "service"
+    GATEWAY = "gateway"
+    FRONTEND = "frontend"
+    INFRASTRUCTURE = "infrastructure"
+
+
+class Ownership(str, Enum):
+    """Data model ownership semantics."""
+    CANONICAL = "canonical"  # I am the sole definer; others reference me
+    DERIVED = "derived"      # I reference a canonical model; may add local_extensions
+    OWNED = "owned"          # This model is entirely local to this module
+
+
 # DAG workflow steps
 DAG_STEPS = [
     "prd",

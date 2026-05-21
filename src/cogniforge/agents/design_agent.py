@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from cogniforge.agents.base import BaseAgent
-from cogniforge.core.constants import AgentRole, DocumentType
+from cogniforge.core.constants import AgentRole, DocumentType, ModuleType
 from cogniforge.core.exceptions import AgentError
 
 
@@ -32,8 +32,14 @@ class DesignAgent(BaseAgent):
             now = datetime.now().strftime("%Y-%m-%d %H:%M")
             json_path = self.wiki_system.agent_path(DocumentType.LLD, doc_id=doc_id, module=module)
 
+            # --- Determine module_type from SAD component type ---
+            module_type = self._resolve_module_type(module)
+
             # --- Cross-module contract discovery ---
-            contract_context = self._build_contract_context(module)
+            contract_context = self._build_contract_context(module, module_type)
+
+            # --- Ownership rules tailored to module_type ---
+            ownership_rules = self._build_ownership_rules(module_type)
 
             prompt = (
                 f"根据以下数据创建一份详细设计文档 (LLD)，以 JSON 格式输出并写入:\n\n"
@@ -41,6 +47,7 @@ class DesignAgent(BaseAgent):
                 f"JSON 结构:\n"
                 f"{{\n"
                 f"  \"meta\": {{\"doc_id\": \"{doc_id}\", \"type\": \"lld\",\n"
+                f"    \"module_type\": \"{module_type}\",\n"
                 f"    \"module\": \"{module}\", \"title\": \"{title}\",\n"
                 f"    \"author\": \"design_agent\", \"created\": \"{now}\"}},\n"
                 f"  \"overview\": {{\n"
@@ -49,7 +56,11 @@ class DesignAgent(BaseAgent):
                 f"    \"tech_stack\": [\"技术栈\"]\n"
                 f"  }},\n"
                 f"  \"data_models\": [\n"
-                f"    {{\"name\": \"模型名\", \"type\": \"table|interface|struct|store|config\",\n"
+                f"    {{\"name\": \"模型名\",\n"
+                f"      \"type\": \"table|reference|struct|store|config\",\n"
+                f"      \"ownership\": \"canonical|derived|owned\",\n"
+                f"      // 仅 ownership=derived 时需要:\n"
+                f"      \"source\": {{\"doc_id\": \"lld-Primary Database-001\", \"model_name\": \"表名\"}},\n"
                 f"      \"description\": \"说明\",\n"
                 f"      \"fields\": [\n"
                 f"        {{\"name\": \"字段名\", \"type\": \"类型\",\n"
@@ -77,11 +88,13 @@ class DesignAgent(BaseAgent):
                 f"重要:\n"
                 f"- interfaces[].method 与 endpoint 分开填写，method 为 HTTP 方法或 INTERNAL\n"
                 f"- interfaces[].response.body 的字段名与类型与 SAD 契约严格一致，不可修改\n"
-                f"- data_models[].type 使用 table（数据库表）/interface（TS 接口）/struct（Go 结构体）/store（前端状态）/config（配置）\n"
                 f"- 前端模块的 interfaces 使用 frontend 作为 method 值，endpoint 填写路由路径\n"
-                f"- overview.tech_stack 必须从 SAD tech_stack 中选取本模块相关的技术子集，不可引入未声明的技术\n\n"
+                f"- overview.tech_stack 必须从 SAD tech_stack 中选取本模块相关的技术子集，不可引入未声明的技术\n"
+                f"- gateway 模块的 API 契约必须自包含：完整的 request/response body，不写\"参考下游\"\n\n"
+                f"{ownership_rules}\n"
                 f"输入数据:\n"
                 f"module: {module}\n"
+                f"module_type: {module_type}\n"
                 f"overview: {overview}\n"
                 f"data_models: {json.dumps(data_models, ensure_ascii=False)}\n"
                 f"interfaces: {json.dumps(interfaces, ensure_ascii=False)}\n"
@@ -102,7 +115,69 @@ class DesignAgent(BaseAgent):
         except Exception as e:
             return self.format_result(status="failed", message=str(e))
 
-    def _build_contract_context(self, module: str) -> str:
+    def _resolve_module_type(self, module: str) -> str:
+        """Read the SAD component type — SAD and LLD share ModuleType values directly.
+
+        Defaults to ``service`` when SAD is missing or type is unknown.
+        """
+        sad_docs = self.wiki_system.list_documents(DocumentType.SAD)
+        if not sad_docs:
+            return ModuleType.SERVICE
+        sad_data = self.wiki_system.read_json(DocumentType.SAD, doc_id=sad_docs[-1].doc_id)
+        if not sad_data:
+            return ModuleType.SERVICE
+        components = sad_data.get("components", [])
+        my_comp = next((c for c in components if c.get("name") == module), None)
+        if my_comp:
+            try:
+                return ModuleType(my_comp.get("type", "service"))
+            except ValueError:
+                return ModuleType.SERVICE
+        return ModuleType.SERVICE
+
+    def _build_ownership_rules(self, module_type: str) -> str:
+        """Return ownership rules tailored to this module's type."""
+        rules: dict[str, str] = {
+            "database": (
+                "数据模型所有权规则 (module_type=database):\n"
+                "- 你是所有数据库表的唯一权威定义者\n"
+                "- data_models 中所有 type=table 的模型必须使用 ownership=canonical\n"
+                "- 每个 canonical 表必须包含完整的字段定义、索引定义\n"
+                "- 其他服务需要的表也在此统一定义，不要遗漏"
+            ),
+            "service": (
+                "数据模型所有权规则 (module_type=service):\n"
+                "- 你不可以重新定义数据库表结构\n"
+                "- 需要数据库表时，必须使用 type=reference + ownership=derived\n"
+                "- source 指向 Primary Database LLD (doc_id: lld-Primary Database-001)\n"
+                "- 只列出本服务关心的字段视图，可添加 local_extensions（服务特有的扩展字段）\n"
+                "- 服务内部专用的 config/struct 使用 ownership=owned\n"
+                "- 接口 response body 必须完整展开字段，不写 {}"
+            ),
+            "gateway": (
+                "数据模型所有权规则 (module_type=gateway):\n"
+                "- 所有模型使用 ownership=owned（网关自身的路由规则、认证模型等）\n"
+                "- API 契约必须自包含：每个透传接口的 response body 必须完整展开\n"
+                "- 不可以写 {} 或\"参考下游服务\"——前端开发者只读你的 LLD\n"
+                "- 在 description 中注明 routes_to 指向哪个下游服务"
+            ),
+            "frontend": (
+                "数据模型所有权规则 (module_type=frontend):\n"
+                "- 所有模型使用 ownership=owned（Pinia store、组件状态等）\n"
+                "- 不定义数据库表\n"
+                "- interfaces 的 method 使用 frontend，endpoint 填写路由路径\n"
+                "- 写明每个页面调用的 API endpoint"
+            ),
+            "infrastructure": (
+                "数据模型所有权规则 (module_type=infrastructure):\n"
+                "- 所有模型使用 ownership=owned（Redis key 模式、MQ 队列定义等中间件数据结构）\n"
+                "- 不定义业务数据库表\n"
+                "- 明确缓存键命名空间/过期策略/Pub/Sub 频道（cache），或队列名/routing key/消费者配置（mq）"
+            ),
+        }
+        return rules.get(module_type, rules["service"])
+
+    def _build_contract_context(self, module: str, module_type: str = "service") -> str:
         """Assemble self-contained context from SAD + existing LLDs.
 
         The MDE agent receives everything it needs inline — no mandatory
@@ -222,7 +297,28 @@ class DesignAgent(BaseAgent):
                     parts.extend(flow_lines)
                 parts.append("")
 
-        # ── 6. Global tech stack from SAD ──
+        # ── 6. Primary Database canonical tables (for service/gateway modules) ──
+        if module_type in ("service", "gateway"):
+            db_llds = self.wiki_system.list_documents(DocumentType.LLD, module="Primary Database")
+            if db_llds:
+                db_data = _read_lld_json(db_llds[-1].path)
+                if db_data:
+                    tables = [m for m in db_data.get("data_models", []) if m.get("type") == "table"]
+                    if tables:
+                        parts.append("=== Primary Database 权威表定义 (只能引用，不可重新定义) ===")
+                        parts.append("以下数据库表已在 Primary Database LLD 中权威定义。")
+                        parts.append("你的 LLD 中如需使用这些表，必须用 type=reference + ownership=derived + source 引用，不得重新定义字段。")
+                        parts.append("")
+                        for t in tables:
+                            parts.append(f"  表名: {t['name']}")
+                            parts.append(f"  字段: {json.dumps(t.get('fields', []), ensure_ascii=False)}")
+                            idx_info = t.get("indexes", [])
+                            if idx_info:
+                                parts.append(f"  索引: {json.dumps(idx_info, ensure_ascii=False)}")
+                            parts.append("")
+                        parts.append("")
+
+        # ── 7. Global tech stack from SAD ──
         if sad_data:
             tech_stack = sad_data.get("tech_stack", {})
             if tech_stack:

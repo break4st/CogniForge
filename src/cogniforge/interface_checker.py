@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+
+from cogniforge.core.constants import ModuleType
 from typing import Optional
 
 
@@ -209,6 +211,145 @@ def _references_provider(interfaces: list[dict], provider: str, endpoint: str) -
         if provider.lower() in ep or target in ep:
             return True
     return False
+
+
+def check_data_models(repo_path: Path) -> dict:
+    """Check data model ownership consistency across all LLDs.
+
+    Validates:
+      - Only ``module_type=database`` modules use ``ownership=canonical`` on tables
+      - All ``ownership=derived`` models have valid ``source`` references
+      - No two modules claim ``canonical`` ownership of the same model name
+      - ``source`` references point to existing documents and model names
+    """
+    llds = _all_llds(repo_path)
+    violations: list[dict] = []
+    canonical_models: dict[str, str] = {}  # model_name -> module
+
+    for mod_name, mod_lld in llds.items():
+        meta = mod_lld.get("meta", {})
+        mod_type = meta.get("module_type", "service")
+
+        for dm in mod_lld.get("data_models", []):
+            model_name = dm.get("name", "?")
+            dm_type = dm.get("type", "")
+            ownership = dm.get("ownership", "")
+
+            # Rule 1: only database modules can declare canonical tables
+            if ownership == "canonical" and dm_type == "table" and mod_type != ModuleType.DATABASE:
+                violations.append({
+                    "contract": model_name,
+                    "module": mod_name,
+                    "detail": (
+                        f"module_type={mod_type} 不可对 table '{model_name}' 使用 "
+                        f"ownership=canonical。仅 module_type=database 有此权限。"
+                        f"应改为 type=reference + ownership=derived + source 指向 Primary Database LLD"
+                    ),
+                })
+
+            # Rule 2: canonical name must be unique across all modules
+            if ownership == "canonical":
+                if model_name in canonical_models:
+                    violations.append({
+                        "contract": model_name,
+                        "module": mod_name,
+                        "detail": (
+                            f"模型 '{model_name}' 已被 '{canonical_models[model_name]}' 声明为 canonical。"
+                            f"每个模型名只能有一个 canonical 定义"
+                        ),
+                    })
+                else:
+                    canonical_models[model_name] = mod_name
+
+            # Rule 3: derived models must have a valid source
+            if ownership == "derived":
+                source = dm.get("source")
+                if not source or not isinstance(source, dict):
+                    violations.append({
+                        "contract": model_name,
+                        "module": mod_name,
+                        "detail": (
+                            f"模型 '{model_name}' ownership=derived 但缺少 source 字段。"
+                            f"必须提供 {{doc_id, model_name}} 指向 canonical 定义"
+                        ),
+                    })
+                    continue
+
+                src_doc_id = source.get("doc_id", "")
+                src_model = source.get("model_name", "")
+                if not src_doc_id or not src_model:
+                    violations.append({
+                        "contract": model_name,
+                        "module": mod_name,
+                        "detail": (
+                            f"模型 '{model_name}' 的 source 不完整，需要 doc_id 和 model_name"
+                        ),
+                    })
+                    continue
+
+                # Verify source doc exists
+                target_lld = _find_lld_by_doc_id(llds, src_doc_id)
+                if not target_lld:
+                    violations.append({
+                        "contract": model_name,
+                        "module": mod_name,
+                        "detail": (
+                            f"模型 '{model_name}' 引用的 source.doc_id='{src_doc_id}' 不存在"
+                        ),
+                    })
+                    continue
+
+                # Verify source model exists in target
+                target_models = target_lld.get("data_models", [])
+                if not any(m.get("name") == src_model for m in target_models):
+                    violations.append({
+                        "contract": model_name,
+                        "module": mod_name,
+                        "detail": (
+                            f"模型 '{model_name}' 引用的 source.model_name='{src_model}' "
+                            f"在 '{src_doc_id}' 中不存在"
+                        ),
+                    })
+
+    return {
+        "status": "conflict" if violations else "ok",
+        "violations": violations,
+        "canonical_models": canonical_models,
+    }
+
+
+def format_data_model_report(result: dict) -> str:
+    """Render a human-readable data model ownership report."""
+    lines = []
+    status = result["status"]
+    violations = result.get("violations", [])
+    canonical = result.get("canonical_models", {})
+
+    if status == "ok":
+        lines.append("✓ 数据模型所有权检查通过")
+    else:
+        lines.append(f"✗ 数据模型所有权检查失败 — {len(violations)} 个冲突")
+
+    if canonical:
+        lines.append(f"\n权威模型注册表 ({len(canonical)}):")
+        for name, mod in sorted(canonical.items()):
+            lines.append(f"  • {name} → {mod}")
+
+    if violations:
+        lines.append("\n--- 冲突 (必须修复) ---")
+        for v in violations:
+            lines.append(f"  ✗ [{v['module']}] {v['contract']}: {v['detail']}")
+
+    return "\n".join(lines)
+
+
+def _find_lld_by_doc_id(llds: dict[str, dict], doc_id: str) -> dict | None:
+    """Find an LLD dict by its meta.doc_id."""
+    target = doc_id.strip()
+    for mod_lld in llds.values():
+        if mod_lld.get("meta", {}).get("doc_id", "") == target:
+            return mod_lld
+    return None
 
 
 def _has_contract(contracts: list[dict], module: str, endpoint: str) -> bool:

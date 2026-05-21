@@ -66,7 +66,7 @@ class ArchitectAgent(BaseAgent):
                 f"    \"...\": \"按需增删字段\"\n"
                 f"  }},\n"
                 f"  \"components\": [\n"
-                f"    {{\"name\": \"组件名\", \"type\": \"frontend|gateway|service|db|cache|mq\",\n"
+                f"    {{\"name\": \"组件名\", \"type\": \"frontend|gateway|service|database|infrastructure\",\n"
                 f"      \"description\": \"组件描述\", \"responsibilities\": [\"职责1\", ...]}}\n"
                 f"  ],\n"
                 f"  \"contracts\": [\n"

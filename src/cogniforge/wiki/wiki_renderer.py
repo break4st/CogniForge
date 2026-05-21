@@ -755,7 +755,7 @@ def _render_architecture_section(data, components: list) -> str:
         diag_parts = []
         css_map = {
             "frontend": "frontend", "gateway": "gateway", "service": "service",
-            "db": "db", "cache": "cache", "mq": "mq",
+            "database": "db", "infrastructure": "cache",
         }
         for idx, layer in enumerate(layers):
             layer_name = layer.get("name", "")
@@ -1120,7 +1120,7 @@ def _render_sad(d: dict) -> str:
         # Render groups (preserve layer order from architecture)
         type_icons = {
             "frontend": "🖥️", "gateway": "🔀", "service": "⚙️",
-            "db": "🗄️", "cache": "⚡", "mq": "📨",
+            "database": "🗄️", "infrastructure": "⚡",
         }
         layer_order = list(dict.fromkeys(layer_for.values()))  # unique, insertion order
         for lname in layer_order:
@@ -1180,14 +1180,18 @@ def _render_lld(d: dict) -> str:
     title = m.get("title", "LLD")
     doc_id = m.get("doc_id", "")
     module = m.get("module", "")
+    module_type = m.get("module_type", "")
     models = d.get("data_models", [])
     ifaces = d.get("interfaces", [])
+    workflow = d.get("workflow")
 
     # Sidebar sections
     sections = [
         ("overview", "📄", "概述"),
         ("models", "🗄️", f"数据模型 ({len(models)})"),
     ]
+    if workflow:
+        sections.append(("workflow", "🔄", "编排流程"))
     if ifaces:
         sections.append(("interfaces", "🔌", f"接口定义 ({len(ifaces)})"))
     if d.get("error_handling"):
@@ -1202,15 +1206,30 @@ def _render_lld(d: dict) -> str:
     # ── 1. Overview ──
     overview = d.get("overview", "")
     parts.append(_section_header("📄", "概述", "rgba(124,111,247,0.12)", "overview"))
+
+    # Module type badge
+    mt_labels = {
+        "database": "🗄️ 数据库层", "service": "⚙️ 业务服务", "gateway": "🔀 网关层",
+        "frontend": "🖥️ 前端", "infrastructure": "⚡ 基础设施",
+    }
+    mt_badge = mt_labels.get(module_type, "")
+    if module and module_type:
+        parts.append(
+            f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">'
+            f'<div class="arch-style-badge">{_esc(module)}</div>'
+            + (f'<span class="badge accent">{_esc(mt_badge)}</span>' if mt_badge else "")
+            + '</div>'
+        )
+    elif module:
+        parts.append(
+            f'<div class="arch-style-badge" style="margin-bottom:12px">'
+            f'模块: {_esc(module)}</div>'
+        )
+
     if isinstance(overview, dict):
         desc = overview.get("description", "")
         deps = overview.get("dependencies", [])
         tech = overview.get("tech_stack", [])
-        if module:
-            parts.append(
-                f'<div class="arch-style-badge" style="margin-bottom:12px">'
-                f'模块: {_esc(module)}</div>'
-            )
         if desc:
             parts.append(f'<div class="arch-desc">{_esc(desc)}</div>')
         if deps:
@@ -1226,13 +1245,7 @@ def _render_lld(d: dict) -> str:
             )
             parts.append(f'<div style="margin-bottom:8px">{tags}</div>')
     else:
-        # String overview — plain text
         ov_text = str(overview) if overview else ""
-        if module:
-            parts.append(
-                f'<div class="arch-style-badge" style="margin-bottom:12px">'
-                f'模块: {_esc(module)}</div>'
-            )
         if ov_text:
             parts.append(f"<p>{_esc(ov_text)}</p>")
     parts.append(_SECTION_FOOT)
@@ -1240,15 +1253,19 @@ def _render_lld(d: dict) -> str:
     # ── 2. Data Models ──
     parts.append(_section_header("🗄️", f"数据模型 ({len(models)})", "rgba(91,141,239,0.12)", "models"))
     if models:
-        # Group by type
         from collections import OrderedDict
         type_labels = {
-            "table": "数据库表", "interface": "数据接口", "struct": "数据结构",
-            "store": "状态存储", "config": "配置定义",
+            "table": "数据库表", "reference": "引用模型", "interface": "数据接口",
+            "struct": "数据结构", "store": "状态存储", "config": "配置定义",
         }
         type_icons = {
-            "table": "🗄️", "interface": "📋", "struct": "📦",
-            "store": "🗃️", "config": "⚙️",
+            "table": "🗄️", "reference": "🔗", "interface": "📋",
+            "struct": "📦", "store": "🗃️", "config": "⚙️",
+        }
+        ownership_labels = {
+            "canonical": ("权威定义", "rgba(52,211,153,0.15)", "var(--c-green)"),
+            "derived": ("引用", "rgba(91,141,239,0.12)", "var(--c-accent)"),
+            "owned": ("自有", "rgba(107,115,148,0.12)", "var(--c-muted)"),
         }
         grouped: dict[str, list] = OrderedDict()
         for dm in models:
@@ -1260,6 +1277,28 @@ def _render_lld(d: dict) -> str:
             icon = type_icons.get(t, "📄")
             cards = []
             for dm in items:
+                ownership = dm.get("ownership", "")
+                own_label, own_bg, own_color = ownership_labels.get(ownership, ("", "", ""))
+                own_badge = (
+                    f'<span style="display:inline-block;padding:2px 8px;border-radius:4px;'
+                    f'font-size:0.72em;font-weight:600;background:{own_bg};color:{own_color};'
+                    f'margin-left:6px">{_esc(own_label)}</span>'
+                ) if own_label else ""
+
+                # Source reference for derived models
+                source_html = ""
+                source = dm.get("source")
+                if source and isinstance(source, dict):
+                    src_doc = source.get("doc_id", "")
+                    src_model = source.get("model_name", "")
+                    if src_doc or src_model:
+                        source_html = (
+                            f'<div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">'
+                            f'↳ 引用自: {_esc(src_doc)} / {_esc(src_model)}'
+                            f'</div>'
+                        )
+
+                # Fields table
                 rows = ""
                 for f in dm.get("fields", []):
                     required = f.get("required", False)
@@ -1271,13 +1310,36 @@ def _render_lld(d: dict) -> str:
                         f"<td>{_esc(f.get('description',''))}</td>"
                         f"</tr>"
                     )
+
+                # Indexes table (for canonical tables)
+                indexes = dm.get("indexes", [])
+                idx_html = ""
+                if indexes:
+                    idx_rows = ""
+                    for idx in indexes:
+                        unique = "✓" if idx.get("unique") else ""
+                        cols = ", ".join(idx.get("columns", []))
+                        idx_rows += (
+                            f"<tr><td>{_esc(idx.get('name',''))}</td>"
+                            f"<td>{unique}</td>"
+                            f"<td style=\"font-family:monospace;font-size:0.85em\">{_esc(cols)}</td></tr>"
+                        )
+                    idx_html = (
+                        '<div class="body-label" style="margin-top:8px">索引</div>'
+                        '<table class="body-table"><thead><tr><th>索引名</th><th>唯一</th><th>列</th></tr></thead>'
+                        f'<tbody>{idx_rows}</tbody></table>'
+                    )
+
                 desc_html = f'<p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">{_esc(dm.get("description",""))}</p>' if dm.get("description") else ""
                 cards.append(
                     f'<div class="contract-card" style="border-top:none">'
-                    f'<h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">{icon} {_esc(dm.get("name",""))}</h3>'
+                    f'<h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">'
+                    f'{icon} {_esc(dm.get("name",""))}{own_badge}</h3>'
+                    f'{source_html}'
                     f'{desc_html}'
                     f'<div class="body-label">字段</div>'
                     f'<table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody>{rows}</tbody></table>'
+                    f'{idx_html}'
                     f'</div>'
                 )
             parts.append(
@@ -1288,7 +1350,64 @@ def _render_lld(d: dict) -> str:
             )
     parts.append(_SECTION_FOOT)
 
-    # ── 3. Interfaces ──
+    # ── 3. Workflow (if present) ──
+    if workflow:
+        parts.append(_section_header("🔄", "编排流程", "rgba(251,191,36,0.12)", "workflow"))
+        wf_name = workflow.get("name", "")
+        wf_desc = workflow.get("description", "")
+        if wf_name:
+            parts.append(f'<h3 style="font-size:1.05em;font-weight:700;color:var(--c-heading);margin-bottom:4px">{_esc(wf_name)}</h3>')
+        if wf_desc:
+            parts.append(f'<p style="font-size:0.9em;color:var(--c-muted);margin-bottom:16px">{_esc(wf_desc)}</p>')
+
+        steps = workflow.get("steps", [])
+        if steps:
+            # Render steps as a visual flow
+            step_htmls = []
+            for i, step in enumerate(steps):
+                order = step.get("order", i + 1)
+                name = step.get("name", f"Step {order}")
+                action = step.get("action", "")
+                timeout = step.get("timeout_seconds")
+                on_failure = step.get("on_failure", "")
+
+                timeout_str = f' <span style="font-size:0.78em;color:var(--c-amber)">({timeout}s 超时)</span>' if timeout else ""
+
+                step_htmls.append(
+                    f'<div style="display:flex;align-items:flex-start;gap:12px;padding:12px 0;'
+                    f'border-bottom:1px solid var(--c-border)">'
+                    f'<div style="width:32px;height:32px;border-radius:50%;'
+                    f'background:rgba(251,191,36,0.15);color:var(--c-amber);'
+                    f'display:flex;align-items:center;justify-content:center;'
+                    f'font-weight:700;font-size:0.85em;flex-shrink:0">{order}</div>'
+                    f'<div style="flex:1">'
+                    f'<div style="font-weight:600;color:var(--c-heading);margin-bottom:4px">'
+                    f'{_esc(name)}{timeout_str}</div>'
+                    f'<div style="font-size:0.88em;color:var(--c-text);margin-bottom:4px">{_esc(action)}</div>'
+                    + (f'<div style="font-size:0.82em;color:var(--c-red)">失败处理: {_esc(on_failure)}</div>' if on_failure else "")
+                    + '</div></div>'
+                )
+
+            parts.append(
+                f'<div style="background:var(--c-surface);border:1px solid var(--c-border);'
+                f'border-radius:var(--radius);padding:8px 16px">{"".join(step_htmls)}</div>'
+            )
+
+        # Retry strategy
+        retry = workflow.get("retry_strategy")
+        if retry:
+            parts.append(
+                f'<div style="margin-top:16px;font-size:0.88em;color:var(--c-muted)">'
+                f'<strong>重试策略:</strong> 最多 {retry.get("max_retries", "?")} 次，'
+                f'间隔 {retry.get("retry_interval_seconds", "?")}s<br>'
+                f'可重试错误: {", ".join(retry.get("retryable_errors", [])) or "无"}<br>'
+                f'不可重试错误: {", ".join(retry.get("non_retryable_errors", [])) or "无"}'
+                f'</div>'
+            )
+
+        parts.append(_SECTION_FOOT)
+
+    # ── 4. Interfaces ──
     if ifaces:
         parts.append(_section_header("🔌", f"接口定义 ({len(ifaces)})", "rgba(34,211,238,0.12)", "interfaces"))
         for iface in ifaces:
@@ -1363,7 +1482,7 @@ def _render_lld(d: dict) -> str:
             )
         parts.append(_SECTION_FOOT)
 
-    # ── 4. Error Handling ──
+    # ── 5. Error Handling ──
     if d.get("error_handling"):
         parts.append(_section_header("⚠️", "错误处理", "rgba(251,191,36,0.12)", "errors"))
         parts.append(f"<p>{_esc(d['error_handling'])}</p>")

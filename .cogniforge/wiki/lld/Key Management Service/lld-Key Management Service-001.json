@@ -6,107 +6,190 @@
     "module": "Key Management Service",
     "title": "LLD - Key Management Service",
     "author": "design_agent",
-    "created": "2026-05-21 09:46"
+    "created": "2026-05-21 10:14"
   },
   "overview": {
-    "description": "密钥管理微服务，负责SSH密钥的上传、安全存储、配置管理和连通性测试。提供密钥的AES-256-GCM加密存储、密钥与环境的关联绑定、SSH连接连通性测试、密钥删除和轮换以及密钥文件权限管理能力。",
-    "dependencies": ["Primary Database"],
-    "tech_stack": ["Python 3.11+", "FastAPI", "MySQL 8.0", "Paramiko"]
+    "description": "负责 SSH 密钥的安全存储、管理和生命周期控制。提供 SSH 私钥的加密存储与解密、密钥上传与删除、密钥与环境关联管理等核心功能，并为 SSH Execution Service 提供密钥解密内部接口。所有私钥内容在存储前使用 AES-256 加密，内存中使用后及时清除。",
+    "dependencies": [
+      "API Gateway",
+      "Primary Database",
+      "SSH Execution Service",
+      "Audit Service"
+    ],
+    "tech_stack": [
+      "Python",
+      "FastAPI",
+      "PostgreSQL 15"
+    ]
   },
   "data_models": [
     {
-      "name": "environment_keys",
+      "name": "keys",
       "type": "reference",
       "ownership": "derived",
       "source": {
         "doc_id": "lld-Primary Database-001",
-        "model_name": "environment_keys"
+        "model_name": "keys"
       },
-      "description": "SSH密钥表，继承自主数据库。存储每个环境关联的SSH密钥元数据，密钥内容经AES-256-GCM加密后存储，通过env_id与环境关联。",
+      "description": "SSH 密钥表，存储密钥元数据和加密后的私钥内容。私钥在写入前使用 AES-256-CBC 加密，密钥指纹在写入时自动计算。支持可选密码短语的加密存储。",
       "fields": [
-        {"name": "id", "type": "bigint", "required": true, "description": "密钥ID，自增主键"},
-        {"name": "env_id", "type": "bigint", "required": true, "description": "环境ID，外键关联environments表"},
-        {"name": "key_type", "type": "enum('rsa','ed25519')", "required": true, "description": "密钥类型：rsa或ed25519"},
-        {"name": "encrypted_key", "type": "text", "required": true, "description": "AES-256-GCM加密后的SSH私钥内容"},
-        {"name": "fingerprint", "type": "varchar(255)", "required": true, "description": "密钥指纹，用于标识和验证"},
-        {"name": "created_at", "type": "datetime", "required": true, "description": "创建时间"},
-        {"name": "updated_at", "type": "datetime", "required": true, "description": "更新时间"}
+        {
+          "name": "id",
+          "type": "uuid",
+          "required": true,
+          "description": "密钥唯一标识，主键，默认 uuid_generate_v4()"
+        },
+        {
+          "name": "name",
+          "type": "varchar(200)",
+          "required": true,
+          "description": "密钥名称，全局唯一，用于标识和检索"
+        },
+        {
+          "name": "fingerprint",
+          "type": "varchar(100)",
+          "required": true,
+          "description": "SSH 公钥指纹（MD5 格式），用于密钥验证和展示，写入时自动计算"
+        },
+        {
+          "name": "encrypted_key",
+          "type": "text",
+          "required": true,
+          "description": "AES-256-CBC 加密后的 SSH 私钥内容（Base64 编码存储）"
+        },
+        {
+          "name": "passphrase_encrypted",
+          "type": "text",
+          "required": false,
+          "description": "加密后的私钥密码短语，若上传时未提供密码则为 NULL"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz",
+          "required": true,
+          "description": "密钥创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "required": true,
+          "description": "密钥信息最后更新时间"
+        }
       ]
     },
     {
-      "name": "EncryptionConfig",
+      "name": "encryption_config",
       "type": "config",
       "ownership": "owned",
-      "description": "AES-256-GCM加密配置，从环境变量加载，用于SSH密钥内容的加密和解密操作",
+      "description": "密钥加密配置，定义 AES 加密算法参数和主密钥来源。配置加载后常驻内存，用于私钥的加密和解密操作。",
       "fields": [
-        {"name": "encryption_key", "type": "string", "required": true, "description": "AES-256加密密钥，32字节长度，Base64编码存储"},
-        {"name": "algorithm", "type": "string", "required": true, "description": "加密算法，固定 AES-256-GCM"},
-        {"name": "key_rotation_interval_days", "type": "integer", "required": false, "description": "密钥轮换周期（天），默认90天"}
-      ]
-    },
-    {
-      "name": "SSHTestConfig",
-      "type": "config",
-      "ownership": "owned",
-      "description": "SSH连接测试配置参数，控制连接超时和重试行为",
-      "fields": [
-        {"name": "connect_timeout", "type": "integer", "required": true, "description": "SSH连接超时时间（秒），默认10"},
-        {"name": "max_test_retries", "type": "integer", "required": true, "description": "连接测试最大重试次数，默认1"}
+        {
+          "name": "encryption_algorithm",
+          "type": "string",
+          "required": true,
+          "description": "加密算法，固定为 AES-256-CBC"
+        },
+        {
+          "name": "master_key_source",
+          "type": "string",
+          "required": true,
+          "description": "主密钥来源，可选值：environment（环境变量）、vault（外部密钥管理）"
+        },
+        {
+          "name": "key_rotation_interval_days",
+          "type": "integer",
+          "required": true,
+          "description": "主密钥轮换周期（天），默认 90"
+        }
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "SSH Key Upload API",
+      "name": "UploadKey",
       "method": "POST",
-      "endpoint": "/api/environments/{env_id}/keys",
-      "description": "为指定环境上传SSH密钥。接收密钥类型和私钥文本内容，校验密钥格式合法性（PEM/OpenSSH格式），计算密钥指纹，使用AES-256-GCM加密密钥内容后存储密钥元数据到数据库，返回密钥ID、类型、指纹和创建时间。",
-      "parameters": [
-        {"name": "env_id", "type": "integer", "description": "环境ID（路径参数）"},
-        {"name": "key_type", "type": "enum", "description": "密钥类型：rsa|ed25519"},
-        {"name": "key_content", "type": "string", "description": "SSH私钥文本内容（PEM或OpenSSH格式）"},
-        {"name": "passphrase", "type": "string", "description": "密钥口令，可选"}
-      ],
+      "endpoint": "/api/keys",
+      "description": "上传 SSH 私钥。接收 PEM 格式的私钥内容和可选密码短语，验证私钥格式合法性，计算密钥指纹，使用 AES-256-CBC 加密私钥内容后持久化到数据库。返回密钥 ID、名称、指纹和创建时间。",
+      "parameters": [],
       "response": {
         "status": 201,
         "body": {
-          "id": "integer",
-          "env_id": "integer",
-          "key_type": "string",
+          "id": "string",
+          "name": "string",
           "fingerprint": "string",
-          "created_at": "datetime"
+          "created_at": "string"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "请求参数校验失败：密钥类型不合法（仅支持rsa或ed25519）、密钥内容非合法PEM/OpenSSH格式、口令格式不合法"},
-        {"code": 404, "message": "环境不存在，指定的env_id未找到对应环境"},
-        {"code": 409, "message": "密钥已存在，该环境已关联密钥，需先删除现有密钥再上传"},
-        {"code": 500, "message": "密钥加密失败或数据库写入异常"}
+        {"code": 400, "message": "密钥名称已存在、密钥格式不合法（非 PEM 格式私钥）、私钥内容为空"},
+        {"code": 422, "message": "私钥解析失败，密码短语错误或私钥已损坏"},
+        {"code": 500, "message": "加密或持久化失败"}
       ]
     },
     {
-      "name": "SSH Connection Test API",
-      "method": "POST",
-      "endpoint": "/api/environments/{env_id}/keys/test",
-      "description": "测试指定环境的SSH连接连通性。从数据库获取环境连接参数（主机地址、端口、用户名）和加密的SSH密钥，使用AES-256-GCM解密密钥后通过Paramiko建立SSH连接到目标服务器，收集连接延迟和服务器基本信息后返回测试结果。",
+      "name": "DeleteKey",
+      "method": "DELETE",
+      "endpoint": "/api/keys/{key_id}",
+      "description": "删除指定 SSH 密钥。检查该密钥是否被环境绑定（environments.key_id 引用），若有关联环境则拒绝删除，防止环境配置失效。删除后委托 Audit Service 记录操作日志。",
       "parameters": [
-        {"name": "env_id", "type": "integer", "description": "环境ID（路径参数）"}
+        {
+          "name": "key_id",
+          "type": "string",
+          "description": "路径参数，密钥 ID"
+        }
+      ],
+      "response": {
+        "status": 204,
+        "body": {}
+      },
+      "error_codes": [
+        {"code": 404, "message": "密钥不存在"},
+        {"code": 409, "message": "该密钥已被环境绑定，无法删除（存在关联的部署环境）"},
+        {"code": 500, "message": "数据库操作失败"}
+      ]
+    },
+    {
+      "name": "ListKeys",
+      "method": "GET",
+      "endpoint": "/api/keys",
+      "description": "获取所有已上传的 SSH 密钥列表。返回密钥概要信息（ID、名称、指纹、创建时间），不包含私钥内容和密码。用于 Web Console 密钥管理页面和创建环境时选择密钥。",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "keys": "array",
+          "total": "integer"
+        }
+      },
+      "error_codes": [
+        {"code": 500, "message": "数据库查询失败"}
+      ]
+    },
+    {
+      "name": "GetDecryptedKey",
+      "method": "INTERNAL",
+      "endpoint": "/internal/keys/{key_id}/decrypt",
+      "description": "内部接口，为 SSH Execution Service 提供解密后的 SSH 私钥。根据密钥 ID 从数据库读取加密私钥，使用系统主密钥解密后返回明文私钥和密码短语。调用方需在服务网格层进行身份验证，此接口不通过 API Gateway 对外暴露。",
+      "parameters": [
+        {
+          "name": "key_id",
+          "type": "string",
+          "description": "路径参数，密钥 ID"
+        }
       ],
       "response": {
         "status": 200,
         "body": {
-          "success": "boolean",
-          "message": "string",
-          "latency_ms": "integer",
-          "server_info": "string"
+          "id": "string",
+          "private_key": "string",
+          "passphrase": "string"
         }
       },
       "error_codes": [
-        {"code": 404, "message": "环境或密钥不存在，指定的env_id未找到对应环境或该环境未配置SSH密钥"},
-        {"code": 502, "message": "SSH连接失败：主机不可达、认证失败、连接超时等"},
-        {"code": 500, "message": "密钥解密失败或测试过程内部异常"}
+        {"code": 404, "message": "密钥不存在"},
+        {"code": 500, "message": "密钥解密失败（主密钥不可用或数据损坏）"}
       ]
     }
   ],
-  "error_handling": "1）参数校验错误（400）：密钥类型不在[rsa,ed25519]范围内、密钥内容非合法PEM/OpenSSH格式、口令格式不合法时返回400，响应体包含具体校验失败原因。2）资源不存在（404）：env_id引用的环境在environments表中不存在时返回404；该环境未配置SSH密钥时同样返回404。3）资源冲突（409）：尝试为已有密钥的环境上传新密钥时返回409 Conflict，提示先删除现有密钥。4）SSH连接失败（502）：目标主机不可达（DNS解析失败、连接超时）、SSH认证失败（密钥不匹配、口令错误）、传输层错误等场景返回502，响应体包含连接失败的具体原因描述但不暴露密钥材料等敏感信息。5）加密/解密错误（500）：AES-256-GCM加密或解密操作失败时记录错误日志，不泄露密钥材料和明文内容。6）数据库错误：数据库连接失败或查询超时（默认5秒超时阈值），记录错误日志后返回500，不暴露数据库内部细节。7）内部错误（500）：所有未捕获异常统一返回500，响应体包含请求ID以便链路追踪。"
+  "error_handling": "Key Management Service 对各类异常进行统一处理：(1) 参数校验异常 — 请求体 JSON 解析失败、必填字段缺失、密钥名称重复、私钥非 PEM 格式返回 400 Bad Request，附带具体校验错误详情；(2) 资源不存在 — 密钥 ID 在数据库中不存在时返回 404 Not Found；(3) 业务冲突 — 密钥已被环境绑定引用时返回 409 Conflict，提示用户先解除环境关联后再删除；(4) 私钥解析失败 — 私钥内容损坏或密码短语错误时返回 422 Unprocessable Entity；(5) 加密解密异常 — AES 加密解密操作失败（主密钥不可用、密文损坏等）记录完整错误栈并返回 500 Internal Server Error，确保私钥明文不写入日志；(6) 数据库异常 — 数据库连接失败或写入冲突时记录错误上下文，返回 500 Internal Server Error。所有错误响应体统一格式为: { code: integer, error: string, detail: string }。密钥明文在内存中使用后通过 byte 数组覆写方式及时清除，防止敏感信息残留。"
 }
