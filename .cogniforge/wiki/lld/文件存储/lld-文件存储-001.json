@@ -1,0 +1,314 @@
+{
+  "meta": {
+    "doc_id": "lld-文件存储-001",
+    "type": "lld",
+    "module_type": "infrastructure",
+    "module": "文件存储",
+    "title": "文件存储详细设计 - 基于MinIO/本地文件系统的部署文件存储系统",
+    "author": "design_agent",
+    "created": "2026-05-21T00:00:00Z"
+  },
+  "overview": {
+    "description": "部署文件（部署包、脚本等）的持久化存储，支持本地文件系统或MinIO对象存储。提供文件上传、下载、删除、元数据查询等基础操作，以及版本化归档和存储空间管理能力，为部署编排和SSH文件传输提供底层存储支持。",
+    "dependencies": ["部署编排服务", "SSH连接管理服务", "版本管理服务"],
+    "tech_stack": ["Python", "FastAPI"]
+  },
+  "data_models": [
+    {
+      "name": "FileMetadata",
+      "type": "store",
+      "ownership": "owned",
+      "description": "存储文件的元数据信息，包含文件标识、所属项目和环境、版本号、大小、存储路径、上传时间、过期时间等，以对象存储标签或独立索引文件形式维护",
+      "fields": [
+        {"name": "file_id", "type": "string", "required": true, "description": "文件唯一标识（UUID）"},
+        {"name": "file_name", "type": "string", "required": true, "description": "原始文件名"},
+        {"name": "bucket", "type": "string", "required": true, "description": "存储桶名称"},
+        {"name": "object_path", "type": "string", "required": true, "description": "对象存储完整路径"},
+        {"name": "project_id", "type": "integer", "required": false, "description": "关联项目ID"},
+        {"name": "environment_id", "type": "integer", "required": false, "description": "关联环境ID"},
+        {"name": "version", "type": "string", "required": false, "description": "部署版本号"},
+        {"name": "file_size", "type": "integer", "required": true, "description": "文件大小（字节）"},
+        {"name": "content_type", "type": "string", "required": true, "description": "文件MIME类型"},
+        {"name": "md5", "type": "string", "required": true, "description": "文件MD5校验值"},
+        {"name": "category", "type": "string", "required": true, "description": "文件分类：deployment_package / script / config / other"},
+        {"name": "status", "type": "string", "required": true, "description": "文件状态：active / archived / deleted"},
+        {"name": "created_at", "type": "datetime", "required": true, "description": "上传时间"},
+        {"name": "expires_at", "type": "datetime", "required": false, "description": "过期时间（临时文件自动清理）"},
+        {"name": "updated_at", "type": "datetime", "required": true, "description": "最后更新时间"}
+      ]
+    },
+    {
+      "name": "StoragePolicy",
+      "type": "config",
+      "ownership": "owned",
+      "description": "存储空间管理策略配置，定义各桶的容量上限、文件保留期限、清理策略等",
+      "fields": [
+        {"name": "bucket", "type": "string", "required": true, "description": "存储桶名称"},
+        {"name": "max_capacity_bytes", "type": "integer", "required": true, "description": "桶容量上限（字节）"},
+        {"name": "retention_days", "type": "integer", "required": true, "description": "文件保留天数"},
+        {"name": "archive_after_days", "type": "integer", "required": false, "description": "自动归档天数"},
+        {"name": "cleanup_strategy", "type": "string", "required": true, "description": "清理策略：FIFO / size_based / manual"},
+        {"name": "max_file_size", "type": "integer", "required": true, "description": "单文件大小上限（字节）"},
+        {"name": "allowed_content_types", "type": "array", "required": false, "description": "允许的MIME类型列表"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "文件上传",
+      "method": "POST",
+      "endpoint": "/api/v1/storage/upload",
+      "description": "上传部署文件到文件存储，支持部署包、脚本和配置文件的上传。文件根据分类保存到对应存储桶，部署编排服务在上传部署包时调用此接口。",
+      "parameters": [
+        {"name": "file", "type": "binary", "description": "上传的文件二进制内容"},
+        {"name": "category", "type": "string", "description": "文件分类：deployment_package / script / config"},
+        {"name": "project_id", "type": "integer", "description": "关联项目ID"},
+        {"name": "environment_id", "type": "integer", "description": "关联环境ID"},
+        {"name": "version", "type": "string", "description": "版本号（归档用）"},
+        {"name": "ttl_seconds", "type": "integer", "description": "存活时间，临时文件自动过期"}
+      ],
+      "response": {
+        "status": 201,
+        "body": {
+          "file_id": "string",
+          "file_name": "string",
+          "file_size": "integer",
+          "bucket": "string",
+          "object_path": "string",
+          "md5": "string",
+          "created_at": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "文件大小超出限制或文件类型不允许"},
+        {"code": 413, "message": "上传文件体积超过单文件上限"},
+        {"code": 507, "message": "存储空间不足，无法存储文件"}
+      ]
+    },
+    {
+      "name": "文件下载",
+      "method": "GET",
+      "endpoint": "/api/v1/storage/download/{file_id}",
+      "description": "根据文件ID下载存储的文件，返回文件二进制流。SSH连接管理服务在获取部署包以通过SCP传输到远程服务器时调用此接口。",
+      "parameters": [
+        {"name": "file_id", "type": "string", "description": "文件唯一标识"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "file": "binary",
+          "content_type": "string",
+          "content_length": "integer",
+          "file_name": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "文件不存在或已被清理"},
+        {"code": 403, "message": "无权限访问该文件"}
+      ]
+    },
+    {
+      "name": "文件删除",
+      "method": "DELETE",
+      "endpoint": "/api/v1/storage/files/{file_id}",
+      "description": "删除指定文件，支持逻辑删除（标记为deleted）或物理删除。版本管理服务在执行版本清理和回收存储空间时调用。",
+      "parameters": [
+        {"name": "file_id", "type": "string", "description": "文件唯一标识"},
+        {"name": "physical", "type": "boolean", "description": "是否物理删除，默认false（逻辑删除）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "file_id": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "文件不存在"},
+        {"code": 500, "message": "文件删除失败，存储后端异常"}
+      ]
+    },
+    {
+      "name": "文件元数据查询",
+      "method": "GET",
+      "endpoint": "/api/v1/storage/files/{file_id}/metadata",
+      "description": "查询指定文件的元数据信息，包括大小、类型、上传时间、存储位置等，供其他服务确认文件完整性。",
+      "parameters": [
+        {"name": "file_id", "type": "string", "description": "文件唯一标识"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "file_id": "string",
+          "file_name": "string",
+          "bucket": "string",
+          "object_path": "string",
+          "project_id": "integer",
+          "environment_id": "integer",
+          "version": "string",
+          "file_size": "integer",
+          "content_type": "string",
+          "md5": "string",
+          "category": "string",
+          "status": "string",
+          "created_at": "string",
+          "expires_at": "string",
+          "updated_at": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "文件不存在"}
+      ]
+    },
+    {
+      "name": "文件列表查询",
+      "method": "GET",
+      "endpoint": "/api/v1/storage/files",
+      "description": "分页查询文件列表，支持按项目、环境、分类、版本、状态等条件过滤。版本管理服务和部署编排服务用于查看和管理已存储的部署包。",
+      "parameters": [
+        {"name": "project_id", "type": "integer", "description": "项目ID过滤"},
+        {"name": "environment_id", "type": "integer", "description": "环境ID过滤"},
+        {"name": "category", "type": "string", "description": "文件分类过滤"},
+        {"name": "version", "type": "string", "description": "版本号过滤"},
+        {"name": "status", "type": "string", "description": "状态过滤：active / archived / deleted"},
+        {"name": "page", "type": "integer", "description": "页码，默认1"},
+        {"name": "page_size", "type": "integer", "description": "每页数量，默认20"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "total": "integer",
+          "items": "array",
+          "page": "integer",
+          "page_size": "integer"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "查询参数校验失败"}
+      ]
+    },
+    {
+      "name": "存储空间统计",
+      "method": "GET",
+      "endpoint": "/api/v1/storage/stats",
+      "description": "查询各存储桶的空间使用情况，包括已用容量、文件数量、可用空间等，供系统管理员监控存储水位。",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "buckets": "array",
+          "total_used_bytes": "integer",
+          "total_capacity_bytes": "integer"
+        }
+      },
+      "error_codes": [
+        {"code": 500, "message": "存储后端连接异常，无法获取统计信息"}
+      ]
+    },
+    {
+      "name": "文件移动",
+      "method": "POST",
+      "endpoint": "/api/v1/storage/move",
+      "description": "将文件从一个存储位置移动到另一个位置（如从临时桶移动到归档桶），用于部署完成后的文件归档操作。",
+      "parameters": [
+        {"name": "file_id", "type": "string", "description": "源文件唯一标识"},
+        {"name": "target_bucket", "type": "string", "description": "目标存储桶名称"},
+        {"name": "target_path", "type": "string", "description": "目标存储路径"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "file_id": "string",
+          "new_object_path": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "源文件不存在"},
+        {"code": 507, "message": "目标存储桶空间不足"}
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "文件操作失败时根据异常类型分级处理：存储后端连接异常自动重连并重试，配额超限返回明确错误码引导清理，文件不存在返回404，权限不足返回403。所有异常记录审计日志以便追溯。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "400",
+        "name": "请求参数错误",
+        "description": "文件大小超限、文件类型不允许、必填参数缺失等请求校验失败"
+      },
+      {
+        "code": "403",
+        "name": "权限拒绝",
+        "description": "请求方无权限访问指定文件或存储桶"
+      },
+      {
+        "code": "404",
+        "name": "文件不存在",
+        "description": "指定file_id的文件不存在或已被逻辑删除/物理清理"
+      },
+      {
+        "code": "413",
+        "name": "文件过大",
+        "description": "上传文件体积超过StoragePolicy中定义的max_file_size上限"
+      },
+      {
+        "code": "507",
+        "name": "存储空间不足",
+        "description": "存储桶容量已达上限，无法存储新文件，需触发清理流程"
+      },
+      {
+        "code": "500",
+        "name": "存储后端异常",
+        "description": "MinIO服务不可用、磁盘IO错误、网络超时等后端异常，自动重试3次后仍失败则抛出"
+      }
+    ]
+  },
+  "topology": {
+    "buckets": [
+      {
+        "name": "temp-uploads",
+        "description": "临时上传文件存储，部署包上传后暂存于此，部署完成后自动移动到归档桶。7天未移动的文件触发清理告警",
+        "max_capacity_bytes": 10737418240,
+        "retention_days": 7
+      },
+      {
+        "name": "deployment-archives",
+        "description": "部署包版本化归档存储，按项目/环境/版本三层目录组织，长期保存。FIFO策略自动清理最早版本",
+        "max_capacity_bytes": 107374182400,
+        "retention_days": 365
+      },
+      {
+        "name": "scripts",
+        "description": "部署脚本和配置模板存储，支持版本化管理，与部署包解耦便于单独更新脚本",
+        "max_capacity_bytes": 1073741824,
+        "retention_days": 365
+      }
+    ],
+    "path_conventions": "{bucket}/{project_id}/{environment_type}/{version}/{file_name}",
+    "expiry_strategy": "temp-uploads桶文件7天后自动清理；deployment-archives和scripts桶按FIFO策略清理，优先删除最早版本文件"
+  },
+  "connection_contracts": {
+    "endpoint": "http://minio:9000（MinIO对象存储模式）或 /data/deployments/（本地文件系统模式）",
+    "auth_method": "AccessKey + SecretKey（MinIO模式）；文件系统POSIX权限（本地模式）",
+    "timeout_seconds": {
+      "connect": 10,
+      "read": 30,
+      "write": 60
+    },
+    "tls_enabled": true,
+    "sdk_version": "minio-py 7.x",
+    "connection_pool": {
+      "max_connections": 20,
+      "max_idle_connections": 5,
+      "idle_timeout_seconds": 300
+    }
+  }
+}
