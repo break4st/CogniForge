@@ -1,0 +1,378 @@
+{
+  "meta": {
+    "doc_id": "lld-Deployment Orchestrator-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "Deployment Orchestrator",
+    "title": "Deployment Orchestrator 详细设计",
+    "author": "design_agent",
+    "created": "2026-05-21T17:00:00Z"
+  },
+  "overview": {
+    "description": "部署流程的编排引擎，负责部署任务接收、状态管理和进度发布。接收来自 API Gateway 的 REST 部署请求，创建部署记录并发布部署任务消息到 RabbitMQ。通过消费 SSH Execution Service 的进度消息更新部署状态，实时状态通过 Redis 缓存加速查询，最终结果持久化到 Primary Database。关键操作同步记录审计日志至 Audit Service。提供部署历史查询能力。",
+    "dependencies": [
+      "API Gateway",
+      "Primary Database",
+      "Redis",
+      "RabbitMQ",
+      "SSH Execution Service",
+      "Audit Service"
+    ],
+    "tech_stack": [
+      "Python 3.11+",
+      "FastAPI",
+      "asyncio + uvicorn",
+      "PostgreSQL 15",
+      "Redis 7",
+      "RabbitMQ 3.12",
+      "Docker + Docker Compose"
+    ]
+  },
+  "data_models": [
+    {
+      "name": "deployments",
+      "type": "reference",
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "deployments"
+      },
+      "description": "部署记录主表，由 Primary Database 模块管理 DDL 和数据迁移。Deployment Orchestrator 持有此视图的读写权限，是本服务的核心数据来源。存储每次部署请求的完整信息和运行时状态。",
+      "fields": [
+        {"name": "id", "type": "UUID", "required": true, "description": "部署记录唯一标识，主键"},
+        {"name": "project_id", "type": "UUID", "required": true, "description": "所属项目 ID，外键引用 projects 表"},
+        {"name": "environment_id", "type": "UUID", "required": true, "description": "部署目标环境 ID，外键引用 environments 表"},
+        {"name": "version", "type": "VARCHAR(255)", "required": true, "description": "部署版本标识字符串，如 v1.2.3"},
+        {"name": "artifact_path", "type": "TEXT", "required": true, "description": "部署产物路径（本地或可下载 URL）"},
+        {"name": "description", "type": "TEXT", "required": false, "description": "部署描述说明"},
+        {"name": "status", "type": "VARCHAR(50)", "required": true, "description": "部署状态枚举：pending/running/success/failed"},
+        {"name": "current_step", "type": "VARCHAR(100)", "required": false, "description": "当前执行的部署步骤名称"},
+        {"name": "progress_pct", "type": "INTEGER", "required": true, "description": "整体进度百分比，0-100"},
+        {"name": "logs", "type": "JSONB", "required": false, "description": "部署日志列表，存储为 JSON 字符串数组"},
+        {"name": "started_at", "type": "TIMESTAMPTZ", "required": false, "description": "部署开始执行时间"},
+        {"name": "finished_at", "type": "TIMESTAMPTZ", "required": false, "description": "部署完成时间（成功或失败）"},
+        {"name": "created_by", "type": "UUID", "required": true, "description": "发起部署的用户 ID"},
+        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "记录创建时间"},
+        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": true, "description": "最后更新时间"}
+      ],
+      "indexes": [
+        {"name": "idx_deployments_project_id", "unique": false, "columns": ["project_id"]},
+        {"name": "idx_deployments_environment_id", "unique": false, "columns": ["environment_id"]},
+        {"name": "idx_deployments_status", "unique": false, "columns": ["status"]},
+        {"name": "idx_deployments_created_at", "unique": false, "columns": ["created_at"]},
+        {"name": "idx_deployments_project_env_status", "unique": false, "columns": ["project_id", "environment_id", "status"]}
+      ]
+    },
+    {
+      "name": "DeploymentCache",
+      "type": "store",
+      "ownership": "owned",
+      "description": "部署实时状态缓存（Redis）。加速 GET /api/v1/deployments/{id}/status 轮询响应速度，避免每次查询穿透到 PostgreSQL。SSH Execution Service 每发布一次进度消息即更新此缓存。部署达到终态（success/failed）后保留 1 小时后过期，后续查询回退到 Primary Database。",
+      "fields": [
+        {"name": "key", "type": "String", "required": true, "description": "Redis key 格式: deploy:status:{deployment_id}"},
+        {"name": "deployment_id", "type": "UUID", "required": true, "description": "部署记录 ID"},
+        {"name": "status", "type": "String (enum: pending/running/success/failed)", "required": true, "description": "部署状态"},
+        {"name": "current_step", "type": "String", "required": false, "description": "当前执行的部署步骤名称"},
+        {"name": "progress_pct", "type": "Integer", "required": true, "description": "整体进度百分比，0-100"},
+        {"name": "logs", "type": "List[String]", "required": true, "description": "部署日志列表"},
+        {"name": "started_at", "type": "DateTime", "required": false, "description": "部署开始时间"},
+        {"name": "finished_at", "type": "DateTime", "required": false, "description": "部署完成时间"},
+        {"name": "ttl_seconds", "type": "Integer", "required": true, "description": "缓存 TTL，终态 3600s，非终态 86400s"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "DeployRequest",
+      "method": "POST",
+      "endpoint": "/api/v1/projects/{project_id}/deploy",
+      "description": "提交一键部署请求。校验项目和环境存在性、校验无冲突部署后创建部署记录（status=pending），将部署任务消息发布到 RabbitMQ deploy.tasks 队列，返回 deployment_id 供后续轮询状态。",
+      "parameters": [
+        {"name": "project_id", "type": "string (uuid)", "description": "项目唯一标识，来自 URL 路径参数"},
+        {"name": "environment_id", "type": "string (uuid)", "description": "目标环境 ID，必须属于指定项目且环境状态为 active"},
+        {"name": "artifact_path", "type": "string", "description": "部署产物路径，可以是本地路径或可下载 URL"},
+        {"name": "version", "type": "string", "description": "部署版本标识，如 v1.2.3，同一项目下应唯一"},
+        {"name": "description", "type": "string (optional)", "description": "部署说明，最大 500 字符"}
+      ],
+      "response": {
+        "status": 202,
+        "body": {
+          "deployment_id": "string (uuid)",
+          "status": "string (enum: pending)",
+          "estimated_duration": "string (optional)"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数校验失败（version 为空、artifact_path 为空、environment_id 格式不合法、description 超长）"},
+        {"code": 401, "message": "未授权，请求未携带有效身份凭证或 Token 已过期"},
+        {"code": 403, "message": "无权限执行部署操作（当前用户非项目成员或无部署权限）"},
+        {"code": 404, "message": "项目不存在或环境不存在（environment_id 不属于指定项目）"},
+        {"code": 409, "message": "冲突，同一项目+环境存在进行中的部署（status=pending/running），不允许并发提交"},
+        {"code": 422, "message": "请求体 JSON 解析失败或字段类型不匹配"},
+        {"code": 503, "message": "RabbitMQ 不可用，部署任务无法发布到消息队列"}
+      ]
+    },
+    {
+      "name": "DeployStatusQuery",
+      "method": "GET",
+      "endpoint": "/api/v1/deployments/{deployment_id}/status",
+      "description": "查询指定部署任务的实时状态和进度日志。优先查询 Redis 缓存加速响应，缓存未命中时回退到 Primary Database 查询。支持用于 Web Console 的轮询场景。",
+      "parameters": [
+        {"name": "deployment_id", "type": "string (uuid)", "description": "部署记录唯一标识，来自 URL 路径参数"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "deployment_id": "string (uuid)",
+          "status": "string (enum: pending/running/success/failed)",
+          "current_step": "string",
+          "progress_pct": "int (0-100)",
+          "logs": "string[]",
+          "started_at": "string (datetime)",
+          "finished_at": "string (datetime, optional)"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "deployment_id 格式不合法（非 UUID 格式）"},
+        {"code": 401, "message": "未授权，请求未携带有效身份凭证"},
+        {"code": 403, "message": "无权限查询此部署记录（非项目成员）"},
+        {"code": 404, "message": "部署记录不存在（deployment_id 未找到）"},
+        {"code": 500, "message": "数据库查询异常或 Redis 连接异常"}
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "Deployment Orchestrator 对所有入参进行前置校验，校验失败返回 400。项目/环境/部署记录不存在返回 404。存在冲突部署（同一项目环境已有进行中部署）返回 409。RabbitMQ 连接失败返回 503。MQ 消息消费失败时记录错误日志并发送失败审计事件，消费 ack 异常时根据重试策略处理。所有未预期异常由全局异常处理器捕获返回 500。",
+    "response_format": {
+      "body": {
+        "code": "integer (HTTP 状态码)",
+        "error": "string (错误分类标识)",
+        "detail": "string (详细错误信息，包含错误上下文)"
+      }
+    },
+    "categories": [
+      {"code": 400, "name": "参数校验错误", "description": "请求体 JSON 解析失败、必填字段缺失、字段值不合法（project_id/UUID 格式错误、version 为空、artifact_path 为空、description 超长）"},
+      {"code": 401, "name": "身份认证失败", "description": "JWT Token 缺失、过期或签名无效，由 API Gateway 在转发前校验，本服务仅在内部通信时校验服务间 Token"},
+      {"code": 403, "name": "权限不足", "description": "当前用户非项目成员或不被授权执行部署操作"},
+      {"code": 404, "name": "资源不存在", "description": "project_id 对应项目不存在、environment_id 对应环境不属于指定项目、deployment_id 对应部署记录不存在"},
+      {"code": 409, "name": "资源冲突", "description": "同一项目+环境已有进行中的部署（status=pending/running），不允许并发提交新部署请求"},
+      {"code": 422, "name": "请求体格式错误", "description": "Content-Type 不是 application/json、请求体为空或 JSON 语法错误"},
+      {"code": 500, "name": "服务内部错误", "description": "数据库写入异常、消息序列化失败、未预期的运行时异常"},
+      {"code": 503, "name": "外部服务不可用", "description": "RabbitMQ 连接失败导致无法发布部署任务消息"}
+    ]
+  },
+  "domain_objects": [
+    {
+      "name": "Deployment",
+      "object_type": "entity",
+      "description": "部署记录实体。代表一次完整的部署任务，包含部署参数、运行状态和进度信息。从 pending 开始，经过 running，终态为 success 或 failed。",
+      "attributes": [
+        {"name": "id", "type": "UUID", "required": true, "source": "computed", "description": "部署记录唯一标识，系统自动生成 UUID"},
+        {"name": "project_id", "type": "UUID", "required": true, "source": "input", "description": "所属项目 ID，来自请求路径参数"},
+        {"name": "environment_id", "type": "UUID", "required": true, "source": "input", "description": "部署目标环境 ID，来自请求体"},
+        {"name": "version", "type": "String", "required": true, "source": "input", "description": "部署版本标识字符串"},
+        {"name": "artifact_path", "type": "String", "required": true, "source": "input", "description": "部署产物路径"},
+        {"name": "description", "type": "String", "required": false, "source": "input", "description": "部署说明"},
+        {"name": "status", "type": "DeploymentStatus", "required": true, "source": "derived", "description": "部署当前状态，由进度消息更新"},
+        {"name": "current_step", "type": "String", "required": false, "source": "derived", "description": "当前执行步骤名称，如 create_directory / upload_artifact"},
+        {"name": "progress_pct", "type": "Integer", "required": true, "source": "derived", "description": "整体进度百分比，0-100"},
+        {"name": "logs", "type": "List[String]", "required": false, "source": "derived", "description": "步骤执行日志，按时间顺序追加"},
+        {"name": "started_at", "type": "DateTime", "required": false, "source": "computed", "description": "部署开始时间，第一条进度消息到达时设置"},
+        {"name": "finished_at", "type": "DateTime", "required": false, "source": "derived", "description": "部署完成时间，终态时设置"},
+        {"name": "created_by", "type": "UUID", "required": true, "source": "derived", "description": "部署发起用户 ID，从认证上下文获取"},
+        {"name": "created_at", "type": "DateTime", "required": true, "source": "computed", "description": "部署记录创建时间"},
+        {"name": "updated_at", "type": "DateTime", "required": true, "source": "computed", "description": "记录最后更新时间"}
+      ]
+    },
+    {
+      "name": "DeployRequest",
+      "object_type": "dto",
+      "description": "一键部署请求 DTO。由 Web Console 提交，经 API Gateway 转发到本服务。包含部署目标环境、产物路径和版本信息。",
+      "maps_to_entity": "Deployment",
+      "attributes": [
+        {"name": "project_id", "type": "UUID", "required": true, "source": "input", "description": "项目 ID，来自 URL 路径参数，校验存在性和可部署权限"},
+        {"name": "environment_id", "type": "UUID", "required": true, "source": "input", "description": "目标环境 ID，必须属于指定项目且环境状态为 active"},
+        {"name": "artifact_path", "type": "String", "required": true, "source": "input", "description": "部署产物路径，长度 1-1024 字符"},
+        {"name": "version", "type": "String", "required": true, "source": "input", "description": "部署版本标识，长度 1-100 字符，如 v1.2.3"},
+        {"name": "description", "type": "String", "required": false, "source": "input", "description": "部署说明，最大 500 字符"}
+      ]
+    },
+    {
+      "name": "DeployStatusResponse",
+      "object_type": "dto",
+      "description": "部署状态查询响应 DTO。返回给 Web Console 或 API Gateway 的完整状态信息。优先从 Redis 缓存读取，缓存未命中时从数据库加载。",
+      "maps_to_entity": "Deployment",
+      "attributes": [
+        {"name": "deployment_id", "type": "UUID", "required": true, "source": "db", "description": "部署记录唯一标识"},
+        {"name": "status", "type": "DeploymentStatus", "required": true, "source": "derived", "description": "部署当前状态，pending / running / success / failed"},
+        {"name": "current_step", "type": "String", "required": true, "source": "derived", "description": "当前执行的部署步骤名称"},
+        {"name": "progress_pct", "type": "Integer", "required": true, "source": "derived", "description": "整体进度百分比，0-100"},
+        {"name": "logs", "type": "List[String]", "required": true, "source": "derived", "description": "部署步骤执行日志行列表"},
+        {"name": "started_at", "type": "DateTime", "required": true, "source": "db", "description": "部署开始执行时间"},
+        {"name": "finished_at", "type": "DateTime", "required": false, "source": "db", "description": "部署完成时间，终态时返回"}
+      ]
+    },
+    {
+      "name": "DeployTaskMessage",
+      "object_type": "dto",
+      "description": "部署任务消息 DTO。本服务在提交部署请求后组装此消息，发布到 RabbitMQ deploy.tasks 队列，由 SSH Execution Service 消费并执行实际部署操作。",
+      "maps_to_entity": null,
+      "attributes": [
+        {"name": "deployment_id", "type": "UUID", "required": true, "source": "derived", "description": "部署记录唯一标识"},
+        {"name": "project_id", "type": "UUID", "required": true, "source": "derived", "description": "所属项目 ID"},
+        {"name": "environment_id", "type": "UUID", "required": true, "source": "derived", "description": "部署目标环境 ID"},
+        {"name": "version", "type": "String", "required": true, "source": "derived", "description": "部署版本标识"},
+        {"name": "artifact_path", "type": "String", "required": true, "source": "derived", "description": "部署产物路径"},
+        {"name": "ssh_config", "type": "Dict", "required": true, "source": "derived", "description": "SSH 连接配置，从环境关联信息获取，包含 host/port/username/key_id 字段"}
+      ]
+    },
+    {
+      "name": "DeployProgressMessage",
+      "object_type": "dto",
+      "description": "部署进度消息 DTO。SSH Execution Service 在执行过程中发布到 RabbitMQ deploy.progress 队列，本服务消费后更新部署状态和缓存。",
+      "maps_to_entity": null,
+      "attributes": [
+        {"name": "deployment_id", "type": "UUID", "required": true, "source": "input", "description": "部署记录 ID"},
+        {"name": "status", "type": "DeploymentStatus", "required": true, "source": "input", "description": "当前步骤执行状态：running / success / failed"},
+        {"name": "current_step", "type": "String", "required": true, "source": "input", "description": "当前执行步骤名称"},
+        {"name": "progress_pct", "type": "Integer", "required": true, "source": "input", "description": "整体进度百分比，0-100"},
+        {"name": "logs", "type": "List[String]", "required": true, "source": "input", "description": "步骤执行日志行列表"},
+        {"name": "timestamp", "type": "DateTime", "required": true, "source": "input", "description": "消息生成时间戳"}
+      ]
+    },
+    {
+      "name": "AuditEvent",
+      "object_type": "dto",
+      "description": "审计日志事件 DTO。用于调用 Audit Service 的 POST /internal/audit/log 接口记录关键操作审计日志。",
+      "maps_to_entity": null,
+      "attributes": [
+        {"name": "action", "type": "String", "required": true, "source": "derived", "description": "操作类型标识，如 deploy.submit / deploy.progress / deploy.complete / deploy.failed"},
+        {"name": "actor", "type": "String", "required": true, "source": "derived", "description": "操作者用户 ID，从认证上下文或 MQ 消息上下文提取"},
+        {"name": "resource_type", "type": "String", "required": true, "source": "derived", "description": "资源类型，固定值：deployment"},
+        {"name": "resource_id", "type": "UUID", "required": true, "source": "derived", "description": "被操作的部署记录 ID（deployment_id）"},
+        {"name": "detail", "type": "Dict", "required": false, "source": "derived", "description": "操作详情，包含项目 ID、环境 ID、版本、当前状态等上下文"},
+        {"name": "result", "type": "String", "required": true, "source": "derived", "description": "操作结果，枚举值：success / failure"}
+      ]
+    },
+    {
+      "name": "DeploymentStatus",
+      "object_type": "enum",
+      "description": "部署状态枚举。定义部署的完整生命周期状态，遵循状态机转换规则。",
+      "values": ["pending", "running", "success", "failed"]
+    }
+  ],
+  "service_contracts": [
+    {
+      "name": "DeploymentOrchestratorService",
+      "description": "部署编排核心服务。提供部署任务提交、状态查询、进度消息处理和部署历史查询能力。协调 RabbitMQ 消息发布与消费、Redis 实时状态缓存和数据库持久化。",
+      "methods": [
+        {
+          "name": "submitDeployment",
+          "signature": "(request: DeployRequest, userId: UUID) -> Deployment",
+          "precondition": "request.project_id 对应项目存在且状态为 active；request.environment_id 属于指定项目且环境状态为 active；同一 project_id + environment_id 不存在 status IN (pending, running) 的部署记录；RabbitMQ 连接可用（可连接 deploy.tasks 交换机）",
+          "postcondition": "Deployment 记录已写入数据库（status=pending, progress_pct=0, current_step=null）。DeployTaskMessage 已发布到 RabbitMQ deploy.tasks 交换机（routing_key: deploy.execute）。审计日志已发送到 Audit Service（action=deploy.submit, result=pending）。Redis 缓存已初始化（key: deploy:status:{deployment_id}）",
+          "description": "提交部署请求。前置校验项目和环境的有效性和无冲突状态，创建部署记录并发布 MQ 消息触发异步执行。返回包含 deployment_id 的 Deployment 实体，调用方据此轮询状态。",
+          "exceptions": [
+            {"name": "ValidationException", "trigger": "请求参数校验失败（version 为空、artifact_path 为空、description 超长等）", "http_status": 400},
+            {"name": "UnauthorizedException", "trigger": "请求未携带有效身份凭证", "http_status": 401},
+            {"name": "ForbiddenException", "trigger": "当前用户不是项目成员或没有部署权限", "http_status": 403},
+            {"name": "ProjectNotFoundException", "trigger": "project_id 对应项目不存在", "http_status": 404},
+            {"name": "EnvironmentNotFoundException", "trigger": "environment_id 对应环境不存在或不属于指定项目", "http_status": 404},
+            {"name": "ActiveDeploymentConflictException", "trigger": "同一项目+环境已有进行中的部署（status=pending/running）", "http_status": 409},
+            {"name": "MQPublishException", "trigger": "RabbitMQ 连接失败或交换机不可用，无法发布部署任务消息", "http_status": 503}
+          ]
+        },
+        {
+          "name": "getDeploymentStatus",
+          "signature": "(deploymentId: UUID) -> DeployStatusResponse",
+          "precondition": "deploymentId 为合法 UUID 格式",
+          "postcondition": "返回 DeployStatusResponse（含 deployment_id/status/current_step/progress_pct/logs/started_at/finished_at）。优先从 Redis 缓存读取，缓存未命中（key 不存在或已过期）时回退查询 Primary Database，查询结果不回填缓存",
+          "description": "查询部署状态。先读 Redis 缓存（key: deploy:status:{deployment_id}），存在且未过期直接返回。缓存未命中时查询 Primary Database deployments 表。终态部署（success/failed）的缓存 TTL 较短，过期后从 DB 读取确保数据准确。",
+          "exceptions": [
+            {"name": "ValidationException", "trigger": "deploymentId 格式不合法（非 UUID）", "http_status": 400},
+            {"name": "UnauthorizedException", "trigger": "请求未携带有效身份凭证", "http_status": 401},
+            {"name": "ForbiddenException", "trigger": "当前用户无权限查看此部署记录", "http_status": 403},
+            {"name": "DeploymentNotFoundException", "trigger": "deploymentId 对应部署记录不存在（Redis 和 DB 均未命中）", "http_status": 404}
+          ]
+        },
+        {
+          "name": "handleProgressMessage",
+          "signature": "(message: DeployProgressMessage) -> None",
+          "precondition": "RabbitMQ deploy.progress 队列消费者已注册；message.deployment_id 对应部署记录在 DB 中存在；message.status 合法（running/success/failed）；message.progress_pct 在 0-100 范围内",
+          "postcondition": "Redis 缓存已更新（key: deploy:status:{deployment_id} 刷新为最新进度）。若 status=success 或 failed：数据库 updated_at/status/finished_at/progress_pct/logs 已更新，终态缓存设置 TTL=3600s。若 status=running：仅更新 Redis 缓存（progress_pct/logs/current_step），不写数据库（避免高频写入压力）。消息已 ack（非终态消息因业务处理失败不重新入队，直接 ack 避免重复消费）。终态时发送审计日志到 Audit Service（action=deploy.complete 或 deploy.failed）",
+          "description": "消费 RabbitMQ deploy.progress 队列的部署进度消息。运行态进度消息仅更新 Redis 缓存以支持高频轮询，终态消息同步写数据库持久化。进度消息消费失败（如 deployment_id 不存在）时记录 WARN 日志并 ack 消息，避免死信队列堆积。",
+          "exceptions": [
+            {"name": "MessageDeserializationException", "trigger": "MQ 消息 JSON 解析失败或必填字段缺失（如 deployment_id 为空、status 不合法、progress_pct 超出范围）", "http_status": null},
+            {"name": "DeploymentNotFoundException", "trigger": "message.deployment_id 在数据库中不存在，记录 WARN 日志后 ack 消息", "http_status": null},
+            {"name": "RedisUpdateException", "trigger": "Redis 连接异常导致缓存更新失败，不影响 DB 写入和审计记录", "http_status": null}
+          ]
+        },
+        {
+          "name": "listDeploymentHistory",
+          "signature": "(projectId: UUID, page: int, size: int) -> List[Deployment]",
+          "precondition": "projectId 为合法 UUID；page >= 1；size 在 1-100 范围内",
+          "postcondition": "返回指定项目的部署历史列表，按 created_at 降序排列。分页参数 page*size 定位偏移量。仅返回当前用户有权限查看项目下的部署记录",
+          "description": "分页查询项目的部署历史记录。按创建时间倒序返回部署记录列表，包含每次部署的完整信息（id/version/status/progress_pct/started_at/finished_at/created_by/created_at）。支持用于 Web Console 的部署历史页面展示。",
+          "exceptions": [
+            {"name": "ValidationException", "trigger": "projectId 格式不合法、page/size 超出范围", "http_status": 400},
+            {"name": "UnauthorizedException", "trigger": "请求未携带有效身份凭证", "http_status": 401},
+            {"name": "ForbiddenException", "trigger": "当前用户不是项目成员", "http_status": 403},
+            {"name": "ProjectNotFoundException", "trigger": "projectId 对应项目不存在", "http_status": 404}
+          ]
+        }
+      ],
+      "repository_dependencies": [
+        "findDeploymentById(id: UUID) -> Deployment? — 根据部署 ID 查询完整部署记录",
+        "createDeployment(deployment: Deployment) -> Deployment — 创建新部署记录（INSERT）",
+        "updateDeploymentFinalStatus(id: UUID, status: str, current_step: str, progress_pct: int, logs: list, finished_at: datetime) -> None — 终态时更新数据库记录（UPDATE）",
+        "findDeploymentsByProjectId(projectId: UUID, page: int, size: int) -> List[Deployment] — 分页查询项目的部署历史，按 created_at DESC 排序",
+        "existsActiveDeployment(projectId: UUID, environmentId: UUID) -> boolean — 检查同一项目+环境是否存在 status IN (pending, running) 的进行中部署",
+        "cacheDeploymentStatus(deploymentId: UUID, data: dict, ttl_seconds: int) -> None — 写入部署状态到 Redis（key: deploy:status:{deploymentId}）",
+        "getCachedDeploymentStatus(deploymentId: UUID) -> dict? — 从 Redis 读取部署状态缓存（key: deploy:status:{deploymentId}）",
+        "publishDeployTask(message: DeployTaskMessage) -> None — 发布部署任务消息到 RabbitMQ exchange: deploy.tasks / routing_key: deploy.execute",
+        "consumeDeployProgress(callback: Callable[[DeployProgressMessage], None]) -> None — 注册 RabbitMQ 消费者监听 deploy.progress 队列，exchange: deploy.progress / routing_key: deploy.progress.update",
+        "auditLog(action: str, actor: str, resource_type: str, resource_id: UUID, detail: dict, result: str) -> None — 调用 Audit Service 的 POST /internal/audit/log 记录审计日志",
+        "findEnvironmentSshConfig(environmentId: UUID) -> dict? — 查询环境关联的 SSH 连接配置（host/port/username/key_id），用于组装 DeployTaskMessage"
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "同一项目+同一环境同时最多只能有一个非终态（status IN pending/running）的部署记录，并发提交时返回 409",
+      "部署进度百分比 progress_pct 必须始终在 0-100 范围内，单调递增不减少",
+      "部署状态转换必须严格遵循状态机定义：pending → running → running/success/failed，不可跳转或回退",
+      "部署记录创建时必须包含 project_id、environment_id、version、artifact_path、created_by，缺一不可",
+      "部署日志按时间顺序追加，仅追加不覆盖，用于完整追溯执行过程",
+      "progress_pct 达到 100 时 status 必须为 success（正常完成）或 failed（最后一步失败），不可仍为 running",
+      "failed 状态的部署必须有 finished_at 时间戳和至少一条错误日志"
+    ],
+    "state_machines": [
+      {
+        "entity": "Deployment",
+        "states": ["pending", "running", "success", "failed"],
+        "transitions": [
+          {"from": "pending", "to": "running", "trigger": "SSH Execution Service 确认消费 MQ 消息并开始执行首步部署操作，第一条 DeployProgressMessage（status=running）到达", "actor": "DeploymentOrchestratorService (via DeployProgressMessage consumer)"},
+          {"from": "running", "to": "running", "trigger": "SSH Execution Service 完成单个步骤并发布进度更新，progress_pct 增加、current_step 更新", "actor": "DeploymentOrchestratorService (via DeployProgressMessage consumer)"},
+          {"from": "running", "to": "success", "trigger": "SSH Execution Service 完成所有部署步骤且退出码均为 0，发布 status=success 的终态进度消息", "actor": "DeploymentOrchestratorService (via DeployProgressMessage consumer)"},
+          {"from": "running", "to": "failed", "trigger": "任意部署步骤执行失败（命令退出码非零、SSH 连接中断、超时），发布 status=failed 的终态进度消息", "actor": "DeploymentOrchestratorService (via DeployProgressMessage consumer)"}
+        ],
+        "irreversible_rules": [
+          "部署进入 success 或 failed 终态后不可逆，不可转换为其他任何状态",
+          "failed 状态的部署不会自动重试——需要用户重新提交部署请求创建新部署记录",
+          "处于 pending 状态的部署如果超时（超过 30 分钟无进度更新）无自动状态变更机制，由运维人工排查 MQ 消费状态",
+          "progress_pct 不会因应用重启或服务异常而递减或回滚"
+        ],
+        "concurrency": "同一 deployment 的进度消息消费通过 deployment_id 作 key 进行串行化处理，避免并发更新导致状态覆盖。同一项目不同环境的部署互不影响。不同项目的部署可并行处理。通过 RabbitMQ 单队列顺序消费保证同一部署的进度消息按发布顺序到达。"
+      }
+    ],
+    "cross_service_rules": [
+      "部署任务通过 RabbitMQ 从本服务流向 SSH Execution Service：exchange deploy.tasks / routing_key deploy.execute。本服务负责组装 DeployTaskMessage（含 SSH 连接配置），消息持久化确保不丢失。不关心消费者具体处理细节",
+      "部署进度通过 RabbitMQ 从 SSH Execution Service 流向本服务：exchange deploy.progress / routing_key deploy.progress.update。本服务消费 DeployProgressMessage 更新状态。进度消息因业务原因消费失败时不重新入队，直接 ack，避免死信队列堆积",
+      "RabbitMQ 不可用时部署提交接口返回 503 拒绝服务，已创建的部署记录标记为 failed 并记录错误原因。已提交但尚未被消费的部署任务在 MQ 恢复后继续执行",
+      "部署关键事件（提交/完成/失败）通过 Audit Service 的 POST /internal/audit/log 接口同步记录审计日志。审计调用失败不影响主流程（fire-and-forget，本地记录 WARN 日志）",
+      "Redis 缓存用于加速状态轮询查询，是性能优化手段而非数据一致性的保证。Redis 不可用时所有状态查询回退到 Primary Database，系统功能不受影响仅查询延迟增加",
+      "本服务通过 Environment Management Service 的接口或数据库直接查询获取部署目标环境的 SSH 连接配置信息（host/port/username/key_id），组装到 DeployTaskMessage 中传递给 SSH Execution Service",
+      "SSH Execution Service 的 REST 接口（POST /internal/ssh/execute, POST /internal/ssh/upload）作为部署执行主路径（MQ 驱动）的备用路径预留，当前版本不直接调用"
+    ]
+  }
+}
