@@ -534,6 +534,255 @@ _SHARED_CSS = """
     font-size: 0.85em; color: var(--c-muted); line-height: 1.7;
   }
 
+  /* ── Domain Objects ── */
+  .domain-obj {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .domain-obj h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); margin-bottom: 6px; }
+  .obj-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 0.72em; font-weight: 600; margin-left: 6px;
+  }
+  .obj-tag.entity   { background: rgba(91,141,239,0.12);  color: var(--c-accent); }
+  .obj-tag.dto      { background: rgba(52,211,153,0.12);  color: var(--c-green); }
+  .obj-tag.value_object { background: rgba(124,111,247,0.1); color: var(--c-accent2); }
+  .obj-tag.enum     { background: rgba(251,191,36,0.1);   color: var(--c-amber); }
+  .attr-source-tag {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 0.7em; font-weight: 600; font-family: monospace;
+    color: var(--c-muted); background: rgba(107,115,148,0.1);
+  }
+
+  /* ── Service Contracts ── */
+  .svc-contract {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); margin-bottom: 12px; overflow: hidden;
+  }
+  .svc-contract summary {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 20px; cursor: pointer; user-select: none;
+    font-weight: 600; font-size: 0.95em; color: var(--c-heading);
+    background: rgba(255,255,255,0.015);
+  }
+  .svc-contract summary:hover { background: rgba(255,255,255,0.03); }
+  .svc-contract summary::-webkit-details-marker { display: none; }
+  .svc-contract summary::before {
+    content: "›"; display: inline-block; font-size: 1.3em; font-weight: 400;
+    width: 16px; color: var(--c-muted); transition: transform 0.2s;
+  }
+  .svc-contract[open] summary::before { transform: rotate(90deg); }
+  .svc-method {
+    padding: 16px 20px; border-top: 1px solid var(--c-border);
+  }
+  .svc-method-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .svc-method-header .method-name {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading);
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+  }
+  .svc-method-header .return-type {
+    font-size: 0.82em; color: var(--c-accent); font-family: monospace;
+    background: rgba(91,141,239,0.08); padding: 2px 8px; border-radius: 4px;
+  }
+  .sig-block {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.84em; color: var(--c-text);
+    background: rgba(255,255,255,0.02); padding: 10px 14px;
+    border-radius: 6px; margin: 8px 0; overflow-x: auto;
+    border: 1px solid var(--c-border);
+  }
+  .pre-post {
+    display: flex; gap: 12px; margin: 8px 0; flex-wrap: wrap;
+  }
+  .pre-post-item {
+    flex: 1; min-width: 180px;
+    background: rgba(255,255,255,0.015); border: 1px solid var(--c-border);
+    border-radius: 6px; padding: 10px 14px;
+  }
+  .pre-post-item .pp-label {
+    font-size: 0.68em; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .pre-post-item.pre .pp-label { color: var(--c-green); }
+  .pre-post-item.post .pp-label { color: var(--c-accent); }
+  .pre-post-item .pp-text { font-size: 0.84em; color: var(--c-text); }
+  .exc-item {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 14px; margin: 2px 4px 2px 0;
+    font-size: 0.8em; background: rgba(248,113,113,0.06);
+    border: 1px solid rgba(248,113,113,0.15);
+  }
+  .exc-item .exc-name { font-weight: 600; color: var(--c-red); font-family: monospace; font-size: 0.85em; }
+  .exc-item .exc-http { font-size: 0.82em; color: var(--c-muted); }
+  .repo-dep {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.82em; color: var(--c-muted);
+    padding: 2px 0 2px 12px; border-left: 2px solid var(--c-border);
+    margin: 2px 0 2px 8px;
+  }
+
+  /* ── Business Rules ── */
+  .invariant-list {
+    list-style: none; padding: 0; margin: 0;
+  }
+  .invariant-list li {
+    padding: 8px 14px; margin-bottom: 6px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 6px; font-size: 0.9em;
+    display: flex; align-items: flex-start; gap: 10px;
+  }
+  .invariant-list li .inv-icon {
+    color: var(--c-amber); font-weight: 700; flex-shrink: 0;
+  }
+  .state-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 20px; margin-bottom: 12px;
+  }
+  .state-diagram .sd-title {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 12px;
+  }
+  .state-row {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px;
+  }
+  .state-node {
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 8px 18px; border-radius: 20px; font-size: 0.85em; font-weight: 600;
+    border: 1px solid var(--c-border); background: var(--c-card);
+    color: var(--c-text);
+  }
+  .state-node.active { border-color: rgba(91,141,239,0.4); color: var(--c-accent); background: rgba(91,141,239,0.06); }
+  .state-node.terminal { border-color: rgba(52,211,153,0.3); color: var(--c-green); background: rgba(52,211,153,0.06); }
+  .state-node.error   { border-color: rgba(248,113,113,0.3); color: var(--c-red); background: rgba(248,113,113,0.06); }
+  .state-arrow {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 0.78em; color: var(--c-muted); padding: 0 4px;
+  }
+  .state-arrow .trigger-text {
+    font-size: 0.85em; background: rgba(107,115,148,0.1);
+    padding: 2px 8px; border-radius: 4px;
+  }
+  .irrev-rule {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 12px; border-radius: 14px; margin: 4px;
+    font-size: 0.8em; background: rgba(248,113,113,0.06);
+    border: 1px solid rgba(248,113,113,0.15); color: var(--c-red);
+  }
+  .cross-svc-rule {
+    padding: 6px 12px; margin: 4px 0;
+    font-size: 0.85em; color: var(--c-accent2);
+    background: rgba(124,111,247,0.05); border-left: 3px solid rgba(124,111,247,0.3);
+    border-radius: 4px;
+  }
+
+  /* ── Component Tree ── */
+  .comp-node {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 16px 20px; margin-bottom: 8px;
+    margin-left: 0;
+  }
+  .comp-node.child { margin-left: 20px; border-left: 2px solid rgba(91,141,239,0.2); }
+  .comp-node .cn-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;
+  }
+  .comp-node .cn-name { font-weight: 600; font-size: 0.95em; color: var(--c-heading); }
+  .comp-node .cn-path {
+    font-family: monospace; font-size: 0.78em; color: var(--c-accent);
+    background: rgba(91,141,239,0.08); padding: 2px 8px; border-radius: 4px;
+  }
+  .cn-section { margin: 8px 0; }
+  .cn-section .cn-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .cn-tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 4px; margin: 2px;
+    font-size: 0.78em; background: rgba(255,255,255,0.03);
+    border: 1px solid var(--c-border); color: var(--c-text);
+  }
+  .cn-tag.prop { border-color: rgba(91,141,239,0.2); color: var(--c-accent); }
+  .cn-tag.event { border-color: rgba(52,211,153,0.2); color: var(--c-green); }
+  .cn-tag.state { border-color: rgba(251,191,36,0.2); color: var(--c-amber); }
+  .cn-behavior { font-size: 0.84em; color: var(--c-text); }
+  .cn-edge { font-size: 0.82em; color: var(--c-muted); }
+  .cn-edge .edge-icon { color: var(--c-amber); }
+
+  /* ── State Design ── */
+  .state-global-item {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 10px 14px; margin-bottom: 6px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 6px;
+  }
+  .state-global-item .sg-name {
+    font-weight: 600; font-size: 0.9em; color: var(--c-heading); font-family: monospace;
+  }
+  .state-global-item .sg-type {
+    font-size: 0.82em; color: var(--c-accent); font-family: monospace;
+    background: rgba(91,141,239,0.06); padding: 1px 6px; border-radius: 3px;
+  }
+
+  /* ── Route Design ── */
+  .route-row {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 14px; border-bottom: 1px solid var(--c-border);
+  }
+  .route-row:last-child { border-bottom: none; }
+
+  /* ── Interaction Flows ── */
+  .flow-timeline {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 16px 20px; margin-bottom: 12px;
+  }
+  .flow-timeline .ft-title {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 10px;
+  }
+  .ft-step {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 6px 0; font-size: 0.86em;
+  }
+  .ft-step .ft-num {
+    width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+    background: rgba(91,141,239,0.1); color: var(--c-accent);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 0.8em;
+  }
+  .ft-step .ft-text { color: var(--c-text); padding-top: 2px; }
+
+  /* ── Gateway ── */
+  .mw-flow {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+    padding: 14px 18px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; margin-bottom: 12px;
+  }
+  .mw-node {
+    padding: 6px 14px; border-radius: 6px; font-size: 0.84em; font-weight: 500;
+    background: var(--c-card); border: 1px solid var(--c-border);
+    color: var(--c-text); white-space: nowrap;
+  }
+  .mw-node.special {
+    border-color: rgba(91,141,239,0.25); color: var(--c-accent);
+    background: rgba(91,141,239,0.06);
+  }
+  .mw-arrow { color: var(--c-muted); font-size: 0.85em; }
+
+  .auth-matrix {
+    width: 100%; border-collapse: collapse; font-size: 0.85em;
+  }
+  .auth-matrix th {
+    text-align: left; padding: 8px 12px; font-weight: 600;
+    color: var(--c-muted); border-bottom: 2px solid var(--c-border);
+  }
+  .auth-matrix td { padding: 8px 12px; border-bottom: 1px solid var(--c-border); }
+  .role-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px; margin: 1px 3px 1px 0;
+    font-size: 0.82em; background: rgba(91,141,239,0.08); color: var(--c-accent);
+  }
+
   @media (max-width: 700px) {
     body { padding: 24px 16px 48px; }
     h1 { font-size: 1.6em; }
@@ -1289,12 +1538,73 @@ def _render_lld(d: dict) -> str:
     models = d.get("data_models", [])
     ifaces = d.get("interfaces", [])
     workflow = d.get("workflow")
+    domain_objects = d.get("domain_objects", [])
+    service_contracts = d.get("service_contracts", [])
+    business_rules = d.get("business_rules")
+    component_tree = d.get("component_tree", [])
+    state_design = d.get("state_design")
+    route_design = d.get("route_design", [])
+    interaction_flows = d.get("interaction_flows", [])
+    api_integration = d.get("api_integration", [])
 
-    # Sidebar sections
-    sections = [
-        ("overview", "📄", "概述"),
-        ("models", "🗄️", f"数据模型 ({len(models)})"),
-    ]
+    # —— Build sidebar sections dynamically ——
+    sections = [("overview", "📄", "概述")]
+
+    # Frontend-specific sections (before data_models)
+    if module_type == "frontend":
+        if component_tree:
+            sections.append(("component-tree", "🧩", f"组件树 ({len(component_tree)})"))
+        if state_design:
+            sections.append(("state-design", "🗃️", "状态设计"))
+        if route_design:
+            sections.append(("route-design", "🗺️", f"路由 ({len(route_design)})"))
+        if interaction_flows:
+            sections.append(("interaction-flows", "🔄", f"交互流 ({len(interaction_flows)})"))
+        if api_integration:
+            sections.append(("api-integration", "🔗", f"API 映射 ({len(api_integration)})"))
+
+    # Gateway-specific sections
+    if module_type == "gateway":
+        if d.get("route_table"):
+            sections.append(("route-table", "🔀", f"路由表 ({len(d['route_table'])})"))
+        if d.get("middleware_chain"):
+            sections.append(("middleware-chain", "⛓️", "中间件链"))
+        if d.get("auth_policy"):
+            sections.append(("auth-policy", "🔐", "认证授权"))
+        if d.get("rate_limiting"):
+            sections.append(("rate-limiting", "🚦", "限流规则"))
+
+    # Infrastructure-specific sections
+    if module_type == "infrastructure":
+        if d.get("topology"):
+            sections.append(("infra-topology", "🌐", "拓扑结构"))
+        if d.get("message_contracts"):
+            sections.append(("message-contracts", "📨", f"消息契约 ({len(d.get('message_contracts', []))})"))
+        if d.get("reliability_strategy"):
+            sections.append(("reliability", "🛡️", "可靠性策略"))
+
+    sections.append(("models", "🗄️", f"数据模型 ({len(models)})"))
+
+    # Service sections (after data_models)
+    if module_type in ("service", "gateway"):
+        if domain_objects:
+            sections.append(("domain-objects", "📦", f"领域对象 ({len(domain_objects)})"))
+        if service_contracts:
+            sections.append(("service-contracts", "🔧", f"服务接口 ({len(service_contracts)})"))
+        if business_rules:
+            sections.append(("business-rules", "📐", "业务规则"))
+
+    # Database-specific sections
+    if module_type == "database":
+        if d.get("index_strategy"):
+            sections.append(("index-strategy", "📊", "索引策略"))
+        if d.get("migration_strategy"):
+            sections.append(("migration", "📜", "迁移策略"))
+        if d.get("capacity_estimation"):
+            sections.append(("capacity", "📈", "容量估算"))
+        if d.get("connection_contracts"):
+            sections.append(("connections", "🔗", "连接配置"))
+
     if workflow:
         sections.append(("workflow", "🔄", "编排流程"))
     if ifaces:
@@ -1354,6 +1664,305 @@ def _render_lld(d: dict) -> str:
         if ov_text:
             parts.append(f"<p>{_esc(ov_text)}</p>")
     parts.append(_SECTION_FOOT)
+
+    # ═══════════════════════════════════════════════════════════
+    # Module-type-specific sections BEFORE data models
+    # ═══════════════════════════════════════════════════════════
+
+    # ── Frontend: Component Tree ──
+    if module_type == "frontend" and component_tree:
+        parts.append(_section_header("🧩", f"组件树 ({len(component_tree)})",
+                                      "rgba(34,211,238,0.12)", "component-tree"))
+        parts.extend(_render_component_nodes(component_tree))
+        parts.append(_SECTION_FOOT)
+
+    # ── Frontend: State Design ──
+    if module_type == "frontend" and state_design:
+        parts.append(_section_header("🗃️", "状态设计", "rgba(251,191,36,0.12)", "state-design"))
+        global_states = state_design.get("global", [])
+        if global_states:
+            parts.append('<div class="body-label" style="margin-bottom:8px">全局状态</div>')
+            for gs in global_states:
+                consumers_html = " ".join(
+                    f'<span class="cn-tag state">{_esc(c)}</span>' for c in gs.get("consumers", [])
+                )
+                parts.append(
+                    f'<div class="state-global-item">'
+                    f'<div style="flex:1">'
+                    f'<div class="sg-name">{_esc(gs.get("name",""))}</div>'
+                    f'<div style="font-size:0.84em;color:var(--c-muted);margin-top:2px">{_esc(gs.get("description",""))}</div>'
+                    f'</div>'
+                    f'<span class="sg-type">{_esc(gs.get("type",""))}</span>'
+                    f'<div style="margin-top:4px">{consumers_html}</div>'
+                    f'</div>'
+                )
+        caching = state_design.get("caching_strategy", "")
+        if caching:
+            parts.append(
+                f'<div class="body-label" style="margin-top:12px">缓存策略</div>'
+                f'<p style="font-size:0.88em;color:var(--c-muted)">{_esc(str(caching))}</p>'
+            )
+        parts.append(_SECTION_FOOT)
+
+    # ── Frontend: Route Design ──
+    if module_type == "frontend" and route_design:
+        parts.append(_section_header("🗺️", f"路由设计 ({len(route_design)})",
+                                      "rgba(52,211,153,0.12)", "route-design"))
+        rows_html = ""
+        for r in route_design:
+            auth = r.get("auth", "")
+            auth_tag = f'<span class="role-tag">{_esc(auth)}</span>' if auth else ""
+            rows_html += (
+                f'<div class="route-row">'
+                f'<span class="cc-endpoint" style="min-width:180px">{_esc(r.get("path",""))}</span>'
+                f'<span style="font-weight:600;font-size:0.9em;color:var(--c-heading);flex:1">{_esc(r.get("page",""))}</span>'
+                f'{auth_tag}'
+                f'</div>'
+            )
+        parts.append(
+            f'<div style="background:var(--c-surface);border:1px solid var(--c-border);'
+            f'border-radius:var(--radius);padding:4px 0">'
+            f'{rows_html}'
+            f'</div>'
+        )
+        parts.append(_SECTION_FOOT)
+
+    # ── Frontend: Interaction Flows ──
+    if module_type == "frontend" and interaction_flows:
+        parts.append(_section_header("🔄", f"交互流程 ({len(interaction_flows)})",
+                                      "rgba(124,111,247,0.12)", "interaction-flows"))
+        for flow in interaction_flows:
+            ft_steps = ""
+            for i, step in enumerate(flow.get("steps", [])):
+                ft_steps += (
+                    f'<div class="ft-step">'
+                    f'<div class="ft-num">{i + 1}</div>'
+                    f'<div class="ft-text">{_esc(step)}</div>'
+                    f'</div>'
+                )
+            parts.append(
+                f'<div class="flow-timeline">'
+                f'<div class="ft-title">{_esc(flow.get("name",""))}</div>'
+                + (f'<p style="font-size:0.84em;color:var(--c-muted);margin-bottom:8px">{_esc(flow.get("description",""))}</p>' if flow.get("description") else "")
+                + ft_steps
+                + '</div>'
+            )
+        parts.append(_SECTION_FOOT)
+
+    # ── Frontend: API Integration ──
+    if module_type == "frontend" and api_integration:
+        parts.append(_section_header("🔗", f"API 集成映射 ({len(api_integration)})",
+                                      "rgba(34,211,238,0.12)", "api-integration"))
+        api_rows = ""
+        for a in api_integration:
+            api_rows += (
+                f'<tr><td><strong>{_esc(a.get("page",""))}</strong></td>'
+                f'<td style="font-family:monospace;font-size:0.85em">{_esc(a.get("endpoint",""))}</td>'
+                f'<td>{_esc(a.get("maps_to",""))}</td></tr>'
+            )
+        parts.append(
+            f'<table class="body-table"><thead><tr><th>页面</th><th>API / Endpoint</th><th>映射到</th></tr></thead>'
+            f'<tbody>{api_rows}</tbody></table>'
+        )
+        parts.append(_SECTION_FOOT)
+
+    # ── Gateway: Route Table ──
+    if module_type == "gateway" and d.get("route_table"):
+        parts.append(_section_header("🔀", f"路由表 ({len(d['route_table'])})",
+                                      "rgba(124,111,247,0.12)", "route-table"))
+        rt_rows = ""
+        for rt in d["route_table"]:
+            rt_rows += (
+                f'<tr><td style="font-family:monospace">{_esc(rt.get("path_pattern",""))}</td>'
+                f'<td><strong>{_esc(rt.get("upstream",""))}</strong></td>'
+                f'<td style="color:var(--c-muted)">{_esc(rt.get("description",""))}</td></tr>'
+            )
+        parts.append(
+            f'<table style="width:100%;border-collapse:collapse;font-size:0.9em">'
+            f'<thead><tr><th>Path Pattern</th><th>Upstream</th><th>说明</th></tr></thead>'
+            f'<tbody>{rt_rows}</tbody></table>'
+        )
+        parts.append(_SECTION_FOOT)
+
+    # ── Gateway: Middleware Chain ──
+    if module_type == "gateway" and d.get("middleware_chain"):
+        parts.append(_section_header("⛓️", "中间件链", "rgba(91,141,239,0.12)", "middleware-chain"))
+        mw_nodes = ""
+        chain = d["middleware_chain"]
+        if isinstance(chain, list):
+            for i, node in enumerate(chain):
+                mw_nodes += f'<span class="mw-node special">{_esc(node)}</span>'
+                if i < len(chain) - 1:
+                    mw_nodes += '<span class="mw-arrow">→</span>'
+        parts.append(f'<div class="mw-flow">{mw_nodes}</div>')
+        parts.append(_SECTION_FOOT)
+
+    # ── Gateway: Auth Policy ──
+    if module_type == "gateway" and d.get("auth_policy"):
+        ap = d["auth_policy"]
+        parts.append(_section_header("🔐", "认证授权", "rgba(251,191,36,0.12)", "auth-policy"))
+        pub_eps = ap.get("public_endpoints", [])
+        auth_method = ap.get("auth_method", "")
+        token_exp = ap.get("token_expiry", "")
+        role_map = ap.get("role_path_map", [])
+
+        info_parts = []
+        if pub_eps:
+            tags = " ".join(f'<span class="cn-tag">{_esc(e)}</span>' for e in pub_eps)
+            info_parts.append(f'<div style="margin-bottom:8px"><strong style="font-size:0.82em;color:var(--c-muted)">公开端点: </strong>{tags}</div>')
+        if auth_method:
+            info_parts.append(f'<div style="margin-bottom:8px"><strong style="font-size:0.82em;color:var(--c-muted)">认证方式: </strong><span class="role-tag">{_esc(auth_method)}</span></div>')
+        if token_exp:
+            info_parts.append(f'<div style="margin-bottom:12px"><strong style="font-size:0.82em;color:var(--c-muted)">Token 策略: </strong><span class="cn-tag">{_esc(token_exp)}</span></div>')
+        parts.extend(info_parts)
+
+        if role_map:
+            rows = ""
+            for r in role_map:
+                roles_html = " ".join(f'<span class="role-tag">{_esc(role)}</span>' for role in r.get("roles", []))
+                rows += f'<tr><td style="font-family:monospace;font-size:0.85em">{_esc(r.get("path",""))}</td><td>{roles_html}</td></tr>'
+            parts.append(
+                f'<table class="auth-matrix"><thead><tr><th>路径</th><th>允许角色</th></tr></thead><tbody>{rows}</tbody></table>'
+            )
+        parts.append(_SECTION_FOOT)
+
+    # ── Gateway: Rate Limiting ──
+    if module_type == "gateway" and d.get("rate_limiting"):
+        rl = d["rate_limiting"]
+        parts.append(_section_header("🚦", "限流规则", "rgba(248,113,113,0.12)", "rate-limiting"))
+        global_l = rl.get("global", "")
+        per_user = rl.get("per_user", "")
+        special = rl.get("special_endpoints", [])
+
+        if global_l:
+            parts.append(f'<div style="margin-bottom:8px"><span class="cn-tag">全局</span> {_esc(global_l)}</div>')
+        if per_user:
+            parts.append(f'<div style="margin-bottom:8px"><span class="cn-tag">每用户</span> {_esc(per_user)}</div>')
+        if special:
+            sp_rows = ""
+            for s in special:
+                sp_rows += f'<tr><td style="font-family:monospace">{_esc(s.get("endpoint",""))}</td><td>{_esc(s.get("limit",""))}</td></tr>'
+            parts.append(
+                f'<table class="body-table"><thead><tr><th>端点</th><th>限制</th></tr></thead><tbody>{sp_rows}</tbody></table>'
+            )
+        parts.append(_SECTION_FOOT)
+
+    # ── Infrastructure: Topology ──
+    if module_type == "infrastructure" and d.get("topology"):
+        parts.append(_section_header("🌐", "拓扑结构", "rgba(124,111,247,0.12)", "infra-topology"))
+        topo = d["topology"]
+        exchanges = topo.get("exchanges", [])
+        queues = topo.get("queues", [])
+        pc_map = topo.get("producer_consumer_map", [])
+        namespaces = topo.get("namespaces", [])
+        buckets = topo.get("buckets", [])
+
+        if exchanges:
+            parts.append('<div class="body-label">Exchanges</div>')
+            ex_rows = ""
+            for ex in exchanges:
+                bindings = ex.get("bindings", [])
+                bind_str = ", ".join(f'{b.get("queue","")} (rk: {b.get("routing_key","")})' for b in bindings)
+                ex_rows += (
+                    f'<tr><td style="font-family:monospace">{_esc(ex.get("name",""))}</td>'
+                    f'<td>{_esc(ex.get("type",""))}</td>'
+                    f'<td>{"✓" if ex.get("durable") else ""}</td>'
+                    f'<td style="font-size:0.85em">{_esc(bind_str)}</td></tr>'
+                )
+            parts.append(
+                f'<table class="body-table"><thead><tr><th>名称</th><th>类型</th><th>持久</th><th>绑定</th></tr></thead><tbody>{ex_rows}</tbody></table>'
+            )
+
+        if queues:
+            parts.append('<div class="body-label" style="margin-top:12px">Queues</div>')
+            q_rows = ""
+            for q in queues:
+                q_rows += (
+                    f'<tr><td style="font-family:monospace">{_esc(q.get("name",""))}</td>'
+                    f'<td>{"✓" if q.get("durable") else ""}</td>'
+                    f'<td>{_esc(str(q.get("ttl_seconds","")))}s</td>'
+                    f'<td>{_esc(str(q.get("max_length","")))}</td></tr>'
+                )
+            parts.append(
+                f'<table class="body-table"><thead><tr><th>名称</th><th>持久</th><th>TTL</th><th>最大长度</th></tr></thead><tbody>{q_rows}</tbody></table>'
+            )
+
+        if pc_map:
+            parts.append('<div class="body-label" style="margin-top:12px">生产者/消费者</div>')
+            pc_rows = ""
+            for p in pc_map:
+                pc_rows += (
+                    f'<tr><td><strong>{_esc(p.get("producer",""))}</strong></td>'
+                    f'<td>→</td>'
+                    f'<td><strong>{_esc(p.get("consumer",""))}</strong></td>'
+                    f'<td style="font-family:monospace;font-size:0.85em">{_esc(p.get("exchange",""))}</td></tr>'
+                )
+            parts.append(
+                f'<table class="body-table"><thead><tr><th>生产者</th><th></th><th>消费者</th><th>Exchange</th></tr></thead><tbody>{pc_rows}</tbody></table>'
+            )
+
+        if namespaces:
+            parts.append(
+                f'<div class="body-label">Namespaces</div>'
+                f'<p style="font-size:0.9em">{_esc(", ".join(str(n) for n in namespaces))}</p>'
+            )
+        if buckets:
+            parts.append(
+                f'<div class="body-label">Buckets</div>'
+                f'<p style="font-size:0.9em">{_esc(", ".join(str(b) for b in buckets))}</p>'
+            )
+        parts.append(_SECTION_FOOT)
+
+    # ── Infrastructure: Message Contracts ──
+    if module_type == "infrastructure" and d.get("message_contracts"):
+        parts.append(_section_header("📨", f"消息契约 ({len(d['message_contracts'])})",
+                                      "rgba(91,141,239,0.12)", "message-contracts"))
+        for mc in d["message_contracts"]:
+            schema_rows = ""
+            for k, v in mc.get("schema", {}).items():
+                schema_rows += f'<tr><td>{_esc(k)}</td><td class="field-type">{_esc(v)}</td></tr>'
+            required = ", ".join(mc.get("required_fields", []))
+            parts.append(
+                f'<div class="contract-card">'
+                f'<div class="cc-head">'
+                f'<span class="cc-endpoint">{_esc(mc.get("exchange",""))}</span>'
+                f'<span class="method-badge mq">MQ</span>'
+                f'<span class="cc-name">{_esc(mc.get("name",""))}</span>'
+                f'</div>'
+                f'<div style="font-size:0.82em;color:var(--c-muted);margin-bottom:8px">'
+                f'Routing Key: {_esc(mc.get("routing_key",""))}'
+                + (f' · Max: {mc.get("max_size_bytes", "")} bytes' if mc.get("max_size_bytes") else "")
+                + f'</div>'
+                f'<div class="body-label">Schema</div>'
+                f'<table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody>{schema_rows}</tbody></table>'
+                + (f'<div style="font-size:0.82em;color:var(--c-muted);margin-top:6px"><strong>必填:</strong> {_esc(required)}</div>' if required else "")
+                + '</div>'
+            )
+        parts.append(_SECTION_FOOT)
+
+    # ── Infrastructure: Reliability Strategy ──
+    if module_type == "infrastructure" and d.get("reliability_strategy"):
+        rs = d["reliability_strategy"]
+        parts.append(_section_header("🛡️", "可靠性策略", "rgba(251,191,36,0.12)", "reliability"))
+        ack = rs.get("ack_mode", "")
+        dlq = rs.get("dead_letter", "")
+        idem = rs.get("idempotency", "")
+        retry = rs.get("retry", {})
+
+        items = []
+        if ack:
+            items.append(f'<span class="cn-tag">Ack: {_esc(ack)}</span>')
+        if dlq:
+            items.append(f'<span class="cn-tag">DLQ: {_esc(dlq)}</span>')
+        if idem:
+            items.append(f'<span class="cn-tag">幂等: {_esc(idem)}</span>')
+        if retry:
+            items.append(
+                f'<span class="cn-tag">重试: max {retry.get("max_retries","?")}x, '
+                f'backoff {retry.get("backoff","?")}</span>'
+            )
+        parts.append(f'<div style="display:flex;flex-wrap:wrap;gap:8px">{" ".join(items)}</div>')
+        parts.append(_SECTION_FOOT)
 
     # ── 2. Data Models ──
     parts.append(_section_header("🗄️", f"数据模型 ({len(models)})", "rgba(91,141,239,0.12)", "models"))
@@ -1454,6 +2063,279 @@ def _render_lld(d: dict) -> str:
                 '</details>'
             )
     parts.append(_SECTION_FOOT)
+
+    # ═══════════════════════════════════════════════════════════
+    # Module-type-specific sections AFTER data models
+    # ═══════════════════════════════════════════════════════════
+
+    # ── Service / Gateway: Domain Objects ──
+    if module_type in ("service", "gateway") and domain_objects:
+        parts.append(_section_header("📦", f"领域对象 ({len(domain_objects)})",
+                                      "rgba(91,141,239,0.12)", "domain-objects"))
+        obj_type_icons = {"entity": "🏷️", "value_object": "📌", "dto": "📋", "enum": "🔢"}
+        obj_type_labels = {"entity": "实体", "value_object": "值对象", "dto": "DTO", "enum": "枚举"}
+        source_labels = {"db": "DB 透传", "computed": "计算", "input": "输入", "derived": "派生"}
+
+        for dobj in domain_objects:
+            ot = dobj.get("object_type", "entity")
+            oicon = obj_type_icons.get(ot, "📄")
+            olabel = obj_type_labels.get(ot, ot)
+            tag_cls = ot if ot in ("entity", "dto", "value_object", "enum") else ""
+
+            # Enum: show values as tags
+            if ot == "enum":
+                vals = dobj.get("values", [])
+                val_tags = " ".join(
+                    f'<span class="cn-tag prop">{_esc(v)}</span>' for v in vals
+                )
+                parts.append(
+                    f'<div class="domain-obj">'
+                    f'<h3>{oicon} {_esc(dobj.get("name",""))}'
+                    f'<span class="obj-tag {tag_cls}">{_esc(olabel)}</span></h3>'
+                    f'<p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">{_esc(dobj.get("description",""))}</p>'
+                    f'<div class="body-label">值</div><div>{val_tags}</div>'
+                    f'</div>'
+                )
+            else:
+                # Entity / Value Object / DTO
+                attrs = dobj.get("attributes", [])
+                attr_rows = ""
+                for a in attrs:
+                    required = a.get("required", False)
+                    req_mark = ' <span style="color:var(--c-red);font-size:0.75em">*</span>' if required else ""
+                    src = a.get("source", "")
+                    src_tag = f' <span class="attr-source-tag">{_esc(source_labels.get(src, src))}</span>' if src else ""
+                    attr_rows += (
+                        f"<tr>"
+                        f"<td>{_esc(a.get('name',''))}{req_mark}{src_tag}</td>"
+                        f"<td class=\"field-type\">{_esc(a.get('type',''))}</td>"
+                        f"<td>{_esc(a.get('description',''))}</td>"
+                        f"</tr>"
+                    )
+
+                maps_to = dobj.get("maps_to_entity", "")
+                maps_html = f'<div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↦ {_esc(maps_to)}</div>' if maps_to else ""
+
+                parts.append(
+                    f'<div class="domain-obj">'
+                    f'<h3>{oicon} {_esc(dobj.get("name",""))}'
+                    f'<span class="obj-tag {tag_cls}">{_esc(olabel)}</span></h3>'
+                    f'{maps_html}'
+                    f'<p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">{_esc(dobj.get("description",""))}</p>'
+                    + (f'<div class="body-label">属性</div>'
+                       f'<table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody>{attr_rows}</tbody></table>' if attrs else "")
+                    + '</div>'
+                )
+        parts.append(_SECTION_FOOT)
+
+    # ── Service: Service Contracts ──
+    if module_type in ("service", "gateway") and service_contracts:
+        parts.append(_section_header("🔧", f"服务接口 ({len(service_contracts)})",
+                                      "rgba(124,111,247,0.12)", "service-contracts"))
+        for svc in service_contracts:
+            methods = svc.get("methods", [])
+            method_cards = ""
+            for meth in methods:
+                excs = meth.get("exceptions", [])
+                exc_tags = ""
+                for e in excs:
+                    exc_tags += (
+                        f'<span class="exc-item">'
+                        f'<span class="exc-name">{_esc(e.get("name",""))}</span>'
+                        f'<span class="exc-http">→ {_esc(str(e.get("http_status","")))}</span>'
+                        f'<span style="font-size:0.82em;color:var(--c-muted)">{_esc(e.get("trigger",""))}</span>'
+                        f'</span>'
+                    )
+
+                pre = meth.get("precondition", "")
+                post = meth.get("postcondition", "")
+                pre_post_html = ""
+                if pre or post:
+                    pre_post_html = '<div class="pre-post">'
+                    if pre:
+                        pre_post_html += f'<div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">{_esc(pre)}</div></div>'
+                    if post:
+                        pre_post_html += f'<div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">{_esc(post)}</div></div>'
+                    pre_post_html += '</div>'
+
+                method_cards += (
+                    f'<div class="svc-method">'
+                    f'<div class="svc-method-header">'
+                    f'<span class="method-name">{_esc(meth.get("name",""))}</span>'
+                    f'</div>'
+                    + (f'<div class="sig-block">{_esc(meth.get("signature",""))}</div>' if meth.get("signature") else "")
+                    + (f'<div class="cc-desc">{_esc(meth.get("description",""))}</div>' if meth.get("description") else "")
+                    + pre_post_html
+                    + (f'<div style="margin-top:6px">{exc_tags}</div>' if exc_tags else "")
+                    + '</div>'
+                )
+
+            # Repository dependencies
+            repo_deps = svc.get("repository_dependencies", [])
+            repo_html = ""
+            if repo_deps:
+                repo_items = "".join(f'<div class="repo-dep">{_esc(d)}</div>' for d in repo_deps)
+                repo_html = (
+                    f'<div style="padding:16px 20px;border-top:1px solid var(--c-border)">'
+                    f'<div class="body-label">数据访问依赖</div>'
+                    f'{repo_items}'
+                    f'</div>'
+                )
+
+            parts.append(
+                '<details class="svc-contract" open>'
+                f'<summary>🔧 {_esc(svc.get("name",""))} '
+                f'<span class="cg-count">{len(methods)} 方法</span></summary>'
+                f'{method_cards}'
+                f'{repo_html}'
+                '</details>'
+            )
+        parts.append(_SECTION_FOOT)
+
+    # ── Service: Business Rules ──
+    if module_type in ("service", "gateway") and business_rules:
+        parts.append(_section_header("📐", "业务规则", "rgba(251,191,36,0.12)", "business-rules"))
+
+        # Invariants
+        invariants = business_rules.get("invariants", [])
+        if invariants:
+            inv_items = ""
+            for inv in invariants:
+                inv_items += f'<li><span class="inv-icon">!</span><span>{_esc(inv)}</span></li>'
+            parts.append(
+                f'<div class="body-label">不变量</div>'
+                f'<ul class="invariant-list">{inv_items}</ul>'
+            )
+
+        # State Machines
+        machines = business_rules.get("state_machines", [])
+        if machines:
+            parts.append('<div class="body-label" style="margin-top:16px">状态机</div>')
+            for sm in machines:
+                states = sm.get("states", [])
+                transitions = sm.get("transitions", [])
+                state_nodes = ""
+                for s in states:
+                    cls = ""
+                    if s in ("completed", "failed", "deleted"):
+                        cls = "terminal" if s == "completed" else "error"
+                    elif s == "running":
+                        cls = "active"
+                    state_nodes += f'<span class="state-node {cls}">{_esc(s)}</span>'
+
+                trans_html = ""
+                for t in transitions:
+                    trans_html += (
+                        f'<div class="state-arrow">'
+                        f'<span>→</span>'
+                        f'<span class="trigger-text">{_esc(t.get("trigger",""))}</span>'
+                        f'<span style="font-size:0.78em;color:var(--c-muted)">by {_esc(t.get("actor",""))}</span>'
+                        f'</div>'
+                    )
+
+                irreversible = sm.get("irreversible_rules", [])
+                irrev_tags = ""
+                for ir in irreversible:
+                    irrev_tags += f'<span class="irrev-rule">🚫 {_esc(ir)}</span>'
+
+                concurrency = sm.get("concurrency", "")
+
+                parts.append(
+                    f'<div class="state-diagram">'
+                    f'<div class="sd-title">🎯 {_esc(sm.get("entity",""))}</div>'
+                    f'<div class="state-row">{state_nodes}</div>'
+                    f'<div style="margin:8px 0">{trans_html}</div>'
+                    + (f'<div style="margin-top:8px">{irrev_tags}</div>' if irrev_tags else "")
+                    + (f'<div style="margin-top:8px;font-size:0.84em;color:var(--c-muted)">⚡ {_esc(concurrency)}</div>' if concurrency else "")
+                    + '</div>'
+                )
+
+        # Cross-service rules
+        cross_rules = business_rules.get("cross_service_rules", [])
+        if cross_rules:
+            cross_items = ""
+            for cr in cross_rules:
+                cross_items += f'<div class="cross-svc-rule">{_esc(cr)}</div>'
+            parts.append(
+                f'<div class="body-label" style="margin-top:16px">跨服务规则</div>'
+                f'{cross_items}'
+            )
+
+        parts.append(_SECTION_FOOT)
+
+    # ── Database: Index Strategy ──
+    if module_type == "database" and d.get("index_strategy"):
+        parts.append(_section_header("📊", "索引策略", "rgba(52,211,153,0.12)", "index-strategy"))
+        for table in d["index_strategy"]:
+            idx_rows = ""
+            for idx in table.get("indexes", []):
+                cols = ", ".join(idx.get("columns", []))
+                idx_rows += (
+                    f'<tr><td><strong>{_esc(idx.get("name",""))}</strong></td>'
+                    f'<td style="font-family:monospace;font-size:0.85em">{_esc(cols)}</td>'
+                    f'<td>{"✓" if idx.get("unique") else ""}</td>'
+                    f'<td>{_esc(idx.get("type","B-tree"))}</td>'
+                    f'<td style="color:var(--c-muted);font-size:0.85em">{_esc(idx.get("purpose",""))}</td></tr>'
+                )
+            parts.append(
+                f'<div class="body-label">{_esc(table.get("table",""))}</div>'
+                f'<table class="body-table"><thead><tr><th>索引名</th><th>列</th><th>唯一</th><th>类型</th><th>用途</th></tr></thead><tbody>{idx_rows}</tbody></table>'
+            )
+        parts.append(_SECTION_FOOT)
+
+    # ── Database: Migration Strategy ──
+    if module_type == "database" and d.get("migration_strategy"):
+        ms = d["migration_strategy"]
+        parts.append(_section_header("📜", "迁移策略", "rgba(124,111,247,0.12)", "migration"))
+        parts.append(
+            f'<div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px">'
+            f'<span class="cn-tag">工具: {_esc(str(ms.get("tool","")))}</span>'
+            f'<span class="cn-tag">命名: {_esc(str(ms.get("naming","")))}</span>'
+            f'</div>'
+            f'<p style="font-size:0.88em;color:var(--c-muted)"><strong>回滚策略:</strong> {_esc(str(ms.get("rollback","")))}</p>'
+        )
+        parts.append(_SECTION_FOOT)
+
+    # ── Database: Capacity Estimation ──
+    if module_type == "database" and d.get("capacity_estimation"):
+        ce = d["capacity_estimation"]
+        parts.append(_section_header("📈", "容量估算", "rgba(34,211,238,0.12)", "capacity"))
+        hot = ce.get("hot_tables", [])
+        hot_tags = " ".join(f'<span class="cn-tag prop">{_esc(t)}</span>' for t in hot)
+        parts.append(
+            f'<div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:8px">'
+            f'<span class="cn-tag">1年: {_esc(str(ce.get("estimated_rows_1y","")))}</span>'
+            f'<span class="cn-tag">3年: {_esc(str(ce.get("estimated_rows_3y","")))}</span>'
+            f'</div>'
+            + (f'<div style="margin-bottom:8px"><strong style="font-size:0.82em;color:var(--c-muted)">热表: </strong>{hot_tags}</div>' if hot else "")
+            + (f'<p style="font-size:0.88em;color:var(--c-muted)"><strong>分区策略:</strong> {_esc(str(ce.get("partition_strategy","")))}</p>' if ce.get("partition_strategy") else "")
+        )
+        parts.append(_SECTION_FOOT)
+
+    # ── Database / Infra: Connection Contracts ──
+    if module_type in ("database", "infrastructure") and d.get("connection_contracts"):
+        cc = d["connection_contracts"]
+        parts.append(_section_header("🔗", "连接配置", "rgba(124,111,247,0.12)", "connections"))
+        parts.append(
+            f'<div style="margin-bottom:8px">'
+            f'<span class="cn-tag">连接池: {_esc(str(cc.get("pool_size","")))}</span>'
+            f'<span class="cn-tag" style="margin-left:8px">超时: {_esc(str(cc.get("timeout","")))}</span>'
+            f'</div>'
+        )
+        accounts = cc.get("service_accounts", [])
+        if accounts:
+            acc_rows = ""
+            for a in accounts:
+                privs = " ".join(f'<span class="role-tag">{_esc(p)}</span>' for p in a.get("privileges", []))
+                acc_rows += (
+                    f'<tr><td><strong>{_esc(a.get("service",""))}</strong></td>'
+                    f'<td style="font-family:monospace">{_esc(a.get("db_user",""))}</td>'
+                    f'<td>{privs}</td></tr>'
+                )
+            parts.append(
+                f'<table class="auth-matrix"><thead><tr><th>服务</th><th>账号</th><th>权限</th></tr></thead><tbody>{acc_rows}</tbody></table>'
+            )
+        parts.append(_SECTION_FOOT)
 
     # ── 3. Workflow (if present) ──
     if workflow:
@@ -1639,6 +2521,83 @@ def _render_lld(d: dict) -> str:
 
     parts.append(_PAGE_END_SIDEBAR)
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Component tree renderer (recursive)
+# ---------------------------------------------------------------------------
+
+def _render_component_nodes(nodes: list, depth: int = 0) -> list:
+    """Recursively render component tree nodes as HTML."""
+    parts = []
+    for node in nodes:
+        child_cls = " child" if depth > 0 else ""
+
+        # Props
+        props = node.get("props", [])
+        prop_tags = ""
+        for p in props:
+            req = " *" if p.get("required") else ""
+            prop_tags += f'<span class="cn-tag prop">{_esc(p.get("name",""))}: {_esc(p.get("type",""))}{req}</span>'
+
+        # Events
+        events = node.get("events", [])
+        event_tags = ""
+        for e in events:
+            event_tags += f'<span class="cn-tag event">@{_esc(e.get("name",""))}({_esc(e.get("payload_type",""))})</span>'
+
+        # State
+        state_fields = node.get("state", [])
+        state_tags = ""
+        for s in state_fields:
+            state_tags += f'<span class="cn-tag state">{_esc(s.get("name",""))}: {_esc(s.get("type",""))}</span>'
+
+        # Behavior
+        behaviors = node.get("behavior", [])
+        behavior_html = ""
+        if behaviors:
+            items = "".join(f"<li>{_esc(b)}</li>" for b in behaviors)
+            behavior_html = (
+                f'<div class="cn-section">'
+                f'<div class="cn-label">行为</div>'
+                f'<ul class="cn-behavior" style="list-style:disc;padding-left:20px">{items}</ul>'
+                f'</div>'
+            )
+
+        # Edge cases
+        edge_cases = node.get("edge_cases", [])
+        edge_html = ""
+        if edge_cases:
+            items = "".join(
+                f'<li><span class="edge-icon">⚠️</span> {_esc(ec)}</li>'
+                for ec in edge_cases
+            )
+            edge_html = (
+                f'<div class="cn-section">'
+                f'<div class="cn-label">边界情况</div>'
+                f'<ul class="cn-edge" style="list-style:none;padding-left:0">{items}</ul>'
+                f'</div>'
+            )
+
+        parts.append(
+            f'<div class="comp-node{child_cls}">'
+            f'<div class="cn-header">'
+            f'<span class="cn-name">{_esc(node.get("name",""))}</span>'
+            + (f'<span class="cn-path">{_esc(node.get("path",""))}</span>' if node.get("path") else "")
+            + f'</div>'
+            f'<p style="font-size:0.84em;color:var(--c-muted);margin-bottom:8px">{_esc(node.get("description",""))}</p>'
+            + (f'<div class="cn-section"><div class="cn-label">Props</div><div>{prop_tags}</div></div>' if prop_tags else "")
+            + (f'<div class="cn-section"><div class="cn-label">Events</div><div>{event_tags}</div></div>' if event_tags else "")
+            + (f'<div class="cn-section"><div class="cn-label">State</div><div>{state_tags}</div></div>' if state_tags else "")
+            + behavior_html
+            + edge_html
+            + '</div>'
+        )
+
+        children = node.get("children", [])
+        if children:
+            parts.extend(_render_component_nodes(children, depth + 1))
+    return parts
 
 
 def _render_report(d: dict) -> str:
