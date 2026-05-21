@@ -17,6 +17,61 @@ def _esc(text: str) -> str:
     )
 
 
+def _repair_json_text(text: str) -> str:
+    """Repair unescaped ASCII double quotes inside JSON string values.
+
+    Uses a state machine to detect when a ``"`` inside a string value is
+    not the actual closing delimiter (the next non-whitespace char is not
+    one of ``,`` ``}`` ``]`` ``:``) and escapes it.
+    """
+    IN_NORMAL, IN_STRING = 0, 1
+    state = IN_NORMAL
+    result = []
+    i = 0
+
+    while i < len(text):
+        c = text[i]
+
+        if state == IN_NORMAL:
+            result.append(c)
+            if c == '"':
+                state = IN_STRING
+        else:  # IN_STRING
+            if c == '\\':
+                result.append(c)
+                if i + 1 < len(text):
+                    result.append(text[i + 1])
+                    i += 1
+            elif c == '"':
+                # Peek past whitespace to decide: real delimiter or stray quote?
+                j = i + 1
+                while j < len(text) and text[j] in ' \t\n\r':
+                    j += 1
+                if j < len(text) and text[j] not in ',}]:':
+                    # Stray quote inside a string value — escape it
+                    result.append('\\"')
+                else:
+                    # Real closing delimiter
+                    result.append(c)
+                    state = IN_NORMAL
+            else:
+                result.append(c)
+
+        i += 1
+
+    return ''.join(result)
+
+
+def load_json_with_repair(file_path: Path) -> dict:
+    """Read a JSON file, attempting repair if the initial parse fails."""
+    raw = file_path.read_text(encoding="utf-8")
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        repaired = _repair_json_text(raw)
+        return json.loads(repaired)
+
+
 # ---------------------------------------------------------------------------
 # Shared CSS (dark theme, self-contained)
 # ---------------------------------------------------------------------------
@@ -429,6 +484,56 @@ _SHARED_CSS = """
   .flow-step.end    { border-color: rgba(124,111,247,0.3);  color: var(--c-accent2); }
   .flow-arrow { color: var(--c-muted); font-size: 0.85em; flex-shrink: 0; }
 
+  /* ── Error Handling ── */
+  .err-strategy {
+    background: linear-gradient(135deg, rgba(251,191,36,0.06), rgba(248,113,113,0.04));
+    border: 1px solid rgba(251,191,36,0.2);
+    border-radius: var(--radius); padding: 20px 24px; margin-bottom: 20px;
+  }
+  .err-strategy .err-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-amber);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;
+  }
+  .err-strategy p { font-size: 0.92em; line-height: 1.8; color: var(--c-text); }
+
+  .err-format-box {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 20px;
+  }
+  .err-format-box .err-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;
+  }
+  .err-format-box pre {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.84em; color: var(--c-text);
+    background: rgba(0,0,0,0.2); padding: 14px 18px; border-radius: 6px;
+    overflow-x: auto; line-height: 1.7;
+  }
+
+  .err-categories { display: flex; flex-direction: column; gap: 10px; }
+  .err-category {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px;
+    display: flex; gap: 16px; align-items: flex-start;
+  }
+  .err-category:hover { border-color: rgba(255,255,255,0.1); }
+  .err-code-badge {
+    font-family: monospace; font-size: 0.85em; font-weight: 700;
+    padding: 6px 12px; border-radius: 6px; white-space: nowrap;
+    flex-shrink: 0; min-width: 48px; text-align: center;
+  }
+  .err-code-badge._4xx { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+  .err-code-badge._5xx { background: rgba(248,113,113,0.12); color: var(--c-red); }
+  .err-code-badge._other { background: rgba(124,111,247,0.1); color: var(--c-accent2); }
+  .err-category-body { flex: 1; min-width: 0; }
+  .err-category-body .err-cat-name {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 6px;
+  }
+  .err-category-body .err-cat-desc {
+    font-size: 0.85em; color: var(--c-muted); line-height: 1.7;
+  }
+
   @media (max-width: 700px) {
     body { padding: 24px 16px 48px; }
     h1 { font-size: 1.6em; }
@@ -633,7 +738,7 @@ def render_file(json_path: Path, wiki_root: Path | None = None) -> Optional[Path
     if not json_path.exists():
         return None
     try:
-        data = json.loads(json_path.read_text(encoding="utf-8"))
+        data = load_json_with_repair(json_path)
     except (json.JSONDecodeError, ValueError):
         return None
 
@@ -1483,9 +1588,53 @@ def _render_lld(d: dict) -> str:
         parts.append(_SECTION_FOOT)
 
     # ── 5. Error Handling ──
-    if d.get("error_handling"):
+    eh = d.get("error_handling")
+    if eh:
         parts.append(_section_header("⚠️", "错误处理", "rgba(251,191,36,0.12)", "errors"))
-        parts.append(f"<p>{_esc(d['error_handling'])}</p>")
+        if isinstance(eh, dict):
+            # Strategy
+            if eh.get("strategy"):
+                parts.append(
+                    '<div class="err-strategy">'
+                    '<div class="err-label">处理策略</div>'
+                    f'<p>{_esc(eh["strategy"])}</p>'
+                    '</div>'
+                )
+            # Unified response format
+            rf = eh.get("response_format")
+            if rf and isinstance(rf, dict) and rf.get("body"):
+                body_rows = ""
+                for k, v in rf["body"].items():
+                    body_rows += f"<tr><td class=\"field-type\">{_esc(k)}</td><td class=\"field-type\">{_esc(v)}</td></tr>"
+                parts.append(
+                    '<div class="err-format-box">'
+                    '<div class="err-label">统一错误响应体</div>'
+                    f'<table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody>{body_rows}</tbody></table>'
+                    '</div>'
+                )
+            # Error categories
+            cats = eh.get("categories", [])
+            if cats:
+                cat_html = '<div class="err-categories">'
+                for c in cats:
+                    code = str(c.get("code", ""))
+                    if code.startswith("4"):
+                        cls = "_4xx"
+                    elif code.startswith("5"):
+                        cls = "_5xx"
+                    else:
+                        cls = "_other"
+                    cat_html += (
+                        '<div class="err-category">'
+                        f'<span class="err-code-badge {cls}">{_esc(code)}</span>'
+                        '<div class="err-category-body">'
+                        f'<div class="err-cat-name">{_esc(c.get("name", ""))}</div>'
+                        f'<div class="err-cat-desc">{_esc(c.get("description", ""))}</div>'
+                        '</div>'
+                        '</div>'
+                    )
+                cat_html += '</div>'
+                parts.append(cat_html)
         parts.append(_SECTION_FOOT)
 
     parts.append(_PAGE_END_SIDEBAR)

@@ -73,7 +73,8 @@ class WikiSystem:
         if not path.exists():
             return None
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            from cogniforge.wiki.wiki_renderer import load_json_with_repair
+            return load_json_with_repair(path)
         except (json.JSONDecodeError, ValueError):
             return None
 

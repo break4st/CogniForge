@@ -83,14 +83,25 @@ class DesignAgent(BaseAgent):
                 f"        {{\"code\": 400, \"message\": \"错误说明\"}}\n"
                 f"      ]}}\n"
                 f"  ],\n"
-                f"  \"error_handling\": \"错误处理策略描述\"\n"
+                f"  \"error_handling\": {{\n"
+                f"    \"strategy\": \"总体错误处理策略简述（1-2句）\",\n"
+                f"    \"response_format\": {{\n"
+                f"      \"body\": {{\"code\": \"integer\", \"error\": \"string\", \"detail\": \"string\"}}\n"
+                f"    }},\n"
+                f"    \"categories\": [\n"
+                f"      {{\"code\": \"4xx 或 5xx 或具体 HTTP 状态码\",\n"
+                f"        \"name\": \"错误分类名称\",\n"
+                f"        \"description\": \"触发条件、处理方式和响应详情\"}}\n"
+                f"    ]\n"
+                f"  }}\n"
                 f"}}\n\n"
                 f"重要:\n"
                 f"- interfaces[].method 与 endpoint 分开填写，method 为 HTTP 方法或 INTERNAL\n"
                 f"- interfaces[].response.body 的字段名与类型与 SAD 契约严格一致，不可修改\n"
                 f"- 前端模块的 interfaces 使用 frontend 作为 method 值，endpoint 填写路由路径\n"
                 f"- overview.tech_stack 必须从 SAD tech_stack 中选取本模块相关的技术子集，不可引入未声明的技术\n"
-                f"- gateway 模块的 API 契约必须自包含：完整的 request/response body，不写\"参考下游\"\n\n"
+                f"- gateway 模块的 API 契约必须自包含：完整的 request/response body，不写\"参考下游\"\n"
+                f"- JSON 字符串值内的双引号必须转义为 \\\"，中文引号请使用「」代替 \"\"\n\n"
                 f"{ownership_rules}\n"
                 f"输入数据:\n"
                 f"module: {module}\n"
@@ -377,7 +388,8 @@ def _read_lld_json(rel_path: str) -> dict | None:
     if not abs_path.exists():
         return None
     try:
-        return json.loads(abs_path.read_text(encoding="utf-8"))
+        from cogniforge.wiki.wiki_renderer import load_json_with_repair
+        return load_json_with_repair(abs_path)
     except Exception:
         return None
 
