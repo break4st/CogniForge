@@ -6,12 +6,19 @@
     "module": "Audit Service",
     "title": "LLD - Audit Service",
     "author": "design_agent",
-    "created": "2026-05-21 09:49"
+    "created": "2026-05-21 10:19"
   },
   "overview": {
-    "description": "审计日志服务，负责记录系统中所有关键操作的审计日志，支持追溯和排查。提供审计日志的写入、查询、筛选和详情查看能力，为系统合规性和操作溯源提供数据支撑。",
-    "dependencies": ["Primary Database"],
-    "tech_stack": ["Python 3.11+", "FastAPI", "MySQL 8.0"]
+    "description": "记录系统中所有关键操作和变更的审计日志。提供审计日志的持久化存储和分页查询能力，供 API Gateway 路由审计日志查询请求，供其他服务通过内部接口写入审计记录。",
+    "dependencies": [
+      "API Gateway",
+      "PostgreSQL"
+    ],
+    "tech_stack": [
+      "Python",
+      "FastAPI",
+      "PostgreSQL 15"
+    ]
   },
   "data_models": [
     {
@@ -22,119 +29,173 @@
         "doc_id": "lld-Primary Database-001",
         "model_name": "audit_logs"
       },
-      "description": "审计日志表，继承自主数据库。记录系统中所有关键操作的审计轨迹，包括操作用户、操作类型、操作对象、操作时间、来源IP及操作结果等。",
+      "description": "审计日志表，记录系统中所有关键操作和变更事件。每次用户操作（如项目创建、环境配置变更、部署触发等）都会在此表中产生一条记录，用于安全审计和操作回溯。",
       "fields": [
-        {"name": "id", "type": "bigint", "required": true, "description": "审计日志ID，自增主键"},
-        {"name": "user_id", "type": "integer", "required": true, "description": "操作用户ID"},
-        {"name": "username", "type": "varchar(255)", "required": true, "description": "操作用户名"},
-        {"name": "action_type", "type": "varchar(50)", "required": true, "description": "操作类型：create|update|delete|deploy|test|login"},
-        {"name": "resource_type", "type": "varchar(50)", "required": true, "description": "资源类型：project|environment|key|deployment"},
-        {"name": "resource_id", "type": "integer", "required": true, "description": "操作资源ID"},
-        {"name": "resource_name", "type": "varchar(255)", "required": false, "description": "操作资源名称，便于快速识别"},
-        {"name": "detail", "type": "json", "required": false, "description": "操作详情JSON，记录请求关键字段和变更内容"},
-        {"name": "ip_address", "type": "varchar(45)", "required": true, "description": "请求来源IP地址，支持IPv4和IPv6"},
-        {"name": "result", "type": "varchar(20)", "required": true, "description": "操作结果：success|failure"},
-        {"name": "created_at", "type": "datetime", "required": true, "description": "审计日志记录时间"}
+        {
+          "name": "id",
+          "type": "uuid",
+          "required": true,
+          "description": "审计日志唯一标识，主键"
+        },
+        {
+          "name": "project_id",
+          "type": "uuid",
+          "required": false,
+          "description": "关联的项目 ID，外键关联 projects 表。系统级操作（如用户登录）可为空"
+        },
+        {
+          "name": "action",
+          "type": "varchar(100)",
+          "required": true,
+          "description": "操作类型标识，采用命名空间格式，如 project.create、environment.create、deployment.trigger、key.upload"
+        },
+        {
+          "name": "actor",
+          "type": "varchar(255)",
+          "required": true,
+          "description": "操作执行者标识，通常为用户名或用户 ID"
+        },
+        {
+          "name": "details",
+          "type": "jsonb",
+          "required": false,
+          "description": "操作详情的 JSON 结构，包含请求参数快照、变更前后对比等扩展信息"
+        },
+        {
+          "name": "ip_address",
+          "type": "varchar(45)",
+          "required": false,
+          "description": "操作发起方的 IP 地址，支持 IPv4 和 IPv6"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz",
+          "required": true,
+          "description": "审计日志记录创建时间，即操作发生的时间"
+        }
       ]
     },
     {
-      "name": "AuditRetentionConfig",
-      "type": "config",
+      "name": "AuditLogEntry",
+      "type": "struct",
       "ownership": "owned",
-      "description": "审计日志保留策略配置，从配置文件加载",
+      "description": "审计日志条目结构体，作为 API 响应中 items 数组的元素类型。从 audit_logs 表查询结果映射而来，用于 QueryAuditLogs 接口的响应体。",
       "fields": [
-        {"name": "retention_days", "type": "integer", "required": true, "description": "日志保留天数，默认90天"},
-        {"name": "archive_enabled", "type": "boolean", "required": true, "description": "是否启用自动归档，默认true"},
-        {"name": "archive_path", "type": "string", "required": false, "description": "归档文件存储路径"}
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "description": "审计日志唯一标识"
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "required": false,
+          "description": "关联的项目 ID，可为空"
+        },
+        {
+          "name": "action",
+          "type": "string",
+          "required": true,
+          "description": "操作类型标识"
+        },
+        {
+          "name": "actor",
+          "type": "string",
+          "required": true,
+          "description": "操作执行者"
+        },
+        {
+          "name": "details",
+          "type": "string",
+          "required": false,
+          "description": "操作详情，从 JSONB 序列化为字符串"
+        },
+        {
+          "name": "ip_address",
+          "type": "string",
+          "required": false,
+          "description": "操作发起方 IP 地址"
+        },
+        {
+          "name": "created_at",
+          "type": "string",
+          "required": true,
+          "description": "操作发生时间，ISO 8601 格式"
+        }
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "Create Audit Log",
-      "method": "POST",
+      "name": "QueryAuditLogs",
+      "method": "GET",
       "endpoint": "/api/audit/logs",
-      "description": "创建审计日志记录。由API Gateway在用户执行关键操作后调用，将操作信息记录到审计日志表。",
+      "description": "查询审计日志（分页）。支持按 project_id 和 action 筛选，返回分页后的审计日志条目列表。查询结果按创建时间降序排列。",
       "parameters": [
-        {"name": "user_id", "type": "integer", "description": "操作用户ID"},
-        {"name": "username", "type": "string", "description": "操作用户名"},
-        {"name": "action_type", "type": "string", "description": "操作类型：create|update|delete|deploy|test|login"},
-        {"name": "resource_type", "type": "string", "description": "资源类型：project|environment|key|deployment"},
-        {"name": "resource_id", "type": "integer", "description": "操作资源ID"},
-        {"name": "resource_name", "type": "string", "description": "操作资源名称，可选"},
-        {"name": "detail", "type": "object", "description": "操作详情JSON，可选"},
-        {"name": "ip_address", "type": "string", "description": "请求来源IP地址"},
-        {"name": "result", "type": "string", "description": "操作结果：success|failure"}
+        {
+          "name": "project_id",
+          "type": "string",
+          "description": "查询参数，按项目 ID 筛选（选填）"
+        },
+        {
+          "name": "action",
+          "type": "string",
+          "description": "查询参数，按操作类型筛选（选填）"
+        },
+        {
+          "name": "page",
+          "type": "integer",
+          "description": "查询参数，页码，从 1 开始，默认 1"
+        },
+        {
+          "name": "page_size",
+          "type": "integer",
+          "description": "查询参数，每页条数，默认 20，最大 100"
+        }
       ],
+      "response": {
+        "status": 200,
+        "body": {
+          "total": "integer",
+          "items": "array"
+        }
+      },
+      "error_codes": [
+        {
+          "code": 400,
+          "message": "分页参数不合法（page 小于 1 或 page_size 超出范围 1-100）"
+        },
+        {
+          "code": 502,
+          "message": "数据库查询失败"
+        }
+      ]
+    },
+    {
+      "name": "RecordAuditLog",
+      "method": "INTERNAL",
+      "endpoint": "内部服务调用",
+      "description": "内部接口：供其他服务调用以记录审计日志。调用方传入操作信息，服务将其持久化到 audit_logs 表。此接口不对外暴露，仅限内部服务间通过服务名调用。",
+      "parameters": [],
       "response": {
         "status": 201,
         "body": {
-          "id": "integer",
-          "created_at": "datetime"
+          "id": "string",
+          "created_at": "string"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "请求参数校验失败，必填字段缺失或格式不合法"},
-        {"code": 500, "message": "审计日志写入数据库失败"}
-      ]
-    },
-    {
-      "name": "Query Audit Logs",
-      "method": "GET",
-      "endpoint": "/api/audit/logs",
-      "description": "分页查询审计日志列表，支持按用户、操作类型、资源类型、时间范围等多维度筛选。按创建时间倒序排列。",
-      "parameters": [
-        {"name": "page", "type": "integer", "description": "页码，默认1"},
-        {"name": "page_size", "type": "integer", "description": "每页条数，默认20"},
-        {"name": "user_id", "type": "integer", "description": "按用户ID筛选，可选"},
-        {"name": "action_type", "type": "string", "description": "按操作类型筛选：create|update|delete|deploy|test|login，可选"},
-        {"name": "resource_type", "type": "string", "description": "按资源类型筛选：project|environment|key|deployment，可选"},
-        {"name": "start_time", "type": "datetime", "description": "起始时间，可选"},
-        {"name": "end_time", "type": "datetime", "description": "结束时间，可选"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "items": "array[object]",
-          "total": "integer",
-          "page": "integer",
-          "page_size": "integer"
+        {
+          "code": 400,
+          "message": "请求参数不合法（如 action 或 actor 为空）"
+        },
+        {
+          "code": 502,
+          "message": "数据库写入失败"
         }
-      },
-      "error_codes": [
-        {"code": 400, "message": "分页参数不合法或时间范围格式错误"},
-        {"code": 500, "message": "审计日志查询失败"}
-      ]
-    },
-    {
-      "name": "Get Audit Log Detail",
-      "method": "GET",
-      "endpoint": "/api/audit/logs/{log_id}",
-      "description": "获取单条审计日志的完整详情。",
-      "parameters": [
-        {"name": "log_id", "type": "integer", "description": "审计日志ID（路径参数）"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "integer",
-          "user_id": "integer",
-          "username": "string",
-          "action_type": "string",
-          "resource_type": "string",
-          "resource_id": "integer",
-          "resource_name": "string",
-          "detail": "object",
-          "ip_address": "string",
-          "result": "string",
-          "created_at": "datetime"
-        }
-      },
-      "error_codes": [
-        {"code": 404, "message": "审计日志不存在"},
-        {"code": 500, "message": "审计日志查询失败"}
       ]
     }
   ],
-  "error_handling": "1）参数校验错误（400）：请求体缺少必填字段（user_id、username、action_type、resource_type、resource_id、ip_address、result）、action_type或resource_type枚举值不合法、分页参数为负数、时间范围格式无效时返回400。2）资源不存在（404）：查询审计日志详情时指定ID不存在则返回404。3）数据库错误：数据库连接失败或写入/查询超时（默认5秒超时），记录错误日志后返回500，不暴露数据库内部细节。4）归档处理失败：自动归档任务执行失败时记录告警日志，不影响当前日志写入和查询。5）内部错误（500）：所有未捕获异常统一返回500，响应体包含请求ID以便链路追踪。"
+  "error_handling": "Audit Service 采用统一的异常处理策略：(1) 参数校验异常 — 查询参数 page 小于 1 或 page_size 超出范围（1-100）时返回 400 Bad Request，附带具体校验错误详情；(2) 数据库查询异常 — 审计日志查询或写入时数据库连接失败或超时（超时阈值 10s）返回 502 Bad Gateway，并在服务器端记录错误栈用于排查；写入失败时不允许重试，避免产生重复审计记录；(3) 内部调用异常 — RecordAuditLog 接口的 action 或 actor 为空时返回 400 Bad Request，防止写入不完整的审计记录。所有错误响应体统一格式为: { code: integer, error: string, detail: string }。"
 }
