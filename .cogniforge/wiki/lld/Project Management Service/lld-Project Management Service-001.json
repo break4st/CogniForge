@@ -6,155 +6,177 @@
     "module": "Project Management Service",
     "title": "LLD - Project Management Service",
     "author": "design_agent",
-    "created": "2026-05-21 10:13"
+    "created": "2026-05-21 10:34"
   },
   "overview": {
-    "description": "管理项目生命周期，提供项目的创建、查询、修改和删除功能",
+    "description": "项目管理服务，负责项目的创建、编辑、删除和查询，实现多项目数据隔离。项目是系统的核心资源容器，所有环境、部署、文件均归属于某个项目。服务通过唯一约束保障项目名称全局唯一，通过数据访问层按project_id过滤实现项目间数据隔离。",
     "dependencies": [
-      "API Gateway",
-      "PostgreSQL"
+      "Primary Database",
+      "Audit Service"
     ],
     "tech_stack": [
       "Python",
       "FastAPI",
-      "PostgreSQL 15"
+      "PostgreSQL"
     ]
   },
   "data_models": [
     {
-      "name": "project",
+      "name": "projects",
       "type": "reference",
       "ownership": "derived",
       "source": {
         "doc_id": "lld-Primary Database-001",
-        "model_name": "project"
+        "model_name": "projects"
       },
-      "description": "项目表，存储项目基本信息。每个项目关联一个创建者用户，被 Environment Management Service 通过 project_id 引用作为环境归属",
+      "description": "项目表。存储项目核心元信息，每个项目在系统中通过UUID唯一标识。name字段具有唯一约束，确保项目名称全局不重复。项目是环境中立的上层容器，环境归属于项目而非项目包含环境，项目删除时需校验无关联资源。",
       "fields": [
-        {
-          "name": "id",
-          "type": "UUID",
-          "required": true,
-          "description": "主键，项目唯一标识"
-        },
-        {
-          "name": "name",
-          "type": "VARCHAR(255)",
-          "required": true,
-          "description": "项目名称"
-        },
-        {
-          "name": "description",
-          "type": "TEXT",
-          "required": false,
-          "description": "项目描述"
-        },
-        {
-          "name": "created_by",
-          "type": "UUID",
-          "required": true,
-          "description": "创建者用户 ID，关联用户表，用于项目权限隔离和列表过滤"
-        },
-        {
-          "name": "created_at",
-          "type": "TIMESTAMPTZ",
-          "required": true,
-          "description": "创建时间"
-        },
-        {
-          "name": "updated_at",
-          "type": "TIMESTAMPTZ",
-          "required": true,
-          "description": "最后更新时间"
-        }
+        {"name": "id", "type": "uuid", "required": true, "description": "项目唯一标识（主键）"},
+        {"name": "name", "type": "varchar(255)", "required": true, "description": "项目名称，唯一约束"},
+        {"name": "description", "type": "text", "required": false, "description": "项目描述"},
+        {"name": "created_by", "type": "uuid", "required": true, "description": "创建者用户ID，关联用户表"},
+        {"name": "created_at", "type": "timestamp", "required": true, "description": "创建时间，默认为当前UTC时间"},
+        {"name": "updated_at", "type": "timestamp", "required": true, "description": "最后更新时间，记录变更时自动更新"}
+      ]
+    },
+    {
+      "name": "project_environment",
+      "type": "reference",
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "project_environments"
+      },
+      "description": "项目-环境关联表。记录项目与环境的多对多关联关系。环境管理由Environment Management Service负责，本项目服务仅通过此关联表查询项目下有哪些环境，用于项目详情的environments字段组装。",
+      "fields": [
+        {"name": "project_id", "type": "uuid", "required": true, "description": "项目ID，关联projects表"},
+        {"name": "environment_id", "type": "uuid", "required": true, "description": "环境ID，关联environments表"},
+        {"name": "created_at", "type": "timestamp", "required": true, "description": "关联创建时间"}
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "CreateProject",
+      "name": "创建项目",
       "method": "POST",
       "endpoint": "/api/projects",
-      "description": "创建一个新项目。从请求头中解析用户身份（由 API Gateway 鉴权后转发 JWT 上下文），校验项目名称非空且不重复后写入 PostgreSQL，返回包含项目 ID 的完整项目信息",
-      "parameters": [],
+      "description": "创建新项目。校验name不为空且全局唯一，将项目信息持久化到Primary Database的projects表，通过Audit Service内部接口记录项目创建审计日志。",
+      "parameters": [
+        {"name": "name", "type": "string", "description": "项目名称，长度1-255字符，需在系统中唯一"},
+        {"name": "description", "type": "string", "description": "项目描述，长度不超过2000字符"}
+      ],
       "response": {
         "status": 201,
         "body": {
           "id": "string",
           "name": "string",
           "description": "string",
-          "created_at": "string"
+          "created_at": "datetime"
         }
       },
       "error_codes": [
-        {
-          "code": 400,
-          "message": "请求参数不合法，项目名称不能为空"
-        },
-        {
-          "code": 409,
-          "message": "项目名称已存在"
-        }
+        {"code": 400, "message": "请求参数错误：name为空或格式不合法"},
+        {"code": 409, "message": "项目名称已存在"},
+        {"code": 500, "message": "服务器内部错误，包括数据库写入失败或审计日志记录失败"}
       ]
     },
     {
-      "name": "ListProjects",
+      "name": "查询项目列表",
       "method": "GET",
       "endpoint": "/api/projects",
-      "description": "获取当前用户的项目列表（分页）。根据用户身份（created_by）过滤项目，支持 page 和 page_size 分页参数，按创建时间降序排列。items 数组中每个项目包含: id, name, description, created_at",
+      "description": "查询项目列表，支持分页和按项目名称模糊搜索（ILIKE）。默认按创建时间倒序排列。返回项目概要信息，不包含环境关联详情。",
       "parameters": [
-        {
-          "name": "page",
-          "type": "integer",
-          "description": "查询参数，页码，从 1 开始，默认 1"
-        },
-        {
-          "name": "page_size",
-          "type": "integer",
-          "description": "查询参数，每页条数，默认 20"
-        }
+        {"name": "page", "type": "integer", "description": "页码，从1开始，默认1"},
+        {"name": "page_size", "type": "integer", "description": "每页条数，默认20，最大100"},
+        {"name": "search", "type": "string", "description": "搜索关键词，按项目名称模糊匹配（可选）"}
       ],
       "response": {
         "status": 200,
         "body": {
+          "items": "array",
           "total": "integer",
-          "items": "array"
+          "page": "integer",
+          "page_size": "integer"
         }
       },
       "error_codes": [
-        {
-          "code": 400,
-          "message": "分页参数不合法"
-        }
+        {"code": 400, "message": "请求参数错误：page或page_size不合法"},
+        {"code": 500, "message": "服务器内部错误"}
       ]
     },
     {
-      "name": "DeleteProject",
-      "method": "DELETE",
-      "endpoint": "/api/projects/{project_id}",
-      "description": "删除指定项目。校验项目存在且属于当前用户后从 PostgreSQL 中删除记录，项目关联的环境等资源交由下游服务自行清理",
+      "name": "获取项目详情",
+      "method": "GET",
+      "endpoint": "/api/projects/{id}",
+      "description": "获取指定项目的详细信息。除项目基本信息外，通过project_environment关联表查询项目关联的环境列表（仅返回环境ID和名称），组装到environments字段中。",
       "parameters": [
-        {
-          "name": "project_id",
-          "type": "string",
-          "description": "路径参数，项目 ID"
+        {"name": "id", "type": "string", "description": "项目ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string",
+          "name": "string",
+          "description": "string",
+          "environments": "array",
+          "created_at": "datetime",
+          "updated_at": "datetime"
         }
+      },
+      "error_codes": [
+        {"code": 404, "message": "项目不存在"},
+        {"code": 500, "message": "服务器内部错误"}
+      ]
+    },
+    {
+      "name": "删除项目",
+      "method": "DELETE",
+      "endpoint": "/api/projects/{id}",
+      "description": "删除指定项目。删除前校验项目下是否存在关联的环境（project_environment表）或部署记录，存在关联资源则拒绝删除并返回409。删除成功后通过Audit Service内部接口记录项目删除审计日志。",
+      "parameters": [
+        {"name": "id", "type": "string", "description": "项目ID（路径参数）"}
       ],
       "response": {
         "status": 204,
         "body": {}
       },
       "error_codes": [
-        {
-          "code": 404,
-          "message": "项目不存在"
-        },
-        {
-          "code": 403,
-          "message": "无权限删除该项目"
-        }
+        {"code": 404, "message": "项目不存在"},
+        {"code": 409, "message": "项目下存在关联资源（环境或部署），无法删除"},
+        {"code": 500, "message": "服务器内部错误，包括数据库删除失败或审计日志记录失败"}
       ]
     }
   ],
-  "error_handling": "Project Management Service 采用统一的异常处理策略：(1) 参数校验失败 — 请求体 JSON 解析错误或必填字段（如项目名称）为空时返回 400 Bad Request，附带具体校验错误详情；(2) 资源冲突 — 创建项目时名称已存在时返回 409 Conflict；(3) 资源不存在 — 删除或查询不存在的项目时返回 404 Not Found；(4) 权限校验 — 当前用户不是项目创建者时返回 403 Forbidden；(5) 数据库异常 — 数据库连接失败或超时（超时阈值 10s）时返回 500 Internal Server Error，并在服务器端记录错误栈用于排查。所有错误响应统一格式为: { code: integer, error: string, detail: string }。"
+  "error_handling": {
+    "strategy": "Project Management Service采用统一错误处理中间件，所有接口返回一致的JSON错误格式。校验类错误（参数校验、唯一性约束违反）在Controller层通过Pydantic模型校验拦截，业务逻辑异常在Service层显式抛出，系统运行时异常由全局异常处理器捕获并记录日志后返回通用错误信息，避免内部细节泄露。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "400",
+        "name": "请求参数错误",
+        "description": "请求参数校验失败。包括缺少必填字段（name为空）、字段格式不合法（page为非正整数、name超长）、page_size超过最大限制（100）。在Controller层通过FastAPI/Pydantic请求模型自动校验，校验不通过直接返回400及具体错误字段说明。"
+      },
+      {
+        "code": "404",
+        "name": "资源不存在",
+        "description": "根据路径参数id未找到对应的项目记录。Service层查询返回空时由Controller层转换为404响应，detail字段包含"项目不存在"及所查询的项目ID。"
+      },
+      {
+        "code": "409",
+        "name": "资源冲突",
+        "description": "创建项目时name违反数据库唯一约束，或删除项目时项目下仍存在关联环境/部署记录。数据库唯一索引抛出IntegrityError时转换为409响应；删除前主动查询关联表，存在记录则返回409并说明具体阻止原因。"
+      },
+      {
+        "code": "500",
+        "name": "服务器内部错误",
+        "description": "服务运行时发生未捕获异常，包括数据库连接失败、数据库写入超时、Audit Service内部接口调用失败等。由全局异常处理器统一捕获，记录完整异常堆栈及trace_id到应用日志，响应中仅返回通用"服务器内部错误"信息，不包含数据库查询语句、堆栈跟踪等内部细节。"
+      }
+    ]
+  }
 }
