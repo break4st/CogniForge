@@ -6,24 +6,22 @@
     "module": "Deployment Orchestrator",
     "title": "LLD - Deployment Orchestrator",
     "author": "design_agent",
-    "created": "2026-05-21 10:15"
+    "created": "2026-05-21 10:37"
   },
   "overview": {
-    "description": "部署流程编排引擎，管理部署任务的创建、调度和执行状态跟踪。接收部署请求后创建部署记录（持久化至 PostgreSQL），将部署任务拆分为多个步骤并发布到 RabbitMQ 供 SSH Execution Service 消费执行，通过 Redis 缓存实时部署状态，通过 WebSocket 向 Web Console 推送实时部署日志和进度更新。",
+    "description": "核心部署编排服务，协调文件传输、目录创建、脚本生成等部署流程，管理部署状态。接收Web Console的一键部署请求后，依次向Environment Management Service获取环境连接配置、向Key Management Service获取SSH私钥、向File Storage获取部署文件内容，通过SSH Execution Service完成文件传输和远程命令执行，最终将部署结果持久化到Primary Database并通过Audit Service记录审计日志。部署流程异步执行，客户端通过轮询获取状态更新。",
     "dependencies": [
-      "RabbitMQ",
-      "Redis",
       "Primary Database",
+      "Environment Management Service",
+      "Key Management Service",
       "SSH Execution Service",
+      "File Storage",
       "Audit Service"
     ],
     "tech_stack": [
       "Python",
       "FastAPI",
-      "PostgreSQL 15",
-      "Redis 7",
-      "RabbitMQ 3.12",
-      "WebSocket (FastAPI WebSocket)"
+      "PostgreSQL"
     ]
   },
   "data_models": [
@@ -35,92 +33,57 @@
         "doc_id": "lld-Primary Database-001",
         "model_name": "deployments"
       },
-      "description": "部署任务主表，记录每次部署请求的基本信息、目标环境、版本号及当前状态。每条记录对应一次完整的部署流程。",
+      "description": "部署记录表。存储每次部署操作的核心信息，包括目标项目和环境、部署文件、版本号、当前状态及执行日志。status字段枚举值控制状态机流转：pending（等待执行）→ running（执行中）→ completed（成功）/ failed（失败）。logs字段以JSON数组格式记录部署各步骤（获取环境配置、获取SSH密钥、下载文件、文件传输、目录创建、脚本执行）的执行输出。通过project_id实现项目间部署数据隔离。",
       "fields": [
-        {"name": "id", "type": "uuid", "required": true, "description": "部署任务唯一标识，主键"},
-        {"name": "project_id", "type": "uuid", "required": true, "description": "所属项目 ID，外键关联 projects 表"},
-        {"name": "environment_id", "type": "uuid", "required": true, "description": "目标环境 ID，外键关联 environments 表"},
-        {"name": "version", "type": "varchar(50)", "required": true, "description": "部署版本号"},
-        {"name": "status", "type": "varchar(20)", "required": true, "description": "部署状态: pending/running/success/failed"},
-        {"name": "file_path", "type": "varchar(500)", "required": false, "description": "已上传可执行文件的存储路径"},
-        {"name": "description", "type": "text", "required": false, "description": "部署说明"},
-        {"name": "created_at", "type": "timestamptz", "required": true, "description": "部署任务创建时间"},
-        {"name": "updated_at", "type": "timestamptz", "required": true, "description": "部署状态最后更新时间"}
-      ]
-    },
-    {
-      "name": "deployment_steps",
-      "type": "reference",
-      "ownership": "derived",
-      "source": {
-        "doc_id": "lld-Primary Database-001",
-        "model_name": "deployment_steps"
-      },
-      "description": "部署步骤明细表，记录每次部署中各步骤的执行状态和起止时间。部署任务拆分为多个步骤（如文件传输、脚本生成、服务启停等），每个步骤独立跟踪状态。",
-      "fields": [
-        {"name": "id", "type": "uuid", "required": true, "description": "步骤唯一标识，主键"},
-        {"name": "deployment_id", "type": "uuid", "required": true, "description": "所属部署任务 ID，外键关联 deployments 表"},
-        {"name": "name", "type": "varchar(100)", "required": true, "description": "步骤名称（如 file_transfer, generate_scripts, start_service）"},
-        {"name": "step_order", "type": "integer", "required": true, "description": "步骤执行顺序序号"},
-        {"name": "status", "type": "varchar(20)", "required": true, "description": "步骤状态: pending/running/success/failed"},
-        {"name": "started_at", "type": "timestamptz", "required": false, "description": "步骤开始执行时间"},
-        {"name": "completed_at", "type": "timestamptz", "required": false, "description": "步骤完成时间"}
-      ]
-    },
-    {
-      "name": "DeploymentState",
-      "type": "store",
-      "ownership": "owned",
-      "description": "部署实时状态缓存，存储在 Redis 中。加速 WebSocket 推送和部署状态查询，避免频繁查询数据库。Key 格式为 deployment:{deployment_id}，Value 为 JSON 字符串。",
-      "fields": [
-        {"name": "deployment_id", "type": "string", "required": true, "description": "Redis Key 后缀，完整 Key: deployment:{deployment_id}"},
-        {"name": "status", "type": "string", "required": true, "description": "当前部署状态（pending/running/success/failed）"},
-        {"name": "steps", "type": "array", "required": true, "description": "步骤状态数组，每项包含 name, status, started_at, completed_at"},
-        {"name": "logs", "type": "array", "required": false, "description": "最近的日志条目缓存（最多保留 1000 条）"}
-      ]
-    },
-    {
-      "name": "DeploymentLogMessage",
-      "type": "struct",
-      "ownership": "owned",
-      "description": "WebSocket 推送消息结构体，向 Web Console 实时推送部署日志和状态变更。",
-      "fields": [
-        {"name": "type", "type": "string", "required": true, "description": "消息类型: log（日志行）/ status（状态变更）/ error（错误信息）"},
-        {"name": "data", "type": "string", "required": true, "description": "消息内容，log 类型时为日志文本，status 类型时为新状态值，error 类型时为错误描述"},
-        {"name": "timestamp", "type": "string", "required": true, "description": "消息产生时间，ISO 8601 格式"}
+        {"name": "id", "type": "uuid", "required": true, "description": "部署唯一标识（主键），服务层自动生成UUID v4"},
+        {"name": "project_id", "type": "uuid", "required": true, "description": "所属项目ID，关联projects表，实现项目间数据隔离"},
+        {"name": "environment_id", "type": "uuid", "required": true, "description": "目标环境ID，关联environments表"},
+        {"name": "file_id", "type": "uuid", "required": true, "description": "部署文件ID，关联files表"},
+        {"name": "version", "type": "varchar(50)", "required": true, "description": "部署版本号，自动生成策略为yyyyMMdd-HHmmss-{deployment_id前8位}"},
+        {"name": "status", "type": "varchar(20)", "required": true, "description": "部署状态枚举：pending、running、completed、failed"},
+        {"name": "notes", "type": "text", "required": false, "description": "部署备注说明，用户在发起部署时可附带"},
+        {"name": "logs", "type": "jsonb", "required": false, "description": "部署执行日志数组，每项含step（步骤名）、message（日志内容）、level（日志级别）、timestamp（记录时间）"},
+        {"name": "started_at", "type": "timestamp", "required": false, "description": "部署开始执行时间，状态转为running时记录"},
+        {"name": "completed_at", "type": "timestamp", "required": false, "description": "部署完成时间，状态转为completed或failed时记录"},
+        {"name": "created_at", "type": "timestamp", "required": true, "description": "记录创建时间，默认为当前UTC时间"},
+        {"name": "updated_at", "type": "timestamp", "required": true, "description": "最后更新时间，状态变更或日志追加时自动更新"}
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "TriggerDeployment",
+      "name": "发起一键部署",
       "method": "POST",
-      "endpoint": "/api/projects/{project_id}/deployments",
-      "description": "触发一次新的部署。接收部署请求后校验参数、创建部署记录（状态: pending），将部署任务拆分为步骤并发布到 RabbitMQ 供 SSH Execution Service 消费，返回部署任务 ID。",
+      "endpoint": "/api/deployments",
+      "description": "发起一键部署请求。校验请求参数完整性（project_id、environment_id、file_id必填）。校验project_id、environment_id、file_id对应资源存在性。version未提供时按策略自动生成。在deployments表创建记录（status=pending），异步执行完整部署流程：获取环境配置→获取SSH密钥→下载部署文件→SFTP传输到远程服务器→远程创建版本目录→远程执行部署脚本→更新部署状态。立即返回202及deployment_id，客户端通过GET /api/deployments/{id}轮询状态和日志。全过程通过Audit Service记录审计日志。",
       "parameters": [
-        {"name": "project_id", "type": "string", "description": "路径参数，项目 ID"}
+        {"name": "project_id", "type": "string", "description": "项目ID"},
+        {"name": "environment_id", "type": "string", "description": "目标环境ID"},
+        {"name": "file_id", "type": "string", "description": "部署文件ID"},
+        {"name": "version", "type": "string", "description": "部署版本号（可选，未提供时自动生成）"},
+        {"name": "notes", "type": "string", "description": "部署备注说明（可选）"}
       ],
       "response": {
         "status": 202,
         "body": {
           "deployment_id": "string",
-          "status": "string",
-          "created_at": "string"
+          "status": "enum(pending, running, completed, failed)",
+          "created_at": "datetime"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "请求参数不合法（如版本号为空、environment_id 格式错误）"},
-        {"code": 404, "message": "项目或环境不存在"},
-        {"code": 502, "message": "消息队列不可用或数据库写入失败"}
+        {"code": 400, "message": "请求参数错误：必填字段缺失（project_id、environment_id、file_id）"},
+        {"code": 404, "message": "项目、环境或文件资源不存在"},
+        {"code": 500, "message": "服务器内部错误，包括数据库写入失败或异步任务调度失败"}
       ]
     },
     {
-      "name": "GetDeploymentStatus",
+      "name": "查询部署状态",
       "method": "GET",
-      "endpoint": "/api/deployments/{deployment_id}",
-      "description": "查询指定部署任务的当前状态和步骤进度。优先从 Redis 缓存读取实时状态，缓存未命中时回退到数据库查询。",
+      "endpoint": "/api/deployments/{id}",
+      "description": "查询指定部署的当前状态和详细执行日志。根据路径参数id在deployments表查询部署记录，返回部署ID、所属项目和环境、当前状态、版本号、执行日志数组、开始时间和完成时间（如已结束）。日志按时间顺序排列，每条日志包含步骤名称、内容、级别和时间戳。",
       "parameters": [
-        {"name": "deployment_id", "type": "string", "description": "路径参数，部署任务 ID"}
+        {"name": "id", "type": "string", "description": "部署ID（路径参数）"}
       ],
       "response": {
         "status": 200,
@@ -128,53 +91,44 @@
           "id": "string",
           "project_id": "string",
           "environment_id": "string",
-          "version": "string",
           "status": "string",
-          "steps": "array",
-          "created_at": "string",
-          "updated_at": "string"
+          "version": "string",
+          "logs": "array",
+          "started_at": "datetime",
+          "completed_at": "datetime (optional)"
         }
       },
       "error_codes": [
-        {"code": 404, "message": "部署任务不存在"},
-        {"code": 502, "message": "数据库查询失败"}
-      ]
-    },
-    {
-      "name": "DeploymentLogStream",
-      "method": "WS",
-      "endpoint": "/ws/deployments/{deployment_id}/logs",
-      "description": "WebSocket 端点，实时推送指定部署任务的执行日志和状态更新。连接建立后立即发送当前部署状态快照，持续推送实时日志行和状态变更消息，部署结束后自动关闭连接。",
-      "parameters": [
-        {"name": "deployment_id", "type": "string", "description": "路径参数，部署任务 ID"}
-      ],
-      "response": {
-        "status": 101,
-        "body": {
-          "type": "string",
-          "data": "string",
-          "timestamp": "string"
-        }
-      },
-      "error_codes": [
-        {"code": 404, "message": "部署任务不存在"},
-        {"code": 400, "message": "WebSocket 握手参数不合法"}
-      ]
-    },
-    {
-      "name": "DispatchDeployTask",
-      "method": "INTERNAL",
-      "endpoint": "AMQP exchange: deploy.task",
-      "description": "内部接口：将部署步骤任务发布到 RabbitMQ 的 deploy.task 交换机，路由键为 deploy.task.execute。每个部署步骤发布一条消息，消息体包含 deployment_id、步骤信息和目标环境参数。SSH Execution Service 从相应队列消费并执行。",
-      "parameters": [],
-      "response": {
-        "status": 200,
-        "body": {}
-      },
-      "error_codes": [
-        {"code": 502, "message": "RabbitMQ 发布消息失败，已触发重试（最多 3 次）"}
+        {"code": 404, "message": "部署记录不存在"},
+        {"code": 500, "message": "服务器内部错误"}
       ]
     }
   ],
-  "error_handling": "Deployment Orchestrator 对各类异常进行统一处理：(1) 参数校验异常 — 请求体 JSON 解析失败、必填字段（version、environment_id）缺失或格式错误返回 400 Bad Request，附带具体校验错误详情；(2) 资源不存在 — 项目 ID 或环境 ID 在数据库中不存在时返回 404 Not Found；(3) RabbitMQ 异常 — 发布消息失败时最多重试 3 次（间隔 1s），全部失败则返回 502 Bad Gateway 并将部署记录标记为 failed；(4) Redis 缓存异常 — Redis 不可用时降级为直接查询数据库，核心部署功能不受影响但实时推送能力受限，错误记录到日志；(5) 数据库异常 — 部署记录写入失败返回 500 Internal Server Error，部署状态更新回滚并标记为 failed；(6) WebSocket 异常 — 客户端断连时清理连接资源并停止推送，异常关闭时记录错误上下文；(7) SSH Execution Service 回调异常 — 接收步骤执行结果时若返回非零退出码则标记该步骤为 failed 并终止后续步骤，整个部署标记为 failed；(8) 未捕获异常 — 统一返回 500 Internal Server Error 并在审计日志中记录错误上下文。所有错误响应体统一格式为: { code: integer, error: string, detail: string }。"
+  "error_handling": {
+    "strategy": "Deployment Orchestrator采用统一错误处理中间件，所有接口返回一致的JSON错误格式。请求参数校验在Controller层通过FastAPI/Pydantic模型校验拦截，业务逻辑异常（资源不存在）在Service层显式抛出，部署执行阶段的错误（SSH连接失败、文件传输失败、命令执行异常）捕获后异步更新部署状态为failed并在logs中记录错误详情，系统运行时异常由全局异常处理器捕获并记录日志后返回通用错误信息。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "400",
+        "name": "请求参数错误",
+        "description": "请求参数校验失败。包括必填字段缺失（project_id、environment_id、file_id）、字段格式不合法。在Controller层通过FastAPI/Pydantic请求模型自动校验，校验不通过直接返回400及具体错误字段说明。"
+      },
+      {
+        "code": "404",
+        "name": "资源不存在",
+        "description": "根据请求中的资源ID未找到对应记录。包括：project_id在projects表中不存在、environment_id在environments表中不存在或不属于指定project_id、file_id在files表中不存在、按部署ID查询时未找到deployments记录。Service层在各校验点分别查询对应资源表，查询无结果时转换为404响应，detail字段包含资源类型和查询ID。"
+      },
+      {
+        "code": "500",
+        "name": "服务器内部错误",
+        "description": "服务运行时发生未捕获异常，包括数据库连接/写入失败、内部服务调用失败（Environment Management Service获取配置异常、Key Management Service获取密钥异常、File Storage文件下载异常、SSH Execution Service执行超时或连接拒绝、Audit Service日志记录失败）、部署步骤执行异常等。由全局异常处理器统一捕获，记录完整异常堆栈及trace_id到应用日志，响应中仅返回通用\"服务器内部错误\"信息。异步部署流程中的错误不会直接以500返回客户端（因已返回202），而是更新部署状态为failed并在logs中记录详细错误，客户端通过查询接口获取失败详情。"
+      }
+    ]
+  }
 }
