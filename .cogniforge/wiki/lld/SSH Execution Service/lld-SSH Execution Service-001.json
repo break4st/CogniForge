@@ -6,139 +6,108 @@
     "module": "SSH Execution Service",
     "title": "LLD - SSH Execution Service",
     "author": "design_agent",
-    "created": "2026-05-21 09:48"
+    "created": "2026-05-21 10:16"
   },
   "overview": {
-    "description": "SSH执行服务，负责通过Paramiko库建立SSH连接到远程服务器并执行部署操作。通过RabbitMQ异步消费部署任务，解析MQ消息中的连接参数和加密SSH私钥，调用Key Management Service解密私钥后建立SSH连接，在远程服务器上创建版本文件夹、上传可执行文件、生成并执行部署脚本，实时回传执行日志到Deployment Orchestrator，处理SSH连接异常和自动重试。",
+    "description": "远程命令执行服务，通过 SSH 连接到远程服务器并执行部署操作。从 RabbitMQ 消费部署任务，使用 asyncssh 建立并发 SSH 会话，在远程服务器执行目录创建、文件传输、脚本生成和命令执行等操作，并将执行结果实时回传。",
     "dependencies": [
-      "Deployment Orchestrator",
+      "RabbitMQ",
       "Key Management Service",
-      "Message Queue (RabbitMQ)"
+      "File Storage"
     ],
     "tech_stack": [
-      "Python 3.11+",
-      "Paramiko",
-      "RabbitMQ",
-      "Docker 容器化部署"
+      "Python",
+      "FastAPI",
+      "asyncssh",
+      "RabbitMQ 3.12"
     ]
   },
   "data_models": [
     {
-      "name": "SSHConnectionConfig",
-      "type": "struct",
-      "ownership": "owned",
-      "description": "SSH连接配置参数，用于建立到远程服务器的Paramiko SSH连接",
-      "fields": [
-        {"name": "host", "type": "string", "required": true, "description": "远程服务器主机地址（IP或域名）"},
-        {"name": "port", "type": "integer", "required": true, "description": "SSH端口号，默认22"},
-        {"name": "username", "type": "string", "required": true, "description": "SSH登录用户名"},
-        {"name": "connect_timeout", "type": "integer", "required": true, "description": "SSH连接超时时间（秒），默认10"},
-        {"name": "max_retries", "type": "integer", "required": true, "description": "连接失败最大重试次数，默认3"},
-        {"name": "retry_base_delay", "type": "integer", "required": true, "description": "重试间隔基础时间（秒），指数退避策略，默认2"}
-      ]
-    },
-    {
-      "name": "DeploymentTaskContext",
-      "type": "struct",
-      "ownership": "owned",
-      "description": "部署任务执行上下文，从MQ消息体反序列化后构建，包含执行远程部署所需的全部参数",
-      "fields": [
-        {"name": "deployment_id", "type": "integer", "required": true, "description": "部署任务ID"},
-        {"name": "env_config", "type": "object", "required": true, "description": "目标服务器连接配置 {host, port, username}"},
-        {"name": "key_content", "type": "string", "required": true, "description": "加密传输的SSH私钥内容，需调用KMS解密后使用"},
-        {"name": "version", "type": "string", "required": true, "description": "版本号，用于远程服务器创建对应版本的部署目录"},
-        {"name": "artifact_path", "type": "string", "required": true, "description": "可执行文件路径或下载URL"},
-        {"name": "commands", "type": "array[string]", "required": true, "description": "在远程服务器上依次执行的部署命令列表"}
-      ]
-    },
-    {
-      "name": "SSHExecutionConfig",
+      "name": "ssh_session_config",
       "type": "config",
       "ownership": "owned",
-      "description": "SSH运行时配置参数，控制命令执行行为、资源限制和重试策略，从环境变量加载",
+      "description": "SSH 会话默认配置，控制连接建立和命令执行的全局参数。服务启动时从配置中心加载，运行期间保持不变。",
       "fields": [
-        {"name": "command_timeout", "type": "integer", "required": true, "description": "单条命令执行超时时间（秒），默认300"},
-        {"name": "max_stdout_bytes", "type": "integer", "required": true, "description": "标准输出最大捕获字节数，默认1048576（1MB）"},
-        {"name": "max_stderr_bytes", "type": "integer", "required": true, "description": "标准错误最大捕获字节数，默认1048576（1MB）"},
-        {"name": "heartbeat_interval", "type": "integer", "required": true, "description": "心跳间隔（秒），默认30，用于Deployment Orchestrator检测僵尸任务"}
+        {"name": "default_timeout", "type": "integer", "required": true, "description": "默认命令执行超时时间（秒），接口未指定 timeout 时使用此值，默认 300"},
+        {"name": "connection_retry_max", "type": "integer", "required": true, "description": "SSH 连接失败时的最大重试次数，默认 3"},
+        {"name": "connection_retry_interval_base", "type": "integer", "required": true, "description": "重试间隔基准值（秒），实际间隔按指数退避计算，默认 1"},
+        {"name": "keepalive_interval", "type": "integer", "required": true, "description": "SSH 连接保活心跳间隔（秒），默认 30"},
+        {"name": "max_concurrent_sessions", "type": "integer", "required": true, "description": "最大并发 SSH 会话数，防止资源耗尽，默认 50"}
+      ]
+    },
+    {
+      "name": "deploy_execution_context",
+      "type": "struct",
+      "ownership": "owned",
+      "description": "部署步骤执行上下文，封装一次部署任务中单个步骤的执行环境信息，用于在 SSH 会话中按步骤执行远程操作。",
+      "fields": [
+        {"name": "deployment_id", "type": "string", "required": true, "description": "部署任务唯一标识"},
+        {"name": "environment_id", "type": "string", "required": true, "description": "目标环境 ID，用于解析环境连接参数"},
+        {"name": "remote_base_path", "type": "string", "required": true, "description": "远程服务器上的部署根路径，格式 /deploy/{project}/{env}/{version}"},
+        {"name": "file_path", "type": "string", "required": false, "description": "可执行文件在 File Storage 中的路径"},
+        {"name": "version", "type": "string", "required": true, "description": "部署版本号，用于创建版本化目录"},
+        {"name": "current_step", "type": "string", "required": true, "description": "当前执行的步骤名称，如 create_directories / transfer_file / generate_script / execute_start"}
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "SSH Execute Command",
-      "method": "INTERNAL",
-      "endpoint": "RabbitMQ Queue: deployment.execute (consumer)",
-      "description": "从RabbitMQ的deployment.execute队列消费部署任务消息。接收任务后调用Key Management Service解密SSH私钥，建立Paramiko SSH连接，依次执行创建版本文件夹、上传可执行文件、生成并执行部署脚本等部署操作，执行过程中通过AMQP实时回传日志到Deployment Orchestrator的日志队列，执行完成后将最终结果消息投递到部署结果队列。",
+      "name": "ExecuteSSHCommand",
+      "method": "POST",
+      "endpoint": "/internal/ssh/execute",
+      "description": "在远程服务器上执行一条 SSH 命令并返回执行结果。接收连接参数和命令内容，建立 SSH 会话并执行，等待命令完成后返回退出码和输出流。此接口为内部服务间调用，不通过 API Gateway 对外暴露。",
       "parameters": [
-        {"name": "deployment_id", "type": "integer", "description": "部署任务ID"},
-        {"name": "env_config", "type": "object", "description": "目标服务器连接配置 {host, port, username}"},
-        {"name": "key_content", "type": "string", "description": "加密传输的SSH私钥内容"},
-        {"name": "version", "type": "string", "description": "版本号"},
-        {"name": "artifact_path", "type": "string", "description": "可执行文件路径或下载URL"},
-        {"name": "commands", "type": "array[string]", "description": "要执行的部署命令列表"}
+        {"name": "host", "type": "string", "description": "远程服务器主机名或 IP 地址"},
+        {"name": "port", "type": "integer", "description": "SSH 端口号，默认 22"},
+        {"name": "username", "type": "string", "description": "SSH 登录用户名"},
+        {"name": "key_content", "type": "string", "description": "解密后的私钥内容（PEM 格式字符串）"},
+        {"name": "command", "type": "string", "description": "待执行的远程 Shell 命令"},
+        {"name": "timeout", "type": "integer", "description": "命令执行超时时间（秒），不传时使用全局默认配置"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "deployment_id": "integer",
-          "success": "boolean",
           "exit_code": "integer",
           "stdout": "string",
           "stderr": "string",
-          "error_message": "string"
+          "executed_at": "string"
         }
       },
       "error_codes": [
-        {"code": 500, "message": "MQ消息反序列化失败：消息体格式错误或字段缺失"},
-        {"code": 500, "message": "密钥解密失败：调用Key Management Service解密SSH私钥时发生内部错误"},
-        {"code": 502, "message": "SSH连接失败：主机不可达（DNS解析失败/连接超时）、认证失败（密钥不匹配）、连接重置，重试耗尽后返回"},
-        {"code": 502, "message": "文件操作失败：远程版本目录创建失败或SFTP文件上传异常"},
-        {"code": 502, "message": "命令执行失败：远程命令返回非零退出码"},
-        {"code": 504, "message": "命令执行超时：单条命令执行超过command_timeout阈值未返回"}
+        {"code": 400, "message": "请求参数无效（host 为空、port 超出范围（1-65535）、key_content 非合法 PEM 格式）"},
+        {"code": 401, "message": "SSH 认证失败（私钥与用户名不匹配、私钥已吊销或格式错误）"},
+        {"code": 408, "message": "SSH 连接超时或命令执行超时（超过 timeout 参数指定的时间）"},
+        {"code": 502, "message": "SSH 连接失败（主机不可达、端口未开放、DNS 解析失败，重试耗尽后返回）"},
+        {"code": 500, "message": "服务内部错误（会话管理异常、资源分配失败等）"}
       ]
     },
     {
-      "name": "Decrypt SSH Key",
+      "name": "DispatchDeployTask",
       "method": "INTERNAL",
-      "endpoint": "Key Management Service (internal RPC)",
-      "description": "调用Key Management Service的内部密钥解密接口，将MQ消息中携带的AES-256-GCM加密SSH私钥内容解密为明文，解密后的私钥用于建立Paramiko SSH连接。",
+      "endpoint": "AMQP exchange: deploy.task",
+      "description": "从 RabbitMQ 的 deploy.task 交换机订阅并消费部署任务消息。SSH Execution Service 作为消费者绑定到队列，接收 Deployment Orchestrator 发布的部署步骤，依次执行远程操作（创建目录、传输文件、生成脚本、启停服务），并将每步执行结果发布回 MQ 供 Deployment Orchestrator 汇总。",
       "parameters": [
-        {"name": "encrypted_key", "type": "string", "description": "AES-256-GCM加密后的SSH私钥内容（Base64编码）"}
+        {"name": "deployment_id", "type": "string", "description": "部署任务唯一标识，用于关联执行上下文和结果回传"},
+        {"name": "environment_id", "type": "string", "description": "目标环境 ID，用于从 Key Management Service 获取 SSH 密钥和连接参数"},
+        {"name": "file_path", "type": "string", "description": "可执行文件在 File Storage 上的存储路径，SSH ES 通过该路径读取文件并传输到远程服务器"},
+        {"name": "version", "type": "string", "description": "部署版本号，用于在远程服务器上创建版本化目录结构"},
+        {"name": "steps", "type": "array<string>", "description": "部署步骤顺序列表，如 ['create_directories','transfer_file','generate_script','execute_start']"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "decrypted_key": "string",
-          "algorithm": "string"
+          "deployment_id": "string",
+          "step": "string",
+          "status": "string",
+          "output": "string"
         }
       },
       "error_codes": [
-        {"code": 500, "message": "密钥解密失败：加密格式不兼容、密钥已轮换或KMS内部错误"},
-        {"code": 401, "message": "解密认证失败：加密密钥验证标签（GCM tag）校验不通过"}
-      ]
-    },
-    {
-      "name": "Report Execution Log",
-      "method": "INTERNAL",
-      "endpoint": "RabbitMQ Queue: deployment.log (producer)",
-      "description": "在SSH命令执行过程中实时捕获标准输出和标准错误流，通过AMQP消息推送日志片段到Deployment Orchestrator的日志队列，用于Web Console实时展示部署进度和操作日志。",
-      "parameters": [
-        {"name": "deployment_id", "type": "integer", "description": "部署任务ID"},
-        {"name": "message", "type": "string", "description": "日志内容文本"},
-        {"name": "level", "type": "string", "description": "日志级别：info|warn|error"},
-        {"name": "timestamp", "type": "string", "description": "日志产生时间（ISO 8601格式）"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "acknowledged": "boolean"
-        }
-      },
-      "error_codes": [
-        {"code": 500, "message": "日志消息投递失败：MQ连接异常或队列不可达"}
+        {"code": 400, "message": "消息格式无效或缺少必填字段（deployment_id、environment_id、version 缺失）"},
+        {"code": 500, "message": "消息消费或步骤执行异常（MQ 连接断开、步骤执行未捕获异常）"}
       ]
     }
   ],
-  "error_handling": "SSH执行服务的错误处理分为六个层面：\n(1) MQ消息层 — 消息反序列化或格式校验失败时记录错误日志并确认消费（basic_ack），避免死信队列堆积；消息处理过程中发生异常时，根据异常类型决定是否重新入队（requeue）——连接类异常允许重试，格式类异常直接丢弃。\n(2) 密钥解密层 — 调用Key Management Service解密SSH私钥失败时，记录错误日志（不泄露密钥材料），立即终止执行流程，将失败结果（deployment_id、success=false、error_message）投递到部署结果队列。\n(3) SSH连接层 — 连接建立失败启用自动重试机制：最多重试3次，采用指数退避策略（2s/4s/8s退避间隔），每次重试前重新初始化Paramiko SSHClient避免连接状态污染；重试耗尽仍失败时在error_message中返回原因描述（如主机不可达、认证失败、连接超时），不暴露密钥材料或服务器敏感信息。\n(4) 命令执行层 — 每条命令设置独立执行超时（由SSHExecutionConfig.command_timeout控制，默认300秒），超时后强制关闭SSH通道（channel.close）并终止后续命令执行；命令退出码非零时捕获标准错误输出写入stderr字段；执行过程中通过Report Execution Log接口实时推送日志片段。\n(5) 文件操作层 — 远程版本文件夹创建失败（权限不足/路径冲突）、SFTP文件上传失败（磁盘空间不足/网络中断）等异常，捕获异常描述后终止执行并返回失败结果。\n(6) 超时兜底层 — 命令执行超时或SSH连接空闲超时时关闭连接并清理资源（临时文件、SSH通道），防止远程服务器残留僵尸进程。所有异常处理路径最终收敛为统一的响应body格式（deployment_id、success、exit_code、stdout、stderr、error_message），通过AMQP确认机制（basic_ack）确保结果可靠投递到Deployment Orchestrator的结果消费队列。"
+  "error_handling": "SSH Execution Service 对运行时异常进行分级处理：(1) 参数校验异常 — 请求体 JSON 解析失败、必填字段缺失、host 为空、port 超出范围（1-65535）、key_content 非 PEM 格式时返回 400 Bad Request，附带具体校验错误详情；(2) SSH 连接阶段异常 — 主机不可达、DNS 解析失败、端口未开放时按指数退避重试（间隔 1s / 4s / 16s，最多 3 次），重试耗尽后返回 502 Bad Gateway 并在审计日志中记录连接失败上下文；(3) SSH 认证阶段异常 — 私钥格式错误、用户名不匹配、密钥已吊销等认证失败不进行重试（重试无意义），立即返回 401 Unauthorized；(4) 命令执行阶段异常 — 远程命令返回非零退出码时不视为服务异常，将 exit_code 和 stderr 原样封装在响应体中返回，由调用方判断业务成功与否；(5) 超时异常 — SSH 连接建立超过 30 秒或命令执行超过 timeout 参数时中断会话，清理连接资源，返回 408 Request Timeout；(6) 文件传输异常 — 从 File Storage 读取文件失败或 SCP/rsync 传输中断时记录错误细节，标记当前部署步骤为 failed 并跳过后续步骤；(7) 资源限制 — 当前并发 SSH 会话数达到 max_concurrent_sessions 时对新请求返回 503 Service Unavailable，等待其他会话释放后再接受；(8) MQ 消费异常 — 消息格式解析失败时记录错误日志并将消息投递至死信队列（DLQ），不阻塞后续消息消费；步骤执行中抛出的未捕获异常由消费处理器统一捕获，记录完整错误栈并将该部署步骤标记为 failed。所有错误响应体统一格式为: { code: integer, error: string, detail: string }。关键操作（连接建立、命令执行、文件传输）均记录审计追踪日志。"
 }
