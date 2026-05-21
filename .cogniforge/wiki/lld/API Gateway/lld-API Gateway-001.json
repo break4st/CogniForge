@@ -6,53 +6,95 @@
     "module": "API Gateway",
     "title": "LLD - API Gateway",
     "author": "design_agent",
-    "created": "2026-05-21 10:11"
+    "created": "2026-05-21 10:33"
   },
   "overview": {
-    "description": "系统的统一入口网关，负责接收所有前端（Web Console）请求并进行路由分发、用户身份认证与会话管理、请求限流和防护、请求日志记录，以及转发 WebSocket 连接至相应服务。所有外部请求必须经过 API Gateway 进入系统内部服务层，前端不直接访问任何下游微服务。",
+    "description": "系统统一API入口，基于FastAPI实现，负责请求路由分发、用户身份认证、接口权限校验、请求限流与防护。前端所有API请求经由API Gateway路由到下游服务，Gateway承担认证拦截与路由转发职责。认证令牌使用JWT签发，黑名单与限流计数器基于Redis实现。",
     "dependencies": [
       "Project Management Service",
       "Environment Management Service",
-      "Key Management Service",
       "Deployment Orchestrator",
-      "File Storage",
-      "Audit Service"
+      "Key Management Service",
+      "Audit Service",
+      "File Storage"
     ],
-    "tech_stack": [
-      "Python",
-      "FastAPI"
-    ]
+    "tech_stack": ["Python", "FastAPI", "Redis"]
   },
-  "data_models": [],
+  "data_models": [
+    {
+      "name": "auth_token",
+      "type": "store",
+      "ownership": "owned",
+      "description": "用户认证令牌（JWT）。用户登录后签发，后续请求在Authorization头携带Bearer token。令牌中编码用户身份（user_id）与角色（role）。Redis缓存黑名单令牌用于登出失效，Redis设置过期时间与令牌自身exp一致。",
+      "fields": [
+        {"name": "token", "type": "string", "required": true, "description": "JWT令牌字符串"},
+        {"name": "user_id", "type": "string", "required": true, "description": "用户唯一标识"},
+        {"name": "role", "type": "string", "required": true, "description": "用户角色：developer/ops/manager"},
+        {"name": "expires_at", "type": "datetime", "required": true, "description": "令牌过期时间"}
+      ]
+    },
+    {
+      "name": "route_rule",
+      "type": "config",
+      "ownership": "owned",
+      "description": "路由规则配置表。定义前端请求路径到下游目标服务的映射关系，同时配置该路由是否需要认证及允许访问的角色。Gateway启动时加载到内存。",
+      "fields": [
+        {"name": "route_id", "type": "string", "required": true, "description": "路由规则唯一标识"},
+        {"name": "path_pattern", "type": "string", "required": true, "description": "匹配路径模式，如/api/projects/*"},
+        {"name": "method", "type": "string", "required": true, "description": "HTTP方法(GET/POST/PUT/DELETE)或ANY"},
+        {"name": "target_service", "type": "string", "required": true, "description": "下游目标服务名称"},
+        {"name": "require_auth", "type": "boolean", "required": true, "description": "是否要求认证"},
+        {"name": "allowed_roles", "type": "array[string]", "required": false, "description": "允许访问的角色列表，为空表示所有已认证用户均可访问"}
+      ]
+    },
+    {
+      "name": "rate_limit_rule",
+      "type": "config",
+      "ownership": "owned",
+      "description": "限流规则配置。基于Redis计数器实现滑动窗口算法，支持按接口维度和用户维度分别限流。Gateway启动时加载到内存。",
+      "fields": [
+        {"name": "rule_id", "type": "string", "required": true, "description": "限流规则唯一标识"},
+        {"name": "path_pattern", "type": "string", "required": true, "description": "匹配路径模式"},
+        {"name": "method", "type": "string", "required": true, "description": "HTTP方法"},
+        {"name": "limit", "type": "integer", "required": true, "description": "时间窗口内允许的最大请求数"},
+        {"name": "window_seconds", "type": "integer", "required": true, "description": "时间窗口长度（秒）"},
+        {"name": "scope", "type": "string", "required": true, "description": "限流维度：global（全局）或 per_user（按用户）"}
+      ]
+    }
+  ],
   "interfaces": [
     {
-      "name": "HealthCheck",
+      "name": "健康检查",
       "method": "GET",
       "endpoint": "/api/health",
-      "description": "网关健康检查，返回服务运行状态和版本信息，用于负载均衡器和监控系统探测",
+      "description": "系统健康检查接口。返回网关本身状态及下游各服务的连通状态。routes_to: API Gateway自身处理",
       "parameters": [],
       "response": {
         "status": 200,
         "body": {
           "status": "string",
-          "version": "string"
+          "services": "object",
+          "timestamp": "datetime"
         }
       },
       "error_codes": []
     },
     {
-      "name": "Login",
+      "name": "用户登录",
       "method": "POST",
       "endpoint": "/api/auth/login",
-      "description": "用户登录认证，验证用户名和密码并返回 JWT 访问令牌。请求体: { username: string (必填), password: string (必填) }",
-      "parameters": [],
+      "description": "用户登录认证。校验用户名密码，验证通过后签发JWT访问令牌。后续请求须在Authorization头部携带Bearer token。routes_to: API Gateway自身处理",
+      "parameters": [
+        {"name": "username", "type": "string", "description": "用户名"},
+        {"name": "password", "type": "string", "description": "密码"}
+      ],
       "response": {
         "status": 200,
         "body": {
           "token": "string",
-          "user_id": "string",
-          "username": "string",
-          "role": "string"
+          "token_type": "string",
+          "expires_in": "integer",
+          "user": "object"
         }
       },
       "error_codes": [
@@ -61,10 +103,10 @@
       ]
     },
     {
-      "name": "Logout",
+      "name": "用户登出",
       "method": "POST",
       "endpoint": "/api/auth/logout",
-      "description": "用户登出，使当前 JWT 访问令牌失效并清除服务端会话状态",
+      "description": "用户登出。将当前JWT令牌加入Redis黑名单，后续请求携带该令牌将被拒绝认证。routes_to: API Gateway自身处理",
       "parameters": [],
       "response": {
         "status": 200,
@@ -73,197 +115,276 @@
         }
       },
       "error_codes": [
-        {"code": 401, "message": "未认证或令牌已过期"}
+        {"code": 401, "message": "未认证或令牌无效"}
       ]
     },
     {
-      "name": "GetCurrentUser",
-      "method": "GET",
-      "endpoint": "/api/auth/me",
-      "description": "获取当前登录用户信息，从 JWT 令牌中解析用户身份并返回基本信息",
-      "parameters": [],
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "string",
-          "username": "string",
-          "role": "string"
-        }
-      },
-      "error_codes": [
-        {"code": 401, "message": "未认证或令牌已过期"}
-      ]
-    },
-    {
-      "name": "CreateProject",
+      "name": "创建项目",
       "method": "POST",
       "endpoint": "/api/projects",
-      "description": "创建新项目，路由至 Project Management Service。请求体: { name: string (必填, 项目名称), description: string (选填, 项目描述) }",
-      "parameters": [],
+      "description": "创建新项目。需manager角色权限。透传请求到Project Management Service。routes_to: Project Management Service",
+      "parameters": [
+        {"name": "name", "type": "string", "description": "项目名称"},
+        {"name": "description", "type": "string", "description": "项目描述"}
+      ],
       "response": {
         "status": 201,
         "body": {
           "id": "string",
           "name": "string",
           "description": "string",
-          "created_at": "string"
+          "created_at": "datetime"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "请求参数不合法（如项目名称为空）"},
-        {"code": 502, "message": "下游服务不可用"}
+        {"code": 400, "message": "请求参数错误"},
+        {"code": 401, "message": "未认证"},
+        {"code": 403, "message": "权限不足，需要manager角色"},
+        {"code": 409, "message": "项目名称已存在"},
+        {"code": 500, "message": "服务器内部错误"}
       ]
     },
     {
-      "name": "ListProjects",
+      "name": "查询项目列表",
       "method": "GET",
       "endpoint": "/api/projects",
-      "description": "获取当前用户的项目列表（分页），路由至 Project Management Service。items 数组中每个项目包含: id, name, description, created_at",
+      "description": "查询项目列表，支持分页和按名称搜索。透传请求到Project Management Service。routes_to: Project Management Service",
       "parameters": [
-        {"name": "page", "type": "integer", "description": "查询参数，页码，从1开始，默认1"},
-        {"name": "page_size", "type": "integer", "description": "查询参数，每页条数，默认20"}
+        {"name": "page", "type": "integer", "description": "页码，默认1"},
+        {"name": "page_size", "type": "integer", "description": "每页条数，默认20"},
+        {"name": "search", "type": "string", "description": "搜索关键词（可选）"}
       ],
       "response": {
         "status": 200,
         "body": {
+          "items": "array",
           "total": "integer",
-          "items": "array"
+          "page": "integer",
+          "page_size": "integer"
         }
       },
       "error_codes": [
-        {"code": 502, "message": "下游服务不可用"}
+        {"code": 400, "message": "请求参数错误"},
+        {"code": 401, "message": "未认证"},
+        {"code": 500, "message": "服务器内部错误"}
       ]
     },
     {
-      "name": "DeleteProject",
-      "method": "DELETE",
-      "endpoint": "/api/projects/{project_id}",
-      "description": "删除指定项目及其关联的所有环境配置，路由至 Project Management Service",
+      "name": "获取项目详情",
+      "method": "GET",
+      "endpoint": "/api/projects/{id}",
+      "description": "获取指定项目的详细信息，包含关联的环境列表。透传请求到Project Management Service。routes_to: Project Management Service",
       "parameters": [
-        {"name": "project_id", "type": "string", "description": "路径参数，项目 ID"}
+        {"name": "id", "type": "string", "description": "项目ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string",
+          "name": "string",
+          "description": "string",
+          "environments": "array",
+          "created_at": "datetime",
+          "updated_at": "datetime"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "未认证"},
+        {"code": 403, "message": "权限不足"},
+        {"code": 404, "message": "项目不存在"},
+        {"code": 500, "message": "服务器内部错误"}
+      ]
+    },
+    {
+      "name": "删除项目",
+      "method": "DELETE",
+      "endpoint": "/api/projects/{id}",
+      "description": "删除指定项目。需manager角色权限。透传请求到Project Management Service。routes_to: Project Management Service",
+      "parameters": [
+        {"name": "id", "type": "string", "description": "项目ID（路径参数）"}
       ],
       "response": {
         "status": 204,
         "body": {}
       },
       "error_codes": [
+        {"code": 401, "message": "未认证"},
+        {"code": 403, "message": "权限不足，需要manager角色"},
         {"code": 404, "message": "项目不存在"},
-        {"code": 502, "message": "下游服务不可用"}
+        {"code": 500, "message": "服务器内部错误"}
       ]
     },
     {
-      "name": "CreateEnvironment",
+      "name": "创建环境",
       "method": "POST",
-      "endpoint": "/api/projects/{project_id}/environments",
-      "description": "为指定项目创建新的部署环境，路由至 Environment Management Service。请求体: { name: string (必填, 环境名称), label: string (必填, 环境标识如 test/staging/prod), host: string (必填, 服务器地址), port: integer (必填, SSH端口, 默认22), username: string (必填, SSH用户名), key_id: string (必填, SSH密钥ID), deploy_path: string (必填, 远程部署根路径) }",
+      "endpoint": "/api/environments",
+      "description": "创建新的部署环境配置。支持密码认证和密钥认证两种方式。需ops或manager角色权限。透传请求到Environment Management Service。routes_to: Environment Management Service",
       "parameters": [
-        {"name": "project_id", "type": "string", "description": "路径参数，项目 ID"}
+        {"name": "project_id", "type": "string", "description": "所属项目ID"},
+        {"name": "name", "type": "string", "description": "环境名称"},
+        {"name": "host", "type": "string", "description": "服务器地址"},
+        {"name": "port", "type": "integer", "description": "SSH端口"},
+        {"name": "username", "type": "string", "description": "登录用户名"},
+        {"name": "auth_type", "type": "string", "description": "认证方式：密钥或密码"},
+        {"name": "key_id", "type": "string", "description": "密钥ID（密钥认证时必填）"},
+        {"name": "password", "type": "string", "description": "密码（密码认证时必填）"},
+        {"name": "tags", "type": "array", "description": "环境标签（可选）"},
+        {"name": "description", "type": "string", "description": "环境描述（可选）"}
       ],
       "response": {
         "status": 201,
         "body": {
           "id": "string",
           "name": "string",
-          "label": "string",
           "host": "string",
           "port": "integer",
           "username": "string",
-          "deploy_path": "string",
-          "created_at": "string"
+          "auth_type": "string",
+          "tags": "array",
+          "description": "string",
+          "created_at": "datetime"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "请求参数不合法"},
-        {"code": 404, "message": "项目不存在"},
-        {"code": 502, "message": "下游服务不可用"}
+        {"code": 400, "message": "请求参数错误"},
+        {"code": 401, "message": "未认证"},
+        {"code": 403, "message": "权限不足"},
+        {"code": 404, "message": "关联项目不存在"},
+        {"code": 500, "message": "服务器内部错误"}
       ]
     },
     {
-      "name": "TestConnection",
-      "method": "POST",
-      "endpoint": "/api/environments/{env_id}/test",
-      "description": "测试指定环境的 SSH 连接是否可用，路由至 Environment Management Service（最终委托 SSH Execution Service 执行连接测试）",
+      "name": "查询环境列表",
+      "method": "GET",
+      "endpoint": "/api/environments",
+      "description": "查询指定项目下的环境列表，支持分页。透传请求到Environment Management Service。routes_to: Environment Management Service",
       "parameters": [
-        {"name": "env_id", "type": "string", "description": "路径参数，环境 ID"}
+        {"name": "project_id", "type": "string", "description": "所属项目ID"},
+        {"name": "page", "type": "integer", "description": "页码，默认1"},
+        {"name": "page_size", "type": "integer", "description": "每页条数，默认20"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "items": "array",
+          "total": "integer"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数错误"},
+        {"code": 401, "message": "未认证"},
+        {"code": 403, "message": "权限不足"},
+        {"code": 500, "message": "服务器内部错误"}
+      ]
+    },
+    {
+      "name": "测试环境连接",
+      "method": "POST",
+      "endpoint": "/api/environments/{id}/test-connection",
+      "description": "测试指定环境配置的SSH连接有效性。需ops或manager角色权限。透传请求到Environment Management Service。routes_to: Environment Management Service",
+      "parameters": [
+        {"name": "id", "type": "string", "description": "环境ID（路径参数）"}
       ],
       "response": {
         "status": 200,
         "body": {
           "success": "boolean",
-          "message": "string"
+          "message": "string",
+          "latency_ms": "integer"
         }
       },
       "error_codes": [
+        {"code": 401, "message": "未认证"},
+        {"code": 403, "message": "权限不足"},
         {"code": 404, "message": "环境不存在"},
-        {"code": 502, "message": "下游服务不可用"}
+        {"code": 500, "message": "服务器内部错误"}
       ]
     },
     {
-      "name": "UploadKey",
+      "name": "导入SSH密钥",
       "method": "POST",
       "endpoint": "/api/keys",
-      "description": "上传 SSH 私钥，系统将加密存储，路由至 Key Management Service。请求体: { name: string (必填, 密钥名称), private_key: string (必填, PEM格式私钥内容), passphrase: string (选填, 私钥密码) }",
-      "parameters": [],
+      "description": "导入SSH密钥对。私钥在传输过程中应使用HTTPS加密。需ops或manager角色权限。透传请求到Key Management Service。routes_to: Key Management Service",
+      "parameters": [
+        {"name": "name", "type": "string", "description": "密钥名称"},
+        {"name": "public_key", "type": "string", "description": "公钥内容"},
+        {"name": "private_key", "type": "string", "description": "私钥内容"},
+        {"name": "type", "type": "string", "description": "密钥类型：RSA/ECDSA/Ed25519"}
+      ],
       "response": {
         "status": 201,
         "body": {
           "id": "string",
           "name": "string",
+          "type": "string",
           "fingerprint": "string",
-          "created_at": "string"
+          "created_at": "datetime"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "密钥格式不合法"},
-        {"code": 502, "message": "下游服务不可用"}
+        {"code": 400, "message": "请求参数错误"},
+        {"code": 401, "message": "未认证"},
+        {"code": 403, "message": "权限不足"},
+        {"code": 500, "message": "服务器内部错误"}
       ]
     },
     {
-      "name": "DeleteKey",
-      "method": "DELETE",
-      "endpoint": "/api/keys/{key_id}",
-      "description": "删除指定 SSH 密钥，路由至 Key Management Service",
+      "name": "查询密钥列表",
+      "method": "GET",
+      "endpoint": "/api/keys",
+      "description": "查询SSH密钥列表，仅返回元数据（名称、类型、指纹），不包含私钥内容。透传请求到Key Management Service。routes_to: Key Management Service",
       "parameters": [
-        {"name": "key_id", "type": "string", "description": "路径参数，密钥 ID"}
+        {"name": "page", "type": "integer", "description": "页码，默认1"},
+        {"name": "page_size", "type": "integer", "description": "每页条数，默认20"}
       ],
       "response": {
-        "status": 204,
-        "body": {}
+        "status": 200,
+        "body": {
+          "items": "array",
+          "total": "integer"
+        }
       },
       "error_codes": [
-        {"code": 404, "message": "密钥不存在"},
-        {"code": 502, "message": "下游服务不可用"}
+        {"code": 400, "message": "请求参数错误"},
+        {"code": 401, "message": "未认证"},
+        {"code": 500, "message": "服务器内部错误"}
       ]
     },
     {
-      "name": "TriggerDeployment",
+      "name": "发起部署",
       "method": "POST",
-      "endpoint": "/api/projects/{project_id}/deployments",
-      "description": "触发一次新的部署，系统将异步执行部署流程，路由至 Deployment Orchestrator。请求体: { environment_id: string (必填, 目标环境ID), file_path: string (选填, 已上传文件路径), version: string (必填, 部署版本号), description: string (选填, 部署说明) }",
+      "endpoint": "/api/deployments",
+      "description": "发起一键部署请求。请求提交后异步执行，立即返回deployment_id用于后续查询状态。透传请求到Deployment Orchestrator。routes_to: Deployment Orchestrator",
       "parameters": [
-        {"name": "project_id", "type": "string", "description": "路径参数，项目 ID"}
+        {"name": "project_id", "type": "string", "description": "目标项目ID"},
+        {"name": "environment_id", "type": "string", "description": "目标环境ID"},
+        {"name": "file_id", "type": "string", "description": "部署文件ID"},
+        {"name": "version", "type": "string", "description": "版本号（可选，不填自动生成）"},
+        {"name": "notes", "type": "string", "description": "部署备注（可选）"}
       ],
       "response": {
         "status": 202,
         "body": {
           "deployment_id": "string",
-          "status": "string",
-          "created_at": "string"
+          "status": "enum(pending, running, completed, failed)",
+          "created_at": "datetime"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "请求参数不合法"},
-        {"code": 404, "message": "项目或环境不存在"},
-        {"code": 502, "message": "下游服务不可用"}
+        {"code": 400, "message": "请求参数错误"},
+        {"code": 401, "message": "未认证"},
+        {"code": 403, "message": "权限不足"},
+        {"code": 404, "message": "项目/环境/文件不存在"},
+        {"code": 500, "message": "服务器内部错误"}
       ]
     },
     {
-      "name": "GetDeploymentStatus",
+      "name": "查询部署详情",
       "method": "GET",
-      "endpoint": "/api/deployments/{deployment_id}",
-      "description": "查询指定部署任务的当前状态和进度，路由至 Deployment Orchestrator。steps 数组中每个元素包含: name (步骤名称), status (pending/running/success/failed), started_at (开始时间), completed_at (完成时间)",
+      "endpoint": "/api/deployments/{id}",
+      "description": "查询指定部署的详细状态、版本信息及执行日志。前端可轮询此接口获取实时状态更新。透传请求到Deployment Orchestrator。routes_to: Deployment Orchestrator",
       "parameters": [
-        {"name": "deployment_id", "type": "string", "description": "路径参数，部署任务 ID"}
+        {"name": "id", "type": "string", "description": "部署ID（路径参数）"}
       ],
       "response": {
         "status": 200,
@@ -271,79 +392,141 @@
           "id": "string",
           "project_id": "string",
           "environment_id": "string",
-          "version": "string",
           "status": "string",
-          "steps": "array",
-          "created_at": "string",
-          "updated_at": "string"
+          "version": "string",
+          "logs": "array",
+          "started_at": "datetime",
+          "completed_at": "datetime (optional)"
         }
       },
       "error_codes": [
-        {"code": 404, "message": "部署任务不存在"},
-        {"code": 502, "message": "下游服务不可用"}
+        {"code": 401, "message": "未认证"},
+        {"code": 403, "message": "权限不足"},
+        {"code": 404, "message": "部署记录不存在"},
+        {"code": 500, "message": "服务器内部错误"}
       ]
     },
     {
-      "name": "UploadFile",
+      "name": "查询审计日志",
+      "method": "GET",
+      "endpoint": "/api/audit-logs",
+      "description": "查询审计日志，支持按项目、操作类型、操作人、时间范围多维度过滤与分页。透传请求到Audit Service。routes_to: Audit Service",
+      "parameters": [
+        {"name": "project_id", "type": "string", "description": "按项目过滤（可选）"},
+        {"name": "action_type", "type": "string", "description": "按操作类型过滤（可选）"},
+        {"name": "operator", "type": "string", "description": "按操作人过滤（可选）"},
+        {"name": "start_time", "type": "datetime", "description": "开始时间（可选）"},
+        {"name": "end_time", "type": "datetime", "description": "结束时间（可选）"},
+        {"name": "page", "type": "integer", "description": "页码，默认1"},
+        {"name": "page_size", "type": "integer", "description": "每页条数，默认20"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "items": "array",
+          "total": "integer",
+          "page": "integer",
+          "page_size": "integer"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "过滤参数错误"},
+        {"code": 401, "message": "未认证"},
+        {"code": 403, "message": "权限不足"},
+        {"code": 500, "message": "服务器内部错误"}
+      ]
+    },
+    {
+      "name": "上传部署文件",
       "method": "POST",
       "endpoint": "/api/files/upload",
-      "description": "上传可执行文件到文件存储，路由至 File Storage。请求体为 multipart/form-data 格式，包含: file (binary, 必填, 可执行文件) 和 project_id (string, 必填)",
-      "parameters": [],
+      "description": "上传部署包文件（multipart/form-data）。支持上传进度跟踪。透传请求到File Storage。routes_to: File Storage",
+      "parameters": [
+        {"name": "file", "type": "binary", "description": "部署包文件（multipart/form-data字段名：file）"},
+        {"name": "project_id", "type": "string", "description": "关联项目ID"},
+        {"name": "notes", "type": "string", "description": "文件备注（可选）"}
+      ],
       "response": {
-        "status": 200,
+        "status": 201,
         "body": {
-          "file_id": "string",
+          "id": "string",
           "file_name": "string",
-          "size": "integer",
-          "storage_path": "string",
-          "uploaded_at": "string"
+          "file_size": "integer",
+          "project_id": "string",
+          "version": "string",
+          "created_at": "datetime"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "文件上传参数不合法"},
+        {"code": 400, "message": "文件格式或大小不符合要求"},
+        {"code": 401, "message": "未认证"},
+        {"code": 403, "message": "权限不足"},
+        {"code": 404, "message": "关联项目不存在"},
         {"code": 413, "message": "文件大小超出限制"},
-        {"code": 502, "message": "下游服务不可用"}
-      ]
-    },
-    {
-      "name": "QueryAuditLogs",
-      "method": "GET",
-      "endpoint": "/api/audit/logs",
-      "description": "查询审计日志（分页），路由至 Audit Service。items 数组中每条日志条目包含: id, project_id, action, actor, details, ip_address, created_at",
-      "parameters": [
-        {"name": "project_id", "type": "string", "description": "查询参数，按项目 ID 筛选（选填）"},
-        {"name": "action", "type": "string", "description": "查询参数，按操作类型筛选（选填）"},
-        {"name": "page", "type": "integer", "description": "查询参数，页码，从1开始，默认1"},
-        {"name": "page_size", "type": "integer", "description": "查询参数，每页条数，默认20"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "total": "integer",
-          "items": "array"
-        }
-      },
-      "error_codes": [
-        {"code": 502, "message": "下游服务不可用"}
-      ]
-    },
-    {
-      "name": "DeploymentLogStream",
-      "method": "WS",
-      "endpoint": "/ws/deployments/{deployment_id}",
-      "description": "WebSocket 端点，实时推送指定部署任务的执行日志，代理至 Deployment Orchestrator 的 WebSocket 服务。前端通过此端点建立长连接，接收实时部署进度和日志输出",
-      "parameters": [
-        {"name": "deployment_id", "type": "string", "description": "路径参数，部署任务 ID"}
-      ],
-      "response": {
-        "status": 101,
-        "body": {}
-      },
-      "error_codes": [
-        {"code": 404, "message": "部署任务不存在"},
-        {"code": 502, "message": "下游 WebSocket 服务不可用"}
+        {"code": 500, "message": "服务器内部错误"}
       ]
     }
   ],
-  "error_handling": "API Gateway 作为系统统一入口，对各类异常进行统一拦截和处理：(1) 认证异常 — JWT 令牌缺失、无效或过期时返回 401 Unauthorized，并附带具体错误原因；(2) 请求限流 — 基于 IP 和用户维度的令牌桶限流策略，超出阈值返回 429 Too Many Requests，响应头附带 Retry-After；(3) 参数校验 — 请求体 JSON 解析失败或参数格式非法返回 400 Bad Request，附带具体校验错误详情；(4) 下游服务异常 — 下游服务连接超时（超时阈值 30s）或返回非成功状态码时返回 502 Bad Gateway，同时在审计日志中记录错误上下文用于排查；若下游持续不可用则触发熔断（5 分钟内连续失败超过 10 次，熔断 30 秒）；(5) 内部错误 — 未捕获异常返回 500 Internal Server Error，同时记录完整错误栈。所有错误响应体统一格式为: { code: integer, error: string, detail: string }。"
+  "error_handling": {
+    "strategy": "API Gateway作为统一入口，采用中间件管道（Middleware Pipeline）模式对请求进行认证、限流、路由三层处理，每层失败即返回不转发下游。下游服务返回的错误码原样透传，同时统一注入trace_id便于链路追踪。网关自身接口（登录/登出/健康检查）的错误由网关直接处理。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "400",
+        "name": "请求参数错误",
+        "description": "请求体校验失败、缺少必填字段、参数格式错误或枚举值不合法。Gateway在AuthMiddleware之后、路由转发之前进行基础参数格式校验，校验不通过直接返回400，不转发到下游服务。"
+      },
+      {
+        "code": "401",
+        "name": "未认证",
+        "description": "请求未携带Authorization头、Token格式错误、Token已过期或Token已被加入黑名单（登出后）。Gateway在AuthMiddleware中统一拦截，不满足认证条件的请求直接拒绝，detail字段说明具体原因。"
+      },
+      {
+        "code": "403",
+        "name": "权限不足",
+        "description": "用户已认证通过但当前角色（developer/ops/manager）不满足接口在route_rule中配置的allowed_roles要求。Gateway在AuthMiddleware中完成角色校验，不满足时直接返回403。"
+      },
+      {
+        "code": "404",
+        "name": "路由不存在",
+        "description": "请求的HTTP方法+路径组合未匹配到任何route_rule。Gateway返回标准404响应，附带当前请求路径信息，避免无效请求到达下游服务。"
+      },
+      {
+        "code": "409",
+        "name": "资源冲突",
+        "description": "下游服务返回的资源冲突错误（如创建项目时名称已存在、重复创建环境配置等）。Gateway原样透传409状态码及下游返回的error与detail信息。"
+      },
+      {
+        "code": "413",
+        "name": "请求体过大",
+        "description": "上传文件或请求体超出Gateway配置的最大限制（默认100MB）。Gateway在请求体读取阶段直接拒绝并返回413，不转发到下游。响应头中的detail字段提示当前限制值。"
+      },
+      {
+        "code": "429",
+        "name": "请求限流",
+        "description": "请求频率超过rate_limit_rule配置的限制。Gateway基于Redis自增计数器实现滑动窗口算法，超出阈值时返回429状态码，并在响应头中携带Retry-After字段（秒数）告知客户端何时可以重试。登录接口（/api/auth/login）有独立的严格限流规则，防止暴力破解。"
+      },
+      {
+        "code": "502",
+        "name": "下游服务不可达",
+        "description": "Gateway转发请求到下游服务时发生连接拒绝、DNS解析失败或请求超时（默认5秒）。返回502状态码，记录完整错误日志及trace_id便于排查。不包含下游内部网络拓扑信息在响应体中。"
+      },
+      {
+        "code": "504",
+        "name": "下游服务响应超时",
+        "description": "Gateway成功连接到下游服务但在超时时间（默认30秒）内未收到完整响应。返回504状态码，detail中注明超时时间，响应中携带trace_id。"
+      },
+      {
+        "code": "500",
+        "name": "网关内部错误",
+        "description": "Gateway自身在请求处理过程中发生未捕获异常（如JSON解析失败、中间件执行异常等）。返回统一错误格式，记录完整异常堆栈到服务器日志并关联trace_id。"
+      }
+    ]
+  }
 }
