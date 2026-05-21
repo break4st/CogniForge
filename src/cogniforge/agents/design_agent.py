@@ -470,7 +470,44 @@ class DesignAgent(BaseAgent):
             )
 
             response = self.agent.generate_agentic(prompt, role="design")
-            return self._commit_and_result(json_path, title, response.content)
+
+            # ── Validation loop (max 2 retries) ──
+            correction_attempts = 0
+            max_corrections = 2
+            validation_report = ""
+
+            while correction_attempts <= max_corrections:
+                json_abs = Path(self.config.repo_path) / json_path
+                if not json_abs.exists():
+                    return self.format_result(
+                        status="failed",
+                        message=f"LLM did not produce {json_path}"
+                    )
+
+                from cogniforge.lld_validator import validate_lld_json, format_validation_report
+                validation = validate_lld_json(json_abs)
+                validation_report = format_validation_report(validation)
+
+                if validation["passed"]:
+                    break
+
+                if correction_attempts < max_corrections:
+                    correction_attempts += 1
+                    fix_prompt = (
+                        f"你刚才生成的 LLD JSON 校验未通过：\n\n"
+                        f"{validation_report}\n\n"
+                        f"请修正以上所有问题，重新输出完整的 JSON 到路径: {json_path}\n"
+                        f"只输出修正后的完整 JSON，保留所有章节，不要省略。"
+                    )
+                    response = self.agent.generate_agentic(fix_prompt, role="design")
+                else:
+                    break
+
+            return self._commit_and_result(
+                json_path, title, response.content,
+                validation=validation_report,
+                correction_attempts=correction_attempts,
+            )
 
         except Exception as e:
             return self.format_result(status="failed", message=str(e))
@@ -634,7 +671,8 @@ class DesignAgent(BaseAgent):
 
         return "\n".join(parts) if parts else ""
 
-    def _commit_and_result(self, json_path: Path, title: str, reasoning: str = "") -> dict:
+    def _commit_and_result(self, json_path: Path, title: str, reasoning: str = "",
+                           validation: str = "", correction_attempts: int = 0) -> dict:
         json_abs = Path(self.config.repo_path) / json_path
         if not json_abs.exists():
             return self.format_result(status="failed",
@@ -655,11 +693,16 @@ class DesignAgent(BaseAgent):
         if rel_html:
             artifacts.append(rel_html)
 
+        decisions = [f"validation_passed={validation.startswith('✓')}"]
+        if correction_attempts > 0:
+            decisions.append(f"correction_attempts={correction_attempts}")
+
         return self.format_result(
             status="success",
             message=f"LLD created: {json_path.stem}",
             artifacts=artifacts,
-            reasoning=reasoning,
+            reasoning=f"{reasoning}\n{validation}" if validation else reasoning,
+            decisions=decisions,
         )
 
 
