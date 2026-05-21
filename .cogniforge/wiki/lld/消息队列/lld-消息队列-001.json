@@ -1,0 +1,203 @@
+{
+  "meta": {
+    "doc_id": "lld-消息队列-001",
+    "type": "lld",
+    "module_type": "infrastructure",
+    "module": "消息队列",
+    "title": "消息队列详细设计 - 基于RabbitMQ的异步消息中间件",
+    "author": "design_agent",
+    "created": "2026-05-21T00:00:00Z"
+  },
+  "overview": {
+    "description": "基于RabbitMQ的异步消息中间件，用于部署任务的异步分发和服务间解耦，确保部署任务的可靠传递和处理。支持削峰填谷，平滑处理突发部署请求，提供消息重试和死信处理机制。",
+    "dependencies": ["部署编排服务", "SSH连接管理服务", "审计日志服务"],
+    "tech_stack": ["RabbitMQ", "Python"]
+  },
+  "data_models": [],
+  "interfaces": [
+    {
+      "name": "部署任务异步分发",
+      "method": "MQ",
+      "endpoint": "exchange: deploy.tasks / routing_key: deploy.file_transfer",
+      "description": "部署编排服务通过消息队列将文件传输和脚本执行任务异步分发给SSH连接管理服务，实现解耦和削峰。",
+      "parameters": [
+        {"name": "task_id", "type": "string", "description": "部署任务ID"},
+        {"name": "action", "type": "string", "description": "操作类型：file_transfer/script_exec/rollback"},
+        {"name": "environment_id", "type": "integer", "description": "环境ID"},
+        {"name": "file_path", "type": "string", "description": "部署包路径"},
+        {"name": "target_path", "type": "string", "description": "远程目标路径"},
+        {"name": "version", "type": "string", "description": "版本号"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "task_id": "string",
+          "status": "string",
+          "output": "string",
+          "error": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 500, "message": "消息发送失败，RabbitMQ连接异常或channel不可用"}
+      ]
+    },
+    {
+      "name": "审计事件推送",
+      "method": "MQ",
+      "endpoint": "exchange: audit.events / routing_key: audit.*",
+      "description": "各微服务在处理操作前后通过消息队列异步发送审计事件到审计日志服务，确保审计记录不阻塞主业务流程。",
+      "parameters": [
+        {"name": "event_type", "type": "string", "description": "事件类型（deploy/rollback/create/delete等）"},
+        {"name": "actor", "type": "string", "description": "操作人用户名"},
+        {"name": "actor_id", "type": "integer", "description": "操作人ID"},
+        {"name": "action", "type": "string", "description": "操作描述"},
+        {"name": "target_type", "type": "string", "description": "目标对象类型（project/environment/deployment）"},
+        {"name": "target_id", "type": "integer", "description": "目标对象ID"},
+        {"name": "result", "type": "string", "description": "操作结果（success/failure）"},
+        {"name": "ip_address", "type": "string", "description": "请求IP地址"},
+        {"name": "timestamp", "type": "string", "description": "事件时间戳，datetime格式"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "received": "boolean",
+          "log_id": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 500, "message": "消息发送失败，RabbitMQ连接异常或channel不可用"}
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "消息发布失败时自动重试，达到最大重试次数后丢弃并记录告警；消费失败时根据异常类型决定重试或转入死信队列；连接异常时自动重连并恢复channel。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "500",
+        "name": "消息发布失败",
+        "description": "MQ连接异常或channel异常导致消息无法发布，自动重试3次后记录告警日志"
+      },
+      {
+        "code": "500",
+        "name": "消息消费失败",
+        "description": "消费者nack或抛出异常，根据重试策略决定requeue或转入死信队列"
+      },
+      {
+        "code": "500",
+        "name": "连接异常",
+        "description": "RabbitMQ连接断开或超时，自动重连并恢复channel，期间消息缓存在生产者本地缓冲"
+      }
+    ]
+  },
+  "topology": {
+    "exchanges": [
+      {
+        "name": "deploy.tasks",
+        "type": "direct",
+        "durable": true,
+        "bindings": [
+          {"queue": "deploy.tasks.ssh", "routing_key": "deploy.file_transfer"}
+        ]
+      },
+      {
+        "name": "audit.events",
+        "type": "topic",
+        "durable": true,
+        "bindings": [
+          {"queue": "audit.events.logger", "routing_key": "audit.*"}
+        ]
+      },
+      {
+        "name": "dlx.global",
+        "type": "fanout",
+        "durable": true,
+        "bindings": [
+          {"queue": "dead.letter.queue", "routing_key": ""}
+        ]
+      }
+    ],
+    "queues": [
+      {
+        "name": "deploy.tasks.ssh",
+        "durable": true,
+        "ttl_seconds": 86400,
+        "max_length": 10000
+      },
+      {
+        "name": "audit.events.logger",
+        "durable": true,
+        "ttl_seconds": 604800,
+        "max_length": 50000
+      },
+      {
+        "name": "dead.letter.queue",
+        "durable": true,
+        "ttl_seconds": 2592000,
+        "max_length": 100000
+      }
+    ],
+    "producer_consumer_map": [
+      {
+        "producer": "部署编排服务",
+        "consumer": "SSH连接管理服务",
+        "exchange": "deploy.tasks"
+      },
+      {
+        "producer": "所有微服务",
+        "consumer": "审计日志服务",
+        "exchange": "audit.events"
+      }
+    ]
+  },
+  "message_contracts": [
+    {
+      "name": "DeployTaskMessage",
+      "exchange": "deploy.tasks",
+      "routing_key": "deploy.file_transfer",
+      "schema": {
+        "task_id": "string",
+        "action": "string",
+        "environment_id": "integer",
+        "file_path": "string",
+        "target_path": "string",
+        "version": "string"
+      },
+      "required_fields": ["task_id", "action", "environment_id", "target_path", "version"],
+      "max_size_bytes": 1048576
+    },
+    {
+      "name": "AuditEventMessage",
+      "exchange": "audit.events",
+      "routing_key": "audit.*",
+      "schema": {
+        "event_type": "string",
+        "actor": "string",
+        "actor_id": "integer",
+        "action": "string",
+        "target_type": "string",
+        "target_id": "integer",
+        "result": "string",
+        "ip_address": "string",
+        "timestamp": "string"
+      },
+      "required_fields": ["event_type", "actor", "actor_id", "action", "target_type", "target_id", "result", "timestamp"],
+      "max_size_bytes": 1048576
+    }
+  ],
+  "reliability_strategy": {
+    "ack_mode": "manual（消费者处理完成后手动ack，处理失败时nack并决定requeue或死信）",
+    "retry": {
+      "max_retries": 3,
+      "backoff": "exponential（1s → 3s → 9s，通过死信队列的x-message-ttl实现延迟重投）"
+    },
+    "dead_letter": "dlx.global死信交换机，所有重试耗尽的消息路由到dead.letter.queue，支持人工重投和监控告警",
+    "idempotency": "生产者通过消息唯一ID（message_id UUID）去重；消费者通过task_id（部署任务）或(event_type, actor_id, timestamp)组合（审计事件）作为幂等键，确保重复消费不产生副作用"
+  }
+}
