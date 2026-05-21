@@ -1,0 +1,120 @@
+{
+  "meta": {
+    "doc_id": "lld-RabbitMQ-001",
+    "type": "lld",
+    "module_type": "ModuleType.INFRASTRUCTURE",
+    "module": "RabbitMQ",
+    "title": "LLD - RabbitMQ",
+    "author": "design_agent",
+    "created": "2026-05-21 10:22"
+  },
+  "overview": {
+    "description": "异步消息队列中间件，解耦部署任务的生产和消费。Deployment Orchestrator 将部署步骤消息发布到 RabbitMQ 交换机，SSH Execution Service 从绑定队列消费并执行，实现部署任务的可靠异步投递、至少一次消费语义和失败重试机制。",
+    "dependencies": [],
+    "tech_stack": ["RabbitMQ 3.12"]
+  },
+  "data_models": [
+    {
+      "name": "deploy_task_exchange",
+      "type": "config",
+      "ownership": "owned",
+      "description": "部署任务交换机配置。Topic 类型交换机，用于将部署任务消息按照 routing key 路由到对应的消费队列。服务启动时由 RabbitMQ 客户端自动声明。",
+      "fields": [
+        {"name": "name", "type": "string", "required": true, "description": "交换机名称：deploy.task"},
+        {"name": "type", "type": "string", "required": true, "description": "交换机类型：topic"},
+        {"name": "durable", "type": "boolean", "required": true, "description": "持久化标志：true，RabbitMQ 重启后交换机定义不丢失"},
+        {"name": "auto_delete", "type": "boolean", "required": true, "description": "自动删除：false，最后一个解绑后不自动删除"}
+      ]
+    },
+    {
+      "name": "deploy_task_queue",
+      "type": "config",
+      "ownership": "owned",
+      "description": "部署任务消费队列配置。SSH Execution Service 从此队列消费部署步骤消息，采用手动 ACK 模式确保可靠消费。支持死信转发，消费失败且达到最大重试次数后转入死信队列。",
+      "fields": [
+        {"name": "name", "type": "string", "required": true, "description": "队列名称：deploy.task.execute"},
+        {"name": "durable", "type": "boolean", "required": true, "description": "持久化标志：true，消息持久化到磁盘，服务重启不丢失"},
+        {"name": "exclusive", "type": "boolean", "required": true, "description": "排他性：false，允许多个消费者实例共享队列实现水平扩展"},
+        {"name": "auto_delete", "type": "boolean", "required": true, "description": "自动删除：false"},
+        {"name": "prefetch_count", "type": "integer", "required": true, "description": "消费者预取计数：1，每次只处理一条消息，确保部署步骤顺序执行"},
+        {"name": "dead_letter_exchange", "type": "string", "required": true, "description": "死信交换机名称：deploy.task.dlx"}
+      ]
+    },
+    {
+      "name": "deploy_task_binding",
+      "type": "config",
+      "ownership": "owned",
+      "description": "交换机到队列的绑定关系配置。将 deploy.task 交换机通过指定的 routing key 绑定到 deploy.task.execute 队列，确保发布到交换机的消息能正确路由到消费队列。",
+      "fields": [
+        {"name": "source_exchange", "type": "string", "required": true, "description": "源交换机：deploy.task"},
+        {"name": "destination_queue", "type": "string", "required": true, "description": "目标队列：deploy.task.execute"},
+        {"name": "routing_key", "type": "string", "required": true, "description": "绑定路由键：deploy.task.execute"}
+      ]
+    },
+    {
+      "name": "deploy_dlx_config",
+      "type": "config",
+      "ownership": "owned",
+      "description": "死信交换机及队列配置。处理消费失败且不再重新入队的消息，支持 TTL 到期后自动重试，避免消息无限积压。",
+      "fields": [
+        {"name": "dlx_exchange_name", "type": "string", "required": true, "description": "死信交换机名称：deploy.task.dlx"},
+        {"name": "dlx_queue_name", "type": "string", "required": true, "description": "死信队列名称：deploy.task.dlx.retry"},
+        {"name": "dlx_routing_key", "type": "string", "required": true, "description": "死信队列路由键：deploy.task.dlx.retry"},
+        {"name": "dlx_message_ttl", "type": "integer", "required": true, "description": "死信消息 TTL：30000ms，到期后自动重新发布到原队列"},
+        {"name": "dlx_exchange_type", "type": "string", "required": true, "description": "死信交换机类型：direct"}
+      ]
+    },
+    {
+      "name": "DeployTaskMessage",
+      "type": "struct",
+      "ownership": "owned",
+      "description": "部署任务消息体结构。Deployment Orchestrator 将部署请求拆分为步骤后，以此结构序列化为 JSON 并发布到 RabbitMQ。SSH Execution Service 消费后解析执行。",
+      "fields": [
+        {"name": "deployment_id", "type": "string", "required": true, "description": "部署任务唯一标识（UUID）"},
+        {"name": "environment_id", "type": "string", "required": true, "description": "目标环境 ID（UUID）"},
+        {"name": "file_path", "type": "string", "required": true, "description": "已上传可执行文件在文件存储中的路径"},
+        {"name": "version", "type": "string", "required": true, "description": "部署版本号"},
+        {"name": "steps", "type": "array<string>", "required": true, "description": "部署步骤名称列表，按执行顺序排列（如 file_transfer, generate_scripts, start_service）"}
+      ]
+    },
+    {
+      "name": "DeployTaskResult",
+      "type": "struct",
+      "ownership": "owned",
+      "description": "部署任务执行结果结构。SSH Execution Service 执行完单个步骤后，将结果以此结构返回。通过 Direct Reply-to 机制或独立结果队列回传给 Deployment Orchestrator。",
+      "fields": [
+        {"name": "deployment_id", "type": "string", "required": true, "description": "部署任务唯一标识（UUID）"},
+        {"name": "step", "type": "string", "required": true, "description": "已执行的步骤名称"},
+        {"name": "status", "type": "string", "required": true, "description": "执行结果状态：success/failed"},
+        {"name": "output", "type": "string", "required": true, "description": "步骤执行输出日志（包含 stdout 和 stderr 内容）"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "DispatchDeployTask",
+      "method": "INTERNAL",
+      "endpoint": "AMQP exchange: deploy.task",
+      "description": "部署任务发布与消费接口。Deployment Orchestrator 通过此接口将部署步骤消息发布到 deploy.task 交换机（routing key: deploy.task.execute），消息持久化以确保可靠投递。SSH Execution Service 从 deploy.task.execute 队列消费消息并执行，执行结果通过 DeployTaskResult 结构返回。采用 Publisher Confirm 机制确保消息可达，consumer 手动 ACK 确保至少一次消费。",
+      "parameters": [
+        {"name": "routing_key", "type": "string", "description": "路由键：deploy.task.execute"},
+        {"name": "message", "type": "DeployTaskMessage", "description": "部署任务消息体，JSON 序列化后发布"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "deployment_id": "string",
+          "step": "string",
+          "status": "string",
+          "output": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 502, "message": "消息发布失败：RabbitMQ 连接不可用或 Channel 异常，已触发自动重试（最多 3 次，指数退避间隔 1s/2s/4s）"},
+        {"code": 504, "message": "消息发布超时：Publisher Confirm 在 5s 内未返回确认，消息状态未知需人工核查"},
+        {"code": 503, "message": "消费处理失败：业务异常导致消息 NACK，重新入队重试。超过 3 次后转入死信队列"}
+      ]
+    }
+  ],
+  "error_handling": "RabbitMQ 消息队列采用可靠投递和故障隔离策略：(1) 连接管理 — RabbitMQ 客户端启用自动恢复（Automatic Recovery），连接断开后每隔 5s 自动重连，最大重试次数 60 次（5 分钟）。采用单连接多 Channel 模型，Channel 最大数量 10，避免连接资源耗尽。(2) 消息发布可靠性 — 启用 Publisher Confirm 模式（channel.confirmSelect()），每条消息发布后等待 Broker 确认。未确认消息触发重试（最多 3 次），采用指数退避策略（1s → 2s → 4s），全部失败后标记对应部署步骤为 failed 并记录审计日志。消息发布时设置 DeliveryMode=2（持久化），确保消息写入磁盘。(3) 消费确认 — 所有消费者采用手动 ACK 模式（autoAck=false）。消息消费成功后调用 channel.basicAck() 确认消费。业务处理异常时调用 channel.basicNack(requeue=true) 重新入队重试，单条消息最大重试次数为 3 次。超过重试上限的消息调用 basicNack(requeue=false) 转发至死信交换机 deploy.task.dlx。(4) 死信自动恢复 — 死信队列 deploy.task.dlx.retry 的 TTL 设置为 30s，到期后消息自动重新发布到原队列 deploy.task.execute。死信消息头部携带 x-death 数组，包含原始路由信息、失败原因和拒绝次数，供运维排障。死信重试计数写死，不产生无限循环。(5) 资源声明 — 应用启动时通过 Channel 以被动声明（queue.declare passive=false）自动创建交换机、队列和绑定关系。交换机、队列和消息均设置 durable=true，确保 RabbitMQ 节点重启后拓扑结构和消息完整恢复。(6) 消费顺序和并发 — 单消费者 prefetch_count=1 保证消息串行处理，避免部署步骤乱序。支持多实例水平扩展：同一队列可绑定多个 SSH Execution Service 消费者实例，消息按轮询方式分发（Round-Robin Dispatch），各实例独立处理不同部署任务。(7) 监控告警 — 监控指标包括：队列深度（deploy.task.execute 队列积压超过 100 条触发告警）、消费者计数（活跃消费者数为 0 时触发告警）、消息处理延迟（从发布到 ACK 超过 5 分钟触发告警）、Channel 异常数。所有异常事件和关键状态变更记录到审计日志。(8) 优雅关闭 — 应用关闭时取消消费者（basicCancel）、关闭 Channel 和 Connection，等待 in-flight 消息处理完成（最多等待 30s），确保正在执行的消息不被强制中断。"
+}
