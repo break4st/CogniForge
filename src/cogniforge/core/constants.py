@@ -60,6 +60,18 @@ class ModuleType(str, Enum):
     INFRASTRUCTURE = "infrastructure"
 
 
+class TaskCategory(str, Enum):
+    """Task category for WBS task classification"""
+    MODEL = "model"
+    SERVICE = "service"
+    ENDPOINT = "endpoint"
+    TEST = "test"
+    CONFIG = "config"
+    MIGRATION = "migration"
+    DOC = "doc"
+    FIX = "fix"
+
+
 class Ownership(str, Enum):
     """Data model ownership semantics."""
     CANONICAL = "canonical"  # I am the sole definer; others reference me

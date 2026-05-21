@@ -1,5 +1,6 @@
 """Task engine - task scheduling and DAG execution"""
 
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -11,9 +12,35 @@ from cogniforge.storage.git_storage import GitStorage
 from cogniforge.task_engine.dag import DAGStep, dag
 
 
+def _has_cycle(tasks: dict[str, Task], start_id: str) -> bool:
+    """Check if start_id's dependencies lead back to start_id (cycle)."""
+    start_task = tasks.get(start_id)
+    if not start_task:
+        return False
+
+    visited: set[str] = set()
+    stack: list[str] = []
+
+    for dep_id in start_task.deps:
+        if dep_id in tasks:
+            stack.append(dep_id)
+
+    while stack:
+        current = stack.pop()
+        if current == start_id:
+            return True
+        if current in visited:
+            continue
+        visited.add(current)
+        task = tasks.get(current)
+        if task:
+            stack.extend(task.deps)
+
+    return False
+
+
 class TaskEngine:
-    """
-    Task scheduling engine.
+    """Task scheduling engine.
 
     Responsibilities:
     - Task creation and management
@@ -29,18 +56,20 @@ class TaskEngine:
         self._load_tasks()
 
     def _load_tasks(self) -> None:
-        """Load existing tasks from wiki/tasks/"""
+        """Load existing tasks from wiki/tasks/ (JSON format)."""
         tasks_dir = self.config.repo_path / ".cogniforge/wiki/tasks"
         if not tasks_dir.exists():
             return
 
-        for task_file in tasks_dir.glob("*.md"):
+        for task_file in tasks_dir.glob("*.json"):
+            # Skip WBS aggregate files
+            if task_file.name.startswith("wbs_"):
+                continue
             try:
-                content = task_file.read_text(encoding="utf-8")
-                task = Task.from_markdown(str(task_file.relative_to(self.config.repo_path)), content)
+                data = json.loads(task_file.read_text(encoding="utf-8"))
+                task = Task.from_json_dict(data)
                 self._tasks[task.task_id] = task
             except Exception:
-                # Skip files that can't be parsed
                 pass
 
     def create_task(
@@ -51,10 +80,11 @@ class TaskEngine:
         deps: list[str] = None,
         priority: TaskPriority = TaskPriority.P2,
         assignee: Optional[str] = None,
-        commit_message: str = "feat: create task"
+        estimated_hours: Optional[float] = None,
+        category: Optional[str] = None,
+        commit_message: str = "feat: create task",
     ) -> Task:
-        """
-        Create a new task.
+        """Create a new task.
 
         Args:
             name: Task name
@@ -63,16 +93,22 @@ class TaskEngine:
             deps: List of dependent task IDs
             priority: Task priority (P0-P3)
             assignee: Agent role or ID assigned to this task
+            estimated_hours: Estimated effort in hours
+            category: Task category (model, service, endpoint, test, etc.)
             commit_message: Git commit message
 
         Returns:
             Created task
+
+        Raises:
+            TaskDependencyError: if a dependency doesn't exist or creates a cycle
         """
-        # Validate dependencies
-        if deps:
-            for dep_id in deps:
-                if dep_id not in self._tasks:
-                    raise TaskDependencyError(f"Dependency task {dep_id} does not exist")
+        deps = deps or []
+
+        # Validate dependencies exist
+        for dep_id in deps:
+            if dep_id not in self._tasks:
+                raise TaskDependencyError(f"Dependency task {dep_id} does not exist")
 
         task_id = self._generate_task_id(module)
 
@@ -81,15 +117,151 @@ class TaskEngine:
             name=name,
             module=module,
             description=description,
-            deps=deps or [],
+            deps=deps,
             priority=priority,
-            assignee=assignee
+            assignee=assignee,
+            estimated_hours=estimated_hours,
+            category=category,
         )
 
         self._tasks[task_id] = task
-        self._save_task(task, commit_message)
 
+        # Check for cycles after insertion
+        if _has_cycle(self._tasks, task_id):
+            del self._tasks[task_id]
+            raise TaskDependencyError(f"Adding task {task_id} would create a circular dependency")
+
+        self._save_task(task, commit_message)
         return task
+
+    def add_task(self, task: Task, commit_message: str = "feat: add task") -> Task:
+        """Add a pre-built task mid-execution (dynamic replanning).
+
+        Raises TaskDependencyError if deps create a cycle.
+        """
+        # Validate dependencies
+        for dep_id in task.deps:
+            if dep_id not in self._tasks:
+                raise TaskDependencyError(f"Dependency task {dep_id} does not exist")
+
+        self._tasks[task.task_id] = task
+        if _has_cycle(self._tasks, task.task_id):
+            del self._tasks[task.task_id]
+            raise TaskDependencyError(f"Adding task {task.task_id} would create a circular dependency")
+
+        self._save_task(task, commit_message)
+        return task
+
+    def remove_task(self, task_id: str, commit_message: str = "chore: remove task") -> bool:
+        """Remove a PENDING task that is no longer needed.
+
+        Refuses to remove tasks that are IN_PROGRESS, DONE, or FAILED.
+        Also refuses if other tasks depend on this one.
+        """
+        if task_id not in self._tasks:
+            return False
+
+        task = self._tasks[task_id]
+        if task.status != TaskStatus.PENDING:
+            return False
+
+        # Check if any other task depends on this one
+        for other_id, other_task in self._tasks.items():
+            if other_id != task_id and task_id in other_task.deps:
+                return False
+
+        del self._tasks[task_id]
+
+        task_path = Path(f".cogniforge/wiki/tasks/{task_id}.json")
+        full_path = self.config.repo_path / task_path
+        if full_path.exists():
+            full_path.unlink()
+            self.git_storage.repo.index.remove([str(task_path)])
+            self.git_storage.commit(commit_message)
+
+        return True
+
+    def replan(self, task_specs: list[dict], commit_message: str = "feat: replan tasks") -> dict:
+        """Batch replan: add/update/remove tasks from a new WBS snapshot.
+
+        Each spec dict must have: name, module.  Optional: description, deps,
+        priority, assignee, estimated_hours, category.
+
+        Existing tasks not in the new spec are removed (if PENDING).
+        New tasks in the spec but not in _tasks are created.
+        Existing tasks are updated in-place.
+        """
+        spec_ids: set[str] = set()
+        added: list[str] = []
+        updated: list[str] = []
+        removed: list[str] = []
+
+        new_tasks: dict[str, Task] = {}
+
+        for spec in task_specs:
+            name = spec["name"]
+            module = spec["module"]
+            task_id = self._generate_task_id(module)
+            spec_ids.add(task_id)
+
+            # Build task — resolve deps to actual task IDs where possible
+            deps = spec.get("deps", [])
+            priority_val = spec.get("priority", 2)
+            if isinstance(priority_val, str):
+                try:
+                    priority_val = int(priority_val)
+                except ValueError:
+                    priority_val = 2
+            priority = TaskPriority(priority_val) if isinstance(priority_val, int) else TaskPriority.P2
+
+            task = Task(
+                task_id=task_id,
+                name=name,
+                module=module,
+                description=spec.get("description", ""),
+                deps=deps,
+                priority=priority,
+                assignee=spec.get("assignee"),
+                estimated_hours=spec.get("estimated_hours"),
+                category=spec.get("category"),
+            )
+
+            if task_id in self._tasks:
+                existing = self._tasks[task_id]
+                existing.name = name
+                existing.description = spec.get("description", existing.description)
+                existing.deps = deps
+                existing.priority = priority
+                existing.assignee = spec.get("assignee", existing.assignee)
+                existing.estimated_hours = spec.get("estimated_hours", existing.estimated_hours)
+                existing.category = spec.get("category", existing.category)
+                existing.updated_at = task.created_at
+                new_tasks[task_id] = existing
+                updated.append(task_id)
+                self._save_task(existing, commit_message)
+            else:
+                new_tasks[task_id] = task
+                added.append(task_id)
+
+        # Remove tasks not in the new spec (only PENDING ones)
+        for task_id in list(self._tasks.keys()):
+            if task_id not in spec_ids and self._tasks[task_id].status == TaskStatus.PENDING:
+                if self.remove_task(task_id, commit_message):
+                    removed.append(task_id)
+
+        # Now add new tasks and check for cycles
+        for task_id in added:
+            task = new_tasks[task_id]
+            self._tasks[task_id] = task
+            if _has_cycle(self._tasks, task_id):
+                del self._tasks[task_id]
+                added.remove(task_id)
+                continue
+            self._save_task(task, commit_message)
+
+        self._tasks.update(new_tasks)
+
+        return {"added": added, "updated": updated, "removed": removed}
 
     def _generate_task_id(self, module: str) -> str:
         """Generate unique task ID for module"""
@@ -98,12 +270,15 @@ class TaskEngine:
         return f"{module}-{seq:03d}"
 
     def _save_task(self, task: Task, commit_message: str) -> None:
-        """Save task to wiki and commit"""
-        task_path = Path(f".cogniforge/wiki/tasks/{task.task_id}.md")
+        """Save task to wiki as JSON and commit"""
+        task_path = Path(f".cogniforge/wiki/tasks/{task.task_id}.json")
         full_path = self.config.repo_path / task_path
 
         full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(task.to_markdown(), encoding="utf-8")
+        full_path.write_text(
+            json.dumps(task.to_json(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
         self.git_storage.repo.index.add([str(task_path)])
         self.git_storage.commit(commit_message)
@@ -119,8 +294,7 @@ class TaskEngine:
         return [t for t in self._tasks.values() if t.module == module]
 
     def get_ready_tasks(self) -> list[Task]:
-        """
-        Get tasks that are ready to execute.
+        """Get tasks that are ready to execute.
 
         A task is ready if:
         1. Status is PENDING
@@ -132,7 +306,6 @@ class TaskEngine:
             if task.status != TaskStatus.PENDING:
                 continue
 
-            # Check if all dependencies are done
             deps_done = all(
                 self._tasks.get(dep).status == TaskStatus.DONE
                 for dep in task.deps
@@ -142,7 +315,6 @@ class TaskEngine:
             if deps_done:
                 ready.append(task)
 
-        # Sort by priority (P0 first)
         return sorted(ready, key=lambda t: t.priority.value)
 
     def get_blocked_tasks(self) -> list[Task]:
@@ -153,7 +325,6 @@ class TaskEngine:
             if task.status != TaskStatus.PENDING:
                 continue
 
-            # Check if any dependency is not done
             deps_blocked = any(
                 self._tasks.get(dep).status != TaskStatus.DONE
                 for dep in task.deps
@@ -167,8 +338,6 @@ class TaskEngine:
 
     def get_tasks_by_step(self, step: DAGStep) -> list[Task]:
         """Get tasks associated with a DAG step"""
-        # Tasks are associated with steps through their module or type
-        # For now, return all pending tasks for the coding step
         if step == DAGStep.CODING:
             return [t for t in self._tasks.values() if t.status == TaskStatus.PENDING]
         return []
@@ -179,13 +348,14 @@ class TaskEngine:
         status: TaskStatus,
         result: Optional[dict] = None,
         error: Optional[str] = None,
-        commit_message: str = "chore: update task"
+        changed_files: list[str] | None = None,
+        commit_message: str = "chore: update task",
     ) -> Task:
         """Update task status"""
         task = self.get_task(task_id)
 
         if status == TaskStatus.DONE:
-            task.mark_done(result)
+            task.mark_done(result, changed_files)
         elif status == TaskStatus.FAILED:
             task.mark_failed(error or "Unknown error")
         elif status == TaskStatus.BLOCKED:
@@ -194,7 +364,7 @@ class TaskEngine:
             task.mark_in_progress()
         else:
             task.status = status
-            task.updated_at = result
+            task.updated_at = None  # Force refresh
 
         self._save_task(task, commit_message)
         return task
@@ -203,14 +373,12 @@ class TaskEngine:
         """Get tasks that can be executed in parallel"""
         ready = self.get_ready_tasks()
 
-        # Filter tasks that have no dependencies on each other
         parallel = []
         remaining = ready
 
         while remaining and len(parallel) < max_count:
             task = remaining.pop(0)
 
-            # Check if this task depends on any task already in parallel set
             has_dep_in_parallel = any(
                 dep in [t.task_id for t in parallel]
                 for dep in task.deps
@@ -219,7 +387,6 @@ class TaskEngine:
             if not has_dep_in_parallel:
                 parallel.append(task)
             else:
-                # Put at end, will be scheduled in next batch
                 remaining.append(task)
 
         return parallel

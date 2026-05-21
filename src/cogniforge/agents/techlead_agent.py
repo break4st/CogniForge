@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from cogniforge.agents.base import BaseAgent
-from cogniforge.core.constants import DocumentType
+from cogniforge.core.constants import DocumentType, TaskPriority
 from cogniforge.core.exceptions import AgentError
 
 
@@ -54,30 +54,42 @@ class TechLeadAgent(BaseAgent):
             f"\"title\": \"WBS - {module}\", "
             f"\"author\": \"techlead_agent\", \"created\": \"{now}\"}},\n"
             f" \"tasks\": [{{\"name\": \"...\", \"description\": \"...\", "
-            f"\"deps\": [\"...\"], \"priority\": 1, \"assignee\": \"...\", "
-            f"\"estimated_hours\": 0}}]}}\n\n"
+            f"\"deps\": [\"...\"], \"priority\": 1, \"assignee\": \"dev\", "
+            f"\"estimated_hours\": 4, \"category\": \"service\"}}]}}\n\n"
             f"输入数据:\n"
             f"module: {module}\n"
             f"tasks: {json.dumps(tasks, ensure_ascii=False, indent=2)}\n\n"
             f"要求:\n"
             f"1. 先阅读 .cogniforge/wiki/prd/、.cogniforge/wiki/sad/、.cogniforge/wiki/lld/{module}/ 了解上下文\n"
-            f"2. 按依赖关系排序，标注优先级(0=阻塞 1=高 2=中 3=低)和预估工时\n"
-            f"3. 使用中文、只写 JSON 不写 HTML、完成后回复确认"
+            f"2. 每个任务粒度: 2-8 小时，对应一个可验证的产出物 (文件、函数、API 端点、测试套件)\n"
+            f"3. 按依赖关系拓扑排序，标注优先级 (0=阻塞 1=高 2=中 3=低) 和预估工时\n"
+            f"4. 每个任务必须指定 category: model | service | endpoint | test | config | migration | doc | fix\n"
+            f"5. 使用中文、只写 JSON 不写 HTML、完成后回复确认"
         )
 
         response = self.agent.generate_agentic(prompt, role="techlead")
 
-        # Create tasks in task_engine if provided
-        if hasattr(self, "task_engine") and tasks:
-            for t in tasks:
-                try:
-                    self.task_engine.create_task(
-                        name=t.get("name", "task"),
-                        module=module,
-                        description=t.get("description", ""),
-                    )
-                except Exception:
-                    pass
+        # Read back the generated WBS JSON and create individual tasks
+        if hasattr(self, "task_engine") and json_path.exists():
+            try:
+                wbs_data = json.loads(json_path.read_text(encoding="utf-8"))
+                wbs_tasks = wbs_data.get("tasks", [])
+                for i, t in enumerate(wbs_tasks):
+                    try:
+                        self.task_engine.create_task(
+                            name=t.get("name", f"task-{i}"),
+                            module=module,
+                            description=t.get("description", ""),
+                            deps=t.get("deps", []),
+                            priority=TaskPriority(t.get("priority", 2)),
+                            assignee=t.get("assignee"),
+                            estimated_hours=t.get("estimated_hours"),
+                            category=t.get("category"),
+                        )
+                    except Exception:
+                        pass
+            except (json.JSONDecodeError, IOError):
+                pass
 
         return self._commit_result(json_path, f"WBS - {module}", "techlead_agent",
                                    f"feat: add WBS for {module}", response.content)

@@ -982,6 +982,8 @@ def render_to_html(doc_type: str, data: dict) -> str:
         return _render_deploy(data)
     elif doc_type == "adr":
         return _render_adr(data)
+    elif doc_type == "task":
+        return _render_task(data)
     else:
         return _render_generic(doc_type, data)
 
@@ -2689,6 +2691,185 @@ def _render_adr(d: dict) -> str:
     parts.append(_section_header("⚠️", "后果", "rgba(251,191,36,0.12)"))
     parts.append(f"<p>{_esc(d.get('consequences', ''))}</p>")
     parts.append(_SECTION_FOOT)
+    parts.append(_PAGE_END)
+    return "\n".join(parts)
+
+
+PRIORITY_LABELS = {0: "P0 阻塞", 1: "P1 高", 2: "P2 中", 3: "P3 低"}
+PRIORITY_COLORS = {0: "#ef4444", 1: "#f59e0b", 2: "#3b82f6", 3: "#9ca3af"}
+STATUS_LABELS = {"pending": "待开始", "in_progress": "进行中", "done": "已完成",
+                  "blocked": "被阻塞", "failed": "失败"}
+STATUS_COLORS = {"pending": "#9ca3af", "in_progress": "#3b82f6", "done": "#22c55e",
+                 "blocked": "#f59e0b", "failed": "#ef4444"}
+
+
+def _render_task(d: dict) -> str:
+    """Render single task or WBS aggregate JSON to HTML."""
+    # Detect: WBS aggregate has "tasks" array; individual task has "task_id"
+    if "tasks" in d:
+        return _render_wbs_aggregate(d)
+    return _render_single_task(d)
+
+
+def _render_wbs_aggregate(d: dict) -> str:
+    m = d.get("meta", {})
+    tasks = d.get("tasks", [])
+    parts = [_page_start(
+        m.get("title", "WBS"), m.get("doc_id", ""), "WBS",
+        m.get("created", ""), m.get("author", "techlead_agent"),
+    )]
+
+    # Summary stats
+    total = len(tasks)
+    total_hours = sum(t.get("estimated_hours", 0) or 0 for t in tasks)
+    cats = {}
+    for t in tasks:
+        cat = t.get("category", "未分类")
+        cats[cat] = cats.get(cat, 0) + 1
+    cat_badges = " ".join(f'<span class="badge">{c} ({n})</span>' for c, n in sorted(cats.items()))
+
+    parts.append(_section_header("📊", f"概览 — {total} 个任务，共 {total_hours:.0f}h", "rgba(91,141,239,0.12)"))
+    parts.append(f"<div style='margin-bottom:12px'>{cat_badges}</div>")
+    parts.append(_SECTION_FOOT)
+
+    # Task list
+    parts.append(_section_header("📋", "任务列表", "rgba(124,111,247,0.12)"))
+    parts.append('<div class="req-list">')
+    for i, t in enumerate(tasks, 1):
+        name = _esc(t.get("name", f"任务 {i}"))
+        desc = _esc(t.get("description", ""))
+        prio = t.get("priority", 2)
+        prio_label = PRIORITY_LABELS.get(prio, f"P{prio}")
+        prio_color = PRIORITY_COLORS.get(prio, "#9ca3af")
+        cat = _esc(t.get("category", "未分类"))
+        hours = t.get("estimated_hours", 0) or 0
+        deps = t.get("deps", [])
+        deps_str = ", ".join(deps) if deps else "无"
+        assignee = _esc(t.get("assignee", "未分配"))
+
+        parts.append(
+            f'<div class="req-item">\n'
+            f'  <h3>{i}. {name}</h3>\n'
+            f'  <div class="comp-type">'
+            f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;'
+            f'background:{prio_color};margin-right:4px"></span>'
+            f'{prio_label} · {cat} · {hours}h · {assignee}'
+            f'</div>\n'
+            f'  <p>{desc}</p>\n'
+            f'  <p><strong>依赖:</strong> {_esc(deps_str)}</p>\n'
+            f'</div>'
+        )
+    parts.append("</div>")
+    parts.append(_SECTION_FOOT)
+
+    # Dependency graph (simple text-based)
+    parts.append(_section_header("🔗", "依赖关系图", "rgba(52,211,153,0.12)"))
+    parts.append("<pre>")
+    for i, t in enumerate(tasks, 1):
+        name = t.get("name", f"任务 {i}")
+        deps = t.get("deps", [])
+        if deps:
+            for dep in deps:
+                dep_name = dep
+                for dt in tasks:
+                    if dt.get("name") == dep:
+                        dep_name = f"{dep} ({dt.get('name', dep)})"
+                        break
+                parts.append(f"{_esc(dep)} → {_esc(name)}")
+        else:
+            parts.append(f"(入口) → {_esc(name)}")
+    parts.append("</pre>")
+    parts.append(_SECTION_FOOT)
+
+    parts.append(_PAGE_END)
+    return "\n".join(parts)
+
+
+def _render_single_task(d: dict) -> str:
+    """Render a single task JSON to HTML."""
+    task_id = _esc(d.get("task_id", ""))
+    name = _esc(d.get("name", ""))
+    module = _esc(d.get("module", ""))
+    status_val = d.get("status", "pending")
+    status_label = STATUS_LABELS.get(status_val, status_val)
+    status_color = STATUS_COLORS.get(status_val, "#9ca3af")
+    prio = d.get("priority", 2)
+    prio_label = PRIORITY_LABELS.get(prio, f"P{prio}")
+    prio_color = PRIORITY_COLORS.get(prio, "#9ca3af")
+    cat = _esc(d.get("category", "未分类"))
+    assignee = _esc(d.get("assignee") or "未分配")
+    est_h = d.get("estimated_hours")
+    act_h = d.get("actual_hours")
+    deps = d.get("deps", [])
+    changed = d.get("changed_files", [])
+    desc = _esc(d.get("description", ""))
+    result = d.get("result")
+    error = d.get("error")
+    created = d.get("created_at", "")
+    updated = d.get("updated_at", "")
+
+    parts = [_page_start(name, task_id, "任务", created, assignee)]
+
+    # Status bar
+    parts.append(
+        f'<div style="margin-bottom:16px">'
+        f'<span style="display:inline-block;padding:4px 12px;border-radius:4px;'
+        f'background:{status_color}22;color:{status_color};font-weight:600;margin-right:8px">'
+        f'{status_label}</span>'
+        f'<span style="display:inline-block;padding:4px 12px;border-radius:4px;'
+        f'background:{prio_color}22;color:{prio_color};font-weight:600;margin-right:8px">'
+        f'{prio_label}</span>'
+        f'<span class="badge">{cat}</span>'
+        f'<span style="margin-left:8px;color:#9ca3af">{module} · {assignee}</span>'
+        f'</div>'
+    )
+
+    # Key info
+    parts.append(_section_header("📋", "基本信息", "rgba(91,141,239,0.12)"))
+    parts.append(f"<p><strong>Task ID:</strong> {task_id}</p>")
+    parts.append(f"<p><strong>模块:</strong> {module}</p>")
+    if est_h is not None:
+        parts.append(f"<p><strong>预估工时:</strong> {est_h}h</p>")
+    if act_h is not None:
+        parts.append(f"<p><strong>实际工时:</strong> {act_h}h</p>")
+    if deps:
+        parts.append(f"<p><strong>依赖:</strong> {_esc(', '.join(deps))}</p>")
+    else:
+        parts.append("<p><strong>依赖:</strong> 无</p>")
+    parts.append(_SECTION_FOOT)
+
+    # Description
+    parts.append(_section_header("📝", "描述", "rgba(124,111,247,0.12)"))
+    parts.append(f"<p>{desc}</p>")
+    parts.append(_SECTION_FOOT)
+
+    # Changed files
+    if changed:
+        parts.append(_section_header("📁", "变更文件", "rgba(52,211,153,0.12)"))
+        parts.append("<ul>")
+        for f in changed:
+            parts.append(f"<li>{_esc(f)}</li>")
+        parts.append("</ul>")
+        parts.append(_SECTION_FOOT)
+
+    # Result
+    if result:
+        parts.append(_section_header("✅", "执行结果", "rgba(34,197,94,0.12)"))
+        parts.append("<pre>")
+        for k, v in result.items():
+            parts.append(f"{_esc(k)}: {_esc(str(v))}")
+        parts.append("</pre>")
+        parts.append(_SECTION_FOOT)
+
+    # Error
+    if error:
+        parts.append(_section_header("❌", "错误信息", "rgba(239,68,68,0.12)"))
+        parts.append(f"<pre>{_esc(error)}</pre>")
+        parts.append(_SECTION_FOOT)
+
+    # Timestamps
+    parts.append(f'<div class="meta" style="margin-top:24px">创建: {created} · 更新: {updated}</div>')
+
     parts.append(_PAGE_END)
     return "\n".join(parts)
 
