@@ -223,11 +223,15 @@ _SHARED_CSS = """
     font-family: monospace; font-size: 0.75em; font-weight: 700;
     padding: 3px 8px; border-radius: 5px; white-space: nowrap;
   }
-  .method-badge.get    { background: rgba(52,211,153,0.15);  color: var(--c-green); }
-  .method-badge.post   { background: rgba(91,141,239,0.15);  color: var(--c-accent); }
-  .method-badge.put    { background: rgba(251,191,36,0.12);  color: var(--c-amber); }
-  .method-badge.delete { background: rgba(248,113,113,0.12); color: var(--c-red); }
-  .method-badge.mq     { background: rgba(124,111,247,0.13); color: var(--c-accent2); }
+  .method-badge.get      { background: rgba(52,211,153,0.15);  color: var(--c-green); }
+  .method-badge.post     { background: rgba(91,141,239,0.15);  color: var(--c-accent); }
+  .method-badge.put      { background: rgba(251,191,36,0.12);  color: var(--c-amber); }
+  .method-badge.delete   { background: rgba(248,113,113,0.12); color: var(--c-red); }
+  .method-badge.patch    { background: rgba(34,211,238,0.12);  color: var(--c-cyan); }
+  .method-badge.mq       { background: rgba(124,111,247,0.13); color: var(--c-accent2); }
+  .method-badge.ws       { background: rgba(124,111,247,0.13); color: var(--c-accent2); }
+  .method-badge.frontend { background: rgba(34,211,238,0.12);  color: var(--c-cyan); }
+  .method-badge.internal { background: rgba(107,115,148,0.15); color: var(--c-muted); }
   .cc-endpoint {
     font-family: monospace; font-size: 0.82em; color: var(--c-text);
     background: rgba(255,255,255,0.03); padding: 2px 8px; border-radius: 4px;
@@ -1585,8 +1589,8 @@ def _render_lld(d: dict) -> str:
 
     sections.append(("models", "🗄️", f"数据模型 ({len(models)})"))
 
-    # Service sections (after data_models)
-    if module_type in ("service", "gateway"):
+    # Service sections (after data_models — service only, not gateway)
+    if module_type == "service":
         if domain_objects:
             sections.append(("domain-objects", "📦", f"领域对象 ({len(domain_objects)})"))
         if service_contracts:
@@ -1907,6 +1911,37 @@ def _render_lld(d: dict) -> str:
                 f'<div class="body-label">Buckets</div>'
                 f'<p style="font-size:0.9em">{_esc(", ".join(str(b) for b in buckets))}</p>'
             )
+
+        # Cache-specific sub-fields
+        key_patterns = topo.get("key_patterns", [])
+        expiry = topo.get("expiry_strategy", "")
+        if key_patterns:
+            kp_rows = ""
+            for kp in key_patterns:
+                kp_rows += (
+                    f'<tr><td style="font-family:monospace">{_esc(kp.get("pattern",""))}</td>'
+                    f'<td>{_esc(kp.get("description",""))}</td></tr>'
+                )
+            parts.append(
+                f'<div class="body-label" style="margin-top:12px">Key Patterns</div>'
+                f'<table class="body-table"><thead><tr><th>Pattern</th><th>说明</th></tr></thead><tbody>{kp_rows}</tbody></table>'
+            )
+        if expiry:
+            parts.append(
+                f'<div style="margin-top:8px;font-size:0.88em;color:var(--c-muted)">'
+                f'<strong>过期策略:</strong> {_esc(str(expiry))}'
+                f'</div>'
+            )
+
+        # File-storage-specific sub-fields
+        path_conventions = topo.get("path_conventions", "")
+        if path_conventions:
+            parts.append(
+                f'<div style="margin-top:8px;font-size:0.88em;color:var(--c-muted)">'
+                f'<strong>路径规范:</strong> {_esc(str(path_conventions))}'
+                f'</div>'
+            )
+
         parts.append(_SECTION_FOOT)
 
     # ── Infrastructure: Message Contracts ──
@@ -2065,7 +2100,7 @@ def _render_lld(d: dict) -> str:
     # ═══════════════════════════════════════════════════════════
 
     # ── Service / Gateway: Domain Objects ──
-    if module_type in ("service", "gateway") and domain_objects:
+    if module_type == "service" and domain_objects:
         parts.append(_section_header("📦", f"领域对象 ({len(domain_objects)})",
                                       "rgba(91,141,239,0.12)", "domain-objects"))
         obj_type_icons = {"entity": "🏷️", "value_object": "📌", "dto": "📋", "enum": "🔢"}
@@ -2125,7 +2160,7 @@ def _render_lld(d: dict) -> str:
         parts.append(_SECTION_FOOT)
 
     # ── Service: Service Contracts ──
-    if module_type in ("service", "gateway") and service_contracts:
+    if module_type == "service" and service_contracts:
         parts.append(_section_header("🔧", f"服务接口 ({len(service_contracts)})",
                                       "rgba(124,111,247,0.12)", "service-contracts"))
         for svc in service_contracts:
@@ -2189,7 +2224,7 @@ def _render_lld(d: dict) -> str:
         parts.append(_SECTION_FOOT)
 
     # ── Service: Business Rules ──
-    if module_type in ("service", "gateway") and business_rules:
+    if module_type == "service" and business_rules:
         parts.append(_section_header("📐", "业务规则", "rgba(251,191,36,0.12)", "business-rules"))
 
         # Invariants

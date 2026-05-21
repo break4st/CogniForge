@@ -465,9 +465,8 @@ class DesignAgent(BaseAgent):
                 f"   - provider 契约: 你必须实现这些接口，response body 字段名与类型不可修改\n"
                 f"   - consumer 契约: 引用这些接口的确切 endpoint 与字段，不要自造变体\n"
                 f"4. 各模块类型要求的章节必须完整填写，不可省略\n"
-                f"5. domain_objects 中 entity 的每个 attribute 必须标注 source\n"
-                f"6. service_contracts 中每个 method 必须有 precondition/postcondition/exceptions\n"
-                f"7. 使用中文、只写 JSON 不写 HTML、完成后回复确认"
+                + _type_specific_hints(module_type)
+                + f"使用中文、只写 JSON 不写 HTML、完成后回复确认"
             )
 
             response = self.agent.generate_agentic(prompt, role="design")
@@ -667,6 +666,46 @@ class DesignAgent(BaseAgent):
 # ---------------------------------------------------------------------------
 # Conditional schema assembler
 # ---------------------------------------------------------------------------
+
+_HINTS: dict[str, str] = {
+    "service": (
+        "- domain_objects 中 entity 的每个 attribute 必须标注 source (db/computed/input/derived)\n"
+        "- service_contracts 中每个 method 必须有 precondition/postcondition/exceptions\n"
+        "- business_rules 中如有状态实体必须定义状态机，含转换图和不可逆规则\n"
+    ),
+    "frontend": (
+        "- component_tree 中每个组件必须定义 props、events、state、behavior、edge_cases\n"
+        "- state_design 必须划分全局状态 vs 页面局部状态\n"
+        "- interaction_flows 必须覆盖关键用户旅程\n"
+        "- api_integration 必须列出每个页面调用的确切 API endpoint\n"
+    ),
+    "gateway": (
+        "- route_table 必须完整列出每个 path pattern → upstream 映射\n"
+        "- middleware_chain 必须标注顺序\n"
+        "- auth_policy 的 role_path_map 必须覆盖所有受保护路径\n"
+        "- rate_limiting 必须区分全局、每用户、特殊端点三级\n"
+    ),
+    "database": (
+        "- index_strategy 按表列出所有索引的名称、列、类型、用途\n"
+        "- migration_strategy 必须声明工具、命名规范和回滚策略\n"
+        "- capacity_estimation 必须给出 1 年和 3 年预估数据量\n"
+        "- connection_contracts 必须列出各服务账号及其权限矩阵\n"
+    ),
+    "infrastructure": (
+        "- topology 必须包含 exchanges/queues/bindings（MQ）或 namespaces/key_patterns（缓存）或 buckets（文件存储）\n"
+        "- 消息队列必须有 message_contracts 和 reliability_strategy\n"
+        "- reliability_strategy 必须包含 ack 模式、重试策略、死信和幂等说明\n"
+    ),
+}
+
+
+def _type_specific_hints(module_type: str) -> str:
+    """Return type-specific prompt hints based on module_type."""
+    hints = _HINTS.get(module_type, "")
+    if hints:
+        return hints + "\n"
+    return ""
+
 
 def _build_conditional_schema(module_type: str) -> str:
     """Return the extra JSON schema sections for the given module type."""
