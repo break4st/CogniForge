@@ -1,0 +1,493 @@
+{
+  "meta": {
+    "doc_id": "lld-远程服务器集群-001",
+    "type": "lld",
+    "module_type": "infrastructure",
+    "module": "远程服务器集群",
+    "title": "远程服务器集群详细设计 - 部署目标服务器群组与SSH连接基础设施",
+    "author": "design_agent",
+    "created": "2026-05-21T00:00:00Z"
+  },
+  "overview": {
+    "description": "部署目标远程服务器群组，按环境类型（测试/灰度/正式）划分为多个服务器组，承载实际部署的应用服务运行。提供SSH安全连接接收、远程命令执行、文件传输、服务状态监控、部署目录标准化管理等基础设施能力，是部署流程的最终执行目标。",
+    "dependencies": ["SSH连接管理服务", "部署编排服务", "环境管理服务"],
+    "tech_stack": ["SSH / SFTP / SCP", "Python"]
+  },
+  "topology": {
+    "namespaces": [
+      {
+        "name": "test",
+        "description": "测试环境服务器集群，用于开发自测和QA验证，不对线上用户提供服务。包含多台测试服务器组成的高可用分组",
+        "groups": [
+          {
+            "group_id": "test-web-001",
+            "label": "web",
+            "instance_count": 2,
+            "deploy_base_path": "/deploy/{project_name}",
+            "os_type": "linux/amd64"
+          },
+          {
+            "group_id": "test-worker-001",
+            "label": "worker",
+            "instance_count": 1,
+            "deploy_base_path": "/deploy/{project_name}",
+            "os_type": "linux/amd64"
+          }
+        ],
+        "network_policy": "内网互通，对外仅开放SSH端口（22），出站流量不受限制"
+      },
+      {
+        "name": "gray",
+        "description": "灰度环境服务器集群，用于小流量验证和灰度发布，仅对白名单用户开放。服务器配置与正式线一致但承载流量较少",
+        "groups": [
+          {
+            "group_id": "gray-web-001",
+            "label": "web",
+            "instance_count": 2,
+            "deploy_base_path": "/deploy/{project_name}",
+            "os_type": "linux/amd64"
+          },
+          {
+            "group_id": "gray-worker-001",
+            "label": "worker",
+            "instance_count": 1,
+            "deploy_base_path": "/deploy/{project_name}",
+            "os_type": "linux/amd64"
+          },
+          {
+            "group_id": "gray-cron-001",
+            "label": "cron",
+            "instance_count": 1,
+            "deploy_base_path": "/deploy/{project_name}",
+            "os_type": "linux/amd64"
+          }
+        ],
+        "network_policy": "内网互通，对外仅开放SSH端口（22），通过负载均衡器接收灰度流量"
+      },
+      {
+        "name": "prod",
+        "description": "正式环境服务器集群，承载线上生产流量，具备多可用区高可用部署能力。每个分组至少2台实例以确保服务容灾",
+        "groups": [
+          {
+            "group_id": "prod-web-001",
+            "label": "web",
+            "instance_count": 4,
+            "deploy_base_path": "/deploy/{project_name}",
+            "os_type": "linux/amd64"
+          },
+          {
+            "group_id": "prod-web-002",
+            "label": "web",
+            "instance_count": 4,
+            "deploy_base_path": "/deploy/{project_name}",
+            "os_type": "linux/amd64"
+          },
+          {
+            "group_id": "prod-worker-001",
+            "label": "worker",
+            "instance_count": 2,
+            "deploy_base_path": "/deploy/{project_name}",
+            "os_type": "linux/amd64"
+          },
+          {
+            "group_id": "prod-cron-001",
+            "label": "cron",
+            "instance_count": 1,
+            "deploy_base_path": "/deploy/{project_name}",
+            "os_type": "linux/amd64"
+          }
+        ],
+        "network_policy": "内网互通，多可用区部署，对外仅开放SSH端口（22），通过负载均衡器接收生产流量"
+      }
+    ],
+    "grouping_rules": "服务器组按环境类型（test/gray/prod）和业务角色（web/worker/cron）两个维度交叉划分。同一环境类型下可存在多个同角色分组以实现横向扩展。每个分组内实例共享相同的部署路径和版本状态",
+    "isolation_levels": [
+      {
+        "level": "environment",
+        "description": "不同环境类型（test/gray/prod）之间的服务器完全网络隔离，禁止跨环境SSH访问和数据传输"
+      },
+      {
+        "level": "group",
+        "description": "同一环境内不同角色分组之间通过内网互通，但部署操作按分组执行，互不影响"
+      }
+    ]
+  },
+  "data_models": [
+    {
+      "name": "server_group",
+      "type": "config",
+      "ownership": "owned",
+      "description": "服务器组配置，按环境类型（test/gray/prod）划分的逻辑分组，每组包含一组具有相同部署角色的服务器实例。一个项目可在同一环境类型下拥有多个服务器组以实现负载均衡。",
+      "fields": [
+        {"name": "group_id", "type": "string", "required": true, "description": "服务器组唯一标识"},
+        {"name": "group_name", "type": "string", "required": true, "description": "服务器组名称"},
+        {"name": "env_type", "type": "string", "required": true, "description": "环境类型：test（测试线）/ gray（灰度）/ prod（正式线）"},
+        {"name": "description", "type": "string", "required": false, "description": "服务器组描述说明"},
+        {"name": "project_id", "type": "integer", "required": true, "description": "所属项目ID，关联项目管理服务的项目记录"},
+        {"name": "created_at", "type": "string", "required": true, "description": "创建时间 ISO8601"},
+        {"name": "updated_at", "type": "string", "required": true, "description": "更新时间 ISO8601"}
+      ]
+    },
+    {
+      "name": "server_instance",
+      "type": "config",
+      "ownership": "owned",
+      "description": "单台服务器实例配置，记录SSH连接参数、运行状态和所属分组。每台服务器实例对应一个远程物理机或虚拟机。",
+      "fields": [
+        {"name": "server_id", "type": "string", "required": true, "description": "服务器唯一标识"},
+        {"name": "group_id", "type": "string", "required": true, "description": "所属服务器组ID"},
+        {"name": "host", "type": "string", "required": true, "description": "服务器主机地址（IP或域名）"},
+        {"name": "port", "type": "integer", "required": true, "description": "SSH端口号，默认22"},
+        {"name": "username", "type": "string", "required": true, "description": "SSH登录用户名"},
+        {"name": "status", "type": "string", "required": true, "description": "连接状态：online / offline / unknown / maintenance"},
+        {"name": "label", "type": "string", "required": false, "description": "服务器标签，用于分组标识如 web/worker/cron"},
+        {"name": "os_type", "type": "string", "required": false, "description": "操作系统架构标识（如 linux/amd64）"},
+        {"name": "last_connected_at", "type": "string", "required": false, "description": "最后成功连接时间 ISO8601"},
+        {"name": "created_at", "type": "string", "required": true, "description": "创建时间 ISO8601"},
+        {"name": "updated_at", "type": "string", "required": true, "description": "更新时间 ISO8601"}
+      ]
+    },
+    {
+      "name": "deployment_directory",
+      "type": "struct",
+      "ownership": "owned",
+      "description": "远程服务器上的标准化部署目录结构模板。各项目环境按此布局创建目录，确保版本管理和回滚操作的路径一致性。",
+      "fields": [
+        {"name": "deploy_base_path", "type": "string", "required": true, "description": "部署根路径，格式 /deploy/{project_name}"},
+        {"name": "releases_dir", "type": "string", "required": true, "description": "版本发布目录，存放各版本文件：{base}/releases/{version}"},
+        {"name": "current_link", "type": "string", "required": true, "description": "当前版本软链接路径：{base}/current -> releases/{version}"},
+        {"name": "shared_dir", "type": "string", "required": false, "description": "共享数据目录，存放跨版本共享的持久化文件（日志、上传等）：{base}/shared"},
+        {"name": "backup_dir", "type": "string", "required": false, "description": "部署备份目录：{base}/backup"},
+        {"name": "scripts_dir", "type": "string", "required": false, "description": "部署脚本目录，存放启动/停止/健康检查等脚本：{base}/scripts"}
+      ]
+    },
+    {
+      "name": "service_status",
+      "type": "struct",
+      "ownership": "owned",
+      "description": "应用服务运行状态快照，通过SSH远程查询服务进程状态获取。用于部署监控面板展示、健康检查和异常告警。",
+      "fields": [
+        {"name": "service_name", "type": "string", "required": true, "description": "服务名称（如 project-api/worker-celery）"},
+        {"name": "pid", "type": "integer", "required": false, "description": "进程PID，服务未运行时为null"},
+        {"name": "status", "type": "string", "required": true, "description": "运行状态：running / stopped / crashed / unknown"},
+        {"name": "cpu_percent", "type": "number", "required": false, "description": "CPU使用率百分比"},
+        {"name": "memory_mb", "type": "number", "required": false, "description": "内存使用量（MB）"},
+        {"name": "uptime_seconds", "type": "integer", "required": false, "description": "服务已持续运行时长（秒）"},
+        {"name": "last_checked_at", "type": "string", "required": true, "description": "状态检查时间 ISO8601"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "测试SSH连接",
+      "method": "INTERNAL",
+      "endpoint": "ssh://{host}:{port}/connect/test",
+      "description": "测试到指定服务器的SSH连接是否可用，验证认证凭据有效性和网络可达性。返回连接延迟和服务器基础信息。",
+      "parameters": [
+        {"name": "host", "type": "string", "description": "服务器主机地址"},
+        {"name": "port", "type": "integer", "description": "SSH端口号"},
+        {"name": "username", "type": "string", "description": "SSH登录用户名"},
+        {"name": "auth_method", "type": "string", "description": "认证方式：key（密钥）/ password（密码）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "connected": "boolean",
+          "fingerprint": "string",
+          "os_info": "string",
+          "latency_ms": "integer"
+        }
+      },
+      "error_codes": [
+        {"code": 4001, "message": "SSH连接超时（阈值15s），服务器不可达或防火墙拦截"},
+        {"code": 4002, "message": "SSH认证失败，密钥或密码不正确"},
+        {"code": 4003, "message": "SSH主机密钥变更，可能存在中间人攻击"}
+      ]
+    },
+    {
+      "name": "执行远程命令",
+      "method": "INTERNAL",
+      "endpoint": "ssh://{host}:{port}/exec",
+      "description": "在远程服务器上执行指定的Shell命令，支持同步和异步两种执行模式。异步模式返回command_id用于后续查询和日志拉取。",
+      "parameters": [
+        {"name": "host", "type": "string", "description": "服务器主机地址"},
+        {"name": "port", "type": "integer", "description": "SSH端口号"},
+        {"name": "username", "type": "string", "description": "SSH登录用户名"},
+        {"name": "command", "type": "string", "description": "要执行的Shell命令或脚本内容"},
+        {"name": "timeout_seconds", "type": "integer", "description": "命令执行超时时间（秒），默认300"},
+        {"name": "async_mode", "type": "boolean", "description": "是否异步执行，默认false"},
+        {"name": "working_directory", "type": "string", "description": "命令工作目录（可选）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "command_id": "string",
+          "exit_code": "integer",
+          "stdout": "string",
+          "stderr": "string",
+          "executed_at": "string",
+          "duration_seconds": "number"
+        }
+      },
+      "error_codes": [
+        {"code": 4001, "message": "SSH连接超时或执行过程中连接断开"},
+        {"code": 4010, "message": "命令执行超时（超过timeout_seconds），已强制终止远端进程"},
+        {"code": 4011, "message": "命令返回非零退出码，执行失败（详情见stderr）"},
+        {"code": 4012, "message": "命令被系统SIGKILL终止（OOM或被其他进程杀死）"}
+      ]
+    },
+    {
+      "name": "传输文件",
+      "method": "INTERNAL",
+      "endpoint": "sftp://{host}:{port}/file/transfer",
+      "description": "通过SFTP协议在本地与远程服务器之间传输文件。支持上传和下载两种方向，自动创建目标路径的父目录。",
+      "parameters": [
+        {"name": "host", "type": "string", "description": "服务器主机地址"},
+        {"name": "port", "type": "integer", "description": "SSH端口号"},
+        {"name": "username", "type": "string", "description": "SSH登录用户名"},
+        {"name": "direction", "type": "string", "description": "传输方向：upload（上传）/ download（下载）"},
+        {"name": "local_path", "type": "string", "description": "本地文件路径"},
+        {"name": "remote_path", "type": "string", "description": "远程文件路径"},
+        {"name": "file_mode", "type": "string", "description": "远程文件权限模式，默认0644"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "transfer_id": "string",
+          "bytes_transferred": "integer",
+          "elapsed_seconds": "number",
+          "speed_kbps": "number",
+          "checksum": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 4020, "message": "SFTP连接失败，SSH会话异常"},
+        {"code": 4021, "message": "文件传输超时或网络中断"},
+        {"code": 4022, "message": "远程磁盘空间不足（使用率超过95%阈值）"},
+        {"code": 4023, "message": "目标目录创建失败，路径不合法或权限不足"},
+        {"code": 4024, "message": "文件写入权限拒绝"},
+        {"code": 4025, "message": "源文件在传输过程中被删除或修改"}
+      ]
+    },
+    {
+      "name": "检查服务状态",
+      "method": "INTERNAL",
+      "endpoint": "ssh://{host}:{port}/service/status",
+      "description": "通过SSH远程检查指定应用服务的运行状态。支持systemd服务单元和直接进程两种检查模式，返回进程存活状态和资源占用。",
+      "parameters": [
+        {"name": "host", "type": "string", "description": "服务器主机地址"},
+        {"name": "port", "type": "integer", "description": "SSH端口号"},
+        {"name": "username", "type": "string", "description": "SSH登录用户名"},
+        {"name": "service_name", "type": "string", "description": "服务名称"},
+        {"name": "check_type", "type": "string", "description": "检查类型：process（进程检查）/ systemd（systemd单元检查）/ http_health（HTTP健康检查）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "service_name": "string",
+          "status": "string",
+          "pid": "integer",
+          "cpu_percent": "number",
+          "memory_mb": "number",
+          "uptime_seconds": "integer"
+        }
+      },
+      "error_codes": [
+        {"code": 4001, "message": "SSH连接超时，无法获取服务状态"},
+        {"code": 4030, "message": "服务未安装或进程未运行"},
+        {"code": 4031, "message": "systemd服务单元不存在"},
+        {"code": 4032, "message": "HTTP健康检查端点返回非200状态码"}
+      ]
+    },
+    {
+      "name": "管理部署目录",
+      "method": "INTERNAL",
+      "endpoint": "ssh://{host}:{port}/directory/manage",
+      "description": "在远程服务器上按标准化布局创建或维护部署目录。支持版本目录创建、current软链接切换、旧版本清理等操作，是版本管理和回滚的基础。",
+      "parameters": [
+        {"name": "host", "type": "string", "description": "服务器主机地址"},
+        {"name": "port", "type": "integer", "description": "SSH端口号"},
+        {"name": "username", "type": "string", "description": "SSH登录用户名"},
+        {"name": "action", "type": "string", "description": "操作类型：create_release（创建版本目录）/ switch_current（切换软链接）/ cleanup_old（清理旧版本）/ create_shared（创建共享目录）"},
+        {"name": "base_path", "type": "string", "description": "部署根路径"},
+        {"name": "version", "type": "string", "description": "版本标识（create_release/switch_current必填）"},
+        {"name": "keep_versions", "type": "integer", "description": "保留最新版本数量（cleanup_old时使用），默认5"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "action": "string",
+          "path": "string",
+          "success": "boolean",
+          "message": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 4040, "message": "目录创建失败（权限不足或路径无效）"},
+        {"code": 4041, "message": "软链接操作失败（目标路径不存在）"},
+        {"code": 4042, "message": "指定版本目录不存在"},
+        {"code": 4043, "message": "磁盘空间不足，无法创建新版本目录"}
+      ]
+    },
+    {
+      "name": "查询服务器组列表",
+      "method": "INTERNAL",
+      "endpoint": "ssh://server_group/list",
+      "description": "查询所有已注册的服务器组列表，支持按项目ID和环境类型过滤。返回组的概要信息及组内服务器数量和健康统计。",
+      "parameters": [
+        {"name": "project_id", "type": "integer", "description": "按项目ID过滤"},
+        {"name": "env_type", "type": "string", "description": "按环境类型过滤：test / gray / prod"},
+        {"name": "page", "type": "integer", "description": "页码，默认1"},
+        {"name": "page_size", "type": "integer", "description": "每页数量，默认20"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "groups": "array",
+          "total": "integer",
+          "page": "integer",
+          "page_size": "integer"
+        }
+      },
+      "error_codes": [
+        {"code": 4050, "message": "查询参数无效（page或page_size超出范围）"},
+        {"code": 4051, "message": "无匹配的服务器组"}
+      ]
+    },
+    {
+      "name": "查询服务器实例列表",
+      "method": "INTERNAL",
+      "endpoint": "ssh://server_instance/list",
+      "description": "查询指定服务器组下的所有服务器实例列表，可按状态过滤。返回实例的连接参数和最新连接状态。",
+      "parameters": [
+        {"name": "group_id", "type": "string", "description": "服务器组ID"},
+        {"name": "status", "type": "string", "description": "按状态过滤：online / offline / unknown / maintenance"},
+        {"name": "page", "type": "integer", "description": "页码，默认1"},
+        {"name": "page_size", "type": "integer", "description": "每页数量，默认50"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "instances": "array",
+          "total": "integer",
+          "page": "integer",
+          "page_size": "integer"
+        }
+      },
+      "error_codes": [
+        {"code": 4050, "message": "查询参数无效"},
+        {"code": 4052, "message": "服务器组不存在"},
+        {"code": 4053, "message": "服务器组下无匹配的实例"}
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      {
+        "id": "INV-SG-001",
+        "severity": "error",
+        "description": "每个服务器组必须至少包含一台服务器实例。空服务器组没有任何部署意义，在创建后必须立即添加实例或标记删除",
+        "scope": "server_group"
+      },
+      {
+        "id": "INV-SG-002",
+        "severity": "error",
+        "description": "同一服务器组内的所有实例必须使用相同的部署根路径（deploy_base_path），确保版本一致性",
+        "scope": "server_group"
+      },
+      {
+        "id": "INV-SG-003",
+        "severity": "warning",
+        "description": "正式环境（prod）的Web角色服务器组至少应包含2台实例以确保服务高可用",
+        "scope": "server_group"
+      },
+      {
+        "id": "INV-SI-001",
+        "severity": "error",
+        "description": "一台服务器实例只能属于一个服务器组。跨组共享实例会导致部署状态混乱和版本冲突",
+        "scope": "server_instance"
+      },
+      {
+        "id": "INV-SI-002",
+        "severity": "error",
+        "description": "同一服务器组内的所有实例的host地址必须唯一，不允许重复注册",
+        "scope": "server_instance"
+      },
+      {
+        "id": "INV-DIR-001",
+        "severity": "error",
+        "description": "部署production环境前必须确认标准化部署目录结构（releases/current/shared/backup/scripts）已完整创建",
+        "scope": "deployment_directory"
+      },
+      {
+        "id": "INV-DIR-002",
+        "severity": "warning",
+        "description": "部署目录的磁盘使用率超过90%时应触发告警，超过95%应阻止新部署操作",
+        "scope": "deployment_directory"
+      },
+      {
+        "id": "INV-ENV-001",
+        "severity": "error",
+        "description": "严格禁止跨环境类型的SSH访问。test/gray/prod环境的服务器不得互相转发请求或传输部署文件",
+        "scope": "environment"
+      }
+    ]
+  },
+  "error_handling": {
+    "strategy": "SSH连接和远程操作失败时采用分层处理策略。网络层级错误（连接超时/断连）自动重试，采用指数退避最多3次。认证层级错误立即返回不重试，防止无效凭证导致账号锁定。命令执行层级错误根据退出码分类处理并记录完整输出。所有操作记录详细执行日志供事后审计和问题追溯。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": 4001,
+        "name": "SSH连接失败",
+        "description": "网络不可达、连接超时（阈值15s）或目标主机拒绝连接。自动重试3次（指数退避1s->3s->9s），重试耗尽后返回错误，标记该服务器状态为offline"
+      },
+      {
+        "code": 4002,
+        "name": "SSH认证失败",
+        "description": "SSH密钥或密码认证不通过。可能原因：密钥已更换、密钥文件格式错误、用户不存在。立即返回不重试，记录安全告警"
+      },
+      {
+        "code": 4003,
+        "name": "主机密钥变更",
+        "description": "远程服务器SSH主机密钥与known_hosts记录不匹配，可能存在中间人攻击或服务器重装。需人工确认后更新known_hosts"
+      },
+      {
+        "code": 4010,
+        "name": "命令执行超时",
+        "description": "远程命令超过指定的timeout_seconds仍未完成。SSH会话主动关闭并发送SIGTERM清理远端进程"
+      },
+      {
+        "code": 4011,
+        "name": "命令执行错误",
+        "description": "远程命令返回非零退出码。记录完整的stdout和stderr输出，供上层部署编排服务判断失败原因"
+      },
+      {
+        "code": 4021,
+        "name": "文件传输中断",
+        "description": "SFTP传输过程中网络中断或对端关闭连接。小于100MB的文件自动重试3次，大文件保留断点信息供恢复"
+      },
+      {
+        "code": 4022,
+        "name": "磁盘空间不足",
+        "description": "远程服务器磁盘使用率超过95%阈值，无法写入新文件。立即通知运维人员清理，部署流程暂停"
+      },
+      {
+        "code": 4030,
+        "name": "服务状态异常",
+        "description": "目标服务进程不存在或systemd服务单元处于failed状态。触发部署编排服务的容错处理流程"
+      },
+      {
+        "code": 5001,
+        "name": "内部错误",
+        "description": "SSH连接池内部错误、参数解析异常或不可预见的运行时异常。记录完整错误堆栈并通知系统管理员"
+      }
+    ]
+  }
+}
