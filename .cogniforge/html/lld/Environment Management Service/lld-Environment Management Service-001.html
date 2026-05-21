@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LLD - Environment Management Service — lld-Environment Management Service-001</title>
+<title>Environment Management Service — 详细设计 — lld-Environment Management Service-001</title>
 <style>
   :root {
     --c-bg: #0b0f19; --c-surface: #131926; --c-card: #191e2e;
@@ -412,6 +412,305 @@
   .flow-step.end    { border-color: rgba(124,111,247,0.3);  color: var(--c-accent2); }
   .flow-arrow { color: var(--c-muted); font-size: 0.85em; flex-shrink: 0; }
 
+  /* ── Error Handling ── */
+  .err-strategy {
+    background: linear-gradient(135deg, rgba(251,191,36,0.06), rgba(248,113,113,0.04));
+    border: 1px solid rgba(251,191,36,0.2);
+    border-radius: var(--radius); padding: 20px 24px; margin-bottom: 20px;
+  }
+  .err-strategy .err-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-amber);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;
+  }
+  .err-strategy p { font-size: 0.92em; line-height: 1.8; color: var(--c-text); }
+
+  .err-format-box {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 20px;
+  }
+  .err-format-box .err-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;
+  }
+  .err-format-box pre {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.84em; color: var(--c-text);
+    background: rgba(0,0,0,0.2); padding: 14px 18px; border-radius: 6px;
+    overflow-x: auto; line-height: 1.7;
+  }
+
+  .err-categories { display: flex; flex-direction: column; gap: 10px; }
+  .err-category {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px;
+    display: flex; gap: 16px; align-items: flex-start;
+  }
+  .err-category:hover { border-color: rgba(255,255,255,0.1); }
+  .err-code-badge {
+    font-family: monospace; font-size: 0.85em; font-weight: 700;
+    padding: 6px 12px; border-radius: 6px; white-space: nowrap;
+    flex-shrink: 0; min-width: 48px; text-align: center;
+  }
+  .err-code-badge._4xx { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+  .err-code-badge._5xx { background: rgba(248,113,113,0.12); color: var(--c-red); }
+  .err-code-badge._other { background: rgba(124,111,247,0.1); color: var(--c-accent2); }
+  .err-category-body { flex: 1; min-width: 0; }
+  .err-category-body .err-cat-name {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 6px;
+  }
+  .err-category-body .err-cat-desc {
+    font-size: 0.85em; color: var(--c-muted); line-height: 1.7;
+  }
+
+  /* ── Domain Objects ── */
+  .domain-obj {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .domain-obj h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); margin-bottom: 6px; }
+  .obj-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 0.72em; font-weight: 600; margin-left: 6px;
+  }
+  .obj-tag.entity   { background: rgba(91,141,239,0.12);  color: var(--c-accent); }
+  .obj-tag.dto      { background: rgba(52,211,153,0.12);  color: var(--c-green); }
+  .obj-tag.value_object { background: rgba(124,111,247,0.1); color: var(--c-accent2); }
+  .obj-tag.enum     { background: rgba(251,191,36,0.1);   color: var(--c-amber); }
+  .attr-source-tag {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 0.7em; font-weight: 600; font-family: monospace;
+    color: var(--c-muted); background: rgba(107,115,148,0.1);
+  }
+
+  /* ── Service Contracts ── */
+  .svc-contract {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); margin-bottom: 12px; overflow: hidden;
+  }
+  .svc-contract summary {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 20px; cursor: pointer; user-select: none;
+    font-weight: 600; font-size: 0.95em; color: var(--c-heading);
+    background: rgba(255,255,255,0.015);
+  }
+  .svc-contract summary:hover { background: rgba(255,255,255,0.03); }
+  .svc-contract summary::-webkit-details-marker { display: none; }
+  .svc-contract summary::before {
+    content: "›"; display: inline-block; font-size: 1.3em; font-weight: 400;
+    width: 16px; color: var(--c-muted); transition: transform 0.2s;
+  }
+  .svc-contract[open] summary::before { transform: rotate(90deg); }
+  .svc-method {
+    padding: 16px 20px; border-top: 1px solid var(--c-border);
+  }
+  .svc-method-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .svc-method-header .method-name {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading);
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+  }
+  .svc-method-header .return-type {
+    font-size: 0.82em; color: var(--c-accent); font-family: monospace;
+    background: rgba(91,141,239,0.08); padding: 2px 8px; border-radius: 4px;
+  }
+  .sig-block {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.84em; color: var(--c-text);
+    background: rgba(255,255,255,0.02); padding: 10px 14px;
+    border-radius: 6px; margin: 8px 0; overflow-x: auto;
+    border: 1px solid var(--c-border);
+  }
+  .pre-post {
+    display: flex; gap: 12px; margin: 8px 0; flex-wrap: wrap;
+  }
+  .pre-post-item {
+    flex: 1; min-width: 180px;
+    background: rgba(255,255,255,0.015); border: 1px solid var(--c-border);
+    border-radius: 6px; padding: 10px 14px;
+  }
+  .pre-post-item .pp-label {
+    font-size: 0.68em; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .pre-post-item.pre .pp-label { color: var(--c-green); }
+  .pre-post-item.post .pp-label { color: var(--c-accent); }
+  .pre-post-item .pp-text { font-size: 0.84em; color: var(--c-text); }
+  .exc-item {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 14px; margin: 2px 4px 2px 0;
+    font-size: 0.8em; background: rgba(248,113,113,0.06);
+    border: 1px solid rgba(248,113,113,0.15);
+  }
+  .exc-item .exc-name { font-weight: 600; color: var(--c-red); font-family: monospace; font-size: 0.85em; }
+  .exc-item .exc-http { font-size: 0.82em; color: var(--c-muted); }
+  .repo-dep {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.82em; color: var(--c-muted);
+    padding: 2px 0 2px 12px; border-left: 2px solid var(--c-border);
+    margin: 2px 0 2px 8px;
+  }
+
+  /* ── Business Rules ── */
+  .invariant-list {
+    list-style: none; padding: 0; margin: 0;
+  }
+  .invariant-list li {
+    padding: 8px 14px; margin-bottom: 6px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 6px; font-size: 0.9em;
+    display: flex; align-items: flex-start; gap: 10px;
+  }
+  .invariant-list li .inv-icon {
+    color: var(--c-amber); font-weight: 700; flex-shrink: 0;
+  }
+  .state-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 20px; margin-bottom: 12px;
+  }
+  .state-diagram .sd-title {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 12px;
+  }
+  .state-row {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px;
+  }
+  .state-node {
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 8px 18px; border-radius: 20px; font-size: 0.85em; font-weight: 600;
+    border: 1px solid var(--c-border); background: var(--c-card);
+    color: var(--c-text);
+  }
+  .state-node.active { border-color: rgba(91,141,239,0.4); color: var(--c-accent); background: rgba(91,141,239,0.06); }
+  .state-node.terminal { border-color: rgba(52,211,153,0.3); color: var(--c-green); background: rgba(52,211,153,0.06); }
+  .state-node.error   { border-color: rgba(248,113,113,0.3); color: var(--c-red); background: rgba(248,113,113,0.06); }
+  .state-arrow {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 0.78em; color: var(--c-muted); padding: 0 4px;
+  }
+  .state-arrow .trigger-text {
+    font-size: 0.85em; background: rgba(107,115,148,0.1);
+    padding: 2px 8px; border-radius: 4px;
+  }
+  .irrev-rule {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 12px; border-radius: 14px; margin: 4px;
+    font-size: 0.8em; background: rgba(248,113,113,0.06);
+    border: 1px solid rgba(248,113,113,0.15); color: var(--c-red);
+  }
+  .cross-svc-rule {
+    padding: 6px 12px; margin: 4px 0;
+    font-size: 0.85em; color: var(--c-accent2);
+    background: rgba(124,111,247,0.05); border-left: 3px solid rgba(124,111,247,0.3);
+    border-radius: 4px;
+  }
+
+  /* ── Component Tree ── */
+  .comp-node {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 16px 20px; margin-bottom: 8px;
+    margin-left: 0;
+  }
+  .comp-node.child { margin-left: 20px; border-left: 2px solid rgba(91,141,239,0.2); }
+  .comp-node .cn-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;
+  }
+  .comp-node .cn-name { font-weight: 600; font-size: 0.95em; color: var(--c-heading); }
+  .comp-node .cn-path {
+    font-family: monospace; font-size: 0.78em; color: var(--c-accent);
+    background: rgba(91,141,239,0.08); padding: 2px 8px; border-radius: 4px;
+  }
+  .cn-section { margin: 8px 0; }
+  .cn-section .cn-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .cn-tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 4px; margin: 2px;
+    font-size: 0.78em; background: rgba(255,255,255,0.03);
+    border: 1px solid var(--c-border); color: var(--c-text);
+  }
+  .cn-tag.prop { border-color: rgba(91,141,239,0.2); color: var(--c-accent); }
+  .cn-tag.event { border-color: rgba(52,211,153,0.2); color: var(--c-green); }
+  .cn-tag.state { border-color: rgba(251,191,36,0.2); color: var(--c-amber); }
+  .cn-behavior { font-size: 0.84em; color: var(--c-text); }
+  .cn-edge { font-size: 0.82em; color: var(--c-muted); }
+  .cn-edge .edge-icon { color: var(--c-amber); }
+
+  /* ── State Design ── */
+  .state-global-item {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 10px 14px; margin-bottom: 6px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 6px;
+  }
+  .state-global-item .sg-name {
+    font-weight: 600; font-size: 0.9em; color: var(--c-heading); font-family: monospace;
+  }
+  .state-global-item .sg-type {
+    font-size: 0.82em; color: var(--c-accent); font-family: monospace;
+    background: rgba(91,141,239,0.06); padding: 1px 6px; border-radius: 3px;
+  }
+
+  /* ── Route Design ── */
+  .route-row {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 14px; border-bottom: 1px solid var(--c-border);
+  }
+  .route-row:last-child { border-bottom: none; }
+
+  /* ── Interaction Flows ── */
+  .flow-timeline {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 16px 20px; margin-bottom: 12px;
+  }
+  .flow-timeline .ft-title {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 10px;
+  }
+  .ft-step {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 6px 0; font-size: 0.86em;
+  }
+  .ft-step .ft-num {
+    width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+    background: rgba(91,141,239,0.1); color: var(--c-accent);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 0.8em;
+  }
+  .ft-step .ft-text { color: var(--c-text); padding-top: 2px; }
+
+  /* ── Gateway ── */
+  .mw-flow {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+    padding: 14px 18px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; margin-bottom: 12px;
+  }
+  .mw-node {
+    padding: 6px 14px; border-radius: 6px; font-size: 0.84em; font-weight: 500;
+    background: var(--c-card); border: 1px solid var(--c-border);
+    color: var(--c-text); white-space: nowrap;
+  }
+  .mw-node.special {
+    border-color: rgba(91,141,239,0.25); color: var(--c-accent);
+    background: rgba(91,141,239,0.06);
+  }
+  .mw-arrow { color: var(--c-muted); font-size: 0.85em; }
+
+  .auth-matrix {
+    width: 100%; border-collapse: collapse; font-size: 0.85em;
+  }
+  .auth-matrix th {
+    text-align: left; padding: 8px 12px; font-weight: 600;
+    color: var(--c-muted); border-bottom: 2px solid var(--c-border);
+  }
+  .auth-matrix td { padding: 8px 12px; border-bottom: 1px solid var(--c-border); }
+  .role-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px; margin: 1px 3px 1px 0;
+    font-size: 0.82em; background: rgba(91,141,239,0.08); color: var(--c-accent);
+  }
+
   @media (max-width: 700px) {
     body { padding: 24px 16px 48px; }
     h1 { font-size: 1.6em; }
@@ -491,14 +790,14 @@
 </head>
 <body>
 <div class="page-layout">
-<nav class="sidebar" id="sidebar"><div class="sidebar-header"><div class="sid">lld-Environment Management Service-001</div><div class="stitle">LLD - Environment Management Service</div></div><div class="sidebar-nav"><a href="#overview" class="sidebar-link"><span class="sl-icon">📄</span>概述</a><a href="#models" class="sidebar-link"><span class="sl-icon">🗄️</span>数据模型 (1)</a><a href="#interfaces" class="sidebar-link"><span class="sl-icon">🔌</span>接口定义 (6)</a><a href="#errors" class="sidebar-link"><span class="sl-icon">⚠️</span>错误处理</a></div></nav><button id="sidebar-toggle" class="sidebar-toggle" aria-label="菜单">☰</button>
+<nav class="sidebar" id="sidebar"><div class="sidebar-header"><div class="sid">lld-Environment Management Service-001</div><div class="stitle">Environment Management Service — 详细设计</div></div><div class="sidebar-nav"><a href="#overview" class="sidebar-link"><span class="sl-icon">📄</span>概述</a><a href="#models" class="sidebar-link"><span class="sl-icon">🗄️</span>数据模型 (1)</a><a href="#domain-objects" class="sidebar-link"><span class="sl-icon">📦</span>领域对象 (12)</a><a href="#service-contracts" class="sidebar-link"><span class="sl-icon">🔧</span>服务接口 (1)</a><a href="#business-rules" class="sidebar-link"><span class="sl-icon">📐</span>业务规则</a><a href="#interfaces" class="sidebar-link"><span class="sl-icon">🔌</span>接口定义 (7)</a><a href="#errors" class="sidebar-link"><span class="sl-icon">⚠️</span>错误处理</a></div></nav><button id="sidebar-toggle" class="sidebar-toggle" aria-label="菜单">☰</button>
 <div class="main-content">
 <div class="top-bar">
   <div class="doc-id">lld-Environment Management Service-001</div>
   <div><span class="badge accent">详细设计文档</span></div>
 </div>
-<h1><span>详细设计文档</span> LLD - Environment Management Service</h1>
-<div class="meta">2026-05-21 10:13 &middot; 作者: design_agent</div>
+<h1><span>详细设计文档</span> Environment Management Service — 详细设计</h1>
+<div class="meta">2026-05-21 18:40 &middot; 作者: design_agent</div>
 
 <div class="section" id="overview">
   <div class="section-header">
@@ -507,10 +806,10 @@
   </div>
   <div class="section-body">
 
-<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap"><div class="arch-style-badge">Environment Management Service</div></div>
-<div class="arch-desc">管理部署环境的配置，包括服务器连接参数、环境标识等。提供部署环境的完整 CRUD 操作，维护环境与项目的绑定关系，验证连接配置参数的有效性，并通过委托 SSH Execution Service 执行连接测试。</div>
-<div style="margin-bottom:12px"><span style="font-size:0.82em;color:var(--c-muted)">依赖: </span><span class="cc-consumer" style="margin:2px">API Gateway</span><span class="cc-consumer" style="margin:2px">Key Management Service</span><span class="cc-consumer" style="margin:2px">SSH Execution Service</span><span class="cc-consumer" style="margin:2px">Audit Service</span></div>
-<div style="margin-bottom:8px"><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Python</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>FastAPI</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>PostgreSQL 15</span></div>
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap"><div class="arch-style-badge">Environment Management Service</div><span class="badge accent">⚙️ 业务服务</span></div>
+<div class="arch-desc">管理部署环境的微服务，基于 FastAPI 构建，负责环境配置与 SSH 密钥绑定，提供环境的创建、编辑、删除、查询，环境连接参数管理，SSH 密钥与环境绑定，以及连接测试触发等能力。关键操作后调用 Audit Service 记录审计日志，连接测试内部调用 SSH Execution Service 执行轻量探测命令，密钥存储委托给 Key Management Service 加密处理，持久化数据写入 Primary Database（PostgreSQL）。</div>
+<div style="margin-bottom:12px"><span style="font-size:0.82em;color:var(--c-muted)">依赖: </span><span class="cc-consumer" style="margin:2px">API Gateway</span><span class="cc-consumer" style="margin:2px">SSH Execution Service</span><span class="cc-consumer" style="margin:2px">Key Management Service</span><span class="cc-consumer" style="margin:2px">Audit Service</span><span class="cc-consumer" style="margin:2px">Primary Database</span></div>
+<div style="margin-bottom:8px"><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Python 3.11+</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>FastAPI</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>PostgreSQL 15</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>OpenAPI 3.0 (自动生成)</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Docker + Docker Compose</span></div>
   </div>
 </div>
 
@@ -521,23 +820,71 @@
   </div>
   <div class="section-body">
 
-<details class="contract-group" open><summary>引用模型 <span class="cg-count">1</span></summary><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🔗 environments<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(91,141,239,0.12);color:var(--c-accent);margin-left:6px">引用</span></h3><div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↳ 引用自: lld-Primary Database-001 / environments</div><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署环境配置表，记录每个项目的远程服务器部署环境信息，包括 SSH 连接参数和部署路径。一个项目可关联多个环境（如测试线、灰度线、正式线）。</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">uuid</td><td>环境唯一标识，主键</td></tr><tr><td>project_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">uuid</td><td>所属项目 ID，外键关联 projects 表</td></tr><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">varchar(100)</td><td>环境名称（如 测试线、灰度线、正式线）</td></tr><tr><td>label <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">varchar(50)</td><td>环境标识（如 test / staging / prod），同一项目内不可重复</td></tr><tr><td>host <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">varchar(255)</td><td>远程服务器主机地址（IP 或域名）</td></tr><tr><td>port <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">integer</td><td>SSH 连接端口，默认 22</td></tr><tr><td>username <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">varchar(100)</td><td>SSH 登录用户名</td></tr><tr><td>key_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">uuid</td><td>关联的 SSH 密钥 ID，外键关联 keys 表</td></tr><tr><td>deploy_path <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">varchar(500)</td><td>远程部署根路径（如 /data/deploy/{project}/{env}）</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">timestamptz</td><td>环境创建时间</td></tr><tr><td>updated_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">timestamptz</td><td>环境信息最后更新时间</td></tr></tbody></table></div></details>
+<details class="contract-group" open><summary>引用模型 <span class="cg-count">1</span></summary><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🔗 environments<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(91,141,239,0.12);color:var(--c-accent);margin-left:6px">引用</span></h3><div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↳ 引用自: lld-Primary Database-001 / environments</div><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署环境数据库表，存储环境连接参数和状态。从 Primary Database 继承，本服务关注以下字段视图</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">uuid</td><td>环境唯一标识，主键</td></tr><tr><td>project_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">uuid</td><td>所属项目 ID，关联 projects 表</td></tr><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">varchar(255)</td><td>环境名称（如 测试线、灰度线、正式线），同一项目下唯一</td></tr><tr><td>host <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">varchar(255)</td><td>远程服务器主机地址（IP 或域名）</td></tr><tr><td>port <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">integer</td><td>SSH 端口号，默认 22</td></tr><tr><td>username <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">varchar(255)</td><td>SSH 登录用户名</td></tr><tr><td>key_id</td><td class="field-type">uuid</td><td>绑定的 SSH 密钥 ID，关联 KMS 管理的密钥，可为空</td></tr><tr><td>connection_status <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">varchar(20)</td><td>连接状态枚举值，默认 unknown，可选值 unknown/connected/failed</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">timestamp</td><td>创建时间</td></tr><tr><td>updated_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">timestamp</td><td>最后更新时间</td></tr><tr><td>is_deleted <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">boolean</td><td>软删除标记，false 为正常，true 为已删除</td></tr></tbody></table><div class="body-label" style="margin-top:8px">索引</div><table class="body-table"><thead><tr><th>索引名</th><th>唯一</th><th>列</th></tr></thead><tbody><tr><td>idx_environments_project_id</td><td></td><td style="font-family:monospace;font-size:0.85em">project_id, is_deleted</td></tr><tr><td>idx_environments_project_name</td><td>✓</td><td style="font-family:monospace;font-size:0.85em">project_id, name</td></tr><tr><td>idx_environments_key_id</td><td></td><td style="font-family:monospace;font-size:0.85em">key_id</td></tr></tbody></table></div></details>
+  </div>
+</div>
+
+<div class="section" id="domain-objects">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(91,141,239,0.12)">📦</div>
+    <h2>领域对象 (12)</h2>
+  </div>
+  <div class="section-body">
+
+<div class="domain-obj"><h3>🏷️ Environment<span class="obj-tag entity">实体</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署环境实体，代表一个可 SSH 连接的远程服务器实例，包含连接参数、密钥绑定和连接状态信息</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">UUID</td><td>环境唯一标识</td></tr><tr><td>project_id <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">UUID</td><td>所属项目 ID</td></tr><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">String</td><td>环境名称，同一项目下唯一</td></tr><tr><td>host <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">String</td><td>远程服务器主机地址</td></tr><tr><td>port <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">Integer</td><td>SSH 端口号</td></tr><tr><td>username <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">String</td><td>SSH 登录用户名</td></tr><tr><td>key_id <span class="attr-source-tag">DB 透传</span></td><td class="field-type">UUID</td><td>绑定的 SSH 密钥 ID，可为空</td></tr><tr><td>connection_status <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">ConnectionStatus</td><td>最后已知连接状态</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">DateTime</td><td>创建时间</td></tr><tr><td>updated_at <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">DateTime</td><td>最后更新时间</td></tr><tr><td>is_deleted <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">Boolean</td><td>软删除标记</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>🔢 ConnectionStatus<span class="obj-tag enum">枚举</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">环境 SSH 连接状态枚举</p><div class="body-label">值</div><div><span class="cn-tag prop">unknown</span> <span class="cn-tag prop">connected</span> <span class="cn-tag prop">failed</span></div></div>
+<div class="domain-obj"><h3>📌 PaginationInfo<span class="obj-tag value_object">值对象</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">不可变的分页信息值对象，统一用于所有列表类接口的分页元数据</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>page <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">计算</span></td><td class="field-type">Integer</td><td>当前页码，从 1 开始</td></tr><tr><td>size <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">计算</span></td><td class="field-type">Integer</td><td>每页记录数</td></tr><tr><td>total <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">计算</span></td><td class="field-type">Integer</td><td>符合条件的总记录数</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 CreateEnvironmentRequest<span class="obj-tag dto">DTO</span></h3><div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↦ Environment</div><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">创建环境时的请求 DTO，通过 POST 请求体传入</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>project_id <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">UUID</td><td>所属项目 ID</td></tr><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">String</td><td>环境名称，长度 1~255 字符，同一项目下唯一</td></tr><tr><td>host <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">String</td><td>远程服务器主机地址，合法 IP 或域名格式</td></tr><tr><td>port <span class="attr-source-tag">输入</span></td><td class="field-type">Integer</td><td>SSH 端口号，默认 22，范围 1~65535</td></tr><tr><td>username <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">String</td><td>SSH 登录用户名</td></tr><tr><td>key_id <span class="attr-source-tag">输入</span></td><td class="field-type">UUID</td><td>SSH 密钥 ID，可选</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 UpdateEnvironmentRequest<span class="obj-tag dto">DTO</span></h3><div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↦ Environment</div><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">更新环境信息时的请求 DTO，通过 PUT 请求体传入</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">String</td><td>新的环境名称</td></tr><tr><td>host <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">String</td><td>新的主机地址</td></tr><tr><td>port <span class="attr-source-tag">输入</span></td><td class="field-type">Integer</td><td>新的 SSH 端口</td></tr><tr><td>username <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">String</td><td>新的 SSH 登录用户名</td></tr><tr><td>key_id <span class="attr-source-tag">输入</span></td><td class="field-type">UUID</td><td>新的 SSH 密钥 ID</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 EnvironmentResponse<span class="obj-tag dto">DTO</span></h3><div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↦ Environment</div><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">环境信息的响应 DTO，返回给 API 调用方。字段名和类型与 SAD 契约严格一致</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">UUID</td><td>环境唯一标识</td></tr><tr><td>project_id <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">UUID</td><td>所属项目 ID</td></tr><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">String</td><td>环境名称</td></tr><tr><td>host <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">String</td><td>远程服务器主机地址</td></tr><tr><td>port <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">Integer</td><td>SSH 端口号</td></tr><tr><td>username <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">String</td><td>SSH 登录用户名</td></tr><tr><td>connection_status <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">ConnectionStatus</td><td>连接状态</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">DateTime</td><td>创建时间</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 EnvironmentListResponse<span class="obj-tag dto">DTO</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">分页环境列表的响应 DTO</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>items <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">派生</span></td><td class="field-type">List[EnvironmentResponse]</td><td>当前页的环境响应对象列表</td></tr><tr><td>pagination <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">派生</span></td><td class="field-type">PaginationInfo</td><td>分页元信息</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 ConnectionTestResponse<span class="obj-tag dto">DTO</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">连接测试的响应 DTO。字段名和类型与 SAD 契约严格一致</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>success <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">派生</span></td><td class="field-type">Boolean</td><td>连接是否成功</td></tr><tr><td>message <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">派生</span></td><td class="field-type">String</td><td>连接结果描述信息</td></tr><tr><td>latency_ms <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">计算</span></td><td class="field-type">Integer</td><td>连接延迟（毫秒）</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 ImportKeyRequest<span class="obj-tag dto">DTO</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">导入 SSH 密钥的请求 DTO，通过 POST 请求体传入</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>private_key <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">String</td><td>SSH 私钥内容（PEM 格式）</td></tr><tr><td>passphrase <span class="attr-source-tag">输入</span></td><td class="field-type">String</td><td>密钥口令，可选</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 ImportKeyResponse<span class="obj-tag dto">DTO</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">导入 SSH 密钥的响应 DTO</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>success <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">派生</span></td><td class="field-type">Boolean</td><td>导入是否成功</td></tr><tr><td>key_id <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">派生</span></td><td class="field-type">UUID</td><td>KMS 返回的密钥 ID</td></tr><tr><td>fingerprint <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">派生</span></td><td class="field-type">String</td><td>密钥指纹</td></tr><tr><td>message <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">派生</span></td><td class="field-type">String</td><td>操作结果描述</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 DeleteResult<span class="obj-tag dto">DTO</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">删除操作的结果 DTO</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>success <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">派生</span></td><td class="field-type">Boolean</td><td>删除是否成功</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>🔢 AuditAction<span class="obj-tag enum">枚举</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">本服务产生的审计操作类型枚举</p><div class="body-label">值</div><div><span class="cn-tag prop">environment.create</span> <span class="cn-tag prop">environment.update</span> <span class="cn-tag prop">environment.delete</span> <span class="cn-tag prop">environment.import_key</span></div></div>
+  </div>
+</div>
+
+<div class="section" id="service-contracts">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(124,111,247,0.12)">🔧</div>
+    <h2>服务接口 (1)</h2>
+  </div>
+  <div class="section-body">
+
+<details class="svc-contract" open><summary>🔧 EnvironmentService <span class="cg-count">7 方法</span></summary><div class="svc-method"><div class="svc-method-header"><span class="method-name">createEnvironment</span></div><div class="sig-block">(req: CreateEnvironmentRequest, userId: UUID) -&gt; EnvironmentResponse</div><div class="cc-desc">创建新环境。校验项目存在性和名称唯一性后写入数据库，发送审计日志后返回完整的环境响应</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">req.project_id 对应的项目存在且未删除；在同一项目中不存在同名的活跃环境（is_deleted=false）；如 req.key_id 有值，该 key_id 在 KMS 中有效</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">新环境记录已写入 environments 表，初始 connection_status 为 unknown；审计日志已记录 environment.create 事件</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">ProjectNotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">req.project_id 对应的项目不存在或已删除</span></span><span class="exc-item"><span class="exc-name">EnvironmentNameConflictException</span><span class="exc-http">→ 409</span><span style="font-size:0.82em;color:var(--c-muted)">同一项目中已存在同名且未删除的环境</span></span><span class="exc-item"><span class="exc-name">KeyNotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">指定的 key_id 在 KMS 中不存在或已删除</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">getEnvironment</span></div><div class="sig-block">(environmentId: UUID) -&gt; EnvironmentResponse</div><div class="cc-desc">根据环境 ID 查询环境详情，不包括已软删除的记录</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">environmentId 格式合法</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">返回环境完整信息（包括连接参数和状态），不存在则抛出异常</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">EnvironmentNotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">environmentId 对应的环境不存在或 is_deleted=true</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">updateEnvironment</span></div><div class="sig-block">(environmentId: UUID, req: UpdateEnvironmentRequest, userId: UUID) -&gt; EnvironmentResponse</div><div class="cc-desc">更新环境配置参数。校验新名称唯一性后更新数据库并发送审计日志</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">environmentId 对应环境存在且未删除；若修改 name，新 name 在同一项目下不与其他现有环境重复</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">环境记录的连接参数已更新，updated_at 已刷新；审计日志已记录 environment.update 事件</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">EnvironmentNotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">environmentId 对应的环境不存在</span></span><span class="exc-item"><span class="exc-name">EnvironmentNameConflictException</span><span class="exc-http">→ 409</span><span style="font-size:0.82em;color:var(--c-muted)">修改后的 name 在同一项目下与其他环境重复</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">deleteEnvironment</span></div><div class="sig-block">(environmentId: UUID, userId: UUID) -&gt; None</div><div class="cc-desc">软删除指定环境。通过 Deployment Orchestrator 或数据库查询确认无关联部署记录后标记 is_deleted 并发送审计日志</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">environmentId 对应环境存在且 is_deleted=false；该环境不存在关联的部署记录</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">环境记录的 is_deleted 已设为 true；审计日志已记录 environment.delete 事件</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">EnvironmentNotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">environmentId 对应的环境不存在</span></span><span class="exc-item"><span class="exc-name">EnvironmentHasDeploymentsException</span><span class="exc-http">→ 409</span><span style="font-size:0.82em;color:var(--c-muted)">该环境存在关联的部署记录，无法删除</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">listEnvironments</span></div><div class="sig-block">(projectId: Optional[UUID], page: int, size: int) -&gt; EnvironmentListResponse</div><div class="cc-desc">分页查询环境列表。如提供 project_id 则筛选该项目下的环境，否则返回所有项目下的环境</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">page &gt;= 1, size &gt;= 1 且 size &lt;= 100</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">返回指定页码的环境列表和分页信息；查询结果按 created_at 倒序排列，已软删除的记录不包含在结果中</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">InvalidParameterException</span><span class="exc-http">→ 400</span><span style="font-size:0.82em;color:var(--c-muted)">page &lt; 1 或 size &lt; 1 或 size &gt; 100</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">testConnection</span></div><div class="sig-block">(environmentId: UUID) -&gt; ConnectionTestResponse</div><div class="cc-desc">测试指定环境的 SSH 连接。读取环境连接参数和密钥 ID，调用 SSH Execution Service 的 POST /internal/ssh/execute 接口执行轻量探测命令（如 echo 'ping'），根据 SSH 执行结果更新环境的 connection_status 并返回测试结果</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">environmentId 对应环境存在且未删除；该环境的 key_id 不为空（必须已绑定 SSH 密钥）</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">环境的 connection_status 已根据测试结果更新为 connected 或 failed；审计日志已记录 environment.test_connection 事件</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">EnvironmentNotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">environmentId 对应的环境不存在</span></span><span class="exc-item"><span class="exc-name">KeyNotBoundException</span><span class="exc-http">→ 422</span><span style="font-size:0.82em;color:var(--c-muted)">环境的 key_id 为空，未绑定 SSH 密钥</span></span><span class="exc-item"><span class="exc-name">SshExecutionTimeoutException</span><span class="exc-http">→ 504</span><span style="font-size:0.82em;color:var(--c-muted)">SSH Execution Service 执行超时或连接超时</span></span><span class="exc-item"><span class="exc-name">SshExecutionException</span><span class="exc-http">→ 502</span><span style="font-size:0.82em;color:var(--c-muted)">SSH Execution Service 返回执行失败（exit_code != 0）</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">importKey</span></div><div class="sig-block">(environmentId: UUID, req: ImportKeyRequest) -&gt; ImportKeyResponse</div><div class="cc-desc">为目标环境导入 SSH 私钥。首先校验环境存在性，然后调用 KMS 的 POST /internal/kms/keys（action=store）加密存储私钥，将返回的 key_id 绑定到环境记录上，最后发送审计日志并返回结果</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">environmentId 对应环境存在且未删除；req.private_key 内容符合 PEM 私钥格式</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">SSH 私钥已通过 KMS 加密存储；环境的 key_id 已更新为新密钥 ID；审计日志已记录 environment.import_key 事件</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">EnvironmentNotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">environmentId 对应的环境不存在</span></span><span class="exc-item"><span class="exc-name">InvalidKeyFormatException</span><span class="exc-http">→ 400</span><span style="font-size:0.82em;color:var(--c-muted)">private_key 格式无效</span></span><span class="exc-item"><span class="exc-name">KmsOperationException</span><span class="exc-http">→ 422</span><span style="font-size:0.82em;color:var(--c-muted)">KMS 返回存储失败（如密钥口令错误）</span></span></div></div><div style="padding:16px 20px;border-top:1px solid var(--c-border)"><div class="body-label">数据访问依赖</div><div class="repo-dep">findById(id: UUID) -&gt; Optional[Environment]</div><div class="repo-dep">findByNameAndProjectId(name: str, projectId: UUID) -&gt; Optional[Environment]</div><div class="repo-dep">findByNameAndProjectIdExcludingId(name: str, projectId: UUID, excludeId: UUID) -&gt; Optional[Environment]</div><div class="repo-dep">findAllByProjectIdPage(projectId: Optional[UUID], page: int, size: int) -&gt; Tuple[List[Environment], int]</div><div class="repo-dep">save(environment: Environment) -&gt; Environment</div><div class="repo-dep">update(environment: Environment) -&gt; Environment</div><div class="repo-dep">markDeleted(environmentId: UUID) -&gt; None</div><div class="repo-dep">updateConnectionStatus(environmentId: UUID, status: ConnectionStatus) -&gt; None</div></div></details>
+  </div>
+</div>
+
+<div class="section" id="business-rules">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(251,191,36,0.12)">📐</div>
+    <h2>业务规则</h2>
+  </div>
+  <div class="section-body">
+
+<div class="body-label">不变量</div><ul class="invariant-list"><li><span class="inv-icon">!</span><span>同一项目下不允许存在两个 is_deleted=false 的环境具有相同的 name</span></li><li><span class="inv-icon">!</span><span>环境删除采用软删除机制，is_deleted=true 的记录不应出现在正常查询和列表结果中</span></li><li><span class="inv-icon">!</span><span>环境必须关联一个已存在的项目（project_id 外键约束），创建时 project_id 对应的项目必须存在且未删除</span></li><li><span class="inv-icon">!</span><span>只有已绑定 SSH 密钥（key_id 不为空）的环境才能执行连接测试</span></li><li><span class="inv-icon">!</span><span>环境名称不能为空字符串或仅含空白字符，去除首尾空格后的长度在 1~255 之间</span></li><li><span class="inv-icon">!</span><span>SSH 端口号必须在 1~65535 之间</span></li></ul>
+<div class="body-label" style="margin-top:16px">状态机</div>
+<div class="state-diagram"><div class="sd-title">🎯 Environment</div><div class="state-row"><span class="state-node ">active</span><span class="state-node error">deleted</span></div><div style="margin:8px 0"><div class="state-arrow"><span>→</span><span class="trigger-text">调用 deleteEnvironment 方法且关联部署记录检查通过</span><span style="font-size:0.78em;color:var(--c-muted)">by admin 或 operator 角色用户</span></div></div><div style="margin-top:8px"><span class="irrev-rule">🚫 环境从 active 变为 deleted 后不可逆，不允许恢复已删除的环境</span><span class="irrev-rule">🚫 deleted 状态为终态，不存在到其他状态的转换</span></div><div style="margin-top:8px;font-size:0.84em;color:var(--c-muted)">⚡ 删除操作使用数据库行级锁锁定 environments 行记录（SELECT ... FOR UPDATE），在事务中同时查询部署记录，防止并发部署创建绕过关联检查</div></div>
+<div class="body-label" style="margin-top:16px">跨服务规则</div><div class="cross-svc-rule">环境创建、更新、删除和密钥导入操作完成后，必须同步调用 Audit Service 的 POST /internal/audit/log 接口记录审计日志，其中 actor 为当前操作用户 ID，action 按操作类型使用 environment.create / environment.update / environment.delete / environment.import_key，resource_type 固定为 environment，result 根据操作结果填入 success 或 failure。若审计日志发送失败（网络超时或服务不可达），仅记录 WARN 级别日志，不阻塞业务主流程</div><div class="cross-svc-rule">连接测试时需调用 SSH Execution Service 的 POST /internal/ssh/execute 接口执行轻量探测命令。传入的 host/port/username/key_id 从当前环境记录的字段中读取，command 固定为探测命令（如 echo 'connection_test'），timeout 设为 10 秒。若 SSH Execution Service 返回 success=true（exit_code=0），将环境的 connection_status 更新为 connected；否则更新为 failed</div><div class="cross-svc-rule">导入 SSH 密钥时需调用 Key Management Service 的 POST /internal/kms/keys 接口，action 固定为 store，传入 private_key 和可选的 passphrase。KMS 返回 key_id 和 fingerprint 后，将该 key_id 写入环境记录的 key_id 字段。若 KMS 返回失败，不更新环境记录，直接向上层返回错误</div><div class="cross-svc-rule">环境所属项目存在性校验通过读取 Primary Database 的 projects 表完成（共享数据库），不调用 Project Management Service 的 API</div>
   </div>
 </div>
 
 <div class="section" id="interfaces">
   <div class="section-header">
     <div class="icon" style="background:rgba(34,211,238,0.12)">🔌</div>
-    <h2>接口定义 (6)</h2>
+    <h2>接口定义 (7)</h2>
   </div>
   <div class="section-body">
 
-<div class="contract-card"><div class="cc-head"><span class="method-badge post">POST</span><span class="cc-endpoint">/api/projects/{project_id}/environments</span><span class="cc-name">CreateEnvironment</span></div><div class="cc-desc">为指定项目创建一个新的部署环境。校验请求参数的合法性（名称唯一性、主机地址格式、端口范围等），将环境配置持久化到数据库，并委托 Audit Service 记录环境创建操作。</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>project_id</td><td class="field-type">string</td><td>路径参数，项目 ID</td></tr></tbody></table><div class="body-label">Response 201</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string</td></tr><tr><td>name</td><td class="field-type">string</td></tr><tr><td>label</td><td class="field-type">string</td></tr><tr><td>host</td><td class="field-type">string</td></tr><tr><td>port</td><td class="field-type">integer</td></tr><tr><td>username</td><td class="field-type">string</td></tr><tr><td>deploy_path</td><td class="field-type">string</td></tr><tr><td>created_at</td><td class="field-type">string</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>请求参数不合法（如名称为空、主机地址格式错误、端口超出范围 1-65535）</td></tr><tr><td>404</td><td>项目不存在</td></tr><tr><td>409</td><td>环境标识 label 在该项目中已存在</td></tr></tbody></table></div>
-<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/projects/{project_id}/environments</span><span class="cc-name">ListEnvironments</span></div><div class="cc-desc">获取指定项目的所有部署环境列表，返回环境概要信息，不包含敏感字段（如 username、host）。</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>project_id</td><td class="field-type">string</td><td>路径参数，项目 ID</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>total</td><td class="field-type">integer</td></tr><tr><td>items</td><td class="field-type">array</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>404</td><td>项目不存在</td></tr></tbody></table></div>
-<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/environments/{env_id}</span><span class="cc-name">GetEnvironment</span></div><div class="cc-desc">获取指定环境的详细配置信息，包含完整的 SSH 连接参数。</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>env_id</td><td class="field-type">string</td><td>路径参数，环境 ID</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string</td></tr><tr><td>project_id</td><td class="field-type">string</td></tr><tr><td>name</td><td class="field-type">string</td></tr><tr><td>label</td><td class="field-type">string</td></tr><tr><td>host</td><td class="field-type">string</td></tr><tr><td>port</td><td class="field-type">integer</td></tr><tr><td>username</td><td class="field-type">string</td></tr><tr><td>key_id</td><td class="field-type">string</td></tr><tr><td>deploy_path</td><td class="field-type">string</td></tr><tr><td>created_at</td><td class="field-type">string</td></tr><tr><td>updated_at</td><td class="field-type">string</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>404</td><td>环境不存在</td></tr></tbody></table></div>
-<div class="contract-card"><div class="cc-head"><span class="method-badge put">PUT</span><span class="cc-endpoint">/api/environments/{env_id}</span><span class="cc-name">UpdateEnvironment</span></div><div class="cc-desc">更新指定环境的配置信息。请求体中仅需包含要修改的字段，未提供的字段保持不变。不允许修改已关联部署记录的环境 label。</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>env_id</td><td class="field-type">string</td><td>路径参数，环境 ID</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string</td></tr><tr><td>project_id</td><td class="field-type">string</td></tr><tr><td>name</td><td class="field-type">string</td></tr><tr><td>label</td><td class="field-type">string</td></tr><tr><td>host</td><td class="field-type">string</td></tr><tr><td>port</td><td class="field-type">integer</td></tr><tr><td>username</td><td class="field-type">string</td></tr><tr><td>key_id</td><td class="field-type">string</td></tr><tr><td>deploy_path</td><td class="field-type">string</td></tr><tr><td>created_at</td><td class="field-type">string</td></tr><tr><td>updated_at</td><td class="field-type">string</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>请求参数不合法</td></tr><tr><td>404</td><td>环境不存在</td></tr><tr><td>409</td><td>环境标识 label 在该项目中已存在或不允许修改已关联部署记录的环境 label</td></tr></tbody></table></div>
-<div class="contract-card"><div class="cc-head"><span class="method-badge delete">DELETE</span><span class="cc-endpoint">/api/environments/{env_id}</span><span class="cc-name">DeleteEnvironment</span></div><div class="cc-desc">删除指定环境。如果该环境存在关联的部署记录则拒绝删除，返回 409 Conflict。删除后委托 Audit Service 记录操作。</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>env_id</td><td class="field-type">string</td><td>路径参数，环境 ID</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>404</td><td>环境不存在</td></tr><tr><td>409</td><td>该环境存在关联的部署记录，无法删除</td></tr></tbody></table></div>
-<div class="contract-card"><div class="cc-head"><span class="method-badge post">POST</span><span class="cc-endpoint">/api/environments/{env_id}/test</span><span class="cc-name">TestConnection</span></div><div class="cc-desc">测试指定环境的 SSH 连接是否可用。从数据库读取环境配置，从 Key Management Service 获取解密后的 SSH 私钥，委托 SSH Execution Service 执行连接测试，返回测试结果。</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>env_id</td><td class="field-type">string</td><td>路径参数，环境 ID</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>success</td><td class="field-type">boolean</td></tr><tr><td>message</td><td class="field-type">string</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>404</td><td>环境不存在</td></tr><tr><td>502</td><td>密钥获取失败或 SSH 连接测试服务不可用</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/v1/environments</span><span class="cc-name">List Environments</span></div><div class="cc-desc">分页查询环境列表，支持按项目 ID 筛选。结果按创建时间倒序排列，排除已软删除的环境</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>project_id</td><td class="field-type">string(uuid)</td><td>按项目筛选环境（可选，不传则返回所有项目的环境）</td></tr><tr><td>page</td><td class="field-type">integer</td><td>分页页码，默认 1，最小 1</td></tr><tr><td>size</td><td class="field-type">integer</td><td>每页条数，默认 20，最小 1，最大 100</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>items</td><td class="field-type">array(EnvironmentResponse)</td></tr><tr><td>pagination</td><td class="field-type">PaginationInfo</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>参数校验失败，page 或 size 超出合法范围</td></tr><tr><td>500</td><td>服务器内部错误</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge post">POST</span><span class="cc-endpoint">/api/v1/environments</span><span class="cc-name">Create Environment</span></div><div class="cc-desc">创建新的部署环境。校验项目是否存在、同一项目下环境名称是否重复，以及指定的 SSH 密钥是否有效（如有提供）。写入数据库后调用 Audit Service 记录 environment.create 审计日志</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>project_id</td><td class="field-type">string(uuid)</td><td>所属项目 ID</td></tr><tr><td>name</td><td class="field-type">string</td><td>环境名称（如 测试线、灰度线、正式线），同一项目下唯一</td></tr><tr><td>host</td><td class="field-type">string</td><td>远程服务器主机地址</td></tr><tr><td>port</td><td class="field-type">integer</td><td>SSH 端口，默认 22</td></tr><tr><td>username</td><td class="field-type">string</td><td>SSH 登录用户名</td></tr><tr><td>key_id</td><td class="field-type">string(uuid)</td><td>已导入的 SSH 密钥 ID（可选，可在创建后通过导入密钥绑定）</td></tr></tbody></table><div class="body-label">Response 201</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string(uuid)</td></tr><tr><td>project_id</td><td class="field-type">string(uuid)</td></tr><tr><td>name</td><td class="field-type">string</td></tr><tr><td>host</td><td class="field-type">string</td></tr><tr><td>port</td><td class="field-type">integer</td></tr><tr><td>username</td><td class="field-type">string</td></tr><tr><td>connection_status</td><td class="field-type">string(enum: unknown|connected|failed)</td></tr><tr><td>created_at</td><td class="field-type">string(date-time)</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>参数校验失败（必填字段缺失或格式错误）</td></tr><tr><td>404</td><td>指定的项目不存在</td></tr><tr><td>409</td><td>同一项目下已存在同名环境</td></tr><tr><td>500</td><td>服务器内部错误</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/v1/environments/{id}</span><span class="cc-name">Get Environment</span></div><div class="cc-desc">获取指定环境的详细信息，包含 SSH 连接参数和当前连接状态</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string(uuid)</td><td>环境 ID（路径参数）</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string(uuid)</td></tr><tr><td>project_id</td><td class="field-type">string(uuid)</td></tr><tr><td>name</td><td class="field-type">string</td></tr><tr><td>host</td><td class="field-type">string</td></tr><tr><td>port</td><td class="field-type">integer</td></tr><tr><td>username</td><td class="field-type">string</td></tr><tr><td>connection_status</td><td class="field-type">string(enum: unknown|connected|failed)</td></tr><tr><td>created_at</td><td class="field-type">string(date-time)</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>404</td><td>环境不存在或已被删除</td></tr><tr><td>500</td><td>服务器内部错误</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge put">PUT</span><span class="cc-endpoint">/api/v1/environments/{id}</span><span class="cc-name">Update Environment</span></div><div class="cc-desc">更新指定环境的配置参数。校验修改后的环境名称在同一项目下是否唯一。更新后调用 Audit Service 记录 environment.update 审计日志</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string(uuid)</td><td>环境 ID（路径参数）</td></tr><tr><td>name</td><td class="field-type">string</td><td>新的环境名称</td></tr><tr><td>host</td><td class="field-type">string</td><td>新的远程服务器主机地址</td></tr><tr><td>port</td><td class="field-type">integer</td><td>新的 SSH 端口</td></tr><tr><td>username</td><td class="field-type">string</td><td>新的 SSH 登录用户名</td></tr><tr><td>key_id</td><td class="field-type">string(uuid)</td><td>新的 SSH 密钥 ID</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string(uuid)</td></tr><tr><td>project_id</td><td class="field-type">string(uuid)</td></tr><tr><td>name</td><td class="field-type">string</td></tr><tr><td>host</td><td class="field-type">string</td></tr><tr><td>port</td><td class="field-type">integer</td></tr><tr><td>username</td><td class="field-type">string</td></tr><tr><td>connection_status</td><td class="field-type">string(enum: unknown|connected|failed)</td></tr><tr><td>created_at</td><td class="field-type">string(date-time)</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>参数校验失败</td></tr><tr><td>404</td><td>环境不存在或已被删除</td></tr><tr><td>409</td><td>修改后的环境名称在同一项目下与其他环境冲突</td></tr><tr><td>500</td><td>服务器内部错误</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge delete">DELETE</span><span class="cc-endpoint">/api/v1/environments/{id}</span><span class="cc-name">Delete Environment</span></div><div class="cc-desc">删除指定环境（软删除）。删除前检查该环境是否有关联的部署记录，有关联则拒绝删除。删除后调用 Audit Service 记录 environment.delete 审计日志</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string(uuid)</td><td>环境 ID（路径参数）</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>success</td><td class="field-type">boolean</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>404</td><td>环境不存在或已被删除</td></tr><tr><td>409</td><td>环境存在关联的部署记录，无法删除</td></tr><tr><td>500</td><td>服务器内部错误</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge post">POST</span><span class="cc-endpoint">/api/v1/environments/{id}/test-connection</span><span class="cc-name">Test Connection</span></div><div class="cc-desc">测试指定环境的 SSH 连接是否可达。内部调用 SSH Execution Service 的 POST /internal/ssh/execute 接口执行轻量探测命令（如 echo 'ping'），根据执行结果更新环境的 connection_status，并返回连接测试结果</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string(uuid)</td><td>环境 ID（路径参数）</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>success</td><td class="field-type">boolean</td></tr><tr><td>message</td><td class="field-type">string</td></tr><tr><td>latency_ms</td><td class="field-type">integer</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>404</td><td>环境不存在</td></tr><tr><td>422</td><td>环境未配置 SSH 密钥，无法测试连接</td></tr><tr><td>504</td><td>SSH 连接测试超时（SSH Execution Service 无响应或超时）</td></tr><tr><td>500</td><td>服务器内部错误</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge post">POST</span><span class="cc-endpoint">/api/v1/environments/{id}/import-key</span><span class="cc-name">Import SSH Key</span></div><div class="cc-desc">为目标环境导入 SSH 私钥。内部调用 Key Management Service 的 POST /internal/kms/keys 接口（action=store）加密存储私钥，将返回的 key_id 绑定到环境记录上。更新后调用 Audit Service 记录 environment.import_key 审计日志</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string(uuid)</td><td>环境 ID（路径参数）</td></tr><tr><td>private_key</td><td class="field-type">string</td><td>SSH 私钥内容（PEM 格式，必须以 -----BEGIN 开头）</td></tr><tr><td>passphrase</td><td class="field-type">string</td><td>密钥口令（可选，如果私钥加密了则需要提供）</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>success</td><td class="field-type">boolean</td></tr><tr><td>key_id</td><td class="field-type">string(uuid)</td></tr><tr><td>fingerprint</td><td class="field-type">string</td></tr><tr><td>message</td><td class="field-type">string</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>私钥格式无效（必须以 -----BEGIN 开头）</td></tr><tr><td>404</td><td>环境不存在</td></tr><tr><td>422</td><td>密钥口令错误或私钥解密失败</td></tr><tr><td>500</td><td>服务器内部错误</td></tr></tbody></table></div>
   </div>
 </div>
 
@@ -548,7 +895,9 @@
   </div>
   <div class="section-body">
 
-<p>Environment Management Service 对各类异常进行统一处理：(1) 参数校验异常 — 请求体 JSON 解析失败、必填字段缺失、字段格式非法（如 host 非有效 IP/域名、port 超范围 1-65535）返回 400 Bad Request，附带具体校验错误详情；(2) 资源不存在 — 项目 ID 或环境 ID 在数据库中不存在时返回 404 Not Found；(3) 业务冲突 — 同项目内环境标识 label 重复返回 409 Conflict，有关联部署记录的环境删除或 label 修改同样返回 409 Conflict；(4) 外部服务异常 — 调用 Key Management Service 获取密钥失败时记录错误并返回 502 Bad Gateway，委托 SSH Execution Service 执行连接测试超时或连接失败时向上层透传错误消息；(5) 数据库异常 — 数据库连接失败或写入冲突时记录完整错误栈，返回 500 Internal Server Error；(6) 未捕获异常 — 统一返回 500 Internal Server Error 并在审计日志中记录上下文。所有错误响应体统一格式为: { code: integer, error: string, detail: string }。</p>
+<div class="err-strategy"><div class="err-label">处理策略</div><p>服务层采用统一的异常处理机制：业务异常以自定义异常类抛出，由 FastAPI 全局异常处理器捕获并转换为标准错误响应格式。参数校验由 FastAPI Pydantic 模型自动完成，校验失败返回 422。调用 SSH Execution Service 和 Key Management Service 时发生的网络超时或服务不可达分别映射为 504 和 502。审计日志调用失败仅记录 WARN 日志，不阻塞业务主流程。数据库操作异常捕获后记录错误日志，避免泄露内部实现细节。所有未预期异常统一返回 500。</p></div>
+<div class="err-format-box"><div class="err-label">统一错误响应体</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td class="field-type">code</td><td class="field-type">integer</td></tr><tr><td class="field-type">error</td><td class="field-type">string</td></tr><tr><td class="field-type">detail</td><td class="field-type">string</td></tr></tbody></table></div>
+<div class="err-categories"><div class="err-category"><span class="err-code-badge _4xx">400</span><div class="err-category-body"><div class="err-cat-name">请求参数错误</div><div class="err-cat-desc">请求体或查询参数格式不正确，由 Pydantic 模型校验触发</div></div></div><div class="err-category"><span class="err-code-badge _4xx">404</span><div class="err-category-body"><div class="err-cat-name">资源不存在</div><div class="err-cat-desc">请求的环境 ID 在数据库中不存在或已被软删除</div></div></div><div class="err-category"><span class="err-code-badge _4xx">409</span><div class="err-category-body"><div class="err-cat-name">资源冲突</div><div class="err-cat-desc">创建环境时名称在同一项目下重复，或删除环境时存在关联部署记录约束</div></div></div><div class="err-category"><span class="err-code-badge _4xx">422</span><div class="err-category-body"><div class="err-cat-name">参数校验失败</div><div class="err-cat-desc">FastAPI Pydantic 模型校验未通过，detail 中包含具体字段错误信息</div></div></div><div class="err-category"><span class="err-code-badge _5xx">502</span><div class="err-category-body"><div class="err-cat-name">上游服务不可达</div><div class="err-cat-desc">调用 SSH Execution Service 或 Key Management Service 时连接被拒绝或返回无效响应</div></div></div><div class="err-category"><span class="err-code-badge _5xx">504</span><div class="err-category-body"><div class="err-cat-name">上游服务超时</div><div class="err-cat-desc">调用 SSH Execution Service 或 Key Management Service 时在超时时间内未响应</div></div></div><div class="err-category"><span class="err-code-badge _5xx">500</span><div class="err-category-body"><div class="err-cat-name">服务器内部错误</div><div class="err-cat-desc">未预期异常，记录错误日志并返回通用错误信息，不泄露堆栈细节</div></div></div></div>
   </div>
 </div>
 

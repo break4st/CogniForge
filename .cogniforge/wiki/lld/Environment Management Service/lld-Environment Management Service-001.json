@@ -2,23 +2,27 @@
   "meta": {
     "doc_id": "lld-Environment Management Service-001",
     "type": "lld",
-    "module_type": "ModuleType.SERVICE",
+    "module_type": "service",
     "module": "Environment Management Service",
-    "title": "LLD - Environment Management Service",
+    "title": "Environment Management Service — 详细设计",
     "author": "design_agent",
-    "created": "2026-05-21 10:36"
+    "created": "2026-05-21 18:40"
   },
   "overview": {
-    "description": "环境管理服务，负责部署环境的创建、查询、编辑和删除，支持多套环境独立配置。提供服务器连接信息（主机地址、端口、认证方式、用户名）的配置管理，支持密钥认证和密码认证两种模式。通过SSH Execution Service提供连接测试验证功能，确保环境配置在部署前可访问。所有变更操作通过Audit Service记录审计日志。环境通过project_id与项目关联，实现项目间环境数据隔离。",
+    "description": "管理部署环境的微服务，基于 FastAPI 构建，负责环境配置与 SSH 密钥绑定，提供环境的创建、编辑、删除、查询，环境连接参数管理，SSH 密钥与环境绑定，以及连接测试触发等能力。关键操作后调用 Audit Service 记录审计日志，连接测试内部调用 SSH Execution Service 执行轻量探测命令，密钥存储委托给 Key Management Service 加密处理，持久化数据写入 Primary Database（PostgreSQL）。",
     "dependencies": [
-      "Primary Database",
+      "API Gateway",
+      "SSH Execution Service",
+      "Key Management Service",
       "Audit Service",
-      "SSH Execution Service"
+      "Primary Database"
     ],
     "tech_stack": [
-      "Python",
+      "Python 3.11+",
       "FastAPI",
-      "PostgreSQL"
+      "PostgreSQL 15",
+      "OpenAPI 3.0 (自动生成)",
+      "Docker + Docker Compose"
     ]
   },
   "data_models": [
@@ -30,96 +34,169 @@
         "doc_id": "lld-Primary Database-001",
         "model_name": "environments"
       },
-      "description": "部署环境配置表。存储每个部署环境的连接信息，通过project_id与项目关联。auth_type字段区分密钥认证（密钥）和密码认证（密码）两种方式，密码认证时password字段存储加密后的连接密码，密钥认证时key_id关联SSH密钥表中的密钥记录。同一项目下环境名称唯一。",
+      "description": "部署环境数据库表，存储环境连接参数和状态。从 Primary Database 继承，本服务关注以下字段视图",
       "fields": [
-        {"name": "id", "type": "uuid", "required": true, "description": "环境唯一标识（主键）"},
-        {"name": "project_id", "type": "uuid", "required": true, "description": "所属项目ID，关联projects表，实现项目间数据隔离"},
-        {"name": "name", "type": "varchar(255)", "required": true, "description": "环境名称，同一项目下唯一"},
-        {"name": "host", "type": "varchar(255)", "required": true, "description": "服务器主机地址（IP或域名）"},
-        {"name": "port", "type": "integer", "required": true, "description": "SSH连接端口号，默认22，范围1-65535"},
-        {"name": "username", "type": "varchar(255)", "required": true, "description": "SSH登录用户名"},
-        {"name": "auth_type", "type": "varchar(50)", "required": true, "description": "认证方式，枚举值：密钥、密码"},
-        {"name": "key_id", "type": "uuid", "required": false, "description": "关联的SSH密钥ID，auth_type为'密钥'时必须提供，关联ssh_keys表"},
-        {"name": "password", "type": "text", "required": false, "description": "连接密码（加密存储），auth_type为'密码'时必须提供"},
-        {"name": "tags", "type": "jsonb", "required": false, "description": "环境标签数组，用于环境分类和检索，如[\"生产\", \"华北\"]"},
-        {"name": "description", "type": "text", "required": false, "description": "环境描述说明"},
-        {"name": "created_at", "type": "timestamp", "required": true, "description": "创建时间，默认为当前UTC时间"},
-        {"name": "updated_at", "type": "timestamp", "required": true, "description": "最后更新时间，记录变更时自动更新"}
+        {"name": "id", "type": "uuid", "required": true, "description": "环境唯一标识，主键"},
+        {"name": "project_id", "type": "uuid", "required": true, "description": "所属项目 ID，关联 projects 表"},
+        {"name": "name", "type": "varchar(255)", "required": true, "description": "环境名称（如 测试线、灰度线、正式线），同一项目下唯一"},
+        {"name": "host", "type": "varchar(255)", "required": true, "description": "远程服务器主机地址（IP 或域名）"},
+        {"name": "port", "type": "integer", "required": true, "description": "SSH 端口号，默认 22"},
+        {"name": "username", "type": "varchar(255)", "required": true, "description": "SSH 登录用户名"},
+        {"name": "key_id", "type": "uuid", "required": false, "description": "绑定的 SSH 密钥 ID，关联 KMS 管理的密钥，可为空"},
+        {"name": "connection_status", "type": "varchar(20)", "required": true, "description": "连接状态枚举值，默认 unknown，可选值 unknown/connected/failed"},
+        {"name": "created_at", "type": "timestamp", "required": true, "description": "创建时间"},
+        {"name": "updated_at", "type": "timestamp", "required": true, "description": "最后更新时间"},
+        {"name": "is_deleted", "type": "boolean", "required": true, "description": "软删除标记，false 为正常，true 为已删除"}
+      ],
+      "indexes": [
+        {"name": "idx_environments_project_id", "unique": false, "columns": ["project_id", "is_deleted"]},
+        {"name": "idx_environments_project_name", "unique": true, "columns": ["project_id", "name"]},
+        {"name": "idx_environments_key_id", "unique": false, "columns": ["key_id"]}
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "创建环境配置",
-      "method": "POST",
-      "endpoint": "/api/environments",
-      "description": "创建新的部署环境配置。校验请求参数完整性（必填字段非空、auth_type为合法枚举值、auth_type=密钥时key_id必填、auth_type=密码时password必填、port在1-65535范围内）。校验project_id对应的项目存在。校验同一项目下环境名称唯一。密码认证时password在存储前使用应用层加密处理。写入成功后通过Audit Service记录环境创建审计日志。",
-      "parameters": [
-        {"name": "project_id", "type": "string", "description": "所属项目ID"},
-        {"name": "name", "type": "string", "description": "环境名称，同一项目下唯一"},
-        {"name": "host", "type": "string", "description": "服务器主机地址（IP或域名）"},
-        {"name": "port", "type": "integer", "description": "SSH端口号，默认22"},
-        {"name": "username", "type": "string", "description": "SSH登录用户名"},
-        {"name": "auth_type", "type": "string", "description": "认证方式：密钥 或 密码"},
-        {"name": "key_id", "type": "string", "description": "密钥认证时的密钥ID（auth_type=密钥时必填）"},
-        {"name": "password", "type": "string", "description": "密码认证时的连接密码（auth_type=密码时必填）"},
-        {"name": "tags", "type": "array[string]", "description": "环境标签列表（可选）"},
-        {"name": "description", "type": "string", "description": "环境描述（可选）"}
-      ],
-      "response": {
-        "status": 201,
-        "body": {
-          "id": "string",
-          "name": "string",
-          "host": "string",
-          "port": "integer",
-          "username": "string",
-          "auth_type": "string",
-          "tags": "array",
-          "description": "string",
-          "created_at": "datetime"
-        }
-      },
-      "error_codes": [
-        {"code": 400, "message": "请求参数错误：必填字段缺失（project_id、name、host、port、username、auth_type）"},
-        {"code": 400, "message": "auth_type不合法，仅支持'密钥'和'密码'"},
-        {"code": 400, "message": "auth_type为'密钥'但key_id未提供"},
-        {"code": 400, "message": "auth_type为'密码'但password未提供"},
-        {"code": 400, "message": "port超出有效范围（1-65535）"},
-        {"code": 404, "message": "project_id对应的项目不存在"},
-        {"code": 409, "message": "该项目下已存在同名环境"},
-        {"code": 500, "message": "服务器内部错误，包括数据库写入失败或审计日志记录失败"}
-      ]
-    },
-    {
-      "name": "查询环境列表",
+      "name": "List Environments",
       "method": "GET",
-      "endpoint": "/api/environments",
-      "description": "查询指定项目下的环境列表，支持分页。按创建时间倒序排列。返回每个环境的基本信息（不含敏感连接字段如password、key_id）。分页参数page从1开始计数。",
+      "endpoint": "/api/v1/environments",
+      "description": "分页查询环境列表，支持按项目 ID 筛选。结果按创建时间倒序排列，排除已软删除的环境",
       "parameters": [
-        {"name": "project_id", "type": "string", "description": "项目ID，筛选指定项目下的环境"},
-        {"name": "page", "type": "integer", "description": "页码，从1开始，默认1"},
-        {"name": "page_size", "type": "integer", "description": "每页条数，默认20，最大100"}
+        {"name": "project_id", "type": "string(uuid)", "description": "按项目筛选环境（可选，不传则返回所有项目的环境）"},
+        {"name": "page", "type": "integer", "description": "分页页码，默认 1，最小 1"},
+        {"name": "size", "type": "integer", "description": "每页条数，默认 20，最小 1，最大 100"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "items": "array",
-          "total": "integer"
+          "items": "array(EnvironmentResponse)",
+          "pagination": "PaginationInfo"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "请求参数错误：page或page_size不合法"},
+        {"code": 400, "message": "参数校验失败，page 或 size 超出合法范围"},
         {"code": 500, "message": "服务器内部错误"}
       ]
     },
     {
-      "name": "测试环境连接",
+      "name": "Create Environment",
       "method": "POST",
-      "endpoint": "/api/environments/{id}/test-connection",
-      "description": "测试指定环境的SSH连接有效性。根据环境配置中的认证方式（密钥/密码），获取对应密钥或解密后的密码，调用SSH Execution Service的内部接口执行SSH连接测试。返回连接成功/失败状态、消息及延迟时间。测试操作通过Audit Service记录审计日志。",
+      "endpoint": "/api/v1/environments",
+      "description": "创建新的部署环境。校验项目是否存在、同一项目下环境名称是否重复，以及指定的 SSH 密钥是否有效（如有提供）。写入数据库后调用 Audit Service 记录 environment.create 审计日志",
       "parameters": [
-        {"name": "id", "type": "string", "description": "环境ID（路径参数）"}
+        {"name": "project_id", "type": "string(uuid)", "description": "所属项目 ID"},
+        {"name": "name", "type": "string", "description": "环境名称（如 测试线、灰度线、正式线），同一项目下唯一"},
+        {"name": "host", "type": "string", "description": "远程服务器主机地址"},
+        {"name": "port", "type": "integer", "description": "SSH 端口，默认 22"},
+        {"name": "username", "type": "string", "description": "SSH 登录用户名"},
+        {"name": "key_id", "type": "string(uuid)", "description": "已导入的 SSH 密钥 ID（可选，可在创建后通过导入密钥绑定）"}
+      ],
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string(uuid)",
+          "project_id": "string(uuid)",
+          "name": "string",
+          "host": "string",
+          "port": "integer",
+          "username": "string",
+          "connection_status": "string(enum: unknown|connected|failed)",
+          "created_at": "string(date-time)"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数校验失败（必填字段缺失或格式错误）"},
+        {"code": 404, "message": "指定的项目不存在"},
+        {"code": 409, "message": "同一项目下已存在同名环境"},
+        {"code": 500, "message": "服务器内部错误"}
+      ]
+    },
+    {
+      "name": "Get Environment",
+      "method": "GET",
+      "endpoint": "/api/v1/environments/{id}",
+      "description": "获取指定环境的详细信息，包含 SSH 连接参数和当前连接状态",
+      "parameters": [
+        {"name": "id", "type": "string(uuid)", "description": "环境 ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string(uuid)",
+          "project_id": "string(uuid)",
+          "name": "string",
+          "host": "string",
+          "port": "integer",
+          "username": "string",
+          "connection_status": "string(enum: unknown|connected|failed)",
+          "created_at": "string(date-time)"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "环境不存在或已被删除"},
+        {"code": 500, "message": "服务器内部错误"}
+      ]
+    },
+    {
+      "name": "Update Environment",
+      "method": "PUT",
+      "endpoint": "/api/v1/environments/{id}",
+      "description": "更新指定环境的配置参数。校验修改后的环境名称在同一项目下是否唯一。更新后调用 Audit Service 记录 environment.update 审计日志",
+      "parameters": [
+        {"name": "id", "type": "string(uuid)", "description": "环境 ID（路径参数）"},
+        {"name": "name", "type": "string", "description": "新的环境名称"},
+        {"name": "host", "type": "string", "description": "新的远程服务器主机地址"},
+        {"name": "port", "type": "integer", "description": "新的 SSH 端口"},
+        {"name": "username", "type": "string", "description": "新的 SSH 登录用户名"},
+        {"name": "key_id", "type": "string(uuid)", "description": "新的 SSH 密钥 ID"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string(uuid)",
+          "project_id": "string(uuid)",
+          "name": "string",
+          "host": "string",
+          "port": "integer",
+          "username": "string",
+          "connection_status": "string(enum: unknown|connected|failed)",
+          "created_at": "string(date-time)"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数校验失败"},
+        {"code": 404, "message": "环境不存在或已被删除"},
+        {"code": 409, "message": "修改后的环境名称在同一项目下与其他环境冲突"},
+        {"code": 500, "message": "服务器内部错误"}
+      ]
+    },
+    {
+      "name": "Delete Environment",
+      "method": "DELETE",
+      "endpoint": "/api/v1/environments/{id}",
+      "description": "删除指定环境（软删除）。删除前检查该环境是否有关联的部署记录，有关联则拒绝删除。删除后调用 Audit Service 记录 environment.delete 审计日志",
+      "parameters": [
+        {"name": "id", "type": "string(uuid)", "description": "环境 ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "环境不存在或已被删除"},
+        {"code": 409, "message": "环境存在关联的部署记录，无法删除"},
+        {"code": 500, "message": "服务器内部错误"}
+      ]
+    },
+    {
+      "name": "Test Connection",
+      "method": "POST",
+      "endpoint": "/api/v1/environments/{id}/test-connection",
+      "description": "测试指定环境的 SSH 连接是否可达。内部调用 SSH Execution Service 的 POST /internal/ssh/execute 接口执行轻量探测命令（如 echo 'ping'），根据执行结果更新环境的 connection_status，并返回连接测试结果",
+      "parameters": [
+        {"name": "id", "type": "string(uuid)", "description": "环境 ID（路径参数）"}
       ],
       "response": {
         "status": 200,
@@ -131,37 +208,40 @@
       },
       "error_codes": [
         {"code": 404, "message": "环境不存在"},
-        {"code": 500, "message": "服务器内部错误，包括SSH连接测试失败或审计日志记录失败"}
+        {"code": 422, "message": "环境未配置 SSH 密钥，无法测试连接"},
+        {"code": 504, "message": "SSH 连接测试超时（SSH Execution Service 无响应或超时）"},
+        {"code": 500, "message": "服务器内部错误"}
       ]
     },
     {
-      "name": "获取环境连接配置（内部）",
-      "method": "GET",
-      "endpoint": "/internal/environments/{id}/config",
-      "description": "Deployment Orchestrator内部调用，获取指定环境的完整连接配置（含敏感信息）。返回环境的主机、端口、用户名、认证方式及对应的密钥ID或密码（解密后）。此接口仅限内部服务间调用，需通过内部认证机制鉴权，不对外暴露。",
+      "name": "Import SSH Key",
+      "method": "POST",
+      "endpoint": "/api/v1/environments/{id}/import-key",
+      "description": "为目标环境导入 SSH 私钥。内部调用 Key Management Service 的 POST /internal/kms/keys 接口（action=store）加密存储私钥，将返回的 key_id 绑定到环境记录上。更新后调用 Audit Service 记录 environment.import_key 审计日志",
       "parameters": [
-        {"name": "id", "type": "string", "description": "环境ID（路径参数）"}
+        {"name": "id", "type": "string(uuid)", "description": "环境 ID（路径参数）"},
+        {"name": "private_key", "type": "string", "description": "SSH 私钥内容（PEM 格式，必须以 -----BEGIN 开头）"},
+        {"name": "passphrase", "type": "string", "description": "密钥口令（可选，如果私钥加密了则需要提供）"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "id": "string",
-          "host": "string",
-          "port": "integer",
-          "username": "string",
-          "auth_type": "string",
-          "key_id": "string",
-          "project_id": "string"
+          "success": "boolean",
+          "key_id": "string(uuid)",
+          "fingerprint": "string",
+          "message": "string"
         }
       },
       "error_codes": [
+        {"code": 400, "message": "私钥格式无效（必须以 -----BEGIN 开头）"},
         {"code": 404, "message": "环境不存在"},
-        {"code": 500, "message": "服务器内部错误，包括数据库查询失败或密码解密失败"}
+        {"code": 422, "message": "密钥口令错误或私钥解密失败"},
+        {"code": 500, "message": "服务器内部错误"}
       ]
     }
   ],
   "error_handling": {
-    "strategy": "Environment Management Service采用统一错误处理中间件，所有接口返回一致的JSON错误格式。请求参数校验在Controller层通过FastAPI/Pydantic模型校验拦截，业务逻辑异常（项目不存在、环境名称冲突）在Service层显式抛出，系统运行时异常由全局异常处理器捕获并记录日志后返回通用错误信息，避免内部配置细节泄露。",
+    "strategy": "服务层采用统一的异常处理机制：业务异常以自定义异常类抛出，由 FastAPI 全局异常处理器捕获并转换为标准错误响应格式。参数校验由 FastAPI Pydantic 模型自动完成，校验失败返回 422。调用 SSH Execution Service 和 Key Management Service 时发生的网络超时或服务不可达分别映射为 504 和 502。审计日志调用失败仅记录 WARN 日志，不阻塞业务主流程。数据库操作异常捕获后记录错误日志，避免泄露内部实现细节。所有未预期异常统一返回 500。",
     "response_format": {
       "body": {
         "code": "integer",
@@ -170,26 +250,272 @@
       }
     },
     "categories": [
+      {"code": 400, "name": "请求参数错误", "description": "请求体或查询参数格式不正确，由 Pydantic 模型校验触发"},
+      {"code": 404, "name": "资源不存在", "description": "请求的环境 ID 在数据库中不存在或已被软删除"},
+      {"code": 409, "name": "资源冲突", "description": "创建环境时名称在同一项目下重复，或删除环境时存在关联部署记录约束"},
+      {"code": 422, "name": "参数校验失败", "description": "FastAPI Pydantic 模型校验未通过，detail 中包含具体字段错误信息"},
+      {"code": 502, "name": "上游服务不可达", "description": "调用 SSH Execution Service 或 Key Management Service 时连接被拒绝或返回无效响应"},
+      {"code": 504, "name": "上游服务超时", "description": "调用 SSH Execution Service 或 Key Management Service 时在超时时间内未响应"},
+      {"code": 500, "name": "服务器内部错误", "description": "未预期异常，记录错误日志并返回通用错误信息，不泄露堆栈细节"}
+    ]
+  },
+  "domain_objects": [
+    {
+      "name": "Environment",
+      "object_type": "entity",
+      "description": "部署环境实体，代表一个可 SSH 连接的远程服务器实例，包含连接参数、密钥绑定和连接状态信息",
+      "attributes": [
+        {"name": "id", "type": "UUID", "required": true, "source": "db", "description": "环境唯一标识"},
+        {"name": "project_id", "type": "UUID", "required": true, "source": "db", "description": "所属项目 ID"},
+        {"name": "name", "type": "String", "required": true, "source": "db", "description": "环境名称，同一项目下唯一"},
+        {"name": "host", "type": "String", "required": true, "source": "db", "description": "远程服务器主机地址"},
+        {"name": "port", "type": "Integer", "required": true, "source": "db", "description": "SSH 端口号"},
+        {"name": "username", "type": "String", "required": true, "source": "db", "description": "SSH 登录用户名"},
+        {"name": "key_id", "type": "UUID", "required": false, "source": "db", "description": "绑定的 SSH 密钥 ID，可为空"},
+        {"name": "connection_status", "type": "ConnectionStatus", "required": true, "source": "db", "description": "最后已知连接状态"},
+        {"name": "created_at", "type": "DateTime", "required": true, "source": "db", "description": "创建时间"},
+        {"name": "updated_at", "type": "DateTime", "required": true, "source": "db", "description": "最后更新时间"},
+        {"name": "is_deleted", "type": "Boolean", "required": true, "source": "db", "description": "软删除标记"}
+      ]
+    },
+    {
+      "name": "ConnectionStatus",
+      "object_type": "enum",
+      "description": "环境 SSH 连接状态枚举",
+      "values": ["unknown", "connected", "failed"]
+    },
+    {
+      "name": "PaginationInfo",
+      "object_type": "value_object",
+      "description": "不可变的分页信息值对象，统一用于所有列表类接口的分页元数据",
+      "attributes": [
+        {"name": "page", "type": "Integer", "required": true, "source": "computed", "description": "当前页码，从 1 开始"},
+        {"name": "size", "type": "Integer", "required": true, "source": "computed", "description": "每页记录数"},
+        {"name": "total", "type": "Integer", "required": true, "source": "computed", "description": "符合条件的总记录数"}
+      ]
+    },
+    {
+      "name": "CreateEnvironmentRequest",
+      "object_type": "dto",
+      "description": "创建环境时的请求 DTO，通过 POST 请求体传入",
+      "attributes": [
+        {"name": "project_id", "type": "UUID", "required": true, "source": "input", "description": "所属项目 ID"},
+        {"name": "name", "type": "String", "required": true, "source": "input", "description": "环境名称，长度 1~255 字符，同一项目下唯一"},
+        {"name": "host", "type": "String", "required": true, "source": "input", "description": "远程服务器主机地址，合法 IP 或域名格式"},
+        {"name": "port", "type": "Integer", "required": false, "source": "input", "description": "SSH 端口号，默认 22，范围 1~65535"},
+        {"name": "username", "type": "String", "required": true, "source": "input", "description": "SSH 登录用户名"},
+        {"name": "key_id", "type": "UUID", "required": false, "source": "input", "description": "SSH 密钥 ID，可选"}
+      ],
+      "maps_to_entity": "Environment"
+    },
+    {
+      "name": "UpdateEnvironmentRequest",
+      "object_type": "dto",
+      "description": "更新环境信息时的请求 DTO，通过 PUT 请求体传入",
+      "attributes": [
+        {"name": "name", "type": "String", "required": true, "source": "input", "description": "新的环境名称"},
+        {"name": "host", "type": "String", "required": true, "source": "input", "description": "新的主机地址"},
+        {"name": "port", "type": "Integer", "required": false, "source": "input", "description": "新的 SSH 端口"},
+        {"name": "username", "type": "String", "required": true, "source": "input", "description": "新的 SSH 登录用户名"},
+        {"name": "key_id", "type": "UUID", "required": false, "source": "input", "description": "新的 SSH 密钥 ID"}
+      ],
+      "maps_to_entity": "Environment"
+    },
+    {
+      "name": "EnvironmentResponse",
+      "object_type": "dto",
+      "description": "环境信息的响应 DTO，返回给 API 调用方。字段名和类型与 SAD 契约严格一致",
+      "attributes": [
+        {"name": "id", "type": "UUID", "required": true, "source": "db", "description": "环境唯一标识"},
+        {"name": "project_id", "type": "UUID", "required": true, "source": "db", "description": "所属项目 ID"},
+        {"name": "name", "type": "String", "required": true, "source": "db", "description": "环境名称"},
+        {"name": "host", "type": "String", "required": true, "source": "db", "description": "远程服务器主机地址"},
+        {"name": "port", "type": "Integer", "required": true, "source": "db", "description": "SSH 端口号"},
+        {"name": "username", "type": "String", "required": true, "source": "db", "description": "SSH 登录用户名"},
+        {"name": "connection_status", "type": "ConnectionStatus", "required": true, "source": "db", "description": "连接状态"},
+        {"name": "created_at", "type": "DateTime", "required": true, "source": "db", "description": "创建时间"}
+      ],
+      "maps_to_entity": "Environment"
+    },
+    {
+      "name": "EnvironmentListResponse",
+      "object_type": "dto",
+      "description": "分页环境列表的响应 DTO",
+      "attributes": [
+        {"name": "items", "type": "List[EnvironmentResponse]", "required": true, "source": "derived", "description": "当前页的环境响应对象列表"},
+        {"name": "pagination", "type": "PaginationInfo", "required": true, "source": "derived", "description": "分页元信息"}
+      ]
+    },
+    {
+      "name": "ConnectionTestResponse",
+      "object_type": "dto",
+      "description": "连接测试的响应 DTO。字段名和类型与 SAD 契约严格一致",
+      "attributes": [
+        {"name": "success", "type": "Boolean", "required": true, "source": "derived", "description": "连接是否成功"},
+        {"name": "message", "type": "String", "required": true, "source": "derived", "description": "连接结果描述信息"},
+        {"name": "latency_ms", "type": "Integer", "required": true, "source": "computed", "description": "连接延迟（毫秒）"}
+      ]
+    },
+    {
+      "name": "ImportKeyRequest",
+      "object_type": "dto",
+      "description": "导入 SSH 密钥的请求 DTO，通过 POST 请求体传入",
+      "attributes": [
+        {"name": "private_key", "type": "String", "required": true, "source": "input", "description": "SSH 私钥内容（PEM 格式）"},
+        {"name": "passphrase", "type": "String", "required": false, "source": "input", "description": "密钥口令，可选"}
+      ]
+    },
+    {
+      "name": "ImportKeyResponse",
+      "object_type": "dto",
+      "description": "导入 SSH 密钥的响应 DTO",
+      "attributes": [
+        {"name": "success", "type": "Boolean", "required": true, "source": "derived", "description": "导入是否成功"},
+        {"name": "key_id", "type": "UUID", "required": true, "source": "derived", "description": "KMS 返回的密钥 ID"},
+        {"name": "fingerprint", "type": "String", "required": true, "source": "derived", "description": "密钥指纹"},
+        {"name": "message", "type": "String", "required": true, "source": "derived", "description": "操作结果描述"}
+      ]
+    },
+    {
+      "name": "DeleteResult",
+      "object_type": "dto",
+      "description": "删除操作的结果 DTO",
+      "attributes": [
+        {"name": "success", "type": "Boolean", "required": true, "source": "derived", "description": "删除是否成功"}
+      ]
+    },
+    {
+      "name": "AuditAction",
+      "object_type": "enum",
+      "description": "本服务产生的审计操作类型枚举",
+      "values": ["environment.create", "environment.update", "environment.delete", "environment.import_key"]
+    }
+  ],
+  "service_contracts": [
+    {
+      "name": "EnvironmentService",
+      "description": "环境生命周期管理的核心服务类，处理所有环境相关的业务逻辑、校验、外部服务调用和审计日志发送",
+      "methods": [
+        {
+          "name": "createEnvironment",
+          "signature": "(req: CreateEnvironmentRequest, userId: UUID) -> EnvironmentResponse",
+          "precondition": "req.project_id 对应的项目存在且未删除；在同一项目中不存在同名的活跃环境（is_deleted=false）；如 req.key_id 有值，该 key_id 在 KMS 中有效",
+          "postcondition": "新环境记录已写入 environments 表，初始 connection_status 为 unknown；审计日志已记录 environment.create 事件",
+          "description": "创建新环境。校验项目存在性和名称唯一性后写入数据库，发送审计日志后返回完整的环境响应",
+          "exceptions": [
+            {"name": "ProjectNotFoundException", "trigger": "req.project_id 对应的项目不存在或已删除", "http_status": 404},
+            {"name": "EnvironmentNameConflictException", "trigger": "同一项目中已存在同名且未删除的环境", "http_status": 409},
+            {"name": "KeyNotFoundException", "trigger": "指定的 key_id 在 KMS 中不存在或已删除", "http_status": 404}
+          ]
+        },
+        {
+          "name": "getEnvironment",
+          "signature": "(environmentId: UUID) -> EnvironmentResponse",
+          "precondition": "environmentId 格式合法",
+          "postcondition": "返回环境完整信息（包括连接参数和状态），不存在则抛出异常",
+          "description": "根据环境 ID 查询环境详情，不包括已软删除的记录",
+          "exceptions": [
+            {"name": "EnvironmentNotFoundException", "trigger": "environmentId 对应的环境不存在或 is_deleted=true", "http_status": 404}
+          ]
+        },
+        {
+          "name": "updateEnvironment",
+          "signature": "(environmentId: UUID, req: UpdateEnvironmentRequest, userId: UUID) -> EnvironmentResponse",
+          "precondition": "environmentId 对应环境存在且未删除；若修改 name，新 name 在同一项目下不与其他现有环境重复",
+          "postcondition": "环境记录的连接参数已更新，updated_at 已刷新；审计日志已记录 environment.update 事件",
+          "description": "更新环境配置参数。校验新名称唯一性后更新数据库并发送审计日志",
+          "exceptions": [
+            {"name": "EnvironmentNotFoundException", "trigger": "environmentId 对应的环境不存在", "http_status": 404},
+            {"name": "EnvironmentNameConflictException", "trigger": "修改后的 name 在同一项目下与其他环境重复", "http_status": 409}
+          ]
+        },
+        {
+          "name": "deleteEnvironment",
+          "signature": "(environmentId: UUID, userId: UUID) -> None",
+          "precondition": "environmentId 对应环境存在且 is_deleted=false；该环境不存在关联的部署记录",
+          "postcondition": "环境记录的 is_deleted 已设为 true；审计日志已记录 environment.delete 事件",
+          "description": "软删除指定环境。通过 Deployment Orchestrator 或数据库查询确认无关联部署记录后标记 is_deleted 并发送审计日志",
+          "exceptions": [
+            {"name": "EnvironmentNotFoundException", "trigger": "environmentId 对应的环境不存在", "http_status": 404},
+            {"name": "EnvironmentHasDeploymentsException", "trigger": "该环境存在关联的部署记录，无法删除", "http_status": 409}
+          ]
+        },
+        {
+          "name": "listEnvironments",
+          "signature": "(projectId: Optional[UUID], page: int, size: int) -> EnvironmentListResponse",
+          "precondition": "page >= 1, size >= 1 且 size <= 100",
+          "postcondition": "返回指定页码的环境列表和分页信息；查询结果按 created_at 倒序排列，已软删除的记录不包含在结果中",
+          "description": "分页查询环境列表。如提供 project_id 则筛选该项目下的环境，否则返回所有项目下的环境",
+          "exceptions": [
+            {"name": "InvalidParameterException", "trigger": "page < 1 或 size < 1 或 size > 100", "http_status": 400}
+          ]
+        },
+        {
+          "name": "testConnection",
+          "signature": "(environmentId: UUID) -> ConnectionTestResponse",
+          "precondition": "environmentId 对应环境存在且未删除；该环境的 key_id 不为空（必须已绑定 SSH 密钥）",
+          "postcondition": "环境的 connection_status 已根据测试结果更新为 connected 或 failed；审计日志已记录 environment.test_connection 事件",
+          "description": "测试指定环境的 SSH 连接。读取环境连接参数和密钥 ID，调用 SSH Execution Service 的 POST /internal/ssh/execute 接口执行轻量探测命令（如 echo 'ping'），根据 SSH 执行结果更新环境的 connection_status 并返回测试结果",
+          "exceptions": [
+            {"name": "EnvironmentNotFoundException", "trigger": "environmentId 对应的环境不存在", "http_status": 404},
+            {"name": "KeyNotBoundException", "trigger": "环境的 key_id 为空，未绑定 SSH 密钥", "http_status": 422},
+            {"name": "SshExecutionTimeoutException", "trigger": "SSH Execution Service 执行超时或连接超时", "http_status": 504},
+            {"name": "SshExecutionException", "trigger": "SSH Execution Service 返回执行失败（exit_code != 0）", "http_status": 502}
+          ]
+        },
+        {
+          "name": "importKey",
+          "signature": "(environmentId: UUID, req: ImportKeyRequest) -> ImportKeyResponse",
+          "precondition": "environmentId 对应环境存在且未删除；req.private_key 内容符合 PEM 私钥格式",
+          "postcondition": "SSH 私钥已通过 KMS 加密存储；环境的 key_id 已更新为新密钥 ID；审计日志已记录 environment.import_key 事件",
+          "description": "为目标环境导入 SSH 私钥。首先校验环境存在性，然后调用 KMS 的 POST /internal/kms/keys（action=store）加密存储私钥，将返回的 key_id 绑定到环境记录上，最后发送审计日志并返回结果",
+          "exceptions": [
+            {"name": "EnvironmentNotFoundException", "trigger": "environmentId 对应的环境不存在", "http_status": 404},
+            {"name": "InvalidKeyFormatException", "trigger": "private_key 格式无效", "http_status": 400},
+            {"name": "KmsOperationException", "trigger": "KMS 返回存储失败（如密钥口令错误）", "http_status": 422}
+          ]
+        }
+      ],
+      "repository_dependencies": [
+        "findById(id: UUID) -> Optional[Environment]",
+        "findByNameAndProjectId(name: str, projectId: UUID) -> Optional[Environment]",
+        "findByNameAndProjectIdExcludingId(name: str, projectId: UUID, excludeId: UUID) -> Optional[Environment]",
+        "findAllByProjectIdPage(projectId: Optional[UUID], page: int, size: int) -> Tuple[List[Environment], int]",
+        "save(environment: Environment) -> Environment",
+        "update(environment: Environment) -> Environment",
+        "markDeleted(environmentId: UUID) -> None",
+        "updateConnectionStatus(environmentId: UUID, status: ConnectionStatus) -> None"
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "同一项目下不允许存在两个 is_deleted=false 的环境具有相同的 name",
+      "环境删除采用软删除机制，is_deleted=true 的记录不应出现在正常查询和列表结果中",
+      "环境必须关联一个已存在的项目（project_id 外键约束），创建时 project_id 对应的项目必须存在且未删除",
+      "只有已绑定 SSH 密钥（key_id 不为空）的环境才能执行连接测试",
+      "环境名称不能为空字符串或仅含空白字符，去除首尾空格后的长度在 1~255 之间",
+      "SSH 端口号必须在 1~65535 之间"
+    ],
+    "state_machines": [
       {
-        "code": "400",
-        "name": "请求参数错误",
-        "description": "请求参数校验失败。包括必填字段缺失（project_id、name、host、port、username、auth_type）、auth_type枚举值不合法（仅接受'密钥'或'密码'）、auth_type=密钥时key_id未提供、auth_type=密码时password未提供、port不在1-65535范围内、page或page_size为非正整数或超出限制。在Controller层通过FastAPI/Pydantic请求模型自动校验，校验不通过直接返回400及具体错误字段说明。"
-      },
-      {
-        "code": "404",
-        "name": "资源不存在",
-        "description": "根据路径参数或请求参数未找到对应资源。包括：创建环境时project_id在projects表中不存在、按id查询环境时未找到记录。Service层查询无结果时转换为404响应，detail字段包含资源类型和查询标识。"
-      },
-      {
-        "code": "409",
-        "name": "资源冲突",
-        "description": "创建环境时同一project_id下name违反唯一约束。数据库唯一索引抛出IntegrityError时在Repository层转换为409响应，detail字段说明"该项目下已存在同名环境"。"
-      },
-      {
-        "code": "500",
-        "name": "服务器内部错误",
-        "description": "服务运行时发生未捕获异常，包括数据库连接失败、数据库写入超时、Audit Service内部接口调用失败、SSH连接测试异常、密码加解密失败等。由全局异常处理器统一捕获，记录完整异常堆栈及trace_id到应用日志，响应中仅返回通用"服务器内部错误"信息，不包含数据库查询语句、连接配置详情、密钥ID等内部敏感信息。"
+        "entity": "Environment",
+        "states": ["active", "deleted"],
+        "transitions": [
+          {"from": "active", "to": "deleted", "trigger": "调用 deleteEnvironment 方法且关联部署记录检查通过", "actor": "admin 或 operator 角色用户"}
+        ],
+        "irreversible_rules": [
+          "环境从 active 变为 deleted 后不可逆，不允许恢复已删除的环境",
+          "deleted 状态为终态，不存在到其他状态的转换"
+        ],
+        "concurrency": "删除操作使用数据库行级锁锁定 environments 行记录（SELECT ... FOR UPDATE），在事务中同时查询部署记录，防止并发部署创建绕过关联检查"
       }
+    ],
+    "cross_service_rules": [
+      "环境创建、更新、删除和密钥导入操作完成后，必须同步调用 Audit Service 的 POST /internal/audit/log 接口记录审计日志，其中 actor 为当前操作用户 ID，action 按操作类型使用 environment.create / environment.update / environment.delete / environment.import_key，resource_type 固定为 environment，result 根据操作结果填入 success 或 failure。若审计日志发送失败（网络超时或服务不可达），仅记录 WARN 级别日志，不阻塞业务主流程",
+      "连接测试时需调用 SSH Execution Service 的 POST /internal/ssh/execute 接口执行轻量探测命令。传入的 host/port/username/key_id 从当前环境记录的字段中读取，command 固定为探测命令（如 echo 'connection_test'），timeout 设为 10 秒。若 SSH Execution Service 返回 success=true（exit_code=0），将环境的 connection_status 更新为 connected；否则更新为 failed",
+      "导入 SSH 密钥时需调用 Key Management Service 的 POST /internal/kms/keys 接口，action 固定为 store，传入 private_key 和可选的 passphrase。KMS 返回 key_id 和 fingerprint 后，将该 key_id 写入环境记录的 key_id 字段。若 KMS 返回失败，不更新环境记录，直接向上层返回错误",
+      "环境所属项目存在性校验通过读取 Primary Database 的 projects 表完成（共享数据库），不调用 Project Management Service 的 API"
     ]
   }
 }
