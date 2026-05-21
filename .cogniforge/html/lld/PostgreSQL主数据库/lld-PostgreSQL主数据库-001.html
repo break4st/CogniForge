@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PostgreSQL主数据库 - 详细设计 — lld-PostgreSQL主数据库-001</title>
+<style>
+  :root {
+    --c-bg: #0b0f19; --c-surface: #131926; --c-card: #191e2e;
+    --c-border: #252b3d; --c-text: #c8d2e0; --c-heading: #e2e8f4;
+    --c-muted: #6b7394; --c-accent: #5b8def; --c-accent2: #7c6ff7;
+    --c-green: #34d399; --c-amber: #fbbf24; --c-red: #f87171;
+    --c-cyan: #22d3ee; --radius: 10px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+    background: var(--c-bg); color: var(--c-text);
+    line-height: 1.75; font-size: 15px;
+    max-width: 860px; margin: 0 auto; padding: 48px 40px 80px;
+  }
+  body:has(.page-layout) { max-width: none; margin: 0; padding: 0; }
+  .top-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 40px; padding-bottom: 24px;
+    border-bottom: 1px solid var(--c-border);
+  }
+  .doc-id { font-size: 0.8em; color: var(--c-muted); font-family: monospace; }
+  .badge {
+    display: inline-flex; padding: 5px 14px; border-radius: 20px;
+    font-size: 0.78em; font-weight: 500;
+    background: rgba(255,255,255,0.04); border: 1px solid var(--c-border);
+    color: var(--c-muted);
+  }
+  .badge.accent { border-color: rgba(91,141,239,0.3); color: var(--c-accent); }
+  .badge.green  { border-color: rgba(52,211,153,0.3); color: var(--c-green); }
+  h1 {
+    font-size: 2.4em; font-weight: 800; color: #fff;
+    letter-spacing: -1px; line-height: 1.2; margin-bottom: 6px;
+  }
+  h1 span {
+    background: linear-gradient(135deg, var(--c-accent), var(--c-cyan));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .meta { font-size: 0.85em; color: var(--c-muted); margin-bottom: 4px; }
+  .section { margin-bottom: 36px; }
+  .section-header {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 18px;
+  }
+  .section-header .icon {
+    width: 40px; height: 40px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.2em; flex-shrink: 0;
+  }
+  .section-header h2 {
+    font-size: 1.25em; font-weight: 700; color: var(--c-heading);
+  }
+  .section-body {
+    background: var(--c-card); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 28px 32px;
+  }
+  .section-body p { margin-bottom: 12px; }
+  .section-body p:last-child { margin-bottom: 0; }
+  .req-item {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .req-item:last-child { margin-bottom: 0; }
+  .req-item h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); margin-bottom: 6px; }
+  .req-desc { font-size: 0.9em; color: var(--c-muted); margin-bottom: 10px; }
+  .ac-list { list-style: none; padding: 0; margin: 0; }
+  .ac-list li {
+    padding: 4px 0 4px 18px; position: relative;
+    font-size: 0.88em; color: var(--c-text);
+  }
+  .ac-list li::before {
+    content: ""; position: absolute; left: 0; top: 12px;
+    width: 6px; height: 6px; border-radius: 50%; background: var(--c-green);
+  }
+  .ac-label {
+    font-size: 0.75em; font-weight: 600; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .story-item {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 14px 18px; border-radius: 8px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    margin-bottom: 8px;
+  }
+  .story-item:last-child { margin-bottom: 0; }
+  .story-role {
+    font-size: 0.8em; font-weight: 600; color: var(--c-accent);
+    background: rgba(91,141,239,0.1); padding: 2px 10px;
+    border-radius: 12px; white-space: nowrap; flex-shrink: 0;
+  }
+  .story-text { font-size: 0.92em; }
+  .story-text .goal { color: var(--c-muted); font-size: 0.88em; }
+  .priority-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .priority-tag {
+    display: inline-flex; padding: 6px 14px; border-radius: 6px;
+    font-size: 0.85em; font-weight: 500;
+  }
+  .priority-tag.high   { background: rgba(248,113,113,0.1);  color: #fca5a5; }
+  .priority-tag.medium { background: rgba(251,191,36,0.1);  color: #fcd34d; }
+  .priority-tag.low    { background: rgba(107,115,148,0.15); color: #9ca3af; }
+  .comp-item {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .comp-item h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); }
+  .comp-type {
+    font-size: 0.78em; color: var(--c-accent); margin-bottom: 8px;
+  }
+  .comp-resp { margin-top: 8px; font-size: 0.88em; }
+  .comp-resp li { margin: 2px 0; }
+
+  /* ── Contract Groups ── */
+  .contract-group {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); margin-bottom: 12px; overflow: hidden;
+  }
+  .contract-group[open] { border-color: rgba(91,141,239,0.25); }
+  .contract-group summary {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 20px; cursor: pointer; user-select: none;
+    font-weight: 600; font-size: 0.95em; color: var(--c-heading);
+    background: rgba(255,255,255,0.015);
+  }
+  .contract-group summary:hover { background: rgba(255,255,255,0.03); }
+  .contract-group summary::-webkit-details-marker { display: none; }
+  .contract-group summary::before {
+    content: "›"; display: inline-block; font-size: 1.3em; font-weight: 400;
+    width: 16px; color: var(--c-muted); transition: transform 0.2s;
+  }
+  .contract-group[open] summary::before { transform: rotate(90deg); }
+  .cg-count {
+    font-size: 0.78em; font-weight: 500; color: var(--c-muted);
+    background: rgba(255,255,255,0.04); padding: 2px 10px; border-radius: 10px;
+  }
+  .contract-card {
+    padding: 16px 20px; border-top: 1px solid var(--c-border);
+  }
+  .contract-card:first-of-type { border-top: 1px solid var(--c-border); }
+  .cc-head {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .cc-head .cc-name { font-weight: 600; font-size: 0.93em; color: var(--c-heading); }
+  .method-badge {
+    font-family: monospace; font-size: 0.75em; font-weight: 700;
+    padding: 3px 8px; border-radius: 5px; white-space: nowrap;
+  }
+  .method-badge.get      { background: rgba(52,211,153,0.15);  color: var(--c-green); }
+  .method-badge.post     { background: rgba(91,141,239,0.15);  color: var(--c-accent); }
+  .method-badge.put      { background: rgba(251,191,36,0.12);  color: var(--c-amber); }
+  .method-badge.delete   { background: rgba(248,113,113,0.12); color: var(--c-red); }
+  .method-badge.patch    { background: rgba(34,211,238,0.12);  color: var(--c-cyan); }
+  .method-badge.mq       { background: rgba(124,111,247,0.13); color: var(--c-accent2); }
+  .method-badge.ws       { background: rgba(124,111,247,0.13); color: var(--c-accent2); }
+  .method-badge.frontend { background: rgba(34,211,238,0.12);  color: var(--c-cyan); }
+  .method-badge.internal { background: rgba(107,115,148,0.15); color: var(--c-muted); }
+  .cc-endpoint {
+    font-family: monospace; font-size: 0.82em; color: var(--c-text);
+    background: rgba(255,255,255,0.03); padding: 2px 8px; border-radius: 4px;
+  }
+  .cc-type-tag {
+    font-size: 0.72em; font-weight: 600; padding: 3px 8px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    background: rgba(91,141,239,0.1); color: var(--c-accent);
+  }
+  .cc-meta {
+    font-size: 0.82em; color: var(--c-muted); margin-bottom: 6px;
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .cc-meta .cc-consumer {
+    font-size: 0.85em; color: var(--c-accent2);
+    background: rgba(124,111,247,0.08); padding: 1px 8px; border-radius: 4px;
+  }
+  .cc-desc { font-size: 0.85em; color: var(--c-muted); margin-bottom: 10px; }
+  .body-table {
+    width: 100%; border-collapse: collapse; font-size: 0.8em; margin: 6px 0 4px;
+  }
+  .body-table th {
+    text-align: left; padding: 5px 10px; font-weight: 600;
+    color: var(--c-muted); font-size: 0.85em; text-transform: uppercase;
+    letter-spacing: 0.4px; border-bottom: 2px solid var(--c-border);
+    background: rgba(255,255,255,0.015);
+  }
+  .body-table td {
+    padding: 4px 10px; border-bottom: 1px solid rgba(255,255,255,0.04);
+    color: var(--c-text);
+  }
+  .body-table .field-type { color: var(--c-accent); font-family: monospace; font-size: 0.9em; }
+  .body-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 2px;
+  }
+  .model-item {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .model-item h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); }
+  table {
+    width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9em;
+  }
+  th {
+    text-align: left; padding: 10px 14px; font-weight: 600;
+    color: var(--c-muted); font-size: 0.8em; text-transform: uppercase;
+    letter-spacing: 0.5px; border-bottom: 2px solid var(--c-border);
+  }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--c-border); }
+  tr:hover td { background: rgba(255,255,255,0.015); }
+  .footer {
+    margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--c-border);
+    text-align: center; color: var(--c-muted); font-size: 0.8em;
+  }
+  /* ── System Overview ── */
+  .overview-hero {
+    background: linear-gradient(135deg, rgba(124,111,247,0.08), rgba(91,141,239,0.05));
+    border: 1px solid rgba(124,111,247,0.18); border-radius: var(--radius);
+    padding: 24px 28px; margin-bottom: 24px;
+  }
+  .overview-hero .hero-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-accent2);
+    text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 10px;
+  }
+  .overview-hero p { font-size: 1.02em; line-height: 1.85; color: var(--c-text); }
+  .role-cards {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
+  }
+  .role-card {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 22px 20px; text-align: center;
+  }
+  .role-card .role-icon {
+    width: 48px; height: 48px; border-radius: 50%; margin: 0 auto 12px;
+    display: flex; align-items: center; justify-content: center; font-size: 1.3em;
+  }
+  .role-card .role-name {
+    font-size: 1em; font-weight: 700; color: var(--c-heading); margin-bottom: 10px;
+  }
+  .role-card .role-perms {
+    font-size: 0.84em; color: var(--c-muted); line-height: 1.7;
+    list-style: none; padding: 0;
+  }
+  .role-card .role-perms li { padding: 1px 0; }
+
+  /* ── Architecture Diagram ── */
+  .arch-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 24px 20px 20px; margin-bottom: 22px;
+  }
+  .arch-tier {
+    display: flex; align-items: center; margin-bottom: 4px;
+  }
+  .arch-tier-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0;
+    width: 52px; text-align: right; padding-right: 16px;
+  }
+  .arch-tier-boxes { display: flex; gap: 8px; flex: 1; flex-wrap: wrap; }
+  .arch-box {
+    border-radius: 8px; padding: 12px 16px; text-align: center;
+    font-weight: 600; font-size: 0.85em; flex: 1; min-width: 80px;
+  }
+  .arch-box.frontend {
+    background: rgba(34,211,238,0.12); border: 1px solid rgba(34,211,238,0.28);
+    color: var(--c-cyan);
+  }
+  .arch-box.gateway {
+    background: rgba(124,111,247,0.13); border: 1px solid rgba(124,111,247,0.3);
+    color: var(--c-accent2);
+  }
+  .arch-box.service {
+    background: rgba(91,141,239,0.1); border: 1px solid rgba(91,141,239,0.22);
+    color: var(--c-accent);
+  }
+  .arch-box.db {
+    background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.22);
+    color: var(--c-green);
+  }
+  .arch-box.cache {
+    background: rgba(251,191,36,0.09); border: 1px solid rgba(251,191,36,0.22);
+    color: var(--c-amber);
+  }
+  .arch-box.mq {
+    background: rgba(248,113,113,0.07); border: 1px solid rgba(248,113,113,0.18);
+    color: var(--c-red);
+  }
+  .arch-overview {
+    display: flex; align-items: center; gap: 0; margin-bottom: 20px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 8px; overflow: hidden;
+  }
+  .arch-ov-item {
+    flex: 1; text-align: center; padding: 16px 12px; position: relative;
+  }
+  .arch-ov-item .ov-count {
+    font-size: 1.8em; font-weight: 800; line-height: 1.1;
+  }
+  .arch-ov-item .ov-label {
+    font-size: 0.75em; color: var(--c-muted); margin-top: 4px;
+  }
+  .arch-ov-arrow {
+    font-size: 1.1em; color: var(--c-muted); flex-shrink: 0;
+    padding: 0 2px;
+  }
+  .arch-style-badge {
+    display: inline-flex; padding: 6px 16px; border-radius: 20px;
+    font-size: 0.85em; font-weight: 700; margin-bottom: 16px;
+    background: linear-gradient(135deg, rgba(124,111,247,0.15), rgba(91,141,239,0.1));
+    border: 1px solid rgba(124,111,247,0.25); color: var(--c-accent2);
+  }
+  .arch-features {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px;
+    padding-top: 16px; border-top: 1px solid var(--c-border);
+  }
+  .arch-feature-tag {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 14px; border-radius: 18px; font-size: 0.82em; font-weight: 500;
+    background: rgba(255,255,255,0.03); border: 1px solid var(--c-border);
+    color: var(--c-text);
+  }
+  .arch-feature-tag .dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  }
+  .arch-desc { margin-bottom: 18px; color: var(--c-text); line-height: 1.8; }
+
+  /* ── Topology ── */
+  .topo-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 24px 20px 20px; margin-bottom: 22px;
+  }
+  .topo-tier {
+    display: flex; align-items: stretch; margin-bottom: 2px;
+  }
+  .topo-tier-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0;
+    width: 52px; text-align: right; padding-right: 16px; padding-top: 12px;
+  }
+  .topo-tier-content { flex: 1; display: flex; flex-wrap: wrap; gap: 8px; }
+  .topo-node {
+    border-radius: 8px; padding: 10px 15px; text-align: center;
+    font-weight: 600; font-size: 0.83em; flex: 1; min-width: 80px;
+  }
+  .topo-node.frontend {
+    background: rgba(34,211,238,0.12); border: 1px solid rgba(34,211,238,0.28);
+    color: var(--c-cyan);
+  }
+  .topo-node.gateway {
+    background: rgba(124,111,247,0.13); border: 1px solid rgba(124,111,247,0.3);
+    color: var(--c-accent2);
+  }
+  .topo-node.service {
+    background: rgba(91,141,239,0.1); border: 1px solid rgba(91,141,239,0.22);
+    color: var(--c-accent);
+  }
+  .topo-node.db {
+    background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.22);
+    color: var(--c-green);
+  }
+  .topo-node.cache {
+    background: rgba(251,191,36,0.09); border: 1px solid rgba(251,191,36,0.22);
+    color: var(--c-amber);
+  }
+  .topo-node.mq {
+    background: rgba(248,113,113,0.07); border: 1px solid rgba(248,113,113,0.18);
+    color: var(--c-red);
+  }
+  .topo-connector {
+    display: flex; align-items: center; padding: 2px 0 2px 52px;
+    gap: 10px; flex-wrap: wrap;
+  }
+  .topo-connector-line {
+    flex: 1; min-width: 60px; display: flex; align-items: center; gap: 6px;
+    color: var(--c-muted); font-size: 0.75em; font-weight: 500;
+  }
+  .topo-connector-line::before {
+    content: ""; display: inline-block; width: 12px; height: 1px;
+    background: var(--c-border); flex-shrink: 0;
+  }
+  .topo-connector-line .proto {
+    color: var(--c-accent2); font-family: monospace; font-size: 0.9em;
+    background: rgba(124,111,247,0.08); padding: 1px 6px; border-radius: 4px;
+  }
+
+  /* ── Data Flow ── */
+  .flow-cards { display: flex; flex-direction: column; gap: 16px; }
+  .flow-card {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 20px 22px;
+  }
+  .flow-card-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+  }
+  .flow-card-header .flow-num {
+    width: 28px; height: 28px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.8em; font-weight: 700; flex-shrink: 0;
+  }
+  .flow-card-header .flow-name {
+    font-weight: 700; font-size: 0.95em; color: var(--c-heading);
+  }
+  .flow-steps {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+  }
+  .flow-step {
+    font-size: 0.82em; padding: 5px 10px; border-radius: 6px;
+    background: rgba(255,255,255,0.03); border: 1px solid var(--c-border);
+    color: var(--c-text); white-space: nowrap;
+  }
+  .flow-step.start  { border-color: rgba(52,211,153,0.3);  color: var(--c-green); }
+  .flow-step.mid    { border-color: rgba(91,141,239,0.25);  color: var(--c-accent); }
+  .flow-step.end    { border-color: rgba(124,111,247,0.3);  color: var(--c-accent2); }
+  .flow-arrow { color: var(--c-muted); font-size: 0.85em; flex-shrink: 0; }
+
+  /* ── Error Handling ── */
+  .err-strategy {
+    background: linear-gradient(135deg, rgba(251,191,36,0.06), rgba(248,113,113,0.04));
+    border: 1px solid rgba(251,191,36,0.2);
+    border-radius: var(--radius); padding: 20px 24px; margin-bottom: 20px;
+  }
+  .err-strategy .err-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-amber);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;
+  }
+  .err-strategy p { font-size: 0.92em; line-height: 1.8; color: var(--c-text); }
+
+  .err-format-box {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 20px;
+  }
+  .err-format-box .err-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;
+  }
+  .err-format-box pre {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.84em; color: var(--c-text);
+    background: rgba(0,0,0,0.2); padding: 14px 18px; border-radius: 6px;
+    overflow-x: auto; line-height: 1.7;
+  }
+
+  .err-categories { display: flex; flex-direction: column; gap: 10px; }
+  .err-category {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px;
+    display: flex; gap: 16px; align-items: flex-start;
+  }
+  .err-category:hover { border-color: rgba(255,255,255,0.1); }
+  .err-code-badge {
+    font-family: monospace; font-size: 0.85em; font-weight: 700;
+    padding: 6px 12px; border-radius: 6px; white-space: nowrap;
+    flex-shrink: 0; min-width: 48px; text-align: center;
+  }
+  .err-code-badge._4xx { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+  .err-code-badge._5xx { background: rgba(248,113,113,0.12); color: var(--c-red); }
+  .err-code-badge._other { background: rgba(124,111,247,0.1); color: var(--c-accent2); }
+  .err-category-body { flex: 1; min-width: 0; }
+  .err-category-body .err-cat-name {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 6px;
+  }
+  .err-category-body .err-cat-desc {
+    font-size: 0.85em; color: var(--c-muted); line-height: 1.7;
+  }
+
+  /* ── Domain Objects ── */
+  .domain-obj {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .domain-obj h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); margin-bottom: 6px; }
+  .obj-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 0.72em; font-weight: 600; margin-left: 6px;
+  }
+  .obj-tag.entity   { background: rgba(91,141,239,0.12);  color: var(--c-accent); }
+  .obj-tag.dto      { background: rgba(52,211,153,0.12);  color: var(--c-green); }
+  .obj-tag.value_object { background: rgba(124,111,247,0.1); color: var(--c-accent2); }
+  .obj-tag.enum     { background: rgba(251,191,36,0.1);   color: var(--c-amber); }
+  .attr-source-tag {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 0.7em; font-weight: 600; font-family: monospace;
+    color: var(--c-muted); background: rgba(107,115,148,0.1);
+  }
+
+  /* ── Service Contracts ── */
+  .svc-contract {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); margin-bottom: 12px; overflow: hidden;
+  }
+  .svc-contract summary {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 20px; cursor: pointer; user-select: none;
+    font-weight: 600; font-size: 0.95em; color: var(--c-heading);
+    background: rgba(255,255,255,0.015);
+  }
+  .svc-contract summary:hover { background: rgba(255,255,255,0.03); }
+  .svc-contract summary::-webkit-details-marker { display: none; }
+  .svc-contract summary::before {
+    content: "›"; display: inline-block; font-size: 1.3em; font-weight: 400;
+    width: 16px; color: var(--c-muted); transition: transform 0.2s;
+  }
+  .svc-contract[open] summary::before { transform: rotate(90deg); }
+  .svc-method {
+    padding: 16px 20px; border-top: 1px solid var(--c-border);
+  }
+  .svc-method-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .svc-method-header .method-name {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading);
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+  }
+  .svc-method-header .return-type {
+    font-size: 0.82em; color: var(--c-accent); font-family: monospace;
+    background: rgba(91,141,239,0.08); padding: 2px 8px; border-radius: 4px;
+  }
+  .sig-block {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.84em; color: var(--c-text);
+    background: rgba(255,255,255,0.02); padding: 10px 14px;
+    border-radius: 6px; margin: 8px 0; overflow-x: auto;
+    border: 1px solid var(--c-border);
+  }
+  .pre-post {
+    display: flex; gap: 12px; margin: 8px 0; flex-wrap: wrap;
+  }
+  .pre-post-item {
+    flex: 1; min-width: 180px;
+    background: rgba(255,255,255,0.015); border: 1px solid var(--c-border);
+    border-radius: 6px; padding: 10px 14px;
+  }
+  .pre-post-item .pp-label {
+    font-size: 0.68em; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .pre-post-item.pre .pp-label { color: var(--c-green); }
+  .pre-post-item.post .pp-label { color: var(--c-accent); }
+  .pre-post-item .pp-text { font-size: 0.84em; color: var(--c-text); }
+  .exc-item {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 14px; margin: 2px 4px 2px 0;
+    font-size: 0.8em; background: rgba(248,113,113,0.06);
+    border: 1px solid rgba(248,113,113,0.15);
+  }
+  .exc-item .exc-name { font-weight: 600; color: var(--c-red); font-family: monospace; font-size: 0.85em; }
+  .exc-item .exc-http { font-size: 0.82em; color: var(--c-muted); }
+  .repo-dep {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.82em; color: var(--c-muted);
+    padding: 2px 0 2px 12px; border-left: 2px solid var(--c-border);
+    margin: 2px 0 2px 8px;
+  }
+
+  /* ── Business Rules ── */
+  .invariant-list {
+    list-style: none; padding: 0; margin: 0;
+  }
+  .invariant-list li {
+    padding: 8px 14px; margin-bottom: 6px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 6px; font-size: 0.9em;
+    display: flex; align-items: flex-start; gap: 10px;
+  }
+  .invariant-list li .inv-icon {
+    color: var(--c-amber); font-weight: 700; flex-shrink: 0;
+  }
+  .state-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 20px; margin-bottom: 12px;
+  }
+  .state-diagram .sd-title {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 12px;
+  }
+  .state-row {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px;
+  }
+  .state-node {
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 8px 18px; border-radius: 20px; font-size: 0.85em; font-weight: 600;
+    border: 1px solid var(--c-border); background: var(--c-card);
+    color: var(--c-text);
+  }
+  .state-node.active { border-color: rgba(91,141,239,0.4); color: var(--c-accent); background: rgba(91,141,239,0.06); }
+  .state-node.terminal { border-color: rgba(52,211,153,0.3); color: var(--c-green); background: rgba(52,211,153,0.06); }
+  .state-node.error   { border-color: rgba(248,113,113,0.3); color: var(--c-red); background: rgba(248,113,113,0.06); }
+  .state-arrow {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 0.78em; color: var(--c-muted); padding: 0 4px;
+  }
+  .state-arrow .trigger-text {
+    font-size: 0.85em; background: rgba(107,115,148,0.1);
+    padding: 2px 8px; border-radius: 4px;
+  }
+  .irrev-rule {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 12px; border-radius: 14px; margin: 4px;
+    font-size: 0.8em; background: rgba(248,113,113,0.06);
+    border: 1px solid rgba(248,113,113,0.15); color: var(--c-red);
+  }
+  .cross-svc-rule {
+    padding: 6px 12px; margin: 4px 0;
+    font-size: 0.85em; color: var(--c-accent2);
+    background: rgba(124,111,247,0.05); border-left: 3px solid rgba(124,111,247,0.3);
+    border-radius: 4px;
+  }
+
+  /* ── Component Tree ── */
+  .comp-node {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 16px 20px; margin-bottom: 8px;
+    margin-left: 0;
+  }
+  .comp-node.child { margin-left: 20px; border-left: 2px solid rgba(91,141,239,0.2); }
+  .comp-node .cn-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;
+  }
+  .comp-node .cn-name { font-weight: 600; font-size: 0.95em; color: var(--c-heading); }
+  .comp-node .cn-path {
+    font-family: monospace; font-size: 0.78em; color: var(--c-accent);
+    background: rgba(91,141,239,0.08); padding: 2px 8px; border-radius: 4px;
+  }
+  .cn-section { margin: 8px 0; }
+  .cn-section .cn-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .cn-tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 4px; margin: 2px;
+    font-size: 0.78em; background: rgba(255,255,255,0.03);
+    border: 1px solid var(--c-border); color: var(--c-text);
+  }
+  .cn-tag.prop { border-color: rgba(91,141,239,0.2); color: var(--c-accent); }
+  .cn-tag.event { border-color: rgba(52,211,153,0.2); color: var(--c-green); }
+  .cn-tag.state { border-color: rgba(251,191,36,0.2); color: var(--c-amber); }
+  .cn-behavior { font-size: 0.84em; color: var(--c-text); }
+  .cn-edge { font-size: 0.82em; color: var(--c-muted); }
+  .cn-edge .edge-icon { color: var(--c-amber); }
+
+  /* ── State Design ── */
+  .state-global-item {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 10px 14px; margin-bottom: 6px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 6px;
+  }
+  .state-global-item .sg-name {
+    font-weight: 600; font-size: 0.9em; color: var(--c-heading); font-family: monospace;
+  }
+  .state-global-item .sg-type {
+    font-size: 0.82em; color: var(--c-accent); font-family: monospace;
+    background: rgba(91,141,239,0.06); padding: 1px 6px; border-radius: 3px;
+  }
+
+  /* ── Route Design ── */
+  .route-row {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 14px; border-bottom: 1px solid var(--c-border);
+  }
+  .route-row:last-child { border-bottom: none; }
+
+  /* ── Interaction Flows ── */
+  .flow-timeline {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 16px 20px; margin-bottom: 12px;
+  }
+  .flow-timeline .ft-title {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 10px;
+  }
+  .ft-step {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 6px 0; font-size: 0.86em;
+  }
+  .ft-step .ft-num {
+    width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+    background: rgba(91,141,239,0.1); color: var(--c-accent);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 0.8em;
+  }
+  .ft-step .ft-text { color: var(--c-text); padding-top: 2px; }
+
+  /* ── Gateway ── */
+  .mw-flow {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+    padding: 14px 18px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; margin-bottom: 12px;
+  }
+  .mw-node {
+    padding: 6px 14px; border-radius: 6px; font-size: 0.84em; font-weight: 500;
+    background: var(--c-card); border: 1px solid var(--c-border);
+    color: var(--c-text); white-space: nowrap;
+  }
+  .mw-node.special {
+    border-color: rgba(91,141,239,0.25); color: var(--c-accent);
+    background: rgba(91,141,239,0.06);
+  }
+  .mw-arrow { color: var(--c-muted); font-size: 0.85em; }
+
+  .auth-matrix {
+    width: 100%; border-collapse: collapse; font-size: 0.85em;
+  }
+  .auth-matrix th {
+    text-align: left; padding: 8px 12px; font-weight: 600;
+    color: var(--c-muted); border-bottom: 2px solid var(--c-border);
+  }
+  .auth-matrix td { padding: 8px 12px; border-bottom: 1px solid var(--c-border); }
+  .role-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px; margin: 1px 3px 1px 0;
+    font-size: 0.82em; background: rgba(91,141,239,0.08); color: var(--c-accent);
+  }
+
+  @media (max-width: 700px) {
+    body { padding: 24px 16px 48px; }
+    h1 { font-size: 1.6em; }
+    .section-body { padding: 20px 16px; }
+    .role-cards { grid-template-columns: 1fr; }
+    .arch-overview { flex-wrap: wrap; }
+    .arch-ov-arrow { display: none; }
+    .arch-tier { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .arch-tier-label { width: auto; text-align: left; padding-right: 0; }
+    .arch-arrows { padding-left: 0; justify-content: flex-start; }
+    .arch-tier-boxes { width: 100%; }
+    .topo-tier { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .topo-tier-label { width: auto; text-align: left; padding-right: 0; padding-top: 0; }
+    .topo-connector { padding-left: 0; }
+    .flow-steps { flex-direction: column; align-items: flex-start; }
+    .flow-arrow { display: none; }
+    .cc-head { flex-direction: column; align-items: flex-start; gap: 6px; }
+    .cc-meta { flex-direction: column; align-items: flex-start; }
+    .page-layout { flex-direction: column; }
+    .sidebar { display: none; }
+    .sidebar.mobile-open { display: flex; }
+    .sidebar-toggle { display: flex; }
+  }
+
+  /* ── Sidebar Layout ── */
+  .page-layout {
+    display: flex; min-height: 100vh;
+  }
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0;
+    width: 230px; overflow-y: auto;
+    background: var(--c-surface); border-right: 1px solid var(--c-border);
+    display: flex; flex-direction: column; padding: 24px 0;
+    z-index: 100;
+  }
+  .sidebar-header {
+    padding: 0 20px 20px; border-bottom: 1px solid var(--c-border); margin-bottom: 12px;
+  }
+  .sidebar-header .sid {
+    font-size: 0.72em; font-weight: 600; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .sidebar-header .stitle {
+    font-size: 0.95em; font-weight: 700; color: var(--c-heading);
+    margin-top: 4px; line-height: 1.3;
+  }
+  .sidebar-nav { flex: 1; padding: 0 12px; }
+  .sidebar-link {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; border-radius: 7px;
+    font-size: 0.86em; color: var(--c-muted); text-decoration: none;
+    margin-bottom: 2px; transition: all 0.15s;
+  }
+  .sidebar-link:hover { color: var(--c-text); background: rgba(255,255,255,0.03); }
+  .sidebar-link.active {
+    color: var(--c-accent); background: rgba(91,141,239,0.1);
+    font-weight: 600;
+  }
+  .sidebar-link .sl-icon { font-size: 1.05em; width: 20px; text-align: center; flex-shrink: 0; }
+  .sidebar-toggle {
+    display: none; position: fixed; top: 12px; left: 12px; z-index: 200;
+    width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--c-border);
+    background: var(--c-surface); color: var(--c-text); font-size: 1.2em;
+    cursor: pointer; align-items: center; justify-content: center;
+  }
+  .main-content {
+    margin-left: 230px; flex: 1; min-width: 0;
+    max-width: 860px; padding: 48px 40px 80px;
+  }
+  html { scroll-behavior: smooth; }
+  @media print {
+    body { background: #fff; color: #222; }
+    .section-body, .req-item, .story-item { background: #fff; border: 1px solid #ddd; }
+    h1 { color: #111; }
+  }
+</style>
+</head>
+<body>
+<div class="page-layout">
+<nav class="sidebar" id="sidebar"><div class="sidebar-header"><div class="sid">lld-PostgreSQL主数据库-001</div><div class="stitle">PostgreSQL主数据库 - 详细设计</div></div><div class="sidebar-nav"><a href="#overview" class="sidebar-link"><span class="sl-icon">📄</span>概述</a><a href="#models" class="sidebar-link"><span class="sl-icon">🗄️</span>数据模型 (9)</a><a href="#index-strategy" class="sidebar-link"><span class="sl-icon">📊</span>索引策略</a><a href="#migration" class="sidebar-link"><span class="sl-icon">📜</span>迁移策略</a><a href="#capacity" class="sidebar-link"><span class="sl-icon">📈</span>容量估算</a><a href="#connections" class="sidebar-link"><span class="sl-icon">🔗</span>连接配置</a><a href="#interfaces" class="sidebar-link"><span class="sl-icon">🔌</span>接口定义 (7)</a><a href="#errors" class="sidebar-link"><span class="sl-icon">⚠️</span>错误处理</a></div></nav><button id="sidebar-toggle" class="sidebar-toggle" aria-label="菜单">☰</button>
+<div class="main-content">
+<div class="top-bar">
+  <div class="doc-id">lld-PostgreSQL主数据库-001</div>
+  <div><span class="badge accent">详细设计文档</span></div>
+</div>
+<h1><span>详细设计文档</span> PostgreSQL主数据库 - 详细设计</h1>
+<div class="meta">2026-05-21 &middot; 作者: design_agent</div>
+
+<div class="section" id="overview">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(124,111,247,0.12)">📄</div>
+    <h2>概述</h2>
+  </div>
+  <div class="section-body">
+
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap"><div class="arch-style-badge">PostgreSQL主数据库</div><span class="badge accent">🗄️ 数据库层</span></div>
+<div class="arch-desc">系统主数据库，存储项目、环境、用户、部署记录、审计日志等所有业务数据的持久化存储。采用 PostgreSQL 15 关系型数据库，提供事务性数据一致性保证、ACID 事务支持、慢查询优化和索引管理能力。所有微服务的业务数据统一集中存储，通过模式(schema)或表前缀逻辑隔离不同服务的数据域。</div>
+<div style="margin-bottom:8px"><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>PostgreSQL 15</span></div>
+  </div>
+</div>
+
+<div class="section" id="models">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(91,141,239,0.12)">🗄️</div>
+    <h2>数据模型 (9)</h2>
+  </div>
+  <div class="section-body">
+
+<details class="contract-group" open><summary>数据库表 <span class="cg-count">9</span></summary><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗄️ users<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(52,211,153,0.15);color:var(--c-green);margin-left:6px">权威定义</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">系统用户表，存储所有登录用户的基本信息、角色和认证凭证。</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGSERIAL</td><td>用户ID，自增主键</td></tr><tr><td>username <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(64)</td><td>用户名，唯一标识</td></tr><tr><td>password_hash <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(256)</td><td>密码哈希值（bcrypt）</td></tr><tr><td>display_name</td><td class="field-type">VARCHAR(128)</td><td>用户显示名称</td></tr><tr><td>role <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(32)</td><td>用户角色：admin / manager / ops</td></tr><tr><td>email</td><td class="field-type">VARCHAR(128)</td><td>电子邮箱</td></tr><tr><td>is_active <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BOOLEAN</td><td>账号是否启用，默认 true</td></tr><tr><td>last_login_at</td><td class="field-type">TIMESTAMP</td><td>最后登录时间</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMP</td><td>记录创建时间，默认 NOW()</td></tr><tr><td>updated_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMP</td><td>记录更新时间，默认 NOW()</td></tr></tbody></table><div class="body-label" style="margin-top:8px">索引</div><table class="body-table"><thead><tr><th>索引名</th><th>唯一</th><th>列</th></tr></thead><tbody><tr><td>idx_users_username</td><td>✓</td><td style="font-family:monospace;font-size:0.85em">username</td></tr><tr><td>idx_users_role</td><td></td><td style="font-family:monospace;font-size:0.85em">role</td></tr><tr><td>idx_users_is_active</td><td></td><td style="font-family:monospace;font-size:0.85em">is_active</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗄️ projects<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(52,211,153,0.15);color:var(--c-green);margin-left:6px">权威定义</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">项目表，每个项目代表一个独立的应用或服务，包含基本信息和部署相关配置。</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGSERIAL</td><td>项目ID，自增主键</td></tr><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(128)</td><td>项目名称</td></tr><tr><td>description</td><td class="field-type">TEXT</td><td>项目描述信息</td></tr><tr><td>status <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(32)</td><td>项目状态：active / archived / deleted，默认 active</td></tr><tr><td>created_by <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGINT</td><td>创建者用户ID，关联 users.id</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMP</td><td>记录创建时间，默认 NOW()</td></tr><tr><td>updated_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMP</td><td>记录更新时间，默认 NOW()</td></tr></tbody></table><div class="body-label" style="margin-top:8px">索引</div><table class="body-table"><thead><tr><th>索引名</th><th>唯一</th><th>列</th></tr></thead><tbody><tr><td>idx_projects_name</td><td></td><td style="font-family:monospace;font-size:0.85em">name</td></tr><tr><td>idx_projects_status</td><td></td><td style="font-family:monospace;font-size:0.85em">status</td></tr><tr><td>idx_projects_created_by</td><td></td><td style="font-family:monospace;font-size:0.85em">created_by</td></tr><tr><td>idx_projects_created_at</td><td></td><td style="font-family:monospace;font-size:0.85em">created_at</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗄️ environments<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(52,211,153,0.15);color:var(--c-green);margin-left:6px">权威定义</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署环境表，关联到具体项目，每套环境独立配置服务器连接参数、部署路径和环境类型。</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGSERIAL</td><td>环境ID，自增主键</td></tr><tr><td>project_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGINT</td><td>所属项目ID，关联 projects.id</td></tr><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(128)</td><td>环境名称，如「测试线-01」</td></tr><tr><td>type <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(32)</td><td>环境类型：test / gray / prod</td></tr><tr><td>server_host <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(256)</td><td>远程服务器主机地址</td></tr><tr><td>server_port <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">INTEGER</td><td>SSH端口号，默认 22</td></tr><tr><td>deploy_user <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(64)</td><td>远程服务器登录用户名，默认 root</td></tr><tr><td>deploy_path <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(512)</td><td>远程服务器上的部署根路径</td></tr><tr><td>connection_status <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(32)</td><td>连接状态：online / offline / unknown，默认 unknown</td></tr><tr><td>ssh_key_id</td><td class="field-type">BIGINT</td><td>关联的SSH密钥ID，关联 ssh_keys.id</td></tr><tr><td>created_by</td><td class="field-type">BIGINT</td><td>创建者用户ID，关联 users.id</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMP</td><td>记录创建时间，默认 NOW()</td></tr><tr><td>updated_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMP</td><td>记录更新时间，默认 NOW()</td></tr></tbody></table><div class="body-label" style="margin-top:8px">索引</div><table class="body-table"><thead><tr><th>索引名</th><th>唯一</th><th>列</th></tr></thead><tbody><tr><td>idx_environments_project_id</td><td></td><td style="font-family:monospace;font-size:0.85em">project_id</td></tr><tr><td>idx_environments_type</td><td></td><td style="font-family:monospace;font-size:0.85em">type</td></tr><tr><td>idx_environments_ssh_key_id</td><td></td><td style="font-family:monospace;font-size:0.85em">ssh_key_id</td></tr><tr><td>idx_environments_connection_status</td><td></td><td style="font-family:monospace;font-size:0.85em">connection_status</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗄️ ssh_keys<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(52,211,153,0.15);color:var(--c-green);margin-left:6px">权威定义</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">SSH密钥表，存储加密后的SSH私钥和公钥指纹信息，用于远程服务器的安全认证连接。</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGSERIAL</td><td>密钥ID，自增主键</td></tr><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(128)</td><td>密钥名称，便于识别</td></tr><tr><td>private_key_encrypted <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TEXT</td><td>AES-256加密后的SSH私钥内容</td></tr><tr><td>public_key</td><td class="field-type">TEXT</td><td>SSH公钥内容（明文存储，用于验证指纹）</td></tr><tr><td>fingerprint</td><td class="field-type">VARCHAR(128)</td><td>SSH密钥指纹（SHA256）</td></tr><tr><td>algorithm <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(32)</td><td>密钥算法：RSA / ECDSA / Ed25519，默认 RSA</td></tr><tr><td>created_by</td><td class="field-type">BIGINT</td><td>创建者用户ID，关联 users.id</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMP</td><td>记录创建时间，默认 NOW()</td></tr><tr><td>updated_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMP</td><td>记录更新时间，默认 NOW()</td></tr></tbody></table><div class="body-label" style="margin-top:8px">索引</div><table class="body-table"><thead><tr><th>索引名</th><th>唯一</th><th>列</th></tr></thead><tbody><tr><td>idx_ssh_keys_name</td><td></td><td style="font-family:monospace;font-size:0.85em">name</td></tr><tr><td>idx_ssh_keys_fingerprint</td><td>✓</td><td style="font-family:monospace;font-size:0.85em">fingerprint</td></tr><tr><td>idx_ssh_keys_algorithm</td><td></td><td style="font-family:monospace;font-size:0.85em">algorithm</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗄️ deployments<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(52,211,153,0.15);color:var(--c-green);margin-left:6px">权威定义</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署任务表，记录每次一键部署或回滚操作的全量信息，是部署流程的核心数据实体。</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGSERIAL</td><td>部署记录ID，自增主键</td></tr><tr><td>task_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">UUID</td><td>部署任务全局唯一标识（UUID v4）</td></tr><tr><td>project_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGINT</td><td>目标项目ID，关联 projects.id</td></tr><tr><td>environment_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGINT</td><td>目标环境ID，关联 environments.id</td></tr><tr><td>file_name <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(256)</td><td>部署包文件名</td></tr><tr><td>file_path</td><td class="field-type">VARCHAR(512)</td><td>部署包在文件存储中的路径</td></tr><tr><td>description</td><td class="field-type">TEXT</td><td>部署说明，用户填写的部署备注</td></tr><tr><td>status <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(32)</td><td>部署状态：pending / running / success / failed / rollbacking / rollbacked / cancelled，默认 pending</td></tr><tr><td>deployer_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGINT</td><td>部署操作者用户ID，关联 users.id</td></tr><tr><td>started_at</td><td class="field-type">TIMESTAMP</td><td>部署开始执行时间</td></tr><tr><td>completed_at</td><td class="field-type">TIMESTAMP</td><td>部署完成或失败时间</td></tr><tr><td>duration_seconds</td><td class="field-type">INTEGER</td><td>部署总耗时（秒）</td></tr><tr><td>rollback_from_version</td><td class="field-type">VARCHAR(128)</td><td>回滚操作的来源版本标识</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMP</td><td>记录创建时间，默认 NOW()</td></tr><tr><td>updated_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMP</td><td>记录更新时间，默认 NOW()</td></tr></tbody></table><div class="body-label" style="margin-top:8px">索引</div><table class="body-table"><thead><tr><th>索引名</th><th>唯一</th><th>列</th></tr></thead><tbody><tr><td>idx_deployments_task_id</td><td>✓</td><td style="font-family:monospace;font-size:0.85em">task_id</td></tr><tr><td>idx_deployments_project_env</td><td></td><td style="font-family:monospace;font-size:0.85em">project_id, environment_id</td></tr><tr><td>idx_deployments_status</td><td></td><td style="font-family:monospace;font-size:0.85em">status</td></tr><tr><td>idx_deployments_deployer_id</td><td></td><td style="font-family:monospace;font-size:0.85em">deployer_id</td></tr><tr><td>idx_deployments_started_at</td><td></td><td style="font-family:monospace;font-size:0.85em">started_at</td></tr><tr><td>idx_deployments_created_at</td><td></td><td style="font-family:monospace;font-size:0.85em">created_at</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗄️ deployment_logs<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(52,211,153,0.15);color:var(--c-green);margin-left:6px">权威定义</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署日志表，记录部署过程中每一步的操作日志、状态变更、错误信息等，用于实时推送和事后追溯。</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGSERIAL</td><td>日志ID，自增主键</td></tr><tr><td>deployment_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGINT</td><td>关联部署任务ID，关联 deployments.id</td></tr><tr><td>event_type <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(32)</td><td>事件类型：log / status / error / complete</td></tr><tr><td>message <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TEXT</td><td>日志消息内容</td></tr><tr><td>metadata</td><td class="field-type">JSONB</td><td>附加元数据（如命令执行输出、错误堆栈等）</td></tr><tr><td>timestamp <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMP</td><td>日志产生时间，默认 NOW()</td></tr></tbody></table><div class="body-label" style="margin-top:8px">索引</div><table class="body-table"><thead><tr><th>索引名</th><th>唯一</th><th>列</th></tr></thead><tbody><tr><td>idx_deployment_logs_deployment_id</td><td></td><td style="font-family:monospace;font-size:0.85em">deployment_id</td></tr><tr><td>idx_deployment_logs_event_type</td><td></td><td style="font-family:monospace;font-size:0.85em">event_type</td></tr><tr><td>idx_deployment_logs_timestamp</td><td></td><td style="font-family:monospace;font-size:0.85em">timestamp</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗄️ deployment_versions<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(52,211,153,0.15);color:var(--c-green);margin-left:6px">权威定义</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署版本表，记录每次部署产生的版本元数据，包括版本号、文件路径、部署快照等，用于版本追溯和回滚。</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGSERIAL</td><td>版本记录ID，自增主键</td></tr><tr><td>deployment_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGINT</td><td>关联部署任务ID，关联 deployments.id</td></tr><tr><td>project_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGINT</td><td>所属项目ID，关联 projects.id</td></tr><tr><td>environment_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGINT</td><td>所属环境ID，关联 environments.id</td></tr><tr><td>version <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(128)</td><td>版本号标识，格式如 v{major}.{minor}.{build}_{timestamp}</td></tr><tr><td>file_name</td><td class="field-type">VARCHAR(256)</td><td>部署包文件名</td></tr><tr><td>deploy_path</td><td class="field-type">VARCHAR(512)</td><td>远程服务器上的版本目录路径</td></tr><tr><td>status <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(32)</td><td>版本状态：active / rollbacked / archived，默认 active</td></tr><tr><td>metadata</td><td class="field-type">JSONB</td><td>版本附加元数据（如文件校验和、部署配置快照等）</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMP</td><td>记录创建时间，默认 NOW()</td></tr></tbody></table><div class="body-label" style="margin-top:8px">索引</div><table class="body-table"><thead><tr><th>索引名</th><th>唯一</th><th>列</th></tr></thead><tbody><tr><td>idx_deployment_versions_deployment_id</td><td></td><td style="font-family:monospace;font-size:0.85em">deployment_id</td></tr><tr><td>idx_deployment_versions_version</td><td></td><td style="font-family:monospace;font-size:0.85em">project_id, environment_id, version</td></tr><tr><td>idx_deployment_versions_status</td><td></td><td style="font-family:monospace;font-size:0.85em">status</td></tr><tr><td>idx_deployment_versions_project_env</td><td></td><td style="font-family:monospace;font-size:0.85em">project_id, environment_id</td></tr><tr><td>idx_deployment_versions_created_at</td><td></td><td style="font-family:monospace;font-size:0.85em">created_at</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗄️ audit_logs<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(52,211,153,0.15);color:var(--c-green);margin-left:6px">权威定义</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">审计日志表，记录系统中所有用户操作行为，满足安全合规和操作追溯要求。</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGSERIAL</td><td>审计记录ID，自增主键</td></tr><tr><td>event_type <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(64)</td><td>事件类型：deploy / rollback / create / update / delete / login / logout</td></tr><tr><td>actor_id</td><td class="field-type">BIGINT</td><td>操作人用户ID，关联 users.id</td></tr><tr><td>actor_username</td><td class="field-type">VARCHAR(128)</td><td>操作人用户名（冗余字段，便于查询）</td></tr><tr><td>action <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(256)</td><td>操作描述，如「创建项目」、「触发一键部署」</td></tr><tr><td>target_type</td><td class="field-type">VARCHAR(64)</td><td>目标对象类型：project / environment / deployment / ssh_key / user</td></tr><tr><td>target_id</td><td class="field-type">BIGINT</td><td>目标对象ID</td></tr><tr><td>detail</td><td class="field-type">JSONB</td><td>操作详情JSON，包含请求参数和响应摘要</td></tr><tr><td>result <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(32)</td><td>操作结果：success / failure，默认 success</td></tr><tr><td>ip_address</td><td class="field-type">VARCHAR(64)</td><td>请求来源IP地址</td></tr><tr><td>timestamp <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMP</td><td>操作发生时间，默认 NOW()</td></tr></tbody></table><div class="body-label" style="margin-top:8px">索引</div><table class="body-table"><thead><tr><th>索引名</th><th>唯一</th><th>列</th></tr></thead><tbody><tr><td>idx_audit_logs_event_type</td><td></td><td style="font-family:monospace;font-size:0.85em">event_type</td></tr><tr><td>idx_audit_logs_actor_id</td><td></td><td style="font-family:monospace;font-size:0.85em">actor_id</td></tr><tr><td>idx_audit_logs_target</td><td></td><td style="font-family:monospace;font-size:0.85em">target_type, target_id</td></tr><tr><td>idx_audit_logs_result</td><td></td><td style="font-family:monospace;font-size:0.85em">result</td></tr><tr><td>idx_audit_logs_timestamp</td><td></td><td style="font-family:monospace;font-size:0.85em">timestamp</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗄️ system_configs<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(52,211,153,0.15);color:var(--c-green);margin-left:6px">权威定义</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">系统配置表，存储全局系统参数和配置项，支持系统管理员动态调整系统行为。</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGSERIAL</td><td>配置ID，自增主键</td></tr><tr><td>config_key <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(128)</td><td>配置键名，唯一标识</td></tr><tr><td>config_value <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TEXT</td><td>配置值（JSON格式存储支持结构化配置）</td></tr><tr><td>description</td><td class="field-type">VARCHAR(256)</td><td>配置项说明</td></tr><tr><td>updated_by</td><td class="field-type">BIGINT</td><td>最后修改者用户ID，关联 users.id</td></tr><tr><td>updated_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMP</td><td>最后更新时间，默认 NOW()</td></tr></tbody></table><div class="body-label" style="margin-top:8px">索引</div><table class="body-table"><thead><tr><th>索引名</th><th>唯一</th><th>列</th></tr></thead><tbody><tr><td>idx_system_configs_key</td><td>✓</td><td style="font-family:monospace;font-size:0.85em">config_key</td></tr></tbody></table></div></details>
+  </div>
+</div>
+
+<div class="section" id="index-strategy">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(52,211,153,0.12)">📊</div>
+    <h2>索引策略</h2>
+  </div>
+  <div class="section-body">
+
+<div class="body-label">users</div><table class="body-table"><thead><tr><th>索引名</th><th>列</th><th>唯一</th><th>类型</th><th>用途</th></tr></thead><tbody><tr><td><strong>idx_users_username</strong></td><td style="font-family:monospace;font-size:0.85em">username</td><td>✓</td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">用户登录时按用户名精确查询，唯一约束保证用户名不重复</td></tr><tr><td><strong>idx_users_role</strong></td><td style="font-family:monospace;font-size:0.85em">role</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按角色过滤用户列表，管理员查询和管理用户</td></tr><tr><td><strong>idx_users_is_active</strong></td><td style="font-family:monospace;font-size:0.85em">is_active</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">过滤活跃/非活跃用户，登录时检查账号状态</td></tr></tbody></table>
+<div class="body-label">projects</div><table class="body-table"><thead><tr><th>索引名</th><th>列</th><th>唯一</th><th>类型</th><th>用途</th></tr></thead><tbody><tr><td><strong>idx_projects_name</strong></td><td style="font-family:monospace;font-size:0.85em">name</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">支持按项目名模糊搜索和排序</td></tr><tr><td><strong>idx_projects_status</strong></td><td style="font-family:monospace;font-size:0.85em">status</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按状态过滤项目列表（活跃/归档）</td></tr><tr><td><strong>idx_projects_created_by</strong></td><td style="font-family:monospace;font-size:0.85em">created_by</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">查询某个用户创建的项目列表</td></tr><tr><td><strong>idx_projects_created_at</strong></td><td style="font-family:monospace;font-size:0.85em">created_at</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按创建时间排序项目列表</td></tr></tbody></table>
+<div class="body-label">environments</div><table class="body-table"><thead><tr><th>索引名</th><th>列</th><th>唯一</th><th>类型</th><th>用途</th></tr></thead><tbody><tr><td><strong>idx_environments_project_id</strong></td><td style="font-family:monospace;font-size:0.85em">project_id</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按项目查询其下所有环境配置</td></tr><tr><td><strong>idx_environments_type</strong></td><td style="font-family:monospace;font-size:0.85em">type</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按环境类型过滤（test/gray/prod）</td></tr><tr><td><strong>idx_environments_ssh_key_id</strong></td><td style="font-family:monospace;font-size:0.85em">ssh_key_id</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">查询某个SSH密钥被哪些环境使用</td></tr><tr><td><strong>idx_environments_connection_status</strong></td><td style="font-family:monospace;font-size:0.85em">connection_status</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按连接状态过滤和统计（online/offline）</td></tr></tbody></table>
+<div class="body-label">ssh_keys</div><table class="body-table"><thead><tr><th>索引名</th><th>列</th><th>唯一</th><th>类型</th><th>用途</th></tr></thead><tbody><tr><td><strong>idx_ssh_keys_name</strong></td><td style="font-family:monospace;font-size:0.85em">name</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按密钥名称搜索</td></tr><tr><td><strong>idx_ssh_keys_fingerprint</strong></td><td style="font-family:monospace;font-size:0.85em">fingerprint</td><td>✓</td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按指纹精确查找密钥，唯一约束保证指纹不冲突</td></tr><tr><td><strong>idx_ssh_keys_algorithm</strong></td><td style="font-family:monospace;font-size:0.85em">algorithm</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按算法类型统计和过滤密钥</td></tr></tbody></table>
+<div class="body-label">deployments</div><table class="body-table"><thead><tr><th>索引名</th><th>列</th><th>唯一</th><th>类型</th><th>用途</th></tr></thead><tbody><tr><td><strong>idx_deployments_task_id</strong></td><td style="font-family:monospace;font-size:0.85em">task_id</td><td>✓</td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按task_id精确查找部署记录，用于WebSocket订阅和状态查询</td></tr><tr><td><strong>idx_deployments_project_env</strong></td><td style="font-family:monospace;font-size:0.85em">project_id, environment_id</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">查询指定项目和环境的部署历史列表</td></tr><tr><td><strong>idx_deployments_status</strong></td><td style="font-family:monospace;font-size:0.85em">status</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按状态过滤进行中的部署任务</td></tr><tr><td><strong>idx_deployments_deployer_id</strong></td><td style="font-family:monospace;font-size:0.85em">deployer_id</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">查询某个用户的部署操作历史</td></tr><tr><td><strong>idx_deployments_started_at</strong></td><td style="font-family:monospace;font-size:0.85em">started_at</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按部署开始时间排序，展示最近的部署</td></tr><tr><td><strong>idx_deployments_created_at</strong></td><td style="font-family:monospace;font-size:0.85em">created_at</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按创建时间排序和检索部署记录</td></tr></tbody></table>
+<div class="body-label">deployment_logs</div><table class="body-table"><thead><tr><th>索引名</th><th>列</th><th>唯一</th><th>类型</th><th>用途</th></tr></thead><tbody><tr><td><strong>idx_deployment_logs_deployment_id</strong></td><td style="font-family:monospace;font-size:0.85em">deployment_id</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按部署ID查询该部署的所有日志，是日志查询的主要路径</td></tr><tr><td><strong>idx_deployment_logs_event_type</strong></td><td style="font-family:monospace;font-size:0.85em">event_type</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按事件类型过滤日志（如只查询error日志）</td></tr><tr><td><strong>idx_deployment_logs_timestamp</strong></td><td style="font-family:monospace;font-size:0.85em">timestamp</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按时间范围查询日志，支持日志的时间序列分析</td></tr></tbody></table>
+<div class="body-label">deployment_versions</div><table class="body-table"><thead><tr><th>索引名</th><th>列</th><th>唯一</th><th>类型</th><th>用途</th></tr></thead><tbody><tr><td><strong>idx_deployment_versions_deployment_id</strong></td><td style="font-family:monospace;font-size:0.85em">deployment_id</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按部署记录查询对应的版本信息</td></tr><tr><td><strong>idx_deployment_versions_version</strong></td><td style="font-family:monospace;font-size:0.85em">project_id, environment_id, version</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按项目+环境+版本号精确查询版本，用于回滚时定位目标版本</td></tr><tr><td><strong>idx_deployment_versions_status</strong></td><td style="font-family:monospace;font-size:0.85em">status</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按版本状态过滤（活跃/已回滚）</td></tr><tr><td><strong>idx_deployment_versions_project_env</strong></td><td style="font-family:monospace;font-size:0.85em">project_id, environment_id</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">查询某项目某环境的所有版本历史</td></tr><tr><td><strong>idx_deployment_versions_created_at</strong></td><td style="font-family:monospace;font-size:0.85em">created_at</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按创建时间排序版本列表</td></tr></tbody></table>
+<div class="body-label">audit_logs</div><table class="body-table"><thead><tr><th>索引名</th><th>列</th><th>唯一</th><th>类型</th><th>用途</th></tr></thead><tbody><tr><td><strong>idx_audit_logs_event_type</strong></td><td style="font-family:monospace;font-size:0.85em">event_type</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按事件类型过滤审计记录</td></tr><tr><td><strong>idx_audit_logs_actor_id</strong></td><td style="font-family:monospace;font-size:0.85em">actor_id</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">查询某个用户的所有操作记录</td></tr><tr><td><strong>idx_audit_logs_target</strong></td><td style="font-family:monospace;font-size:0.85em">target_type, target_id</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按目标对象查询相关审计记录</td></tr><tr><td><strong>idx_audit_logs_result</strong></td><td style="font-family:monospace;font-size:0.85em">result</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">过滤失败操作，用于告警分析</td></tr><tr><td><strong>idx_audit_logs_timestamp</strong></td><td style="font-family:monospace;font-size:0.85em">timestamp</td><td></td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按时间范围查询审计日志，支持时间序列分析</td></tr></tbody></table>
+<div class="body-label">system_configs</div><table class="body-table"><thead><tr><th>索引名</th><th>列</th><th>唯一</th><th>类型</th><th>用途</th></tr></thead><tbody><tr><td><strong>idx_system_configs_key</strong></td><td style="font-family:monospace;font-size:0.85em">config_key</td><td>✓</td><td>B-tree</td><td style="color:var(--c-muted);font-size:0.85em">按配置键名精确查询，系统初始化时批量加载配置</td></tr></tbody></table>
+  </div>
+</div>
+
+<div class="section" id="migration">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(124,111,247,0.12)">📜</div>
+    <h2>迁移策略</h2>
+  </div>
+  <div class="section-body">
+
+<div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px"><span class="cn-tag">工具: Alembic</span><span class="cn-tag">命名: V{序号}__{描述}.py 或 V{序号}__{描述}.sql</span></div><p style="font-size:0.88em;color:var(--c-muted)"><strong>回滚策略:</strong> 每个迁移文件必须提供 downgrade() 函数或对应的回滚SQL。数据迁移（如数据清洗）必须放在单独的可回滚迁移中。生产环境回滚前必须在测试环境验证。</p>
+  </div>
+</div>
+
+<div class="section" id="capacity">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(34,211,238,0.12)">📈</div>
+    <h2>容量估算</h2>
+  </div>
+  <div class="section-body">
+
+<div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:8px"><span class="cn-tag">1年: users: 50, projects: 200, environments: 800, ssh_keys: 200, deployments: 5000, deployment_logs: 50万, deployment_versions: 5000, audit_logs: 20万, system_configs: 50</span><span class="cn-tag">3年: users: 100, projects: 500, environments: 2000, ssh_keys: 500, deployments: 20000, deployment_logs: 200万, deployment_versions: 20000, audit_logs: 80万, system_configs: 100</span></div><div style="margin-bottom:8px"><strong style="font-size:0.82em;color:var(--c-muted)">热表: </strong><span class="cn-tag prop">deployments</span> <span class="cn-tag prop">deployment_logs</span> <span class="cn-tag prop">audit_logs</span></div><p style="font-size:0.88em;color:var(--c-muted)"><strong>分区策略:</strong> deployment_logs 表按月份分区（LIST分区），以 timestamp 字段为分区键。audit_logs 表按季度分区。每月自动创建新分区，使用 pg_partman 扩展管理。分区保留策略：deployment_logs 保留12个月，audit_logs 保留36个月，超期数据归档到冷存储。</p>
+  </div>
+</div>
+
+<div class="section" id="connections">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(124,111,247,0.12)">🔗</div>
+    <h2>连接配置</h2>
+  </div>
+  <div class="section-body">
+
+<div style="margin-bottom:8px"><span class="cn-tag">连接池: 每个服务50（最小20，最大100）</span><span class="cn-tag" style="margin-left:8px">超时: 30秒连接超时，5秒查询超时</span></div>
+<table class="auth-matrix"><thead><tr><th>服务</th><th>账号</th><th>权限</th></tr></thead><tbody><tr><td><strong>API网关</strong></td><td style="font-family:monospace">gw_user</td><td><span class="role-tag">SELECT ON users</span> <span class="role-tag">SELECT ON system_configs</span></td></tr><tr><td><strong>项目管理服务</strong></td><td style="font-family:monospace">project_svc</td><td><span class="role-tag">SELECT, INSERT, UPDATE ON projects</span> <span class="role-tag">SELECT ON environments</span> <span class="role-tag">SELECT ON users</span></td></tr><tr><td><strong>环境管理服务</strong></td><td style="font-family:monospace">env_svc</td><td><span class="role-tag">SELECT, INSERT, UPDATE, DELETE ON environments</span> <span class="role-tag">SELECT, INSERT, UPDATE ON ssh_keys</span></td></tr><tr><td><strong>部署编排服务</strong></td><td style="font-family:monospace">deploy_svc</td><td><span class="role-tag">SELECT, INSERT, UPDATE ON deployments</span> <span class="role-tag">SELECT, INSERT ON deployment_logs</span> <span class="role-tag">SELECT ON projects</span> <span class="role-tag">SELECT ON environments</span></td></tr><tr><td><strong>SSH连接管理服务</strong></td><td style="font-family:monospace">ssh_svc</td><td><span class="role-tag">SELECT ON ssh_keys</span> <span class="role-tag">SELECT ON environments</span></td></tr><tr><td><strong>版本管理服务</strong></td><td style="font-family:monospace">version_svc</td><td><span class="role-tag">SELECT, INSERT, UPDATE ON deployment_versions</span> <span class="role-tag">SELECT ON deployments</span> <span class="role-tag">SELECT ON projects</span> <span class="role-tag">SELECT ON environments</span></td></tr><tr><td><strong>审计日志服务</strong></td><td style="font-family:monospace">audit_svc</td><td><span class="role-tag">INSERT, SELECT ON audit_logs</span></td></tr></tbody></table>
+  </div>
+</div>
+
+<div class="section" id="interfaces">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(34,211,238,0.12)">🔌</div>
+    <h2>接口定义 (7)</h2>
+  </div>
+  <div class="section-body">
+
+<div class="contract-card"><div class="cc-head"><span class="method-badge internal">INTERNAL</span><span class="cc-endpoint">db://users/auth</span><span class="cc-name">用户认证数据访问</span></div><div class="cc-desc">API网关通过该接口查询用户认证信息（用户名、密码哈希、角色），用于登录验证和JWT令牌签发。</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>username</td><td class="field-type">string</td><td>登录用户名</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">BIGINT</td></tr><tr><td>username</td><td class="field-type">VARCHAR(64)</td></tr><tr><td>password_hash</td><td class="field-type">VARCHAR(256)</td></tr><tr><td>role</td><td class="field-type">VARCHAR(32)</td></tr><tr><td>is_active</td><td class="field-type">BOOLEAN</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>P0002</td><td>用户不存在</td></tr><tr><td>P0003</td><td>用户已被禁用</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge internal">INTERNAL</span><span class="cc-endpoint">db://projects/crud</span><span class="cc-name">项目数据访问</span></div><div class="cc-desc">项目管理服务通过该接口对 projects 表进行标准CRUD操作，支持分页查询和关键词搜索。</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>project_id</td><td class="field-type">BIGINT</td><td>项目ID（单个查询时）</td></tr><tr><td>keyword</td><td class="field-type">string</td><td>搜索关键词</td></tr><tr><td>page</td><td class="field-type">INTEGER</td><td>页码</td></tr><tr><td>page_size</td><td class="field-type">INTEGER</td><td>每页数量</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">BIGSERIAL</td></tr><tr><td>name</td><td class="field-type">VARCHAR(128)</td></tr><tr><td>description</td><td class="field-type">TEXT</td></tr><tr><td>status</td><td class="field-type">VARCHAR(32)</td></tr><tr><td>environment_count</td><td class="field-type">INTEGER</td></tr><tr><td>last_deploy_time</td><td class="field-type">TIMESTAMP</td></tr><tr><td>created_by</td><td class="field-type">BIGINT</td></tr><tr><td>created_at</td><td class="field-type">TIMESTAMP</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>P0001</td><td>项目名称已存在</td></tr><tr><td>P0002</td><td>项目不存在或已删除</td></tr><tr><td>P0003</td><td>外键约束：创建者用户不存在</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge internal">INTERNAL</span><span class="cc-endpoint">db://environments/crud</span><span class="cc-name">环境数据访问</span></div><div class="cc-desc">环境管理服务通过该接口对 environments 表进行CRUD操作，并关联查询 ssh_keys 表获取密钥信息。</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>environment_id</td><td class="field-type">BIGINT</td><td>环境ID</td></tr><tr><td>project_id</td><td class="field-type">BIGINT</td><td>按项目过滤</td></tr><tr><td>type</td><td class="field-type">string</td><td>按环境类型过滤</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">BIGSERIAL</td></tr><tr><td>project_id</td><td class="field-type">BIGINT</td></tr><tr><td>name</td><td class="field-type">VARCHAR(128)</td></tr><tr><td>type</td><td class="field-type">VARCHAR(32)</td></tr><tr><td>server_host</td><td class="field-type">VARCHAR(256)</td></tr><tr><td>server_port</td><td class="field-type">INTEGER</td></tr><tr><td>deploy_path</td><td class="field-type">VARCHAR(512)</td></tr><tr><td>connection_status</td><td class="field-type">VARCHAR(32)</td></tr><tr><td>ssh_key_id</td><td class="field-type">BIGINT</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>P0001</td><td>环境名称在项目内重复</td></tr><tr><td>P0002</td><td>项目不存在或已归档</td></tr><tr><td>P0003</td><td>关联的SSH密钥不存在</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge internal">INTERNAL</span><span class="cc-endpoint">db://deployments/crud</span><span class="cc-name">部署数据访问</span></div><div class="cc-desc">部署编排服务通过该接口创建和更新部署任务记录，查询部署状态和历史数据。</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>task_id</td><td class="field-type">UUID</td><td>部署任务UUID</td></tr><tr><td>project_id</td><td class="field-type">BIGINT</td><td>项目ID</td></tr><tr><td>environment_id</td><td class="field-type">BIGINT</td><td>环境ID</td></tr><tr><td>status</td><td class="field-type">string</td><td>按状态过滤</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">BIGSERIAL</td></tr><tr><td>task_id</td><td class="field-type">UUID</td></tr><tr><td>project_id</td><td class="field-type">BIGINT</td></tr><tr><td>environment_id</td><td class="field-type">BIGINT</td></tr><tr><td>status</td><td class="field-type">VARCHAR(32)</td></tr><tr><td>started_at</td><td class="field-type">TIMESTAMP</td></tr><tr><td>completed_at</td><td class="field-type">TIMESTAMP</td></tr><tr><td>duration_seconds</td><td class="field-type">INTEGER</td></tr><tr><td>deployer_id</td><td class="field-type">BIGINT</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>P0001</td><td>部署任务ID已存在</td></tr><tr><td>P0002</td><td>关联的项目或环境不存在</td></tr><tr><td>P0003</td><td>并发状态冲突（乐观锁）</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge internal">INTERNAL</span><span class="cc-endpoint">db://deployment_logs/query</span><span class="cc-name">部署日志访问</span></div><div class="cc-desc">部署编排服务和前端通过该接口写入和查询部署步骤的详细日志，支持按任务ID和时间范围检索。</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>deployment_id</td><td class="field-type">BIGINT</td><td>部署记录ID</td></tr><tr><td>event_type</td><td class="field-type">string</td><td>事件类型过滤</td></tr><tr><td>start_time</td><td class="field-type">TIMESTAMP</td><td>开始时间</td></tr><tr><td>end_time</td><td class="field-type">TIMESTAMP</td><td>结束时间</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">BIGSERIAL</td></tr><tr><td>deployment_id</td><td class="field-type">BIGINT</td></tr><tr><td>event_type</td><td class="field-type">VARCHAR(32)</td></tr><tr><td>message</td><td class="field-type">TEXT</td></tr><tr><td>metadata</td><td class="field-type">JSONB</td></tr><tr><td>timestamp</td><td class="field-type">TIMESTAMP</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>P0001</td><td>关联的部署记录不存在</td></tr><tr><td>P0002</td><td>日志写入超时</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge internal">INTERNAL</span><span class="cc-endpoint">db://deployment_versions/crud</span><span class="cc-name">版本数据访问</span></div><div class="cc-desc">版本管理服务通过该接口读写部署版本元数据，用于版本追溯、历史查询和回滚操作。</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>project_id</td><td class="field-type">BIGINT</td><td>项目ID</td></tr><tr><td>environment_id</td><td class="field-type">BIGINT</td><td>环境ID</td></tr><tr><td>version</td><td class="field-type">string</td><td>版本号</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">BIGSERIAL</td></tr><tr><td>deployment_id</td><td class="field-type">BIGINT</td></tr><tr><td>project_id</td><td class="field-type">BIGINT</td></tr><tr><td>environment_id</td><td class="field-type">BIGINT</td></tr><tr><td>version</td><td class="field-type">VARCHAR(128)</td></tr><tr><td>deploy_path</td><td class="field-type">VARCHAR(512)</td></tr><tr><td>status</td><td class="field-type">VARCHAR(32)</td></tr><tr><td>metadata</td><td class="field-type">JSONB</td></tr><tr><td>created_at</td><td class="field-type">TIMESTAMP</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>P0001</td><td>同一项目环境下版本号重复</td></tr><tr><td>P0002</td><td>关联的部署记录不存在</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge internal">INTERNAL</span><span class="cc-endpoint">db://audit_logs/insert</span><span class="cc-name">审计日志写入</span></div><div class="cc-desc">审计日志服务通过该接口异步写入操作审计记录，采用 append-only 写入模式，不支持修改或删除。</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>event_type</td><td class="field-type">string</td><td>事件类型</td></tr><tr><td>actor_id</td><td class="field-type">BIGINT</td><td>操作人ID</td></tr><tr><td>target_type</td><td class="field-type">string</td><td>目标对象类型</td></tr><tr><td>target_id</td><td class="field-type">BIGINT</td><td>目标对象ID</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">BIGSERIAL</td></tr><tr><td>event_type</td><td class="field-type">VARCHAR(64)</td></tr><tr><td>actor_id</td><td class="field-type">BIGINT</td></tr><tr><td>action</td><td class="field-type">VARCHAR(256)</td></tr><tr><td>target_type</td><td class="field-type">VARCHAR(64)</td></tr><tr><td>target_id</td><td class="field-type">BIGINT</td></tr><tr><td>result</td><td class="field-type">VARCHAR(32)</td></tr><tr><td>timestamp</td><td class="field-type">TIMESTAMP</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>P0001</td><td>审计队列积压导致写入延迟</td></tr><tr><td>P0002</td><td>无效的事件类型</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<div class="section" id="errors">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(251,191,36,0.12)">⚠️</div>
+    <h2>错误处理</h2>
+  </div>
+  <div class="section-body">
+
+<div class="err-strategy"><div class="err-label">处理策略</div><p>采用 PostgreSQL 原生错误码分类处理。连接级错误（连接池耗尽、超时）由连接池中间件重试；事务级错误（死锁、序列化冲突）由应用层以指数退避策略重试最多3次；约束违反错误（唯一冲突、外键失败）直接返回应用层处理，不重试。慢查询（超过200ms）记录到日志并由DBA定期审查优化。</p></div>
+<div class="err-format-box"><div class="err-label">统一错误响应体</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td class="field-type">code</td><td class="field-type">string</td></tr><tr><td class="field-type">error</td><td class="field-type">string</td></tr><tr><td class="field-type">detail</td><td class="field-type">string</td></tr></tbody></table></div>
+<div class="err-categories"><div class="err-category"><span class="err-code-badge _other">08000</span><div class="err-category-body"><div class="err-cat-name">连接异常</div><div class="err-cat-desc">数据库连接断开、连接池耗尽或超时。应用层自动重试重新建立连接。</div></div></div><div class="err-category"><span class="err-code-badge _other">23505</span><div class="err-category-body"><div class="err-cat-name">唯一约束冲突</div><div class="err-cat-desc">INSERT/UPDATE违反唯一索引约束。如用户名重复、版本号重复等。返回对应业务错误提示。</div></div></div><div class="err-category"><span class="err-code-badge _other">23503</span><div class="err-category-body"><div class="err-cat-name">外键约束冲突</div><div class="err-cat-desc">INSERT/UPDATE引用了不存在的外键记录。如环境引用了不存在的项目。</div></div></div><div class="err-category"><span class="err-code-badge _4xx">40001</span><div class="err-category-body"><div class="err-cat-name">序列化冲突</div><div class="err-cat-desc">可串行化隔离级别下的事务冲突。应用层指数退避重试。</div></div></div><div class="err-category"><span class="err-code-badge _4xx">40P01</span><div class="err-category-body"><div class="err-cat-name">死锁检测</div><div class="err-cat-desc">并发事务死锁。自动回滚当前事务，应用层重试。</div></div></div><div class="err-category"><span class="err-code-badge _5xx">57014</span><div class="err-category-body"><div class="err-cat-name">查询取消</div><div class="err-cat-desc">慢查询被 statement_timeout 中断。需要优化SQL或添加索引。</div></div></div><div class="err-category"><span class="err-code-badge _other">22000</span><div class="err-category-body"><div class="err-cat-name">数据异常</div><div class="err-cat-desc">数据格式或类型错误，如JSONB格式不正确。</div></div></div></div>
+  </div>
+</div>
+
+<div class="footer">CogniForge 文档驱动系统</div>
+</div>
+</div>
+
+<script>
+(function() {
+  var links = document.querySelectorAll('.sidebar-link');
+  var sections = [];
+  links.forEach(function(l) { var s = document.getElementById(l.getAttribute('href').slice(1)); if (s) sections.push([s, l]); });
+  function update() {
+    var top = window.scrollY + 80;
+    var active = null;
+    sections.forEach(function(p) { if (p[0].offsetTop <= top) active = p[1]; });
+    links.forEach(function(l) { l.classList.remove('active'); });
+    if (active) active.classList.add('active');
+  }
+  window.addEventListener('scroll', update, {passive: true});
+  update();
+
+  var toggle = document.getElementById('sidebar-toggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function() { sidebar.classList.toggle('mobile-open'); });
+  }
+})();
+</script>
+</body>
+</html>
