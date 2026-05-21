@@ -2,237 +2,310 @@
   "meta": {
     "doc_id": "lld-Cache-001",
     "type": "lld",
+    "module_type": "ModuleType.SERVICE",
     "module": "Cache",
     "title": "LLD - Cache",
     "author": "design_agent",
-    "created": "2026-05-20 17:16"
+    "created": "2026-05-21 09:52"
   },
   "overview": {
-    "description": "缓存层（Redis 7+），为系统各业务服务提供高速数据缓存能力，降低主数据库查询压力并加速热点数据访问。覆盖四大缓存域：部署任务实时状态缓存（供 Deployment Orchestrator 和 Web Console 实时推送部署进度）、用户会话信息缓存（供 API Gateway 鉴权会话校验）、SSH 连接池状态缓存（供 SSH Execution Service 复用连接减少握手开销）、热点配置数据缓存（供各业务服务快速读取配置）。所有缓存项均设置 TTL 过期策略，保证数据最终一致性。",
+    "description": "Cache模块基于Redis 7.x提供分布式缓存能力，为用户会话管理、部署任务实时状态缓存、项目列表与环境配置热点数据加速，以及SSH连接测试临时结果缓存提供统一的高速数据访问层。各业务服务通过内部接口读写缓存，降低Primary Database的读压力，提升系统响应速度。",
     "dependencies": [],
-    "tech_stack": ["Go", "Redis 7+"]
+    "tech_stack": ["Python 3.11+", "FastAPI", "Redis 7.x"]
   },
   "data_models": [
     {
-      "name": "deploy_status",
+      "name": "jwt_session",
       "type": "store",
-      "description": "部署任务实时状态缓存。Deployment Orchestrator 在部署执行过程中持续更新此缓存，Web Console 通过 WebSocket 订阅实时推送。部署完成后数据持久化到 Primary Database 并由 deployment_events 通道广播状态终止信号",
+      "ownership": "owned",
+      "description": "用户JWT会话缓存。Redis Key格式: session:{user_id}:{jwt_id}，Value为JSON序列化会话数据，TTL等于JWT剩余有效期。用于API Gateway鉴权时快速验证用户会话有效性，减少数据库查询。",
       "fields": [
-        {"name": "key_pattern", "type": "string", "required": true, "description": "缓存键格式：cache:deploy:{task_id}，task_id 为部署任务的 UUID 标识"},
-        {"name": "status", "type": "string", "required": true, "description": "部署状态枚举：pending / running / success / failed / rolled_back，与数据库 deployment 表 status 字段保持最终一致"},
-        {"name": "progress", "type": "integer", "required": false, "description": "部署进度百分比（0-100），仅 running 状态时有值，用于前端进度条展示"},
-        {"name": "current_step", "type": "string", "required": false, "description": "当前执行步骤描述，如「正在连接远程服务器」「正在传输文件」「正在执行部署脚本」"},
-        {"name": "latest_log", "type": "string", "required": false, "description": "最新一条日志摘要（最近 200 字符），用于快速预览无需拉取完整日志流"},
-        {"name": "started_at", "type": "string", "required": false, "description": "部署开始时间（ISO8601），进入 running 状态时写入"},
-        {"name": "ttl", "type": "integer", "required": true, "description": "过期时间 3600 秒（1 小时）。部署完成后保留 1 小时供前端查询，超时后自动删除"}
+        {"name": "key", "type": "string", "required": true, "description": "Redis key，格式 session:{user_id}:{jwt_id}"},
+        {"name": "user_id", "type": "bigint", "required": true, "description": "用户ID"},
+        {"name": "username", "type": "string", "required": true, "description": "用户名"},
+        {"name": "token", "type": "string", "required": true, "description": "JWT token值"},
+        {"name": "expires_at", "type": "datetime", "required": true, "description": "会话过期时间"}
       ]
     },
     {
-      "name": "session_info",
+      "name": "deployment_status",
       "type": "store",
-      "description": "用户会话信息缓存。API Gateway 在用户登录成功后写入，各服务在处理请求时通过会话 ID 校验用户身份和权限。采用 Redis Hash 结构存储，支持单字段更新（如刷新 token）",
+      "ownership": "owned",
+      "description": "部署任务实时状态缓存。Redis Key格式: deployment:{deployment_id}:status，Value为JSON序列化状态数据，TTL为部署完成时间+1小时。用于Deployment Orchestrator在各部署阶段快速读写和WebSocket推送实时进度。",
       "fields": [
-        {"name": "key_pattern", "type": "string", "required": true, "description": "缓存键格式：cache:session:{session_id}，session_id 为登录时生成的随机会话标识"},
-        {"name": "user_id", "type": "string", "required": true, "description": "用户 UUID 标识，用于关联后续操作的操作者身份"},
-        {"name": "username", "type": "string", "required": true, "description": "用户名，用于日志审计和前端展示"},
-        {"name": "role", "type": "string", "required": true, "description": "用户角色枚举：admin / developer / viewer，用于请求鉴权"},
-        {"name": "token", "type": "string", "required": true, "description": "JWT token 或会话 token，用于 API 请求鉴权"},
-        {"name": "expires_at", "type": "string", "required": true, "description": "会话过期时间（ISO8601），与 ttl 联动"},
-        {"name": "source_ip", "type": "string", "required": false, "description": "登录时的来源 IP 地址，用于安全审计"},
-        {"name": "ttl", "type": "integer", "required": true, "description": "过期时间 86400 秒（24 小时），与 JWT token 有效期保持一致。用户在每次 API 请求时自动续期"}
+        {"name": "key", "type": "string", "required": true, "description": "Redis key，格式 deployment:{deployment_id}:status"},
+        {"name": "deployment_id", "type": "bigint", "required": true, "description": "部署任务ID"},
+        {"name": "status", "type": "enum('pending','running','success','failed')", "required": true, "description": "部署状态"},
+        {"name": "progress", "type": "int", "required": true, "description": "进度百分比0-100"},
+        {"name": "message", "type": "string", "required": false, "description": "当前状态描述信息"}
       ]
     },
     {
-      "name": "ssh_pool_state",
+      "name": "config_cache",
       "type": "store",
-      "description": "SSH 连接池状态缓存。SSH Execution Service 维护到各远程服务器的连接池，通过此缓存记录连接池的健康状态和活跃连接数，供连接复用和池管理决策",
+      "ownership": "owned",
+      "description": "项目列表与环境配置热点数据缓存。Redis Key格式: config:{resource_type}:{resource_id}，Value为JSON序列化配置数据，基础TTL=300秒。用于Project Management Service和Environment Management Service加速读取热点数据。",
       "fields": [
-        {"name": "key_pattern", "type": "string", "required": true, "description": "缓存键格式：cache:sshpool:{env_id}，env_id 为目标部署环境的 UUID"},
-        {"name": "total_connections", "type": "integer", "required": true, "description": "连接池中总连接数（包括空闲和活跃连接）"},
-        {"name": "active_connections", "type": "integer", "required": true, "description": "当前正在使用的连接数"},
-        {"name": "idle_connections", "type": "integer", "required": true, "description": "当前空闲连接数，用于判断是否需要预创建新连接"},
-        {"name": "max_pool_size", "type": "integer", "required": true, "description": "连接池最大容量上限"},
-        {"name": "pool_status", "type": "string", "required": true, "description": "连接池状态枚举：healthy / degraded / exhausted / closed"},
-        {"name": "last_used_at", "type": "string", "required": false, "description": "最近一次连接使用时间（ISO8601），用于空闲回收判断"},
-        {"name": "error_message", "type": "string", "required": false, "description": "连接池异常时的最后错误信息，仅 pool_status 非 healthy 时有值"},
-        {"name": "ttl", "type": "integer", "required": true, "description": "过期时间 1800 秒（30 分钟）。连接池持续空闲 30 分钟后自动标记为可回收"}
+        {"name": "key", "type": "string", "required": true, "description": "Redis key，格式 config:{resource_type}:{resource_id}"},
+        {"name": "resource_type", "type": "enum('project_list','environment','key')", "required": true, "description": "资源类型"},
+        {"name": "resource_id", "type": "bigint", "required": false, "description": "资源ID，项目列表场景为空"},
+        {"name": "data", "type": "json", "required": true, "description": "缓存的配置数据JSON"}
       ]
     },
     {
-      "name": "hot_config",
+      "name": "ssh_test_result",
       "type": "store",
-      "description": "热点配置数据缓存。各业务服务将频繁读取的配置项缓存至 Redis，减少对 Primary Database 或配置文件的直接读取。采用 Redis String 结构存储序列化 JSON，通过 config_key 唯一标识",
+      "ownership": "owned",
+      "description": "SSH连接测试临时结果缓存。Redis Key格式: ssh_test:{env_id}:{key_id}，Value为JSON序列化测试结果，TTL=600秒。用于Key Management Service连通性测试后暂存结果供Web Console查询。",
       "fields": [
-        {"name": "key_pattern", "type": "string", "required": true, "description": "缓存键格式：cache:config:{config_key}，config_key 为配置项的唯一名称（如 deploy_timeout、log_level、max_concurrent_tasks）"},
-        {"name": "config_value", "type": "string", "required": true, "description": "配置值，JSON 序列化后的字符串。支持 string / integer / boolean / object 等类型"},
-        {"name": "version", "type": "integer", "required": false, "description": "配置版本号，配置更新时递增，用于缓存一致性校验"},
-        {"name": "updated_at", "type": "string", "required": false, "description": "配置最后更新时间（ISO8601），用于判断缓存新鲜度"},
-        {"name": "ttl", "type": "integer", "required": true, "description": "默认过期时间 300 秒（5 分钟）。短 TTL 保证配置更新后缓存快速失效，业务方及时感知变更。可通过 config_key 级别自定义 TTL"}
-      ]
-    },
-    {
-      "name": "redis_config",
-      "type": "config",
-      "description": "Redis 连接池与客户端全局配置",
-      "fields": [
-        {"name": "host", "type": "string", "required": true, "description": "Redis 服务地址（域名或 IP），默认 localhost"},
-        {"name": "port", "type": "integer", "required": true, "description": "Redis 服务端口，默认 6379"},
-        {"name": "password", "type": "string", "required": false, "description": "Redis 认证密码，从环境变量 REDIS_PASSWORD 读取，不硬编码"},
-        {"name": "db", "type": "integer", "required": true, "description": "Redis 数据库编号，默认 0"},
-        {"name": "max_connections", "type": "integer", "required": true, "description": "连接池最大连接数，默认 100"},
-        {"name": "min_idle_connections", "type": "integer", "required": true, "description": "连接池最小空闲连接数，默认 10"},
-        {"name": "connection_timeout", "type": "string", "required": true, "description": "连接超时时间，默认 5s"},
-        {"name": "read_timeout", "type": "string", "required": true, "description": "读取超时时间，默认 3s"},
-        {"name": "write_timeout", "type": "string", "required": true, "description": "写入超时时间，默认 3s"},
-        {"name": "key_prefix", "type": "string", "required": true, "description": "业务键统一前缀，默认 cogniforge:"}
+        {"name": "key", "type": "string", "required": true, "description": "Redis key，格式 ssh_test:{env_id}:{key_id}"},
+        {"name": "env_id", "type": "bigint", "required": true, "description": "环境ID"},
+        {"name": "key_id", "type": "bigint", "required": true, "description": "密钥ID"},
+        {"name": "success", "type": "boolean", "required": true, "description": "连接测试是否成功"},
+        {"name": "latency_ms", "type": "int", "required": false, "description": "连接延迟毫秒数"},
+        {"name": "server_info", "type": "string", "required": false, "description": "服务器信息"}
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "Cache Core Operations",
+      "name": "Set Session",
       "method": "INTERNAL",
-      "endpoint": "/internal/cache/core",
-      "description": "缓存核心操作接口，提供通用的缓存读写删除能力。所有业务模块通过此接口与 Redis 交互，封装底层 go-redis 客户端调用细节，统一处理序列化/反序列化、错误转换和 TTL 管理",
+      "endpoint": "/internal/cache/session/set",
+      "description": "存储用户JWT会话到Redis缓存。由API Gateway在用户登录认证成功后调用，写入会话信息并设置TTL等于JWT剩余有效期。",
       "parameters": [
-        {"name": "Get", "type": "func(ctx, key string) (value string, err error)", "description": "按 key 获取缓存值。key 不存在返回 nil 而非错误，调用方需判断 value 空值"},
-        {"name": "Set", "type": "func(ctx, key string, value interface{}, ttl time.Duration) error", "description": "设置缓存键值对，value 自动 JSON 序列化，ttl 为过期时长。ttl=0 时永不过期（谨慎使用）"},
-        {"name": "Delete", "type": "func(ctx, key string) error", "description": "删除指定 key，key 不存在不返回错误"},
-        {"name": "Exists", "type": "func(ctx, key string) (bool, error)", "description": "检查 key 是否存在，用于缓存穿透防护的预检"},
-        {"name": "Expire", "type": "func(ctx, key string, ttl time.Duration) error", "description": "更新指定 key 的过期时间，用于会话续期等场景"},
-        {"name": "HGetAll", "type": "func(ctx, key string) (map[string]string, error)", "description": "获取 Redis Hash 结构的所有字段和值，用于 session_info 等 Hash 数据结构读取"},
-        {"name": "HSet", "type": "func(ctx, key string, fields map[string]interface{}, ttl time.Duration) error", "description": "向 Redis Hash 结构中批量设置字段，同时设置键过期时间"},
-        {"name": "HIncrBy", "type": "func(ctx, key, field string, incr int64) (int64, error)", "description": "对 Hash 中指定字段执行原子自增操作，用于连接计数场景"},
-        {"name": "Publish", "type": "func(ctx, channel string, message interface{}) error", "description": "向 Redis Pub/Sub 频道发布消息，用于部署状态变更广播通知"},
-        {"name": "Subscribe", "type": "func(ctx, channel string) (<-chan *Message, error)", "description": "订阅 Redis Pub/Sub 频道，返回消息 channel，用于 WebSocket 实时推送"}
+        {"name": "user_id", "type": "bigint", "description": "用户ID"},
+        {"name": "username", "type": "string", "description": "用户名"},
+        {"name": "token", "type": "string", "description": "JWT token值"},
+        {"name": "ttl", "type": "int", "description": "缓存过期时间，单位秒，与JWT过期时间一致"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "value": "string",
-          "exists": "boolean"
+          "success": "boolean",
+          "message": "string"
         }
       },
       "error_codes": [
-        {"code": 500, "message": "Redis 操作失败：连接超时、连接池耗尽、命令执行错误"}
+        {"code": 500, "message": "Redis操作失败，写入缓存异常"}
       ]
     },
     {
-      "name": "Deployment Status Cache",
+      "name": "Get Session",
       "method": "INTERNAL",
-      "endpoint": "/internal/cache/deploy",
-      "description": "部署任务实时状态缓存接口。Deployment Orchestrator 在执行部署的各个阶段调用此接口更新缓存状态；Web Console 服务通过订阅 Redis Pub/Sub 频道获取实时变更并推送至前端 WebSocket",
+      "endpoint": "/internal/cache/session/get",
+      "description": "获取用户JWT会话信息。由API Gateway在请求鉴权时调用，根据user_id和jwt_id从Redis读取会话。",
       "parameters": [
-        {"name": "SetDeployStatus", "type": "func(ctx, taskID string, status *DeployStatus) error", "description": "设置部署任务实时状态。创建任务时初始化 TTL，运行中持续更新，完成后保持 1 小时过期"},
-        {"name": "GetDeployStatus", "type": "func(ctx, taskID string) (*DeployStatus, error)", "description": "查询部署任务当前实时状态。任务不存在返回 nil，不视为错误"},
-        {"name": "UpdateDeployProgress", "type": "func(ctx, taskID string, progress int, step string) error", "description": "更新部署进度百分比和当前步骤描述，不阻塞其他字段"},
-        {"name": "PublishDeployEvent", "type": "func(ctx, taskID string, event *DeployEvent) error", "description": "发布部署状态变更事件到 Redis Pub/Sub 频道 cache:deploy:events，触发 WebSocket 实时推送"}
+        {"name": "user_id", "type": "bigint", "description": "用户ID"},
+        {"name": "jwt_id", "type": "string", "description": "JWT token的唯一标识"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "task_id": "string",
-          "status": "string",
-          "progress": "integer",
-          "current_step": "string",
-          "latest_log": "string"
-        }
-      },
-      "error_codes": [
-        {"code": 500, "message": "部署状态缓存操作失败：Redis 连接异常、JSON 序列化/反序列化错误"}
-      ]
-    },
-    {
-      "name": "Session Cache",
-      "method": "INTERNAL",
-      "endpoint": "/internal/cache/session",
-      "description": "用户会话信息缓存接口。API Gateway 在用户登录成功后写入，在其他请求到达时校验会话有效性。通过 Redis Hash 结构存储，支持按字段读取减少网络开销",
-      "parameters": [
-        {"name": "SetSession", "type": "func(ctx, sessionID string, session *SessionInfo) error", "description": "创建用户会话缓存，设置 24 小时 TTL。仅在登录成功时调用"},
-        {"name": "GetSession", "type": "func(ctx, sessionID string) (*SessionInfo, error)", "description": "获取会话信息。返回 nil 表示会话已过期或不存在，触发重新登录"},
-        {"name": "RefreshSession", "type": "func(ctx, sessionID string) error", "description": "刷新会话 TTL 续期 24 小时。用户在每次 API 请求时由中间件自动触发"},
-        {"name": "DeleteSession", "type": "func(ctx, sessionID string) error", "description": "删除会话（用户登出时调用），不做存在性校验"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "session_id": "string",
-          "user_id": "string",
+          "user_id": "bigint",
           "username": "string",
-          "role": "string",
+          "token": "string",
           "expires_at": "datetime"
         }
       },
       "error_codes": [
-        {"code": 500, "message": "会话缓存操作失败：Redis 连接异常、Hash 操作错误"}
+        {"code": 404, "message": "会话不存在或已过期"},
+        {"code": 500, "message": "Redis操作失败"}
       ]
     },
     {
-      "name": "SSH Pool State Cache",
+      "name": "Delete Session",
       "method": "INTERNAL",
-      "endpoint": "/internal/cache/sshpool",
-      "description": "SSH 连接池状态缓存接口。SSH Execution Service 在连接池初始化、连接获取/释放、池状态变更时调用，用于多实例间共享连接池状态信息",
+      "endpoint": "/internal/cache/session/delete",
+      "description": "删除用户JWT会话缓存。由API Gateway在用户登出或JWT失效（如刷新token）时调用，从Redis中移除对应会话。",
       "parameters": [
-        {"name": "SetPoolState", "type": "func(ctx, envID string, state *SSHPoolState) error", "description": "设置连接池状态快照，覆盖写入全部字段"},
-        {"name": "GetPoolState", "type": "func(ctx, envID string) (*SSHPoolState, error)", "description": "获取连接池当前状态。返回 nil 表示连接池尚未初始化或已过期"},
-        {"name": "IncrActiveConnections", "type": "func(ctx, envID string) (int64, error)", "description": "活跃连接数原子 +1（Redis HINCRBY），返回增加后的值，用于判断是否达到池上限"},
-        {"name": "DecrActiveConnections", "type": "func(ctx, envID string) (int64, error)", "description": "活跃连接数原子 -1（Redis HINCRBY），连接归还时调用"},
-        {"name": "SetPoolStatus", "type": "func(ctx, envID string, status string, errMsg string) error", "description": "更新连接池状态（healthy / degraded / exhausted / closed），仅更新状态字段"}
+        {"name": "user_id", "type": "bigint", "description": "用户ID"},
+        {"name": "jwt_id", "type": "string", "description": "JWT token的唯一标识"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "env_id": "string",
-          "total_connections": "integer",
-          "active_connections": "integer",
-          "idle_connections": "integer",
-          "pool_status": "string"
+          "success": "boolean",
+          "message": "string"
         }
       },
       "error_codes": [
-        {"code": 500, "message": "连接池状态缓存操作失败：Redis 连接异常、计数器操作错误"}
+        {"code": 500, "message": "Redis操作失败"}
       ]
     },
     {
-      "name": "Config Cache",
+      "name": "Set Deployment Status",
       "method": "INTERNAL",
-      "endpoint": "/internal/cache/config",
-      "description": "热点配置数据缓存接口。各业务服务在读取配置时优先查询此缓存，缓存未命中时回退读取 Primary Database 并回填缓存",
+      "endpoint": "/internal/cache/deployment/status/set",
+      "description": "更新部署任务实时状态到Redis缓存。由Deployment Orchestrator在各部署阶段转换时调用（pending→running→success/failed），WebSocket推送依赖此缓存的实时数据。",
       "parameters": [
-        {"name": "GetConfig", "type": "func(ctx, configKey string) (string, error)", "description": "获取配置缓存值。返回空字符串表示缓存未命中，调用方应回填数据库读取结果"},
-        {"name": "SetConfig", "type": "func(ctx, configKey string, value interface{}) error", "description": "设置配置缓存，默认 TTL 5 分钟。配置更新时由管理端主动调用此接口刷新缓存"},
-        {"name": "DeleteConfig", "type": "func(ctx, configKey string) error", "description": "删除配置缓存，在配置值发生变更时调用，促使下次读取时回填新值"}
+        {"name": "deployment_id", "type": "bigint", "description": "部署任务ID"},
+        {"name": "status", "type": "string", "description": "部署状态"},
+        {"name": "progress", "type": "int", "description": "进度百分比"},
+        {"name": "message", "type": "string", "description": "状态描述信息"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "config_key": "string",
-          "config_value": "string"
+          "success": "boolean",
+          "message": "string"
         }
       },
       "error_codes": [
-        {"code": 500, "message": "配置缓存操作失败：Redis 连接异常、JSON 序列化错误"}
+        {"code": 500, "message": "Redis操作失败"}
+      ]
+    },
+    {
+      "name": "Get Deployment Status",
+      "method": "INTERNAL",
+      "endpoint": "/internal/cache/deployment/status/get",
+      "description": "获取部署任务实时状态。由Deployment Orchestrator在WebSocket推送和前端查询时调用，返回当前进度和状态。",
+      "parameters": [
+        {"name": "deployment_id", "type": "bigint", "description": "部署任务ID"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "deployment_id": "bigint",
+          "status": "string",
+          "progress": "int",
+          "message": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "部署状态不存在或已过期"},
+        {"code": 500, "message": "Redis操作失败"}
+      ]
+    },
+    {
+      "name": "Set Config Cache",
+      "method": "INTERNAL",
+      "endpoint": "/internal/cache/config/set",
+      "description": "缓存热点配置数据。由Project Management Service和Environment Management Service在读取数据库后主动写入，后续请求优先读取缓存。",
+      "parameters": [
+        {"name": "resource_type", "type": "string", "description": "资源类型：project_list|environment|key"},
+        {"name": "resource_id", "type": "bigint", "description": "资源ID，project_list时传0"},
+        {"name": "data", "type": "json", "description": "配置数据JSON"},
+        {"name": "ttl", "type": "int", "description": "缓存过期时间，单位秒，默认300"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "message": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 500, "message": "Redis操作失败"}
+      ]
+    },
+    {
+      "name": "Get Config Cache",
+      "method": "INTERNAL",
+      "endpoint": "/internal/cache/config/get",
+      "description": "读取热点配置缓存。由各业务服务在查询数据库前调用，命中缓存则直接返回，减少数据库查询。",
+      "parameters": [
+        {"name": "resource_type", "type": "string", "description": "资源类型：project_list|environment|key"},
+        {"name": "resource_id", "type": "bigint", "description": "资源ID，project_list时传0"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "resource_type": "string",
+          "resource_id": "bigint",
+          "data": "json",
+          "cached_at": "datetime"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "缓存不存在或已过期"},
+        {"code": 500, "message": "Redis操作失败"}
+      ]
+    },
+    {
+      "name": "Delete Config Cache",
+      "method": "INTERNAL",
+      "endpoint": "/internal/cache/config/delete",
+      "description": "删除指定热点配置缓存。由业务服务在数据发生变更时调用，使对应的缓存失效，确保后续读取回源数据库。",
+      "parameters": [
+        {"name": "resource_type", "type": "string", "description": "资源类型：project_list|environment|key"},
+        {"name": "resource_id", "type": "bigint", "description": "资源ID，project_list时传0"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "message": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 500, "message": "Redis操作失败"}
+      ]
+    },
+    {
+      "name": "Set SSH Test Result",
+      "method": "INTERNAL",
+      "endpoint": "/internal/cache/ssh/test/set",
+      "description": "存储SSH连接测试结果到Redis缓存。由Key Management Service在连通性测试完成后调用，结果临时缓存供Web Console查询。",
+      "parameters": [
+        {"name": "env_id", "type": "bigint", "description": "环境ID"},
+        {"name": "key_id", "type": "bigint", "description": "密钥ID"},
+        {"name": "success", "type": "boolean", "description": "测试是否成功"},
+        {"name": "latency_ms", "type": "int", "description": "连接延迟，单位毫秒"},
+        {"name": "server_info", "type": "string", "description": "服务器信息，如OS版本和主机名"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "message": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 500, "message": "Redis操作失败"}
+      ]
+    },
+    {
+      "name": "Get SSH Test Result",
+      "method": "INTERNAL",
+      "endpoint": "/internal/cache/ssh/test/get",
+      "description": "读取SSH连接测试结果缓存。由API Gateway转发Web Console轮询请求时调用，获取之前的连通性测试结果。",
+      "parameters": [
+        {"name": "env_id", "type": "bigint", "description": "环境ID"},
+        {"name": "key_id", "type": "bigint", "description": "密钥ID"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "env_id": "bigint",
+          "key_id": "bigint",
+          "success": "boolean",
+          "latency_ms": "int",
+          "server_info": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "测试结果不存在或已过期"},
+        {"code": 500, "message": "Redis操作失败"}
       ]
     },
     {
       "name": "Health Check",
       "method": "INTERNAL",
-      "endpoint": "/health/cache",
-      "description": "Redis 连通性健康检查。发送 PING 命令探测 Redis 服务可用性，返回延迟信息和连接池状态。供网关层和运维监控系统调用",
+      "endpoint": "/internal/cache/health",
+      "description": "Redis健康检查接口。用于服务治理和监控告警，执行Redis PING命令检测连接状态和延迟。",
       "parameters": [],
       "response": {
         "status": 200,
         "body": {
           "status": "string",
-          "latency_ms": "integer",
-          "pool_active": "integer",
-          "pool_idle": "integer"
+          "ping_ms": "int"
         }
       },
       "error_codes": [
-        {"code": 503, "message": "Redis 连接不可用：服务宕机、网络分区或连接池耗尽"}
+        {"code": 503, "message": "Redis服务不可用或响应超时"}
       ]
     }
   ],
-  "error_handling": "缓存层作为系统加速中间件，所有缓存操作失败不应影响主业务流程的可用性。上层服务在调用缓存接口时必须实现降级策略：缓存不可用时直接回退到数据库查询。\n\n(1) 连接管理 — 使用 go-redis 连接池（pool_size=100, min_idle_conns=10, conn_max_lifetime=30min）。连接超时 5s，读写超时 3s。初始化时采用懒加载模式，首次操作时建立连接，避免启动时因 Redis 不可用导致服务启动失败。\n\n(2) 超时处理 — 操作超时返回独立错误类型 ErrCacheTimeout，上层服务捕获后降级到数据库查询，不向上层调用方透传超时错误。连接池耗尽时返回 ErrPoolExhausted，调用方应退避重试（指数退避：100ms、200ms、400ms，最大 3 次）。\n\n(3) 缓存穿透防护 — 对查询结果为空的数据，设置短 TTL 空值缓存（30s），避免恶意请求穿透到数据库。热门 Key 使用互斥锁（SETNX）控制回填并发，防止缓存雪崩。\n\n(4) 缓存一致性 — 采用 Cache-Aside 模式：读请求先查缓存，未命中则查数据库并回填；写请求先更新数据库，再删除缓存（延迟双删，第一次立即删除，第二次 500ms 后延迟删除）。配置数据采用短 TTL（5 分钟）实现最终一致性。部署状态数据通过 Redis Pub/Sub 广播变更事件，各订阅方实时更新本地状态。\n\n(5) 键管理 — 所有业务键使用前缀命名空间隔离：cogniforge:deploy:*、cogniforge:session:*、cogniforge:sshpool:*、cogniforge:config:*。禁止使用 KEYS 命令（改用 SCAN 游标遍历）。批量操作使用 Pipeline 减少 RTT。\n\n(6) 数据序列化 — 缓存值统一使用 JSON 序列化，序列化/反序列化错误返回 ErrSerialization，上层服务捕获后清空该缓存键并回填。Hash 结构的字段值均存储为字符串类型，数值字段在应用层进行类型转换。\n\n(7) 过期策略 — 所有缓存键必须设置 TTL，禁止永不过期的缓存项。TTL 根据数据特征差异化配置：部署状态 1 小时、会话 24 小时、SSH 连接池 30 分钟、热点配置 5 分钟。Redis 内存达到 maxmemory 限制时，采用 allkeys-lru 淘汰策略自动清理冷数据。"
+  "error_handling": "Cache模块的错误处理策略：\n(1) Redis操作异常 — 所有Redis读写操作失败时返回HTTP 500，响应体包含success=false和具体错误message。调用方需实现降级策略：对于session和config缓存，降级到直接查询Primary Database；对于deployment_status缓存，降级为轮询数据库部署记录；对于ssh_test_result缓存，降级为前端提示重新测试。\n(2) 缓存未命中（404） — Get类接口在key不存在或已过期时返回404，调用方视为缓存缺失，回源数据库查询并重新填充缓存。\n(3) 缓存穿透防护 — 对于热点key（如项目列表），采用SETNX互斥锁机制防止并发缓存重建，未获取到锁的请求回源数据库。\n(4) 缓存雪崩防护 — key的TTL采用基础值+随机偏移（±30%）的策略，避免大量key同时过期导致数据库压力骤增。\n(5) 连接管理 — Redis连接池配置最小连接数5、最大连接数20，连接空闲超过300秒自动回收。连接异常时健康检查接口返回503，触发监控告警。\n(6) 内存管理 — 配置Redis maxmemory和volatile-lru淘汰策略，避免缓存数据无限制增长。对大value（>10KB）进行压缩存储。"
 }
