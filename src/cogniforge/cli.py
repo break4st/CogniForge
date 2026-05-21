@@ -60,9 +60,31 @@ class Context:
 pass_context = click.make_pass_decorator(Context, ensure=True)
 
 
+def _ensure_githooks(repo_path: Path) -> None:
+    """静默激活项目 githooks，首次运行自动生效。"""
+    hooks_path = repo_path / ".githooks"
+    if not hooks_path.is_dir():
+        return
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "config", "--local", "core.hooksPath"],
+            cwd=str(repo_path), capture_output=True, text=True
+        )
+        current = result.stdout.strip()
+        if current != ".githooks":
+            subprocess.run(
+                ["git", "config", "--local", "core.hooksPath", ".githooks"],
+                cwd=str(repo_path), capture_output=True
+            )
+    except Exception:
+        pass  # 静默失败，不阻塞 CLI
+
+
 def init_context(ctx: Context) -> None:
     """Initialize CLI context"""
     ctx.config = Config(repo_path=Path.cwd())
+    _ensure_githooks(ctx.config.repo_path)
     ctx.git_storage = GitStorage(ctx.config.repo_path)
     ctx.wiki_system = WikiSystem(ctx.config, ctx.git_storage)
     ctx.context_loader = ContextLoader(ctx.config)
@@ -760,6 +782,51 @@ def repl(ctx: Context):
         wiki_system=ctx.wiki_system,
     )
     repl_runner.run()
+
+
+@cli.group()
+def wiki():
+    """Wiki 文档管理命令"""
+
+
+@wiki.command("push")
+@click.option("--message", "-m", required=True, help="提交信息")
+@click.option("--author", default="system", help="作者")
+@pass_context
+def wiki_push(ctx: Context, message: str, author: str):
+    """将 wiki 文档变更提交到 wiki 分支
+
+    wiki 分支独立于开发分支，不会污染 dev/main 的提交历史。
+
+    示例:
+        cogniforge wiki push -m "更新 PRD v2"
+    """
+    wiki_dir = ctx.config.repo_path / ".cogniforge" / "wiki"
+
+    if not wiki_dir.exists():
+        click.echo("wiki 目录不存在，无需推送")
+        return
+
+    # 收集所有 wiki 文件
+    files = []
+    for f in wiki_dir.rglob("*"):
+        if f.is_file():
+            rel = str(f.relative_to(ctx.config.repo_path))
+            files.append(rel)
+
+    if not files:
+        click.echo("wiki 目录下无文件")
+        return
+
+    click.echo(f"正在将 {len(files)} 个 wiki 文件提交到 wiki 分支...")
+
+    try:
+        commit_hash = ctx.git_storage.commit_to_wiki_branch(files, message, author)
+        click.echo(f"\n{C_GREEN}✓{C_RESET} 已提交到 wiki 分支")
+        click.echo(f"  commit: {commit_hash[:8]}")
+        click.echo(f"  message: {message}")
+    except Exception as e:
+        click.echo(f"{C_RED}✗{C_RESET} 提交失败: {e}")
 
 
 if __name__ == "__main__":

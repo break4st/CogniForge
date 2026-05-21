@@ -79,6 +79,66 @@ class GitStorage:
         except GitCommandError as e:
             raise GitStorageError(f"Failed to commit: {e}")
 
+    def commit_to_wiki_branch(self, files: list[str], message: str,
+                              author: str = "system") -> str | None:
+        """将指定文件提交到 wiki 分支（通过临时 worktree）。
+
+        files 会被复制到 wiki 分支的 worktree 中提交，
+        提交后当前索引中的这些文件会被 unstage。
+        """
+        import shutil
+        import tempfile
+
+        repo = self.repo
+        wiki_branch = "wiki"
+
+        # 确保 wiki 分支存在
+        if wiki_branch not in [b.name for b in repo.branches]:
+            repo.create_head(wiki_branch)
+
+        worktree_dir = None
+        try:
+            worktree_dir = tempfile.mkdtemp(prefix="cogniforge-wiki-")
+            repo.git.worktree("add", worktree_dir, wiki_branch)
+
+            wt_root = Path(worktree_dir)
+
+            # 复制文件到 worktree
+            for f in files:
+                src = self.repo_path / f
+                dst = wt_root / f
+                if src.exists():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dst)
+                else:
+                    # 文件已删除 — 在 worktree 中也删除
+                    if dst.exists():
+                        dst.unlink()
+
+            # 在 worktree 中提交
+            wt_repo = Repo(worktree_dir)
+            if files:
+                wt_repo.index.add(files)
+            commit = wt_repo.index.commit(message)
+            commit_hash = commit.hexsha
+
+            return commit_hash
+        except GitCommandError as e:
+            raise GitStorageError(f"Failed to commit to wiki branch: {e}")
+        finally:
+            if worktree_dir and Path(worktree_dir).exists():
+                try:
+                    repo.git.worktree("remove", worktree_dir, "--force")
+                except GitCommandError:
+                    pass
+                shutil.rmtree(worktree_dir, ignore_errors=True)
+
+            # 从当前索引中 unstage wiki 文件
+            try:
+                repo.index.remove(files, working_tree=False)
+            except GitCommandError:
+                pass
+
     def get_status(self) -> dict:
         """Get Git status"""
         status = {

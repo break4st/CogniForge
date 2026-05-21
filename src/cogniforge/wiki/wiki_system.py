@@ -89,16 +89,20 @@ class WikiSystem:
         rel = str(path.relative_to(self.repo_path))
         self.git_storage.repo.index.add([rel])
 
+        html_rel = None
         if render:
             from cogniforge.wiki.wiki_renderer import render_file
             html_path = render_file(path)
             if html_path is not None:
-                rel_html = str(html_path.relative_to(self.repo_path))
-                self.git_storage.repo.index.add([rel_html])
+                html_rel = str(html_path.relative_to(self.repo_path))
+                self.git_storage.repo.index.add([html_rel])
 
         if commit_message:
             author = data.get("meta", {}).get("author", "agent")
-            self.git_storage.commit(commit_message, author)
+            staged = [rel]
+            if html_rel:
+                staged.append(html_rel)
+            self.git_storage.commit_to_wiki_branch(staged, commit_message, author)
 
         return path
 
@@ -163,7 +167,7 @@ class WikiSystem:
             doc_path.write_text(doc.to_markdown(), encoding="utf-8")
         self.git_storage.repo.index.add([doc.path])
         if commit_message:
-            self.git_storage.commit(commit_message, doc.author)
+            self.git_storage.commit_to_wiki_branch([doc.path], commit_message, doc.author)
 
     # ------------------------------------------------------------------
     # List / delete
