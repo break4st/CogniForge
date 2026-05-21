@@ -2,32 +2,43 @@
   "meta": {
     "doc_id": "lld-环境管理服务-001",
     "type": "lld",
+    "module_type": "ModuleType.SERVICE",
     "module": "环境管理服务",
     "title": "LLD - 环境管理服务",
     "author": "design_agent",
-    "created": "2026-05-20 16:31"
+    "created": "2026-05-21 11:05"
   },
   "overview": {
-    "description": "环境管理服务负责管理部署环境的完整生命周期，提供部署环境的创建、编辑、删除等CRUD操作，SSH密钥信息的AES-256-GCM加密存储与安全管理，远程服务器连接测试，以及环境与项目的关联管理功能。作为部署编排服务的下游依赖，为其提供目标环境的连接配置信息。",
-    "dependencies": ["关系型数据库（MySQL）", "SSH执行服务"],
-    "tech_stack": ["Java 17", "Spring Boot 3", "Spring Data JPA", "MySQL 8", "AES-256-GCM（SSH密钥加密）", "REST (JSON)"]
+    "description": "管理每套部署环境的配置信息，包括远程服务器地址、端口、关联的SSH密钥等。提供对部署环境的完整CRUD操作，并支持检测环境SSH连通性。作为业务服务层核心之一，接收API网关转发的REST请求，对环境配置数据进行校验和持久化，维护环境与项目的关联关系以及环境与SSH密钥的关联关系。",
+    "dependencies": [
+      "关系型数据库"
+    ],
+    "tech_stack": [
+      "Java 17",
+      "Spring Boot 3.x + Spring Cloud",
+      "MySQL 8.0"
+    ]
   },
   "data_models": [
     {
-      "name": "environment",
-      "type": "table",
-      "description": "部署环境信息表，存储环境基本连接信息及加密后的SSH密钥。通过project_id与项目表关联",
+      "name": "environments",
+      "type": "reference",
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "environments"
+      },
+      "description": "部署环境配置表，存储每套部署环境的连接参数和配置信息。每条记录代表一个独立的部署环境（如测试线、灰度线、正式线），通过project_id与projects表关联，通过key_id与ssh_keys表关联。支持逻辑删除（status字段）。本服务关心以下字段：",
       "fields": [
-        {"name": "id", "type": "int", "required": true, "description": "主键，自增环境ID"},
-        {"name": "project_id", "type": "int", "required": true, "description": "所属项目ID，外键关联project表"},
-        {"name": "name", "type": "string", "required": true, "description": "环境名称，同一项目下名称唯一"},
-        {"name": "type", "type": "string", "required": true, "description": "环境类型：test/staging/production"},
-        {"name": "host", "type": "string", "required": true, "description": "服务器主机地址（IP或域名）"},
-        {"name": "port", "type": "int", "required": true, "description": "SSH连接端口号"},
-        {"name": "ssh_key_encrypted", "type": "string", "required": true, "description": "AES-256-GCM加密后的SSH私钥内容"},
-        {"name": "username", "type": "string", "required": true, "description": "SSH登录用户名"},
-        {"name": "status", "type": "string", "required": true, "description": "连接状态：unknown（未测试）/connected（可连接）/disconnected（不可连接），默认unknown"},
-        {"name": "last_tested_at", "type": "datetime", "required": false, "description": "最近一次连接测试时间"},
+        {"name": "id", "type": "bigint", "required": true, "description": "环境唯一标识，自增主键"},
+        {"name": "project_id", "type": "bigint", "required": true, "description": "所属项目ID，外键关联projects表"},
+        {"name": "name", "type": "varchar(50)", "required": true, "description": "环境名称（如 测试线/灰度线/正式线），同项目内唯一"},
+        {"name": "server_host", "type": "varchar(255)", "required": true, "description": "远程服务器地址，IP或域名"},
+        {"name": "server_port", "type": "int", "required": true, "description": "SSH连接端口号，默认22"},
+        {"name": "deploy_path", "type": "varchar(500)", "required": false, "description": "部署基础路径，远程服务器上的绝对路径"},
+        {"name": "key_id", "type": "bigint", "required": true, "description": "关联的SSH密钥ID，外键关联ssh_keys表"},
+        {"name": "status", "type": "varchar(20)", "required": true, "description": "环境状态：active（正常）/ deleted（逻辑删除），默认 active"},
+        {"name": "created_by", "type": "bigint", "required": true, "description": "创建者用户ID"},
         {"name": "created_at", "type": "datetime", "required": true, "description": "创建时间"},
         {"name": "updated_at", "type": "datetime", "required": true, "description": "最后更新时间"}
       ]
@@ -35,178 +46,212 @@
   ],
   "interfaces": [
     {
+      "name": "环境列表查询",
+      "method": "GET",
+      "endpoint": "/api/projects/{projectId}/environments",
+      "description": "获取指定项目下的所有部署环境配置列表。根据项目ID在environments表中查询关联的部署环境，仅返回status=active的环境记录，按创建时间降序排列。",
+      "parameters": [
+        {"name": "projectId", "type": "integer", "description": "项目ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "integer",
+          "data": "Array<object>"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数校验失败（projectId格式错误）"},
+        {"code": 404, "message": "项目不存在或已被删除"},
+        {"code": 500, "message": "服务器内部错误，查询异常"}
+      ]
+    },
+    {
       "name": "创建部署环境",
       "method": "POST",
-      "endpoint": "/api/environments",
-      "description": "创建部署环境并配置SSH连接信息。SSH密钥入库前使用AES-256-GCM加密存储。创建成功后环境状态初始化为unknown",
+      "endpoint": "/api/projects/{projectId}/environments",
+      "description": "在指定项目下创建新的部署环境。校验参数完整性（name、server_host、server_port、key_id为必填），校验同项目内环境名称唯一性，校验关联的SSH密钥是否存在且有效。校验通过后插入environments表，返回创建成功的环境完整信息。",
       "parameters": [
-        {"name": "project_id", "type": "int", "description": "所属项目ID"},
-        {"name": "name", "type": "string", "description": "环境名称，同一项目下唯一"},
-        {"name": "type", "type": "string（test/staging/production）", "description": "环境类型"},
-        {"name": "host", "type": "string", "description": "服务器主机地址（IP或域名）"},
-        {"name": "port", "type": "int", "description": "SSH端口号"},
-        {"name": "ssh_key", "type": "string（加密传输）", "description": "SSH私钥内容，HTTPS传输通道加密"},
-        {"name": "username", "type": "string", "description": "SSH登录用户名"}
-      ],
-      "response": {
-        "status": 201,
-        "body": {
-          "id": "int",
-          "name": "string",
-          "type": "string",
-          "host": "string",
-          "port": "int",
-          "status": "string"
-        }
-      },
-      "error_codes": [
-        {"code": 400, "message": "请求参数校验失败（参数缺失、类型不合法或格式错误）"},
-        {"code": 404, "message": "指定project_id的项目不存在"},
-        {"code": 409, "message": "同一项目下已存在同名环境，请更换环境名称"}
-      ]
-    },
-    {
-      "name": "查询环境列表",
-      "method": "GET",
-      "endpoint": "/api/environments",
-      "description": "分页查询部署环境列表，支持按项目ID、环境类型和连接状态多条件筛选，按创建时间倒序排列",
-      "parameters": [
-        {"name": "project_id", "type": "int", "description": "项目ID过滤条件（可选）"},
-        {"name": "type", "type": "string", "description": "环境类型过滤条件（可选：test/staging/production）"},
-        {"name": "status", "type": "string", "description": "连接状态过滤条件（可选：unknown/connected/disconnected）"},
-        {"name": "page", "type": "int", "description": "页码，从1开始，默认1"},
-        {"name": "page_size", "type": "int", "description": "每页条数，默认20，最大100"}
+        {"name": "projectId", "type": "integer", "description": "项目ID（路径参数）"},
+        {"name": "name", "type": "string", "description": "环境名称（如 测试线/灰度线/正式线），同项目内唯一"},
+        {"name": "server_host", "type": "string", "description": "远程服务器地址，IP或域名"},
+        {"name": "server_port", "type": "integer", "description": "SSH端口号，取值范围1-65535"},
+        {"name": "deploy_path", "type": "string", "description": "部署基础路径，远程服务器上的绝对路径，可选"},
+        {"name": "key_id", "type": "integer", "description": "关联的SSH密钥ID，必须指向ssh_keys表中存在的有效密钥"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "items": "array<object>（{id:int, project_id:int, name:string, type:string, host:string, port:int, status:string, created_at:datetime}）",
-          "total": "int",
-          "page": "int"
+          "code": "integer",
+          "data.id": "integer",
+          "data.name": "string",
+          "data.server_host": "string",
+          "data.server_port": "integer",
+          "data.deploy_path": "string",
+          "data.key_id": "integer",
+          "data.project_id": "integer"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "分页参数或过滤条件不合法"}
+        {"code": 400, "message": "参数校验失败（必填项缺失、server_port不是合法端口号或字段长度超限）"},
+        {"code": 404, "message": "项目不存在或SSH密钥不存在"},
+        {"code": 409, "message": "同项目内环境名称已存在"},
+        {"code": 500, "message": "服务器内部错误，创建失败"}
       ]
     },
     {
-      "name": "查询环境详情",
+      "name": "获取环境详情",
       "method": "GET",
-      "endpoint": "/api/environments/{id}",
-      "description": "根据环境ID查询单个环境的完整信息。注意：返回信息中不包含加密存储的SSH密钥内容以保证安全",
+      "endpoint": "/api/environments/{environmentId}",
+      "description": "获取指定部署环境的完整配置信息。根据环境ID查询environments表，仅返回status=active的环境。返回数据包含环境的所有配置字段和创建时间。",
       "parameters": [
-        {"name": "id", "type": "int（路径参数）", "description": "环境ID"}
+        {"name": "environmentId", "type": "integer", "description": "环境ID（路径参数）"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "id": "int",
-          "project_id": "int",
-          "name": "string",
-          "type": "string",
-          "host": "string",
-          "port": "int",
-          "username": "string",
-          "status": "string",
-          "last_tested_at": "datetime",
-          "created_at": "datetime",
-          "updated_at": "datetime"
+          "code": "integer",
+          "data.id": "integer",
+          "data.name": "string",
+          "data.server_host": "string",
+          "data.server_port": "integer",
+          "data.deploy_path": "string",
+          "data.key_id": "integer",
+          "data.project_id": "integer",
+          "data.created_at": "string"
         }
       },
       "error_codes": [
-        {"code": 404, "message": "环境不存在，指定ID未找到对应环境"}
+        {"code": 404, "message": "环境不存在或已被删除"},
+        {"code": 500, "message": "服务器内部错误，查询异常"}
       ]
     },
     {
-      "name": "更新环境",
+      "name": "更新部署环境",
       "method": "PUT",
-      "endpoint": "/api/environments/{id}",
-      "description": "更新已有环境的配置信息。如果SSH密钥被重新传入，则重新加密存储并将连接状态重置为unknown；如果未传入则保持原有密钥不变",
+      "endpoint": "/api/environments/{environmentId}",
+      "description": "更新指定部署环境的配置信息。支持修改环境名称、服务器地址、端口、部署路径和关联密钥。修改环境名称时校验同项目内唯一性；修改key_id时校验目标密钥存在性。仅允许更新status=active的环境。",
       "parameters": [
-        {"name": "id", "type": "int（路径参数）", "description": "环境ID"},
-        {"name": "name", "type": "string", "description": "环境名称（可选，不传则不更新）"},
-        {"name": "type", "type": "string（test/staging/production）", "description": "环境类型（可选，不传则不更新）"},
-        {"name": "host", "type": "string", "description": "服务器主机地址（可选，不传则不更新）"},
-        {"name": "port", "type": "int", "description": "SSH端口号（可选，不传则不更新）"},
-        {"name": "ssh_key", "type": "string", "description": "新的SSH私钥（可选，不传则保留原有密钥）"},
-        {"name": "username", "type": "string", "description": "SSH登录用户名（可选，不传则不更新）"}
+        {"name": "environmentId", "type": "integer", "description": "环境ID（路径参数）"},
+        {"name": "name", "type": "string", "description": "环境名称（可选，提供时校验同项目内唯一性）"},
+        {"name": "server_host", "type": "string", "description": "远程服务器地址（可选）"},
+        {"name": "server_port", "type": "integer", "description": "SSH端口号（可选）"},
+        {"name": "deploy_path", "type": "string", "description": "部署基础路径（可选）"},
+        {"name": "key_id", "type": "integer", "description": "关联的SSH密钥ID（可选，提供时校验密钥存在性）"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "id": "int",
-          "project_id": "int",
-          "name": "string",
-          "type": "string",
-          "host": "string",
-          "port": "int",
-          "status": "string",
-          "created_at": "datetime",
-          "updated_at": "datetime"
+          "code": "integer",
+          "data.id": "integer",
+          "data.name": "string",
+          "data.server_host": "string",
+          "data.server_port": "integer",
+          "data.deploy_path": "string",
+          "data.key_id": "integer",
+          "data.project_id": "integer",
+          "data.updated_at": "string"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "请求参数校验失败"},
-        {"code": 404, "message": "环境不存在"},
-        {"code": 409, "message": "修改后的环境名称与同一项目下其他环境冲突"}
+        {"code": 400, "message": "参数校验失败"},
+        {"code": 404, "message": "环境不存在或SSH密钥不存在"},
+        {"code": 409, "message": "环境名称已被同项目下其他环境使用"},
+        {"code": 500, "message": "服务器内部错误，更新失败"}
       ]
     },
     {
-      "name": "删除环境",
+      "name": "删除部署环境",
       "method": "DELETE",
-      "endpoint": "/api/environments/{id}",
-      "description": "删除指定部署环境。系统将检查该环境下是否存在关联的部署记录，有关联记录时拒绝删除以防止数据不一致",
+      "endpoint": "/api/environments/{environmentId}",
+      "description": "删除指定部署环境（逻辑删除）。将环境status更新为deleted，不从数据库物理删除。删除前检查是否存在关联的未完成部署任务，如有则拒绝删除。",
       "parameters": [
-        {"name": "id", "type": "int（路径参数）", "description": "环境ID"}
+        {"name": "environmentId", "type": "integer", "description": "环境ID（路径参数）"}
       ],
       "response": {
-        "status": 204,
-        "body": {}
+        "status": 200,
+        "body": {
+          "code": "integer"
+        }
       },
       "error_codes": [
-        {"code": 404, "message": "环境不存在"},
-        {"code": 409, "message": "该环境下存在关联的部署记录，请先删除所有关联部署后再删除环境"}
+        {"code": 404, "message": "环境不存在或已被删除"},
+        {"code": 409, "message": "环境存在未完成的部署任务，无法删除"},
+        {"code": 500, "message": "服务器内部错误，删除失败"}
       ]
     },
     {
-      "name": "测试环境连接",
+      "name": "检测环境连通性",
       "method": "POST",
-      "endpoint": "/api/environments/{id}/test-connection",
-      "description": "测试指定环境的SSH远程连接可用性。内部调用SSH执行服务的连接测试接口（POST /api/ssh/test-connection），测试完成后根据结果更新环境状态（connected/disconnected）和最近测试时间",
+      "endpoint": "/api/environments/{environmentId}/connectivity-test",
+      "description": "检测指定部署环境的目标服务器SSH连通性。根据环境ID获取服务器地址和端口，并从关联的SSH密钥获取私钥内容（调用密钥管理服务获取解密后的私钥），尝试建立SSH连接到目标服务器，返回连接测试结果。本操作不修改任何持久化数据。",
       "parameters": [
-        {"name": "id", "type": "int（路径参数）", "description": "环境ID"}
+        {"name": "environmentId", "type": "integer", "description": "环境ID（路径参数）"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "success": "bool",
-          "message": "string",
-          "latency_ms": "int"
+          "code": "integer",
+          "data.reachable": "boolean",
+          "data.latency_ms": "integer",
+          "data.message": "string"
         }
       },
       "error_codes": [
         {"code": 404, "message": "环境不存在"},
-        {"code": 502, "message": "SSH执行服务不可达或调用失败"}
+        {"code": 500, "message": "连通性检测过程中发生错误（如密钥无效、网络不可达）"}
       ]
     },
     {
-      "name": "查询项目环境列表",
-      "method": "GET",
-      "endpoint": "/api/projects/{project_id}/environments",
-      "description": "查询指定项目下关联的所有部署环境列表。供API网关路由至项目管理服务的\"查询项目环境列表\"接口时调用的数据来源",
+      "name": "获取项目所有环境（内部）",
+      "method": "INTERNAL",
+      "endpoint": "/api/internal/environments/project/{projectId}",
+      "description": "内部接口，供项目管理服务在项目切换时调用，获取指定项目的所有活跃环境简要信息。不经过API网关外部路由，由服务间内部HTTP调用。返回结果中每个环境对象包含id、name、server_host和deploy_path等关键信息。",
       "parameters": [
-        {"name": "project_id", "type": "int（路径参数）", "description": "项目ID"}
+        {"name": "projectId", "type": "integer", "description": "项目ID（路径参数）"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "environments": "array<object>（{id:int, name:string, type:string, status:string, host:string, port:int}）"
+          "code": "integer",
+          "data": "Array<object>"
         }
       },
       "error_codes": [
-        {"code": 404, "message": "项目不存在，指定project_id未找到对应项目"}
+        {"code": 500, "message": "服务器内部错误，查询异常"}
       ]
     }
   ],
-  "error_handling": "环境管理服务采用分层错误处理策略：1）参数校验层——创建和更新接口对请求参数进行非空校验、类型校验和枚举值校验（环境类型仅允许test/staging/production、连接状态仅允许unknown/connected/disconnected），校验失败统一返回400 Bad Request，响应体包含field和message指明具体问题；2）业务逻辑层——环境名称唯一性通过项目ID+名称的联合唯一索引保障，违反时返回409 Conflict并提示'同一项目下已存在同名环境'；创建环境时通过project_id外键校验项目是否存在，不存在时返回404 Not Found；删除环境前查询部署编排服务确认无关联部署记录，有关联时返回409 Conflict；3）数据安全层——SSH密钥在持久化前使用AES-256-GCM算法加密，密钥加密密钥（KEK）由系统配置管理，加密后的密文以Base64编码存入数据库；所有查询接口的响应中均不返回ssh_key_encrypted字段，防止密钥泄露；4）跨服务调用层——连接测试接口同步调用SSH执行服务的连接测试接口，设置5秒超时，调用失败或超时返回502 Bad Gateway并记录下游服务错误；5）全局异常处理——所有未捕获异常统一返回500 Internal Server Error，服务端记录完整错误堆栈。所有错误响应统一采用格式：{\"error\": {\"code\": \"string错误码\", \"message\": \"string错误描述\"}}。"
+  "error_handling": {
+    "strategy": "环境管理服务采用统一异常处理机制，通过Spring @ControllerAdvice全局拦截业务异常和系统异常。参数校验异常（必填项缺失、字段格式错误）返回400；资源不存在（环境、项目、SSH密钥未找到）返回404；唯一键冲突（同项目内环境名称重复）或操作冲突（环境存在未完成部署任务）返回409；其余未预期异常返回500，detail在生产环境脱敏。所有异常统一封装为标准JSON响应格式。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "400",
+        "name": "请求参数错误",
+        "description": "参数校验失败。包括必填项缺失（如创建环境时name/server_host/server_port/key_id为空）、server_port不是合法端口号（不在1-65535范围内）、字段长度超限等。服务层在校验入口处立即抛出IllegalArgumentException，由全局异常处理器捕获后封装返回。"
+      },
+      {
+        "code": "404",
+        "name": "资源不存在",
+        "description": "请求的目标环境或关联资源不存在。包括：按ID查询的环境不存在（或status!=active）、创建环境时指定的project_id对应的项目不存在、创建环境时指定的key_id对应的SSH密钥不存在。抛出ResourceNotFoundException。"
+      },
+      {
+        "code": "409",
+        "name": "资源冲突",
+        "description": "创建或更新环境时发生名称唯一键冲突。同项目下环境名称（name）不能重复。删除环境时如果存在关联的未完成部署任务也返回409。抛出DuplicateKeyException或BusinessConflictException。"
+      },
+      {
+        "code": "500",
+        "name": "服务器内部错误",
+        "description": "未预期的运行时异常（数据库连接失败、SQL执行异常、SSH连接检测异常等）。全局异常处理器捕获Exception后统一返回500，error字段为InternalServerError，detail字段在生产环境统一返回「服务器内部错误，请稍后重试」，避免泄露内部堆栈信息。"
+      }
+    ]
+  }
 }
