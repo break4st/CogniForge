@@ -6,12 +6,21 @@
     "module": "Environment Management Service",
     "title": "LLD - Environment Management Service",
     "author": "design_agent",
-    "created": "2026-05-21 09:45"
+    "created": "2026-05-21 10:13"
   },
   "overview": {
-    "description": "环境管理微服务，负责部署环境的创建、编辑、删除和查询，维护环境连接参数（主机地址、端口、用户名等），管理环境类型（测试线、灰度线、正式线），处理环境与项目的关联绑定，并对环境配置进行完整性校验。",
-    "dependencies": ["Primary Database"],
-    "tech_stack": ["Python 3.11+", "FastAPI", "MySQL 8.0"]
+    "description": "管理部署环境的配置，包括服务器连接参数、环境标识等。提供部署环境的完整 CRUD 操作，维护环境与项目的绑定关系，验证连接配置参数的有效性，并通过委托 SSH Execution Service 执行连接测试。",
+    "dependencies": [
+      "API Gateway",
+      "Key Management Service",
+      "SSH Execution Service",
+      "Audit Service"
+    ],
+    "tech_stack": [
+      "Python",
+      "FastAPI",
+      "PostgreSQL 15"
+    ]
   },
   "data_models": [
     {
@@ -22,167 +31,209 @@
         "doc_id": "lld-Primary Database-001",
         "model_name": "environments"
       },
-      "description": "部署环境表，继承自主数据库。存储每个环境的连接参数和类型信息，通过project_id与项目关联，本服务负责该表的全部读写操作。",
+      "description": "部署环境配置表，记录每个项目的远程服务器部署环境信息，包括 SSH 连接参数和部署路径。一个项目可关联多个环境（如测试线、灰度线、正式线）。",
       "fields": [
-        {"name": "id", "type": "bigint", "required": true, "description": "环境ID，自增主键"},
-        {"name": "project_id", "type": "bigint", "required": true, "description": "所属项目ID，外键关联projects表"},
-        {"name": "name", "type": "varchar(255)", "required": true, "description": "环境名称，同一项目内唯一"},
-        {"name": "type", "type": "enum('test','gray','production')", "required": true, "description": "环境类型：test-测试线，gray-灰度线，production-正式线"},
-        {"name": "host", "type": "varchar(255)", "required": true, "description": "远程主机地址（IP或域名）"},
-        {"name": "port", "type": "int", "required": true, "description": "SSH端口号，默认22"},
-        {"name": "username", "type": "varchar(128)", "required": true, "description": "SSH登录用户名"},
-        {"name": "created_at", "type": "datetime", "required": true, "description": "创建时间"},
-        {"name": "updated_at", "type": "datetime", "required": true, "description": "更新时间"}
-      ]
-    },
-    {
-      "name": "EnvironmentValidationRule",
-      "type": "config",
-      "ownership": "owned",
-      "description": "环境配置校验规则，从配置文件加载",
-      "fields": [
-        {"name": "name_pattern", "type": "string", "required": true, "description": "环境名称正则模式，允许字母、数字、中划线、下划线，默认 ^[a-zA-Z0-9_-]+$"},
-        {"name": "name_max_length", "type": "integer", "required": true, "description": "环境名称最大长度，默认64"},
-        {"name": "port_range_min", "type": "integer", "required": true, "description": "SSH端口最小值，默认1"},
-        {"name": "port_range_max", "type": "integer", "required": true, "description": "SSH端口最大值，默认65535"},
-        {"name": "host_pattern", "type": "string", "required": true, "description": "主机地址格式校验模式，支持IP或域名"}
-      ]
-    },
-    {
-      "name": "EnvironmentTypeSpec",
-      "type": "config",
-      "ownership": "owned",
-      "description": "环境类型规格定义，描述各类型环境的约束和行为特性",
-      "fields": [
-        {"name": "type", "type": "enum('test','gray','production')", "required": true, "description": "环境类型标识"},
-        {"name": "display_name", "type": "string", "required": true, "description": "环境类型展示名称，如'测试线'"},
-        {"name": "max_count_per_project", "type": "integer", "required": true, "description": "每个项目允许的最大数量，production类型限制为1"},
-        {"name": "allow_deploy", "type": "boolean", "required": true, "description": "是否允许触发部署"},
-        {"name": "description", "type": "string", "required": false, "description": "类型说明"}
+        {
+          "name": "id",
+          "type": "uuid",
+          "required": true,
+          "description": "环境唯一标识，主键"
+        },
+        {
+          "name": "project_id",
+          "type": "uuid",
+          "required": true,
+          "description": "所属项目 ID，外键关联 projects 表"
+        },
+        {
+          "name": "name",
+          "type": "varchar(100)",
+          "required": true,
+          "description": "环境名称（如 测试线、灰度线、正式线）"
+        },
+        {
+          "name": "label",
+          "type": "varchar(50)",
+          "required": true,
+          "description": "环境标识（如 test / staging / prod），同一项目内不可重复"
+        },
+        {
+          "name": "host",
+          "type": "varchar(255)",
+          "required": true,
+          "description": "远程服务器主机地址（IP 或域名）"
+        },
+        {
+          "name": "port",
+          "type": "integer",
+          "required": true,
+          "description": "SSH 连接端口，默认 22"
+        },
+        {
+          "name": "username",
+          "type": "varchar(100)",
+          "required": true,
+          "description": "SSH 登录用户名"
+        },
+        {
+          "name": "key_id",
+          "type": "uuid",
+          "required": true,
+          "description": "关联的 SSH 密钥 ID，外键关联 keys 表"
+        },
+        {
+          "name": "deploy_path",
+          "type": "varchar(500)",
+          "required": true,
+          "description": "远程部署根路径（如 /data/deploy/{project}/{env}）"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz",
+          "required": true,
+          "description": "环境创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "required": true,
+          "description": "环境信息最后更新时间"
+        }
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "Create Environment",
+      "name": "CreateEnvironment",
       "method": "POST",
       "endpoint": "/api/projects/{project_id}/environments",
-      "description": "为指定项目创建部署环境。校验环境名称在项目内唯一性、环境类型合法性、连接参数格式，校验通过后写入数据库并返回创建结果。",
+      "description": "为指定项目创建一个新的部署环境。校验请求参数的合法性（名称唯一性、主机地址格式、端口范围等），将环境配置持久化到数据库，并委托 Audit Service 记录环境创建操作。",
       "parameters": [
-        {"name": "project_id", "type": "integer", "description": "项目ID（路径参数）"},
-        {"name": "name", "type": "string", "description": "环境名称，同一项目内唯一"},
-        {"name": "type", "type": "enum", "description": "环境类型：test|gray|production"},
-        {"name": "host", "type": "string", "description": "远程主机地址（IP或域名）"},
-        {"name": "port", "type": "integer", "description": "SSH端口，默认22"},
-        {"name": "username", "type": "string", "description": "SSH登录用户名"}
+        {
+          "name": "project_id",
+          "type": "string",
+          "description": "路径参数，项目 ID"
+        }
       ],
       "response": {
         "status": 201,
         "body": {
-          "id": "integer",
-          "project_id": "integer",
+          "id": "string",
           "name": "string",
-          "type": "string",
+          "label": "string",
           "host": "string",
           "port": "integer",
           "username": "string",
-          "created_at": "datetime"
+          "deploy_path": "string",
+          "created_at": "string"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "请求参数校验失败：环境名称格式不合法（长度1-64，只允许字母、数字、中划线、下划线）、端口不在有效范围（1-65535）、主机地址格式无效、环境类型不在允许范围内"},
-        {"code": 404, "message": "项目不存在，指定的project_id未找到对应项目"},
-        {"code": 409, "message": "环境名称已存在，同一项目内环境名称唯一性冲突"}
+        {"code": 400, "message": "请求参数不合法（如名称为空、主机地址格式错误、端口超出范围 1-65535）"},
+        {"code": 404, "message": "项目不存在"},
+        {"code": 409, "message": "环境标识 label 在该项目中已存在"}
       ]
     },
     {
-      "name": "List Environments",
+      "name": "ListEnvironments",
       "method": "GET",
       "endpoint": "/api/projects/{project_id}/environments",
-      "description": "获取指定项目的所有部署环境列表。按创建时间倒序排列，返回环境摘要信息。",
+      "description": "获取指定项目的所有部署环境列表，返回环境概要信息，不包含敏感字段（如 username、host）。",
       "parameters": [
-        {"name": "project_id", "type": "integer", "description": "项目ID（路径参数）"},
-        {"name": "page", "type": "integer", "description": "页码，默认1"},
-        {"name": "page_size", "type": "integer", "description": "每页条数，默认20"}
+        {
+          "name": "project_id",
+          "type": "string",
+          "description": "路径参数，项目 ID"
+        }
       ],
       "response": {
         "status": 200,
         "body": {
-          "items": "array[object]",
           "total": "integer",
-          "page": "integer",
-          "page_size": "integer"
+          "items": "array"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "分页参数不合法（page或page_size小于1）"},
         {"code": 404, "message": "项目不存在"}
       ]
     },
     {
-      "name": "Get Environment",
+      "name": "GetEnvironment",
       "method": "GET",
       "endpoint": "/api/environments/{env_id}",
-      "description": "获取指定环境的详细信息，包括所有连接参数和元数据。",
+      "description": "获取指定环境的详细配置信息，包含完整的 SSH 连接参数。",
       "parameters": [
-        {"name": "env_id", "type": "integer", "description": "环境ID（路径参数）"}
+        {
+          "name": "env_id",
+          "type": "string",
+          "description": "路径参数，环境 ID"
+        }
       ],
       "response": {
         "status": 200,
         "body": {
-          "id": "integer",
-          "project_id": "integer",
+          "id": "string",
+          "project_id": "string",
           "name": "string",
-          "type": "string",
+          "label": "string",
           "host": "string",
           "port": "integer",
           "username": "string",
-          "created_at": "datetime"
+          "key_id": "string",
+          "deploy_path": "string",
+          "created_at": "string",
+          "updated_at": "string"
         }
       },
       "error_codes": [
-        {"code": 404, "message": "环境不存在，指定的env_id未找到对应环境"}
+        {"code": 404, "message": "环境不存在"}
       ]
     },
     {
-      "name": "Update Environment",
+      "name": "UpdateEnvironment",
       "method": "PUT",
       "endpoint": "/api/environments/{env_id}",
-      "description": "更新指定环境的配置参数。支持更新环境名称、类型、主机地址、端口、用户名。环境名称变更时需校验项目内唯一性。",
+      "description": "更新指定环境的配置信息。请求体中仅需包含要修改的字段，未提供的字段保持不变。不允许修改已关联部署记录的环境 label。",
       "parameters": [
-        {"name": "env_id", "type": "integer", "description": "环境ID（路径参数）"},
-        {"name": "name", "type": "string", "description": "环境名称，可选"},
-        {"name": "type", "type": "enum", "description": "环境类型：test|gray|production，可选"},
-        {"name": "host", "type": "string", "description": "远程主机地址，可选"},
-        {"name": "port", "type": "integer", "description": "SSH端口，可选"},
-        {"name": "username", "type": "string", "description": "SSH用户名，可选"}
+        {
+          "name": "env_id",
+          "type": "string",
+          "description": "路径参数，环境 ID"
+        }
       ],
       "response": {
         "status": 200,
         "body": {
-          "id": "integer",
-          "project_id": "integer",
+          "id": "string",
+          "project_id": "string",
           "name": "string",
-          "type": "string",
+          "label": "string",
           "host": "string",
           "port": "integer",
           "username": "string",
-          "created_at": "datetime"
+          "key_id": "string",
+          "deploy_path": "string",
+          "created_at": "string",
+          "updated_at": "string"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "请求参数校验失败：环境名称格式不合法、端口不在有效范围、主机地址格式无效"},
+        {"code": 400, "message": "请求参数不合法"},
         {"code": 404, "message": "环境不存在"},
-        {"code": 409, "message": "环境名称已存在，同一项目内环境名称唯一性冲突"}
+        {"code": 409, "message": "环境标识 label 在该项目中已存在或不允许修改已关联部署记录的环境 label"}
       ]
     },
     {
-      "name": "Delete Environment",
+      "name": "DeleteEnvironment",
       "method": "DELETE",
       "endpoint": "/api/environments/{env_id}",
-      "description": "删除指定环境及其所有关联配置。删除前检查环境是否有关联的部署记录或密钥，有关联时拒绝删除。",
+      "description": "删除指定环境。如果该环境存在关联的部署记录则拒绝删除，返回 409 Conflict。删除后委托 Audit Service 记录操作。",
       "parameters": [
-        {"name": "env_id", "type": "integer", "description": "环境ID（路径参数）"}
+        {
+          "name": "env_id",
+          "type": "string",
+          "description": "路径参数，环境 ID"
+        }
       ],
       "response": {
         "status": 204,
@@ -190,9 +241,33 @@
       },
       "error_codes": [
         {"code": 404, "message": "环境不存在"},
-        {"code": 409, "message": "环境存在关联的部署记录或密钥，无法删除"}
+        {"code": 409, "message": "该环境存在关联的部署记录，无法删除"}
+      ]
+    },
+    {
+      "name": "TestConnection",
+      "method": "POST",
+      "endpoint": "/api/environments/{env_id}/test",
+      "description": "测试指定环境的 SSH 连接是否可用。从数据库读取环境配置，从 Key Management Service 获取解密后的 SSH 私钥，委托 SSH Execution Service 执行连接测试，返回测试结果。",
+      "parameters": [
+        {
+          "name": "env_id",
+          "type": "string",
+          "description": "路径参数，环境 ID"
+        }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "message": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "环境不存在"},
+        {"code": 502, "message": "密钥获取失败或 SSH 连接测试服务不可用"}
       ]
     }
   ],
-  "error_handling": "1）参数校验错误（400）：请求体缺少必填字段、环境名称格式不合法（长度1-64字符，只允许字母/数字/中划线/下划线）、SSH端口不在1-65535范围、主机地址非合法IP或域名格式时返回400，响应体包含具体错误字段名和校验失败原因。2）资源不存在（404）：project_id或env_id引用的资源在数据库中不存在时返回404。3）唯一性冲突（409）：同一项目内创建或更新环境时检测到环境名称冲突，返回409 Conflict，响应体包含冲突字段名称和当前冲突值。4）删除冲突（409）：删除环境时检测到有关联的部署记录或SSH密钥，返回409并给出关联类型和数量，提示先清理关联资源。5）数据库错误：数据库连接失败或查询超时（默认5秒超时），记录错误日志后返回500，不暴露数据库内部细节。6）内部错误（500）：所有未捕获异常统一返回500，响应体包含请求ID以便链路追踪。"
+  "error_handling": "Environment Management Service 对各类异常进行统一处理：(1) 参数校验异常 — 请求体 JSON 解析失败、必填字段缺失、字段格式非法（如 host 非有效 IP/域名、port 超范围 1-65535）返回 400 Bad Request，附带具体校验错误详情；(2) 资源不存在 — 项目 ID 或环境 ID 在数据库中不存在时返回 404 Not Found；(3) 业务冲突 — 同项目内环境标识 label 重复返回 409 Conflict，有关联部署记录的环境删除或 label 修改同样返回 409 Conflict；(4) 外部服务异常 — 调用 Key Management Service 获取密钥失败时记录错误并返回 502 Bad Gateway，委托 SSH Execution Service 执行连接测试超时或连接失败时向上层透传错误消息；(5) 数据库异常 — 数据库连接失败或写入冲突时记录完整错误栈，返回 500 Internal Server Error；(6) 未捕获异常 — 统一返回 500 Internal Server Error 并在审计日志中记录上下文。所有错误响应体统一格式为: { code: integer, error: string, detail: string }。"
 }
