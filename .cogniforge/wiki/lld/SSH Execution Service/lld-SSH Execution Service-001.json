@@ -6,108 +6,120 @@
     "module": "SSH Execution Service",
     "title": "LLD - SSH Execution Service",
     "author": "design_agent",
-    "created": "2026-05-21 10:16"
+    "created": "2026-05-21 10:38"
   },
   "overview": {
-    "description": "远程命令执行服务，通过 SSH 连接到远程服务器并执行部署操作。从 RabbitMQ 消费部署任务，使用 asyncssh 建立并发 SSH 会话，在远程服务器执行目录创建、文件传输、脚本生成和命令执行等操作，并将执行结果实时回传。",
-    "dependencies": [
-      "RabbitMQ",
-      "Key Management Service",
-      "File Storage"
-    ],
-    "tech_stack": [
-      "Python",
-      "FastAPI",
-      "asyncssh",
-      "RabbitMQ 3.12"
-    ]
+    "description": "SSH远程执行服务，负责与远程服务器建立安全连接并执行命令和文件传输。提供SSH连接管理、远程命令执行、SFTP/SCP文件传输、连接超时与重试管理、连接测试等能力，作为Deployment Orchestrator的底层执行通道。",
+    "dependencies": [],
+    "tech_stack": ["Python", "FastAPI"]
   },
-  "data_models": [
-    {
-      "name": "ssh_session_config",
-      "type": "config",
-      "ownership": "owned",
-      "description": "SSH 会话默认配置，控制连接建立和命令执行的全局参数。服务启动时从配置中心加载，运行期间保持不变。",
-      "fields": [
-        {"name": "default_timeout", "type": "integer", "required": true, "description": "默认命令执行超时时间（秒），接口未指定 timeout 时使用此值，默认 300"},
-        {"name": "connection_retry_max", "type": "integer", "required": true, "description": "SSH 连接失败时的最大重试次数，默认 3"},
-        {"name": "connection_retry_interval_base", "type": "integer", "required": true, "description": "重试间隔基准值（秒），实际间隔按指数退避计算，默认 1"},
-        {"name": "keepalive_interval", "type": "integer", "required": true, "description": "SSH 连接保活心跳间隔（秒），默认 30"},
-        {"name": "max_concurrent_sessions", "type": "integer", "required": true, "description": "最大并发 SSH 会话数，防止资源耗尽，默认 50"}
-      ]
-    },
-    {
-      "name": "deploy_execution_context",
-      "type": "struct",
-      "ownership": "owned",
-      "description": "部署步骤执行上下文，封装一次部署任务中单个步骤的执行环境信息，用于在 SSH 会话中按步骤执行远程操作。",
-      "fields": [
-        {"name": "deployment_id", "type": "string", "required": true, "description": "部署任务唯一标识"},
-        {"name": "environment_id", "type": "string", "required": true, "description": "目标环境 ID，用于解析环境连接参数"},
-        {"name": "remote_base_path", "type": "string", "required": true, "description": "远程服务器上的部署根路径，格式 /deploy/{project}/{env}/{version}"},
-        {"name": "file_path", "type": "string", "required": false, "description": "可执行文件在 File Storage 中的路径"},
-        {"name": "version", "type": "string", "required": true, "description": "部署版本号，用于创建版本化目录"},
-        {"name": "current_step", "type": "string", "required": true, "description": "当前执行的步骤名称，如 create_directories / transfer_file / generate_script / execute_start"}
-      ]
-    }
-  ],
+  "data_models": [],
   "interfaces": [
     {
-      "name": "ExecuteSSHCommand",
+      "name": "File Transfer (Internal)",
       "method": "POST",
-      "endpoint": "/internal/ssh/execute",
-      "description": "在远程服务器上执行一条 SSH 命令并返回执行结果。接收连接参数和命令内容，建立 SSH 会话并执行，等待命令完成后返回退出码和输出流。此接口为内部服务间调用，不通过 API Gateway 对外暴露。",
+      "endpoint": "/internal/ssh/transfer",
+      "description": "通过SFTP/SCP将文件传输到远程服务器，仅内部服务间调用",
       "parameters": [
-        {"name": "host", "type": "string", "description": "远程服务器主机名或 IP 地址"},
-        {"name": "port", "type": "integer", "description": "SSH 端口号，默认 22"},
-        {"name": "username", "type": "string", "description": "SSH 登录用户名"},
-        {"name": "key_content", "type": "string", "description": "解密后的私钥内容（PEM 格式字符串）"},
-        {"name": "command", "type": "string", "description": "待执行的远程 Shell 命令"},
-        {"name": "timeout", "type": "integer", "description": "命令执行超时时间（秒），不传时使用全局默认配置"}
+        {"name": "host", "type": "string", "description": "远程服务器主机地址"},
+        {"name": "port", "type": "integer", "description": "SSH端口号"},
+        {"name": "username", "type": "string", "description": "SSH登录用户名"},
+        {"name": "private_key", "type": "string", "description": "SSH私钥内容"},
+        {"name": "local_path", "type": "string", "description": "本地文件路径"},
+        {"name": "remote_path", "type": "string", "description": "远程目标路径"},
+        {"name": "timeout", "type": "integer", "description": "连接超时时间（秒），可选"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "exit_code": "integer",
-          "stdout": "string",
-          "stderr": "string",
-          "executed_at": "string"
+          "success": "boolean",
+          "bytes_transferred": "integer",
+          "remote_path": "string",
+          "duration_ms": "integer"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "请求参数无效（host 为空、port 超出范围（1-65535）、key_content 非合法 PEM 格式）"},
-        {"code": 401, "message": "SSH 认证失败（私钥与用户名不匹配、私钥已吊销或格式错误）"},
-        {"code": 408, "message": "SSH 连接超时或命令执行超时（超过 timeout 参数指定的时间）"},
-        {"code": 502, "message": "SSH 连接失败（主机不可达、端口未开放、DNS 解析失败，重试耗尽后返回）"},
-        {"code": 500, "message": "服务内部错误（会话管理异常、资源分配失败等）"}
+        {"code": 400, "message": "请求参数校验失败"},
+        {"code": 401, "message": "SSH认证失败，用户名或私钥无效"},
+        {"code": 404, "message": "本地文件未找到"},
+        {"code": 408, "message": "连接远程服务器超时"},
+        {"code": 500, "message": "服务内部错误"},
+        {"code": 502, "message": "远程服务器连接失败或文件传输失败"}
       ]
     },
     {
-      "name": "DispatchDeployTask",
-      "method": "INTERNAL",
-      "endpoint": "AMQP exchange: deploy.task",
-      "description": "从 RabbitMQ 的 deploy.task 交换机订阅并消费部署任务消息。SSH Execution Service 作为消费者绑定到队列，接收 Deployment Orchestrator 发布的部署步骤，依次执行远程操作（创建目录、传输文件、生成脚本、启停服务），并将每步执行结果发布回 MQ 供 Deployment Orchestrator 汇总。",
+      "name": "Execute Command (Internal)",
+      "method": "POST",
+      "endpoint": "/internal/ssh/execute",
+      "description": "在远程服务器执行shell命令并返回输出，仅内部服务间调用",
       "parameters": [
-        {"name": "deployment_id", "type": "string", "description": "部署任务唯一标识，用于关联执行上下文和结果回传"},
-        {"name": "environment_id", "type": "string", "description": "目标环境 ID，用于从 Key Management Service 获取 SSH 密钥和连接参数"},
-        {"name": "file_path", "type": "string", "description": "可执行文件在 File Storage 上的存储路径，SSH ES 通过该路径读取文件并传输到远程服务器"},
-        {"name": "version", "type": "string", "description": "部署版本号，用于在远程服务器上创建版本化目录结构"},
-        {"name": "steps", "type": "array<string>", "description": "部署步骤顺序列表，如 ['create_directories','transfer_file','generate_script','execute_start']"}
+        {"name": "host", "type": "string", "description": "远程服务器主机地址"},
+        {"name": "port", "type": "integer", "description": "SSH端口号"},
+        {"name": "username", "type": "string", "description": "SSH登录用户名"},
+        {"name": "private_key", "type": "string", "description": "SSH私钥内容"},
+        {"name": "command", "type": "string", "description": "要执行的shell命令"},
+        {"name": "working_dir", "type": "string", "description": "远程工作目录，可选"},
+        {"name": "timeout", "type": "integer", "description": "命令执行超时时间（秒），可选"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "deployment_id": "string",
-          "step": "string",
-          "status": "string",
-          "output": "string"
+          "success": "boolean",
+          "stdout": "string",
+          "stderr": "string",
+          "exit_code": "integer",
+          "duration_ms": "integer"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "消息格式无效或缺少必填字段（deployment_id、environment_id、version 缺失）"},
-        {"code": 500, "message": "消息消费或步骤执行异常（MQ 连接断开、步骤执行未捕获异常）"}
+        {"code": 400, "message": "请求参数校验失败"},
+        {"code": 401, "message": "SSH认证失败，用户名或私钥无效"},
+        {"code": 408, "message": "命令执行超时"},
+        {"code": 500, "message": "服务内部错误"},
+        {"code": 502, "message": "远程服务器连接失败或命令执行失败"}
       ]
     }
   ],
-  "error_handling": "SSH Execution Service 对运行时异常进行分级处理：(1) 参数校验异常 — 请求体 JSON 解析失败、必填字段缺失、host 为空、port 超出范围（1-65535）、key_content 非 PEM 格式时返回 400 Bad Request，附带具体校验错误详情；(2) SSH 连接阶段异常 — 主机不可达、DNS 解析失败、端口未开放时按指数退避重试（间隔 1s / 4s / 16s，最多 3 次），重试耗尽后返回 502 Bad Gateway 并在审计日志中记录连接失败上下文；(3) SSH 认证阶段异常 — 私钥格式错误、用户名不匹配、密钥已吊销等认证失败不进行重试（重试无意义），立即返回 401 Unauthorized；(4) 命令执行阶段异常 — 远程命令返回非零退出码时不视为服务异常，将 exit_code 和 stderr 原样封装在响应体中返回，由调用方判断业务成功与否；(5) 超时异常 — SSH 连接建立超过 30 秒或命令执行超过 timeout 参数时中断会话，清理连接资源，返回 408 Request Timeout；(6) 文件传输异常 — 从 File Storage 读取文件失败或 SCP/rsync 传输中断时记录错误细节，标记当前部署步骤为 failed 并跳过后续步骤；(7) 资源限制 — 当前并发 SSH 会话数达到 max_concurrent_sessions 时对新请求返回 503 Service Unavailable，等待其他会话释放后再接受；(8) MQ 消费异常 — 消息格式解析失败时记录错误日志并将消息投递至死信队列（DLQ），不阻塞后续消息消费；步骤执行中抛出的未捕获异常由消费处理器统一捕获，记录完整错误栈并将该部署步骤标记为 failed。所有错误响应体统一格式为: { code: integer, error: string, detail: string }。关键操作（连接建立、命令执行、文件传输）均记录审计追踪日志。"
+  "error_handling": {
+    "strategy": "统一错误处理，所有接口返回标准JSON错误格式。网络层面的连接错误、认证错误和超时错误统一捕获并转换为结构化错误响应，避免暴露底层SSH库的异常细节。错误响应中的detail字段提供可读的问题描述，不包含敏感信息（如私钥内容、完整命令等）。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": 400,
+        "name": "参数校验错误",
+        "description": "请求body缺少必填字段或字段类型/格式不正确时触发。服务端在反序列化阶段进行校验，返回具体错误字段信息。"
+      },
+      {
+        "code": 401,
+        "name": "SSH认证错误",
+        "description": "SSH连接时用户名或私钥无效导致的认证失败。不区分用户名错误和私钥错误的具体原因以防止信息泄露。"
+      },
+      {
+        "code": 404,
+        "name": "文件未找到",
+        "description": "文件传输接口中，local_path指定的本地文件不存在时触发。仅适用于File Transfer接口。"
+      },
+      {
+        "code": 408,
+        "name": "超时错误",
+        "description": "SSH连接建立超时或命令执行超过指定的timeout时间。由服务端定时器检测并主动中断操作，避免长时间占用连接资源。"
+      },
+      {
+        "code": 500,
+        "name": "服务内部错误",
+        "description": "服务器内部发生未预期错误（如资源不足、SSH库调用异常等），无法完成请求处理。返回通用错误信息，不暴露内部实现细节。"
+      },
+      {
+        "code": 502,
+        "name": "远程操作失败",
+        "description": "与远程服务器建立连接失败（如主机不可达、连接被拒绝、DNS解析失败），或文件传输/命令执行过程中远程端返回非零退出码或发生传输中断。"
+      }
+    ]
+  }
 }
