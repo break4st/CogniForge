@@ -515,9 +515,11 @@ class DesignAgent(BaseAgent):
     # SAD component type → ModuleType mapping
     _SAD_TYPE_MAP: dict[str, str] = {
         "database": ModuleType.DATABASE,
+        "db": ModuleType.DATABASE,
         "cache": ModuleType.INFRASTRUCTURE,
         "mq": ModuleType.INFRASTRUCTURE,
         "infrastructure": ModuleType.INFRASTRUCTURE,
+        "file_storage": ModuleType.INFRASTRUCTURE,
         "service": ModuleType.SERVICE,
         "gateway": ModuleType.GATEWAY,
         "frontend": ModuleType.FRONTEND,

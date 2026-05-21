@@ -353,7 +353,7 @@ class Repl:
         """Return dependency layer for topological sort.
         Layer 0 (infra/db) → 1 (services) → 2 (gateway) → 3 (frontend)."""
         ctype = comp.get("type", "service")
-        if ctype in ("database", "cache", "mq", "infrastructure"):
+        if ctype in ("database", "db", "cache", "mq", "infrastructure", "file_storage"):
             return 0
         if ctype == "service":
             return 1
@@ -365,57 +365,97 @@ class Repl:
 
     _LAYER_LABELS = {0: "基础设施", 1: "业务服务", 2: "网关", 3: "前端"}
 
+    @staticmethod
+    def _print_lld_result(mod_name: str, result: dict) -> None:
+        """Print a single LLD generation result."""
+        status_icon = (
+            f"{C_GREEN}✓{C_RESET}"
+            if result.get("status") == "success"
+            else f"{C_RED}✗{C_RESET}"
+        )
+        click.echo(f"  [{status_icon}] {result.get('message', '')}")
+        for a in result.get("artifacts", []):
+            if a.endswith(".html"):
+                abs_path = (Path.cwd() / a).resolve()
+                link = f"\033]8;;file://{abs_path}\033\\{a}\033]8;;\033\\"
+                click.echo(f"       {link}")
+
     def _exec_lld_auto_all(self, modules: list[dict]) -> str:
-        """Generate LLD for all modules in dependency-layered order."""
-        # Topological sort: infra/db first, frontend last
+        """Generate LLD for all modules in dependency-layered order.
+        Modules within the same layer run in parallel."""
+        from collections import defaultdict
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         ordered = sorted(modules, key=self._lld_layer)
         total = len(ordered)
-        results = []
+
+        # Group by layer
+        layer_groups: dict[int, list[dict]] = defaultdict(list)
+        for comp in ordered:
+            layer_groups[self._lld_layer(comp)].append(comp)
+
+        results: list[dict] = []
         agent = self.agents.get("design")
-        current_layer = -1
+        counter = 0
 
-        for i, comp in enumerate(ordered, 1):
-            layer = self._lld_layer(comp)
-            if layer != current_layer:
-                current_layer = layer
-                label = self._LAYER_LABELS.get(layer, f"Layer {layer}")
-                click.echo(
-                    C_DIM + f"\n  ══ Layer {layer}: {label} ══" + C_RESET
-                )
-
-            mod_name = comp.get("name", "unknown")
+        for layer_num in sorted(layer_groups.keys()):
+            group = layer_groups[layer_num]
+            label = self._LAYER_LABELS.get(layer_num, f"Layer {layer_num}")
             click.echo(
-                f"\n  [{C_AMBER}{i}/{total}{C_RESET}] "
-                + LLD_PROGRESS.format(module=mod_name)
+                C_DIM + f"\n  ══ Layer {layer_num}: {label} "
+                f"({len(group)} 模块) ══" + C_RESET
             )
 
-            input_data = {
-                "module": mod_name,
-                "title": f"LLD - {mod_name}",
-                "overview": comp.get("description", ""),
-            }
+            if len(group) == 1:
+                # Single module — no parallelism overhead
+                comp = group[0]
+                counter += 1
+                mod_name = comp.get("name", "unknown")
+                click.echo(
+                    f"\n  [{C_AMBER}{counter}/{total}{C_RESET}] "
+                    + LLD_PROGRESS.format(module=mod_name)
+                )
+                input_data = {
+                    "module": mod_name,
+                    "title": f"LLD - {mod_name}",
+                    "overview": comp.get("description", ""),
+                }
+                spinner = Spinner(SPINNER_RUNNING.format(agent="design"))
+                spinner.start()
+                try:
+                    result = agent.run(input_data)
+                finally:
+                    spinner.stop()
+                _print_lld_result(mod_name, result)
+                results.append(result)
+            else:
+                # Parallel within layer
+                max_w = min(len(group), 4)
+                with ThreadPoolExecutor(max_workers=max_w) as executor:
+                    future_map: dict = {}
+                    for comp in group:
+                        counter += 1
+                        mod_name = comp.get("name", "unknown")
+                        click.echo(
+                            f"\n  [{C_AMBER}{counter}/{total}{C_RESET}] "
+                            + LLD_PROGRESS.format(module=mod_name)
+                        )
+                        input_data = {
+                            "module": mod_name,
+                            "title": f"LLD - {mod_name}",
+                            "overview": comp.get("description", ""),
+                        }
+                        future = executor.submit(agent.run, input_data)
+                        future_map[future] = mod_name
 
-            spinner = Spinner(SPINNER_RUNNING.format(agent="design"))
-            spinner.start()
-            try:
-                result = agent.run(input_data)
-            finally:
-                spinner.stop()
-
-            results.append(result)
-            status_icon = (
-                f"{C_GREEN}✓{C_RESET}"
-                if result.get("status") == "success"
-                else f"{C_RED}✗{C_RESET}"
-            )
-            click.echo(f"  [{status_icon}] {result.get('message', '')}")
-            for a in result.get("artifacts", []):
-                if a.endswith(".html"):
-                    abs_path = (Path.cwd() / a).resolve()
-                    link = (
-                        f"\033]8;;file://{abs_path}\033\\{a}\033]8;;\033\\"
-                    )
-                    click.echo(f"       {link}")
+                    for future in as_completed(future_map):
+                        mod_name = future_map[future]
+                        try:
+                            result = future.result()
+                        except Exception as e:
+                            result = {"status": "failed", "message": str(e)}
+                        _print_lld_result(mod_name, result)
+                        results.append(result)
 
         # Summary
         success_count = sum(1 for r in results if r.get("status") == "success")
