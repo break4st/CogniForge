@@ -1,0 +1,464 @@
+{
+  "meta": {
+    "doc_id": "lld-Key Management Service-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "Key Management Service",
+    "title": "Key Management Service 详细设计",
+    "author": "design_agent",
+    "created": "2026-05-21T17:00:00Z"
+  },
+  "overview": {
+    "description": "SSH 密钥安全管理的专用服务，负责 SSH 私钥的加密存储与解密使用、密钥的导入与验证、密钥访问权限控制、密钥轮换支持。接收来自 Environment Management Service 的密钥导入请求，对私钥进行 AES-256-GCM 加密后持久化至 Primary Database。为 SSH Execution Service 提供密钥解密接口以用于远程服务器认证。所有密钥操作同步记录审计日志至 Audit Service。",
+    "dependencies": [
+      "Primary Database",
+      "Audit Service"
+    ],
+    "tech_stack": [
+      "Python 3.11+",
+      "FastAPI",
+      "asyncio + uvicorn",
+      "PostgreSQL 15",
+      "Docker + Docker Compose"
+    ]
+  },
+  "data_models": [
+    {
+      "name": "ssh_keys",
+      "type": "reference",
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "ssh_keys"
+      },
+      "description": "SSH 密钥表，存储加密后的私钥材料及元数据。由 Primary Database 管理 DDL，Key Management Service 持有读写权限。private_key 字段始终以 AES-256-GCM 加密后存入。",
+      "fields": [
+        {"name": "key_id", "type": "UUID", "required": true, "description": "密钥唯一标识，主键"},
+        {"name": "name", "type": "VARCHAR(255)", "required": true, "description": "密钥名称，同一项目下唯一"},
+        {"name": "encrypted_private_key", "type": "TEXT", "required": true, "description": "AES-256-GCM 加密后的 PEM 私钥，Base64 编码存储"},
+        {"name": "encryption_iv", "type": "VARCHAR(64)", "required": true, "description": "AES-256-GCM 初始化向量，Base64 编码"},
+        {"name": "encryption_auth_tag", "type": "VARCHAR(64)", "required": true, "description": "AES-256-GCM 认证标签，Base64 编码"},
+        {"name": "fingerprint", "type": "VARCHAR(64)", "required": true, "description": "公钥 SHA256 指纹，格式 SHA256:base64hash"},
+        {"name": "project_id", "type": "UUID", "required": true, "description": "所属项目 ID，外键引用 projects 表"},
+        {"name": "passphrase_protected", "type": "BOOLEAN", "required": true, "description": "导入时是否提供口令保护"},
+        {"name": "status", "type": "VARCHAR(32)", "required": true, "description": "密钥状态枚举：active / rotated / revoked"},
+        {"name": "created_by", "type": "VARCHAR(255)", "required": true, "description": "创建者用户 ID"},
+        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "创建时间"},
+        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": false, "description": "最后更新时间，状态变更时刷新"},
+        {"name": "rotated_at", "type": "TIMESTAMPTZ", "required": false, "description": "轮换时间，rotated 状态时记录"},
+        {"name": "expires_at", "type": "TIMESTAMPTZ", "required": false, "description": "过期时间，过期后自动视为 revoked"}
+      ],
+      "indexes": [
+        {"name": "idx_ssh_keys_key_id", "unique": true, "columns": ["key_id"]},
+        {"name": "idx_ssh_keys_fingerprint", "unique": true, "columns": ["fingerprint"]},
+        {"name": "idx_ssh_keys_project_id", "unique": false, "columns": ["project_id"]},
+        {"name": "idx_ssh_keys_status", "unique": false, "columns": ["status"]}
+      ]
+    },
+    {
+      "name": "encryption_config",
+      "type": "config",
+      "ownership": "owned",
+      "description": "加密配置，服务启动时从环境变量加载，运行时只读。定义加密算法参数和密钥轮换策略。",
+      "fields": [
+        {"name": "master_key_id", "type": "string", "required": true, "description": "AES-256-GCM 主密钥标识，从环境变量 KMS_MASTER_KEY_ID 加载"},
+        {"name": "encryption_algorithm", "type": "string", "required": true, "description": "加密算法，固定为 AES-256-GCM"},
+        {"name": "key_rotation_days", "type": "int", "required": false, "description": "密钥自动轮换天数，默认 90，0 表示不自动轮换"},
+        {"name": "default_key_expiry_days", "type": "int", "required": false, "description": "密钥默认过期天数，默认 365，0 表示永不过期"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "ImportKey",
+      "method": "POST",
+      "endpoint": "/internal/keys/import",
+      "description": "内部接口，导入 SSH 私钥并加密存储。接收 PEM 格式私钥，验证密钥合法性，计算公钥指纹，使用 AES-256-GCM 加密后持久化至 Primary Database。同步记录审计事件。",
+      "parameters": [
+        {"name": "name", "type": "string", "description": "密钥名称，同一项目下唯一"},
+        {"name": "private_key", "type": "string (PEM format)", "description": "RSA/ECDSA/Ed25519 私钥，PEM 编码"},
+        {"name": "passphrase", "type": "string (optional)", "description": "私钥口令，如有则用于解密私钥后再导入"},
+        {"name": "project_id", "type": "string (uuid)", "description": "密钥所属项目 ID"}
+      ],
+      "response": {
+        "status": 201,
+        "body": {
+          "key_id": "string (uuid)",
+          "name": "string",
+          "fingerprint": "string (SHA256 fingerprint)",
+          "created_at": "string (datetime)"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数校验失败（name 为空、private_key 非合法 PEM 格式、passphrase 错误、project_id 非有效 UUID）"},
+        {"code": 401, "message": "未授权，请求未携带有效身份凭证"},
+        {"code": 409, "message": "密钥名称在同一项目下已存在，或指纹已存在（重复密钥导入）"},
+        {"code": 500, "message": "加密失败或数据库写入错误"}
+      ]
+    },
+    {
+      "name": "DecryptKey",
+      "method": "POST",
+      "endpoint": "/internal/keys/{key_id}/decrypt",
+      "description": "内部接口，解密并返回 SSH 私钥的 PEM 明文。用于 SSH Execution Service 在执行远程操作时获取密钥材料。返回的私钥仅在响应中传输一次，服务端不保留明文副本。同步记录审计事件。",
+      "parameters": [
+        {"name": "key_id", "type": "string (uuid)", "description": "密钥 ID（路径参数）"},
+        {"name": "passphrase", "type": "string (optional)", "description": "导入时设置的口令，passphrase_protected=true 时必填"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "key_id": "string (uuid)",
+          "private_key": "string (PEM, decrypted)"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数校验失败（key_id 格式不合法）"},
+        {"code": 401, "message": "未授权，请求未携带有效身份凭证"},
+        {"code": 403, "message": "密钥已被吊销，拒绝解密操作"},
+        {"code": 404, "message": "key_id 对应密钥不存在"},
+        {"code": 409, "message": "密钥受口令保护但未提供 passphrase，或提供的 passphrase 与存储的口令不匹配"}
+      ]
+    },
+    {
+      "name": "GetKeyMetadata",
+      "method": "GET",
+      "endpoint": "/internal/keys/{key_id}",
+      "description": "内部接口，获取单个 SSH 密钥的元数据。返回密钥基本信息（名称、指纹、状态、创建时间等），不返回私钥内容。",
+      "parameters": [
+        {"name": "key_id", "type": "string (uuid)", "description": "密钥 ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "key_id": "string (uuid)",
+          "name": "string",
+          "fingerprint": "string (SHA256 fingerprint)",
+          "project_id": "string (uuid)",
+          "status": "string (enum: active/rotated/revoked)",
+          "passphrase_protected": "boolean",
+          "created_by": "string (user_id)",
+          "created_at": "string (datetime)",
+          "updated_at": "string (datetime, nullable)",
+          "expires_at": "string (datetime, nullable)"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "key_id 格式不合法"},
+        {"code": 401, "message": "未授权，请求未携带有效身份凭证"},
+        {"code": 404, "message": "key_id 对应密钥不存在"}
+      ]
+    },
+    {
+      "name": "ListKeys",
+      "method": "GET",
+      "endpoint": "/internal/keys",
+      "description": "内部接口，分页查询指定项目下的 SSH 密钥列表。按创建时间降序排列，返回密钥摘要信息（不含私钥）。可选择性按状态过滤。",
+      "parameters": [
+        {"name": "project_id", "type": "string (uuid)", "description": "所属项目 ID（查询参数）"},
+        {"name": "status", "type": "string (optional)", "description": "状态过滤：active / rotated / revoked，不传则返回全部"},
+        {"name": "page", "type": "int (default 1)", "description": "当前页码，最小值 1"},
+        {"name": "page_size", "type": "int (default 20)", "description": "每页条数，1-100"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "items": "array of {key_id: string (uuid), name: string, fingerprint: string (SHA256 fingerprint), status: string (enum: active/rotated/revoked), passphrase_protected: boolean, created_by: string (user_id), created_at: string (datetime)}",
+          "total": "int",
+          "page": "int",
+          "page_size": "int"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "查询参数校验失败（project_id 格式不合法、page/page_size 超出范围）"},
+        {"code": 401, "message": "未授权，请求未携带有效身份凭证"}
+      ]
+    },
+    {
+      "name": "RevokeKey",
+      "method": "DELETE",
+      "endpoint": "/internal/keys/{key_id}",
+      "description": "内部接口，吊销指定 SSH 密钥。将密钥状态标记为 revoked，吊销后密钥不可再用于解密操作。已吊销的密钥元数据保留在数据库中。同步记录审计事件。",
+      "parameters": [
+        {"name": "key_id", "type": "string (uuid)", "description": "密钥 ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "key_id": "string (uuid)",
+          "status": "string (revoked)",
+          "revoked_at": "string (datetime)"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "key_id 格式不合法"},
+        {"code": 401, "message": "未授权，请求未携带有效身份凭证"},
+        {"code": 404, "message": "key_id 对应密钥不存在"},
+        {"code": 409, "message": "密钥已处于 revoked 状态，无需重复吊销"}
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "Key Management Service 对所有请求参数进行前置校验，校验失败返回 400。密钥存在性校验在每次数据操作前执行，不存在返回 404。业务逻辑冲突（名称重复、指纹重复、状态冲突）返回 409。密钥被吊销后拒绝解密操作返回 403。加密/解密操作失败返回 500。所有未预期异常由全局异常处理器捕获，返回 500 并记录错误日志，同时向 Audit Service 发送失败审计事件。",
+    "response_format": {
+      "body": {
+        "code": "integer (HTTP 状态码)",
+        "error": "string (错误分类标识)",
+        "detail": "string (详细错误信息)"
+      }
+    },
+    "categories": [
+      {"code": 400, "name": "参数校验错误", "description": "请求体 JSON 解析失败、必填字段缺失、字段值不合法（key_id 格式错误、PEM 格式解析失败、passphrase 错误、page/page_size 超出范围）"},
+      {"code": 403, "name": "密钥操作受限", "description": "密钥状态为 revoked 时尝试解密、密钥已过期等被业务规则禁止的操作"},
+      {"code": 404, "name": "密钥不存在", "description": "指定 key_id 在 ssh_keys 表中不存在"},
+      {"code": 409, "name": "业务冲突", "description": "密钥名称在同一项目下重复、指纹重复（重复导入相同密钥）、密钥已处于目标状态无需变更"},
+      {"code": 500, "name": "服务内部错误", "description": "AES-256-GCM 加密/解密失败、数据库连接失败、审计服务调用失败（审计失败不影响主流程，仅记录警告）、未预期的运行时异常"}
+    ]
+  },
+  "domain_objects": [
+    {
+      "name": "SshKey",
+      "object_type": "entity",
+      "description": "SSH 密钥实体，对应 ssh_keys 表记录。封装密钥的完整生命周期数据，包含加密后的私钥材料和元数据。私钥始终以 AES-256-GCM 加密形式存在，仅解密时临时暴露明文。",
+      "attributes": [
+        {"name": "key_id", "type": "UUID", "required": true, "source": "db", "description": "密钥唯一标识，系统自动生成"},
+        {"name": "name", "type": "String", "required": true, "source": "input", "description": "密钥名称，同一项目下唯一，1-100 字符"},
+        {"name": "encrypted_private_key", "type": "String", "required": true, "source": "derived", "description": "AES-256-GCM 加密后的私钥，Base64 编码"},
+        {"name": "encryption_iv", "type": "String", "required": true, "source": "derived", "description": "AES-256-GCM 加密时使用的初始向量，Base64 编码"},
+        {"name": "encryption_auth_tag", "type": "String", "required": true, "source": "derived", "description": "AES-256-GCM 认证标签，Base64 编码"},
+        {"name": "fingerprint", "type": "String", "required": true, "source": "computed", "description": "公钥 SHA256 指纹，格式 SHA256:base64hash，导入时从私钥提取公钥计算"},
+        {"name": "project_id", "type": "UUID", "required": true, "source": "input", "description": "所属项目 ID"},
+        {"name": "passphrase_protected", "type": "Boolean", "required": true, "source": "derived", "description": "导入时是否提供 passphrase，影响解密时的额外校验"},
+        {"name": "status", "type": "KeyStatus", "required": true, "source": "db", "description": "密钥生命周期状态：active / rotated / revoked"},
+        {"name": "created_by", "type": "String", "required": true, "source": "input", "description": "创建者用户 ID，从调用上下文提取"},
+        {"name": "created_at", "type": "DateTime", "required": true, "source": "db", "description": "创建时间，数据库自动生成"},
+        {"name": "updated_at", "type": "DateTime", "required": false, "source": "db", "description": "最后更新时间，状态变更时数据库自动更新"},
+        {"name": "rotated_at", "type": "DateTime", "required": false, "source": "db", "description": "轮换时间，执行 key rotation 时记录"},
+        {"name": "expires_at", "type": "DateTime", "required": false, "source": "input", "description": "过期时间，超过此日期的密钥自动视为 revoked"}
+      ]
+    },
+    {
+      "name": "KeyImportRequest",
+      "object_type": "dto",
+      "description": "密钥导入请求 DTO。由 Environment Management Service 通过 POST /internal/keys/import 传入。",
+      "maps_to_entity": "SshKey",
+      "attributes": [
+        {"name": "name", "type": "String", "required": true, "source": "input", "description": "密钥名称，同一项目下唯一，1-100 字符"},
+        {"name": "private_key", "type": "String", "required": true, "source": "input", "description": "PEM 格式 SSH 私钥内容，支持 RSA/ECDSA/Ed25519 算法"},
+        {"name": "passphrase", "type": "String", "required": false, "source": "input", "description": "私钥口令，如有则先使用口令解密私钥后再处理"},
+        {"name": "project_id", "type": "UUID", "required": true, "source": "input", "description": "密钥所属项目 ID"}
+      ]
+    },
+    {
+      "name": "KeyImportResponse",
+      "object_type": "dto",
+      "description": "密钥导入响应 DTO。根据 SAD 契约，字段名与类型与 POST /internal/keys/import 响应体严格一致。",
+      "maps_to_entity": "SshKey",
+      "attributes": [
+        {"name": "key_id", "type": "UUID", "required": true, "source": "db", "description": "系统生成的密钥唯一标识"},
+        {"name": "name", "type": "String", "required": true, "source": "input", "description": "密钥名称，与请求一致"},
+        {"name": "fingerprint", "type": "String", "required": true, "source": "computed", "description": "公钥 SHA256 指纹，格式 SHA256:base64hash"},
+        {"name": "created_at", "type": "DateTime", "required": true, "source": "db", "description": "密钥创建时间"}
+      ]
+    },
+    {
+      "name": "DecryptRequest",
+      "object_type": "dto",
+      "description": "密钥解密请求 DTO。由 SSH Execution Service 通过 POST /internal/keys/{key_id}/decrypt 传入。",
+      "maps_to_entity": null,
+      "attributes": [
+        {"name": "key_id", "type": "UUID", "required": true, "source": "input", "description": "密钥 ID，路径参数"},
+        {"name": "passphrase", "type": "String", "required": false, "source": "input", "description": "导入时设置的口令，当密钥 passphrase_protected=true 时必填"}
+      ]
+    },
+    {
+      "name": "DecryptResponse",
+      "object_type": "dto",
+      "description": "密钥解密响应 DTO。返回解密后的 PEM 私钥明文，仅通过 HTTPS 传输一次，服务端不持久化或缓存。",
+      "maps_to_entity": "SshKey",
+      "attributes": [
+        {"name": "key_id", "type": "UUID", "required": true, "source": "db", "description": "密钥 ID"},
+        {"name": "private_key", "type": "String", "required": true, "source": "derived", "description": "AES-256-GCM 解密后的 PEM 私钥明文"}
+      ]
+    },
+    {
+      "name": "KeyMetadataResponse",
+      "object_type": "dto",
+      "description": "密钥元数据响应 DTO。返回密钥的基本信息，不含私钥内容。用于密钥管理场景的展示和查询。",
+      "maps_to_entity": "SshKey",
+      "attributes": [
+        {"name": "key_id", "type": "UUID", "required": true, "source": "db", "description": "密钥唯一标识"},
+        {"name": "name", "type": "String", "required": true, "source": "db", "description": "密钥名称"},
+        {"name": "fingerprint", "type": "String", "required": true, "source": "db", "description": "公钥 SHA256 指纹"},
+        {"name": "project_id", "type": "UUID", "required": true, "source": "db", "description": "所属项目 ID"},
+        {"name": "status", "type": "String", "required": true, "source": "db", "description": "密钥状态：active / rotated / revoked"},
+        {"name": "passphrase_protected", "type": "Boolean", "required": true, "source": "db", "description": "是否受口令保护"},
+        {"name": "created_by", "type": "String", "required": true, "source": "db", "description": "创建者用户 ID"},
+        {"name": "created_at", "type": "DateTime", "required": true, "source": "db", "description": "创建时间"},
+        {"name": "updated_at", "type": "DateTime", "required": false, "source": "db", "description": "最后更新时间"},
+        {"name": "expires_at", "type": "DateTime", "required": false, "source": "db", "description": "过期时间"}
+      ]
+    },
+    {
+      "name": "KeyRevokeResponse",
+      "object_type": "dto",
+      "description": "密钥吊销响应 DTO。返回吊销操作的确认信息。",
+      "maps_to_entity": "SshKey",
+      "attributes": [
+        {"name": "key_id", "type": "UUID", "required": true, "source": "db", "description": "密钥 ID"},
+        {"name": "status", "type": "String", "required": true, "source": "db", "description": "吊销后状态，固定值 revoked"},
+        {"name": "revoked_at", "type": "DateTime", "required": true, "source": "db", "description": "吊销时间"}
+      ]
+    },
+    {
+      "name": "Fingerprint",
+      "object_type": "value_object",
+      "description": "SSH 公钥指纹的不可变值对象。封装 SHA256 指纹的计算和表示。创建时从 PEM 私钥中提取公钥并计算 SHA256 哈希，格式化为 SHA256:base64hash 字符串。创建后不可修改，相等性基于字符串值比较。",
+      "attributes": [
+        {"name": "value", "type": "String", "required": true, "source": "computed", "description": "指纹字符串，格式 SHA256:base64hash，从私钥计算获得"}
+      ]
+    },
+    {
+      "name": "EncryptedPayload",
+      "object_type": "value_object",
+      "description": "AES-256-GCM 加密载荷的不可变值对象。封装加密后的密文、初始向量和认证标签。三个元素一起构成完整的加密记录，缺一不可用于解密。",
+      "attributes": [
+        {"name": "ciphertext", "type": "String (Base64)", "required": true, "source": "computed", "description": "AES-256-GCM 加密后的密文，Base64 编码"},
+        {"name": "iv", "type": "String (Base64)", "required": true, "source": "computed", "description": "加密时使用的 12 字节随机初始向量，Base64 编码"},
+        {"name": "auth_tag", "type": "String (Base64)", "required": true, "source": "computed", "description": "AES-256-GCM 认证标签，Base64 编码"}
+      ]
+    },
+    {
+      "name": "KeyStatus",
+      "object_type": "enum",
+      "description": "SSH 密钥生命周期状态枚举。定义密钥从创建到吊销的合法状态。",
+      "values": ["active", "rotated", "revoked"]
+    },
+    {
+      "name": "AuditEvent",
+      "object_type": "dto",
+      "description": "审计日志事件 DTO，用于调用 Audit Service 的 POST /internal/audit/log 接口时构建请求体。",
+      "maps_to_entity": null,
+      "attributes": [
+        {"name": "action", "type": "String", "required": true, "source": "derived", "description": "操作类型标识，如 key.import / key.decrypt / key.revoke / key.rotate"},
+        {"name": "actor", "type": "String", "required": true, "source": "derived", "description": "操作者用户 ID，从调用上下文提取"},
+        {"name": "resource_type", "type": "String", "required": true, "source": "derived", "description": "资源类型，固定值 ssh_key"},
+        {"name": "resource_id", "type": "UUID", "required": true, "source": "derived", "description": "被操作的密钥 ID"},
+        {"name": "detail", "type": "Dict", "required": false, "source": "derived", "description": "操作详情，包含密钥名称、项目 ID、操作结果等信息"},
+        {"name": "result", "type": "String (enum: success/failure)", "required": true, "source": "derived", "description": "操作结果"}
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "name": "KeyManagementService",
+      "description": "密钥管理核心服务。封装 SSH 密钥的完整生命周期管理，包括导入加密存储、解密使用、元数据查询、吊销和轮换。协调 AES-256-GCM 加密操作和 Primary Database 持久化。所有关键操作同步记录审计事件到 Audit Service。",
+      "methods": [
+        {
+          "name": "importKey",
+          "signature": "(request: KeyImportRequest) -> KeyImportResponse",
+          "precondition": "request.name 非空且长度 ≤ 100；request.private_key 为合法 PEM 格式 SSH 私钥（支持 RSA/ECDSA/Ed25519）；request.project_id 为有效 UUID；同一项目下 name 唯一；fingerprint 全局唯一",
+          "postcondition": "私钥已通过 AES-256-GCM 加密后写入 ssh_keys 表，状态为 active。返回 KeyImportResponse（含 key_id/name/fingerprint/created_at）。同步发送审计事件到 Audit Service",
+          "description": "导入 SSH 私钥。解析并验证 PEM 格式，提取公钥计算 SHA256 指纹，使用 AES-256-GCM 加密私钥主体后持久化。如果提供了 passphrase，先使用 passphrase 解密私钥再处理。",
+          "exceptions": [
+            {"name": "ValidationException", "trigger": "name 为空或超长、private_key 非合法 PEM 格式、project_id 非 UUID 格式", "http_status": 400},
+            {"name": "DuplicateKeyException", "trigger": "同一项目下 name 已存在，或 fingerprint 在全局已存在（重复导入相同密钥）", "http_status": 409},
+            {"name": "EncryptionException", "trigger": "AES-256-GCM 加密操作失败（主密钥不可用、加密库异常）", "http_status": 500}
+          ]
+        },
+        {
+          "name": "decryptKey",
+          "signature": "(key_id: UUID, passphrase: Optional[str]) -> DecryptResponse",
+          "precondition": "key_id 为有效 UUID；key_id 对应密钥在 ssh_keys 表中存在且状态为 active 或 rotated",
+          "postcondition": "从 ssh_keys 表读取加密记录，使用 AES-256-GCM 解密并返回 DecryptResponse（含 key_id 和 private_key 明文）。同步发送审计事件到 Audit Service。如密钥 passphrase_protected=true，则校验传入的 passphrase 后再解密",
+          "description": "解密 SSH 私钥。按 key_id 查询加密记录，使用主密钥和存储的 IV/auth_tag 执行 AES-256-GCM 解密，返回 PEM 明文私钥。用于 SSH Execution Service 的远程认证场景。",
+          "exceptions": [
+            {"name": "KeyNotFoundException", "trigger": "key_id 对应记录在 ssh_keys 表中不存在", "http_status": 404},
+            {"name": "KeyRevokedException", "trigger": "密钥状态为 revoked，拒绝解密", "http_status": 403},
+            {"name": "PassphraseRequiredException", "trigger": "密钥 passphrase_protected=true 但未提供 passphrase 参数", "http_status": 409},
+            {"name": "PassphraseMismatchException", "trigger": "提供的 passphrase 与导入时设置的不匹配", "http_status": 409},
+            {"name": "DecryptionException", "trigger": "AES-256-GCM 解密失败（密钥损坏、认证标签校验失败）", "http_status": 500}
+          ]
+        },
+        {
+          "name": "getKeyMetadata",
+          "signature": "(key_id: UUID) -> KeyMetadataResponse",
+          "precondition": "key_id 为有效 UUID 格式",
+          "postcondition": "返回 KeyMetadataResponse 包含密钥全部元数据字段，不含私钥内容。密钥无论状态（active/rotated/revoked）均可查询",
+          "description": "查询单个密钥的元数据。返回密钥的所有非敏感属性，用于密钥管理界面的详情展示和跨服务校验。",
+          "exceptions": [
+            {"name": "KeyNotFoundException", "trigger": "key_id 对应记录不存在", "http_status": 404}
+          ]
+        },
+        {
+          "name": "listKeys",
+          "signature": "(project_id: UUID, status: Optional[str], page: int, page_size: int) -> PaginatedResult",
+          "precondition": "project_id 为有效 UUID；page ≥ 1；1 ≤ page_size ≤ 100；status 如果提供则必须是 active/rotated/revoked 之一",
+          "postcondition": "按 project_id 过滤分页返回密钥摘要列表，按 created_at 降序排列。items 为空数组时不报错",
+          "description": "分页查询指定项目下的 SSH 密钥列表。支持按状态过滤，返回密钥摘要（不含私钥）。用于密钥管理面板的列表展示。",
+          "exceptions": [
+            {"name": "ValidationException", "trigger": "project_id 格式不合法、page/page_size 超出范围、status 值不在枚举中", "http_status": 400}
+          ]
+        },
+        {
+          "name": "revokeKey",
+          "signature": "(key_id: UUID) -> KeyRevokeResponse",
+          "precondition": "key_id 对应密钥存在且状态不为 revoked（防止重复吊销）",
+          "postcondition": "ssh_keys 表中对应记录的 status 更新为 revoked，updated_at 和 revoked_at 刷新。吊销后密钥不可再用于解密操作。同步发送审计事件到 Audit Service",
+          "description": "吊销 SSH 密钥。将密钥状态标记为 revoked，使其不可再用于解密。已吊销的密钥元数据保留在数据库中供审计追踪。",
+          "exceptions": [
+            {"name": "KeyNotFoundException", "trigger": "key_id 对应记录不存在", "http_status": 404},
+            {"name": "KeyAlreadyRevokedException", "trigger": "密钥已处于 revoked 状态，无需重复吊销", "http_status": 409}
+          ]
+        }
+      ],
+      "repository_dependencies": [
+        "findByKeyId(key_id: UUID) -> SshKey | None — 按 key_id 查询完整 SshKey 实体（含加密字段）",
+        "findByNameAndProjectId(name: str, project_id: UUID) -> SshKey | None — 按名称+项目 ID 查询（用于名称唯一性校验）",
+        "findByFingerprint(fingerprint: str) -> SshKey | None — 按指纹查询（用于防止重复密钥导入）",
+        "findByProjectId(project_id: UUID, status: str | None, page: int, page_size: int) -> Tuple[List[SshKey], int] — 按项目 ID 分页查询，支持状态过滤，返回记录列表和总数",
+        "save(key: SshKey) -> SshKey — 新增密钥记录（INSERT with RETURNING）",
+        "updateStatus(key_id: UUID, status: str, rotated_at: datetime | None) -> None — 更新密钥状态字段（UPDATE SET status, updated_at, rotated_at WHERE key_id = ...）",
+        "auditLog(action: str, actor: str, resource_type: str, resource_id: UUID, detail: dict, result: str) -> None — 调用 Audit Service 的 POST /internal/audit/log 记录审计日志（fire-and-forget）"
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "同一项目下密钥名称唯一，比较不区分大小写",
+      "密钥 fingerprint（SHA256 指纹）全局唯一，不可重复导入相同的 SSH 密钥对",
+      "SSH 私钥在持久化时始终使用 AES-256-GCM 加密，不得以明文形式存储在数据库中",
+      "解密后的私钥明文仅在 HTTP 响应中传输，服务端不得缓存、持久化或记录日志中的私钥内容",
+      "私钥解密日志中不得包含私钥内容，仅记录 key_id、操作者和操作结果",
+      "状态为 revoked 的密钥不可被解密使用",
+      "密钥名称长度 1-100 字符，不可为纯空白字符串",
+      "passphrase_protected=true 的密钥在解密时必须校验 passphrase，不匹配则拒绝解密"
+    ],
+    "state_machines": [
+      {
+        "entity": "SshKey",
+        "states": ["active", "rotated", "revoked"],
+        "transitions": [
+          {"from": "active", "to": "rotated", "trigger": "密钥轮换（新密钥替换旧密钥，旧密钥标记为 rotated）", "actor": "系统/管理员"},
+          {"from": "active", "to": "revoked", "trigger": "密钥吊销或过期（revokeKey 主动吊销 / expires_at 过期自动触发）", "actor": "管理员/系统定时任务"},
+          {"from": "rotated", "to": "revoked", "trigger": "密钥吊销（revokeKey）", "actor": "管理员"}
+        ],
+        "irreversible_rules": [
+          "密钥一旦进入 revoked 状态不可逆转（不可重新激活或恢复为 rotated）",
+          "密钥从 active 到 rotated 的转换不可逆（不可从 rotated 回到 active）",
+          "密钥过期后自动视为 revoked，由定时任务扫描 expires_at 字段执行状态变更",
+          "revoked 或 rotated 状态的密钥数据保留在数据库中不删除，供审计追踪和历史部署记录引用"
+        ],
+        "concurrency": "使用 PostgreSQL 行级锁（SELECT FOR UPDATE）保护状态变更操作。状态更新使用 WHERE key_id = ? AND status = ? 条件更新确保原子性，若影响行数为 0 则说明状态已被其他事务先行变更，返回冲突错误。同一密钥不允许并行状态变更。"
+      }
+    ],
+    "cross_service_rules": [
+      "密钥导入和吊销后通过 Audit Service 的 POST /internal/audit/log 接口同步记录审计日志。审计调用失败不影响主流程（fire-and-forget，本地记录 WARN 日志）",
+      "SSH Execution Service 调用 POST /internal/keys/{key_id}/decrypt 获取解密密钥后，私钥仅在调用方内存中使用，使用后应立即清除，不得持久化到磁盘",
+      "Environment Management Service 调用 POST /internal/keys/import 导入密钥时需确保 project_id 对应的项目在 Project Management Service 中存在且为 active 状态（由 Environment Management Service 自行校验）",
+      "密钥轮换操作涉及本服务和 Environment Management Service 协调：本服务将旧密钥标记为 rotated 并创建新密钥，Environment Management Service 需在环境配置中更新引用的 key_id",
+      "所有涉及密钥的跨服务操作（导入、解密、吊销）均需通过本服务的内部接口进行，其他服务不得直接操作 ssh_keys 数据库表",
+      "主加密密钥（KMS master key）通过环境变量 KMS_MASTER_KEY_ID 注入，不允许硬编码在代码或配置文件中"
+    ]
+  }
+}
