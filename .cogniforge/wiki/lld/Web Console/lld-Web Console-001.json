@@ -6,64 +6,44 @@
     "module": "Web Console",
     "title": "LLD - Web Console",
     "author": "design_agent",
-    "created": "2026-05-21 09:41"
+    "created": "2026-05-21 10:10"
   },
   "overview": {
-    "description": "基于Vue 3和Element Plus的Web管理界面，提供项目管理、环境配置、密钥管理和一键部署等交互功能",
+    "description": "单页应用前端，提供项目、环境、密钥管理和部署操作的可视化界面。基于 React 18 + Ant Design 5 构建，通过 Pinia 管理全局状态，通过 API Gateway 与后端服务通信，使用 WebSocket 实时接收部署日志推送。",
     "dependencies": [
       "API Gateway",
       "Deployment Orchestrator"
     ],
     "tech_stack": [
-      "Vue 3",
-      "Element Plus",
-      "Vite"
+      "React 18",
+      "Ant Design 5",
+      "WebSocket (FastAPI WebSocket)"
     ]
   },
   "data_models": [
     {
-      "name": "authStore",
-      "type": "store",
-      "ownership": "owned",
-      "description": "用户认证状态管理，维护JWT Token与登录状态",
-      "fields": [
-        {
-          "name": "token",
-          "type": "string",
-          "required": false,
-          "description": "JWT认证令牌，为空表示未登录"
-        },
-        {
-          "name": "isAuthenticated",
-          "type": "boolean",
-          "required": true,
-          "description": "是否已通过认证"
-        },
-        {
-          "name": "user",
-          "type": "object|null",
-          "required": false,
-          "description": "当前登录用户信息（用户名、角色等）"
-        }
-      ]
-    },
-    {
       "name": "projectStore",
       "type": "store",
       "ownership": "owned",
-      "description": "项目管理状态，维护项目列表和当前选中项目",
+      "description": "Pinia store，管理项目列表和当前选中项目状态，数据来自 API Gateway 转发的 Project Management Service 接口",
       "fields": [
         {
           "name": "projects",
-          "type": "array[object]",
+          "type": "Array<{id: string, name: string, description?: string, created_at: string}>",
           "required": true,
-          "description": "项目列表，每项包含 id、name、description、created_at"
+          "description": "项目列表，由 ListProjects 接口填充"
+        },
+        {
+          "name": "total",
+          "type": "number",
+          "required": true,
+          "description": "项目总数，用于分页"
         },
         {
           "name": "currentProject",
-          "type": "object|null",
+          "type": "{id: string, name: string, description?: string, created_at: string} | null",
           "required": false,
-          "description": "当前选中的项目对象"
+          "description": "当前选中的项目，用于详情页和状态缓存"
         },
         {
           "name": "loading",
@@ -72,10 +52,16 @@
           "description": "列表加载状态"
         },
         {
-          "name": "pagination",
-          "type": "object",
+          "name": "page",
+          "type": "number",
           "required": true,
-          "description": "分页信息：{ page, page_size, total }"
+          "description": "当前分页页码"
+        },
+        {
+          "name": "pageSize",
+          "type": "number",
+          "required": true,
+          "description": "每页条数"
         }
       ]
     },
@@ -83,57 +69,57 @@
       "name": "environmentStore",
       "type": "store",
       "ownership": "owned",
-      "description": "环境管理状态，维护当前项目的部署环境列表",
+      "description": "Pinia store，管理当前项目下的部署环境列表和配置状态",
       "fields": [
         {
           "name": "environments",
-          "type": "array[object]",
+          "type": "Array<{id: string, name: string, label: string, host: string, port: number, username: string, deploy_path: string, created_at: string}>",
           "required": true,
-          "description": "环境列表，每项包含 id, project_id, name, type (test|gray|production), host, port, username"
+          "description": "当前项目的环境列表"
         },
         {
           "name": "currentEnvironment",
-          "type": "object|null",
+          "type": "{id: string, name: string, label: string, host: string, port: number, username: string, deploy_path: string, created_at: string} | null",
           "required": false,
-          "description": "当前选中的环境对象"
+          "description": "当前选中的环境详情"
         },
         {
           "name": "loading",
           "type": "boolean",
           "required": true,
-          "description": "列表加载状态"
+          "description": "加载状态"
+        },
+        {
+          "name": "connectionTestResult",
+          "type": "{success: boolean, message: string} | null",
+          "required": false,
+          "description": "SSH 连接测试结果，由 TestConnection 接口返回"
         }
       ]
     },
     {
-      "name": "sshKeyStore",
+      "name": "keyStore",
       "type": "store",
       "ownership": "owned",
-      "description": "SSH密钥管理状态，维护密钥列表和连通性测试结果",
+      "description": "Pinia store，管理 SSH 密钥列表和上传状态",
       "fields": [
         {
           "name": "keys",
-          "type": "array[object]",
+          "type": "Array<{id: string, name: string, fingerprint: string, created_at: string}>",
           "required": true,
-          "description": "密钥列表，每项包含 id, env_id, key_type, fingerprint, created_at"
-        },
-        {
-          "name": "testResult",
-          "type": "object|null",
-          "required": false,
-          "description": "连通性测试结果：{ success, message, latency_ms, server_info }"
-        },
-        {
-          "name": "testing",
-          "type": "boolean",
-          "required": true,
-          "description": "是否正在执行连通性测试"
+          "description": "已上传的 SSH 密钥列表"
         },
         {
           "name": "loading",
           "type": "boolean",
           "required": true,
-          "description": "密钥列表加载状态"
+          "description": "加载状态"
+        },
+        {
+          "name": "uploading",
+          "type": "boolean",
+          "required": true,
+          "description": "密钥上传中状态"
         }
       ]
     },
@@ -141,69 +127,51 @@
       "name": "deploymentStore",
       "type": "store",
       "ownership": "owned",
-      "description": "部署任务状态管理，维护部署列表、当前部署详情及WebSocket实时连接",
+      "description": "Pinia store，管理部署记录列表和当前部署详情，对应 GetDeploymentStatus 契约",
       "fields": [
         {
-          "name": "deployments",
-          "type": "array[object]",
-          "required": true,
-          "description": "部署历史列表，每项包含 id, project_id, environment_id, version, status, progress, created_at"
-        },
-        {
           "name": "currentDeployment",
-          "type": "object|null",
+          "type": "{id: string, project_id: string, environment_id: string, version: string, status: string, steps: Array<object>, created_at: string, updated_at: string} | null",
           "required": false,
-          "description": "当前查看的部署详情：{ id, project_id, environment_id, version, status, progress, logs, started_at, finished_at }"
+          "description": "当前正在查看的部署详情，由 GetDeploymentStatus 接口填充"
         },
         {
-          "name": "wsConnected",
-          "type": "boolean",
+          "name": "deploymentHistory",
+          "type": "Array<{id: string, project_id: string, environment_id: string, version: string, status: string, created_at: string}>",
           "required": true,
-          "description": "WebSocket连接状态"
-        },
-        {
-          "name": "progressMessages",
-          "type": "array[object]",
-          "required": true,
-          "description": "WebSocket接收的消息队列：{ message_type: progress|log|complete|error, data: object }"
+          "description": "部署历史记录列表"
         },
         {
           "name": "loading",
           "type": "boolean",
           "required": true,
-          "description": "数据加载状态"
+          "description": "加载状态"
         }
       ]
     },
     {
-      "name": "auditLogStore",
+      "name": "deploymentLogStore",
       "type": "store",
       "ownership": "owned",
-      "description": "审计日志查询状态，维护日志列表、筛选条件和分页信息",
+      "description": "Pinia store，管理 WebSocket 实时部署日志流状态，对应 DeploymentLogStream 契约",
       "fields": [
         {
           "name": "logs",
-          "type": "array[object]",
+          "type": "Array<{type: string, data: string, timestamp: string}>",
           "required": true,
-          "description": "审计日志列表"
+          "description": "实时日志条目列表，由 WebSocket 消息持续追加"
         },
         {
-          "name": "filters",
-          "type": "object",
-          "required": true,
-          "description": "查询筛选条件：{ start_time, end_time, user, operation_type, keyword }"
-        },
-        {
-          "name": "pagination",
-          "type": "object",
-          "required": true,
-          "description": "分页信息：{ page, page_size, total }"
-        },
-        {
-          "name": "loading",
+          "name": "connected",
           "type": "boolean",
           "required": true,
-          "description": "查询加载状态"
+          "description": "WebSocket 连接状态"
+        },
+        {
+          "name": "deploymentId",
+          "type": "string | null",
+          "required": false,
+          "description": "当前 WebSocket 订阅的部署 ID"
         }
       ]
     }
@@ -212,103 +180,54 @@
     {
       "name": "ProjectListPage",
       "method": "frontend",
-      "endpoint": "/projects",
-      "description": "项目管理首页，展示项目列表，支持创建新项目和切换项目入口。调用 GET /api/projects 获取列表，调用 POST /api/projects 创建新项目",
-      "parameters": [
-        {
-          "name": "page",
-          "type": "integer",
-          "description": "页码，可选，默认1（query参数）"
-        }
-      ],
+      "endpoint": "/",
+      "description": "项目列表首页。加载时调用 ListProjects 获取全量项目列表；顶部提供「新建项目」按钮调用 CreateProject；每个项目卡片提供删除操作调用 DeleteProject",
+      "parameters": [],
       "response": {
         "status": 200,
         "body": {
-          "projects": "array[object]（项目列表）",
-          "loading": "boolean"
+          "projects": "array<Project>",
+          "total": "integer"
         }
       },
       "error_codes": [
         {
-          "code": 401,
-          "message": "JWT Token过期或无效，跳转登录页"
+          "code": 400,
+          "message": "请求参数错误，分页参数不合法"
         },
         {
           "code": 500,
-          "message": "服务端错误，显示错误提示"
-        },
-        {
-          "code": "NETWORK_ERROR",
-          "message": "网络异常，显示重试提示"
+          "message": "服务端错误，无法获取项目列表"
         }
       ]
     },
     {
       "name": "ProjectDetailPage",
       "method": "frontend",
-      "endpoint": "/projects/:id",
-      "description": "项目详情与编辑页面，展示项目基本信息，支持修改项目名称/描述和删除项目。调用 GET /api/projects/{id} 获取详情，调用 PUT /api/projects/{id} 更新项目，调用 DELETE /api/projects/{id} 删除项目",
-      "parameters": [
-        {
-          "name": "id",
-          "type": "integer",
-          "description": "项目ID（路由参数）"
-        }
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "project": "object（项目详细信息）",
-          "loading": "boolean"
-        }
-      },
-      "error_codes": [
-        {
-          "code": 404,
-          "message": "项目不存在，显示404提示"
-        },
-        {
-          "code": 401,
-          "message": "JWT Token过期，跳转登录页"
-        },
-        {
-          "code": 500,
-          "message": "服务端错误，显示错误提示"
-        }
-      ]
-    },
-    {
-      "name": "EnvironmentListPage",
-      "method": "frontend",
-      "endpoint": "/projects/:projectId/environments",
-      "description": "部署环境管理页面，展示指定项目下的环境列表，支持创建、编辑和删除部署环境。调用 GET /api/projects/{projectId}/environments 获取环境列表，调用 POST /api/projects/{projectId}/environments 创建新环境",
+      "endpoint": "/projects/:projectId",
+      "description": "项目详情页，展示项目基本信息以及该项目的所有部署环境列表。支持创建新环境（CreateEnvironment）和删除环境操作；每个环境项提供连接测试按钮（TestConnection）。通过 projectStore.currentProject 和 environmentStore.environments 渲染页面",
       "parameters": [
         {
           "name": "projectId",
-          "type": "integer",
-          "description": "所属项目ID（路由参数）"
-        },
-        {
-          "name": "page",
-          "type": "integer",
-          "description": "页码，可选（query参数）"
+          "type": "string",
+          "description": "项目 ID，路由路径参数"
         }
       ],
       "response": {
         "status": 200,
         "body": {
-          "environments": "array[object]（环境列表）",
-          "loading": "boolean"
+          "project": "Project",
+          "environments": "array<Environment>"
         }
       },
       "error_codes": [
         {
           "code": 404,
-          "message": "项目不存在，返回项目列表页"
+          "message": "项目不存在或已被删除"
         },
         {
-          "code": 401,
-          "message": "JWT Token过期，跳转登录页"
+          "code": 500,
+          "message": "服务端错误，无法加载项目详情"
         }
       ]
     },
@@ -316,197 +235,138 @@
       "name": "EnvironmentDetailPage",
       "method": "frontend",
       "endpoint": "/projects/:projectId/environments/:envId",
-      "description": "环境详情与编辑页面，展示环境连接参数，支持修改配置和删除环境。调用 PUT /api/projects/{projectId}/environments/{envId} 更新环境，调用 DELETE /api/projects/{projectId}/environments/{envId} 删除环境",
+      "description": "环境详情页，展示单个部署环境的完整配置信息（主机、端口、用户名、部署路径等）。提供编辑配置和连接测试入口（TestConnection）。关联的 SSH 密钥信息从 keyStore 中读取",
       "parameters": [
         {
           "name": "projectId",
-          "type": "integer",
-          "description": "所属项目ID（路由参数）"
+          "type": "string",
+          "description": "项目 ID"
         },
         {
           "name": "envId",
-          "type": "integer",
-          "description": "环境ID（路由参数）"
+          "type": "string",
+          "description": "环境 ID"
         }
       ],
       "response": {
         "status": 200,
         "body": {
-          "environment": "object（环境详细信息）",
-          "loading": "boolean"
+          "environment": "Environment"
         }
       },
       "error_codes": [
         {
           "code": 404,
-          "message": "环境不存在，显示错误提示"
+          "message": "环境不存在或已被删除"
         },
         {
-          "code": 400,
-          "message": "参数校验失败，显示表单校验信息"
+          "code": 500,
+          "message": "服务端错误"
         }
       ]
     },
     {
-      "name": "SshKeyManagementPage",
+      "name": "KeyManagementPage",
       "method": "frontend",
-      "endpoint": "/environments/:envId/keys",
-      "description": "SSH密钥管理页面，展示指定环境的密钥列表，支持上传新密钥、删除密钥和测试SSH连通性。调用 GET /api/environments/{envId}/keys 获取密钥列表，调用 POST /api/environments/{envId}/keys 上传密钥，调用 DELETE /api/environments/{envId}/keys/{keyId} 删除密钥，调用 POST /api/environments/{envId}/keys/test 测试连通性",
+      "endpoint": "/keys",
+      "description": "SSH 密钥管理页面，展示所有已上传的密钥列表。支持上传新密钥（UploadKey，PEM 格式私钥，可选密码），删除已有密钥（DeleteKey）。密钥指纹用于标识和验证",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "keys": "array<Key>"
+        }
+      },
+      "error_codes": [
+        {
+          "code": 400,
+          "message": "密钥格式错误或密钥内容不合法"
+        },
+        {
+          "code": 500,
+          "message": "服务端错误，密钥存储失败"
+        }
+      ]
+    },
+    {
+      "name": "DeploymentTriggerPage",
+      "method": "frontend",
+      "endpoint": "/projects/:projectId/environments/:envId/deploy",
+      "description": "部署触发页面，用户选择或上传可执行文件（UploadFile），填写版本号和部署说明后点击部署按钮。调用 TriggerDeployment 创建部署任务，成功后跳转至部署详情页。文件上传通过 UploadFile 接口上传至 File Storage",
       "parameters": [
         {
+          "name": "projectId",
+          "type": "string",
+          "description": "项目 ID"
+        },
+        {
           "name": "envId",
-          "type": "integer",
-          "description": "环境ID（路由参数）"
+          "type": "string",
+          "description": "目标部署环境 ID"
         }
       ],
       "response": {
         "status": 200,
         "body": {
-          "keys": "array[object]（密钥列表）",
-          "testResult": "object|null（最近一次连通性测试结果）",
-          "loading": "boolean",
-          "testing": "boolean"
+          "project": "Project",
+          "environment": "Environment"
         }
       },
       "error_codes": [
         {
-          "code": 404,
-          "message": "环境不存在，显示错误提示"
+          "code": 400,
+          "message": "参数校验失败，版本号或文件路径不合法"
         },
         {
           "code": 422,
-          "message": "密钥内容格式校验失败，显示校验提示"
+          "message": "文件上传失败或格式不正确"
         },
         {
-          "code": "CONNECTION_FAILED",
-          "message": "SSH连通性测试失败，展示失败原因"
-        }
-      ]
-    },
-    {
-      "name": "DeployPage",
-      "method": "frontend",
-      "endpoint": "/projects/:projectId/deployments",
-      "description": "一键部署页面，展示项目部署历史列表，提供部署表单（选择目标环境、输入版本号、填写部署说明）。调用 GET /api/deployments（含project_id筛选）获取部署历史，调用 POST /api/projects/{projectId}/deployments 触发新部署",
-      "parameters": [
-        {
-          "name": "projectId",
-          "type": "integer",
-          "description": "项目ID（路由参数）"
-        }
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "deployments": "array[object]（部署历史列表）",
-          "deployForm": "object（部署表单数据：environment_id, version, artifact_path, description）",
-          "loading": "boolean"
-        }
-      },
-      "error_codes": [
-        {
-          "code": 400,
-          "message": "部署参数校验失败，显示表单校验信息"
-        },
-        {
-          "code": 404,
-          "message": "项目或环境不存在，显示错误提示"
+          "code": 500,
+          "message": "服务端错误，部署创建失败"
         }
       ]
     },
     {
       "name": "DeploymentDetailPage",
       "method": "frontend",
-      "endpoint": "/projects/:projectId/deployments/:deploymentId",
-      "description": "部署详情与实时监控页面，展示部署进度条、操作日志和最终结果。页面加载时自动建立WebSocket连接 WS /ws/deployments/{deploymentId} 接收实时推送，同时通过 GET /api/deployments/{deploymentId} 获取完整历史数据和日志。WebSocket推送的消息类型：progress（进度更新）、log（实时日志行）、complete（部署完成结果）、error（部署错误）",
+      "endpoint": "/deployments/:deploymentId",
+      "description": "部署详情页面，实时展示部署状态和日志。页面加载时调用 GetDeploymentStatus 获取初始状态；同时建立 WebSocket 连接（DeploymentLogStream: /ws/deployments/{deployment_id}/logs）接收实时日志和状态推送。使用 deploymentLogStore 管理 WebSocket 数据流，实时渲染日志列表和进度条。部署结束后自动关闭 WebSocket",
       "parameters": [
         {
-          "name": "projectId",
-          "type": "integer",
-          "description": "项目ID（路由参数）"
-        },
-        {
           "name": "deploymentId",
-          "type": "integer",
-          "description": "部署任务ID（路由参数）"
+          "type": "string",
+          "description": "部署任务 ID"
         }
       ],
       "response": {
         "status": 200,
         "body": {
-          "deployment": "object（部署详情：version, status, progress, logs, started_at, finished_at）",
-          "wsConnected": "boolean",
-          "messages": "array[object]（WebSocket实时消息队列）"
+          "id": "string",
+          "project_id": "string",
+          "environment_id": "string",
+          "version": "string",
+          "status": "string",
+          "steps": "array",
+          "created_at": "string",
+          "updated_at": "string"
         }
       },
       "error_codes": [
         {
           "code": 404,
-          "message": "部署任务不存在，显示错误提示"
-        },
-        {
-          "code": "WS_DISCONNECT",
-          "message": "WebSocket连接断开，自动重连并提示用户"
-        },
-        {
-          "code": "WS_TIMEOUT",
-          "message": "WebSocket连接超时，提示用户刷新页面重试"
-        }
-      ]
-    },
-    {
-      "name": "AuditLogPage",
-      "method": "frontend",
-      "endpoint": "/audit-logs",
-      "description": "审计日志查询页面，以表格形式展示系统操作日志，支持按时间范围、操作用户、操作类型和关键字筛选。调用 GET /api/audit-logs（含 query filters）获取审计日志数据",
-      "parameters": [
-        {
-          "name": "page",
-          "type": "integer",
-          "description": "页码，可选，默认1（query参数）"
-        },
-        {
-          "name": "start_time",
-          "type": "string",
-          "description": "筛选起始时间（query参数）"
-        },
-        {
-          "name": "end_time",
-          "type": "string",
-          "description": "筛选结束时间（query参数）"
-        },
-        {
-          "name": "user",
-          "type": "string",
-          "description": "筛选操作用户（query参数）"
-        },
-        {
-          "name": "operation_type",
-          "type": "string",
-          "description": "筛选操作类型（query参数）"
-        }
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "logs": "array[object]（审计日志列表）",
-          "total": "integer",
-          "page": "integer",
-          "page_size": "integer",
-          "loading": "boolean"
-        }
-      },
-      "error_codes": [
-        {
-          "code": 401,
-          "message": "JWT Token过期，跳转登录页"
+          "message": "部署记录不存在"
         },
         {
           "code": 500,
-          "message": "查询服务异常，显示错误提示"
+          "message": "服务端错误，无法获取部署状态"
+        },
+        {
+          "code": 1010,
+          "message": "WebSocket 连接失败，无法接收实时日志"
         }
       ]
     }
   ],
-  "error_handling": "前端全局错误处理策略：\n1. HTTP请求异常：通过Axios拦截器统一捕获，401状态码自动清除token并跳转登录页，其他服务端错误（4xx/5xx）使用Element Plus的ElMessage组件展示错误提示，网络断开时显示断网提示条。\n2. 表单校验：使用Element Plus表单校验规则，在提交前拦截非法输入并展示校验提示。\n3. WebSocket异常：自动重连机制，断线后每3秒尝试重连，最多重试5次，超过后提示用户手动刷新。\n4. 全局异常边界：使用Vue 3的errorHandler捕获未处理的渲染异常，避免白屏，同时记录错误到console。\n5. 空状态处理：列表无数据时展示空状态插图和引导提示文本。\n6. 加载态：所有数据请求期间展示Element Plus的v-loading遮罩，避免重复点击。"
+  "error_handling": "Web Console 前端采用统一的错误处理策略：（1）API 请求失败：通过 Axios 拦截器捕获 HTTP 错误状态码，根据状态码分类处理——4xx 错误在页面顶部展示 Ant Design 警告提示（Alert），5xx 错误展示全局异常提示并记录日志；（2）WebSocket 异常：断线时自动重连（指数退避策略，最多重试 5 次），重连期间展示「连接中断，正在重连…」提示条；连接最终失败时展示错误页并提供手动刷新按钮；（3）表单验证：使用 Ant Design Form 内置校验规则，在提交前对必填项、格式（版本号、主机地址、端口号等）进行客户端校验，校验不通过时聚焦到第一个错误字段；（4）加载与空状态：列表页使用 Skeleton 骨架屏展示加载中，空数据时展示 Ant Design Empty 空状态组件与引导提示；（5）并发请求管理：页面卸载时通过 AbortController 取消未完成的 API 请求，避免内存泄漏和状态污染。"
 }
