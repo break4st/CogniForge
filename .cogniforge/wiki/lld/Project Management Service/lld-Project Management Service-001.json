@@ -6,89 +6,155 @@
     "module": "Project Management Service",
     "title": "LLD - Project Management Service",
     "author": "design_agent",
-    "created": "2026-05-21 09:44"
+    "created": "2026-05-21 10:13"
   },
   "overview": {
-    "description": "项目管理微服务，负责项目的创建和查询，维护项目与环境的关联关系。作为系统的基础数据服务，为Environment Management Service和Deployment Orchestrator提供项目信息支撑。",
-    "dependencies": ["Primary Database"],
-    "tech_stack": ["Python 3.11+", "FastAPI", "MySQL 8.0"]
+    "description": "管理项目生命周期，提供项目的创建、查询、修改和删除功能",
+    "dependencies": [
+      "API Gateway",
+      "PostgreSQL"
+    ],
+    "tech_stack": [
+      "Python",
+      "FastAPI",
+      "PostgreSQL 15"
+    ]
   },
   "data_models": [
     {
-      "name": "projects",
+      "name": "project",
       "type": "reference",
       "ownership": "derived",
       "source": {
         "doc_id": "lld-Primary Database-001",
-        "model_name": "projects"
+        "model_name": "project"
       },
-      "description": "项目表，继承自主数据库。存储项目核心信息，本服务负责该表的读写操作。",
+      "description": "项目表，存储项目基本信息。每个项目关联一个创建者用户，被 Environment Management Service 通过 project_id 引用作为环境归属",
       "fields": [
-        {"name": "id", "type": "bigint", "required": true, "description": "项目ID，自增主键"},
-        {"name": "name", "type": "varchar(255)", "required": true, "description": "项目名称，全局唯一"},
-        {"name": "description", "type": "text", "required": false, "description": "项目描述"},
-        {"name": "created_at", "type": "datetime", "required": true, "description": "创建时间"},
-        {"name": "updated_at", "type": "datetime", "required": true, "description": "更新时间"}
-      ]
-    },
-    {
-      "name": "ProjectValidationRule",
-      "type": "config",
-      "ownership": "owned",
-      "description": "项目名称校验规则配置，从配置文件加载",
-      "fields": [
-        {"name": "name_min_length", "type": "integer", "required": true, "description": "项目名称最小长度，默认2"},
-        {"name": "name_max_length", "type": "integer", "required": true, "description": "项目名称最大长度，默认128"},
-        {"name": "name_pattern", "type": "string", "required": true, "description": "项目名称正则校验模式，允许字母、数字、中划线、下划线"}
+        {
+          "name": "id",
+          "type": "UUID",
+          "required": true,
+          "description": "主键，项目唯一标识"
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(255)",
+          "required": true,
+          "description": "项目名称"
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "required": false,
+          "description": "项目描述"
+        },
+        {
+          "name": "created_by",
+          "type": "UUID",
+          "required": true,
+          "description": "创建者用户 ID，关联用户表，用于项目权限隔离和列表过滤"
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "TIMESTAMPTZ",
+          "required": true,
+          "description": "最后更新时间"
+        }
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "Create Project",
+      "name": "CreateProject",
       "method": "POST",
       "endpoint": "/api/projects",
-      "description": "创建新项目。校验项目名称全局唯一性和格式合法性，写入数据库后返回创建结果。",
-      "parameters": [
-        {"name": "name", "type": "string", "description": "项目名称，系统全局唯一"},
-        {"name": "description", "type": "string", "description": "项目描述，可选字段"}
-      ],
+      "description": "创建一个新项目。从请求头中解析用户身份（由 API Gateway 鉴权后转发 JWT 上下文），校验项目名称非空且不重复后写入 PostgreSQL，返回包含项目 ID 的完整项目信息",
+      "parameters": [],
       "response": {
         "status": 201,
         "body": {
-          "id": "integer",
+          "id": "string",
           "name": "string",
           "description": "string",
-          "created_at": "datetime"
+          "created_at": "string"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "请求参数校验失败，项目名称格式不合法（长度2-128字符，只允许字母、数字、中划线、下划线）"},
-        {"code": 409, "message": "项目名已存在，名称唯一性冲突"}
+        {
+          "code": 400,
+          "message": "请求参数不合法，项目名称不能为空"
+        },
+        {
+          "code": 409,
+          "message": "项目名称已存在"
+        }
       ]
     },
     {
-      "name": "List Projects",
+      "name": "ListProjects",
       "method": "GET",
       "endpoint": "/api/projects",
-      "description": "获取项目列表，支持分页查询。按创建时间倒序排列，返回项目摘要信息和总数。",
+      "description": "获取当前用户的项目列表（分页）。根据用户身份（created_by）过滤项目，支持 page 和 page_size 分页参数，按创建时间降序排列。items 数组中每个项目包含: id, name, description, created_at",
       "parameters": [
-        {"name": "page", "type": "integer", "description": "页码，默认1"},
-        {"name": "page_size", "type": "integer", "description": "每页条数，默认20"}
+        {
+          "name": "page",
+          "type": "integer",
+          "description": "查询参数，页码，从 1 开始，默认 1"
+        },
+        {
+          "name": "page_size",
+          "type": "integer",
+          "description": "查询参数，每页条数，默认 20"
+        }
       ],
       "response": {
         "status": 200,
         "body": {
-          "items": "array[object]",
           "total": "integer",
-          "page": "integer",
-          "page_size": "integer"
+          "items": "array"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "分页参数不合法（page或page_size小于1）"}
+        {
+          "code": 400,
+          "message": "分页参数不合法"
+        }
+      ]
+    },
+    {
+      "name": "DeleteProject",
+      "method": "DELETE",
+      "endpoint": "/api/projects/{project_id}",
+      "description": "删除指定项目。校验项目存在且属于当前用户后从 PostgreSQL 中删除记录，项目关联的环境等资源交由下游服务自行清理",
+      "parameters": [
+        {
+          "name": "project_id",
+          "type": "string",
+          "description": "路径参数，项目 ID"
+        }
+      ],
+      "response": {
+        "status": 204,
+        "body": {}
+      },
+      "error_codes": [
+        {
+          "code": 404,
+          "message": "项目不存在"
+        },
+        {
+          "code": 403,
+          "message": "无权限删除该项目"
+        }
       ]
     }
   ],
-  "error_handling": "1）参数校验错误（400）：请求体缺少必填字段、项目名称格式不合法（长度2-128字符，只允许字母、数字、中划线、下划线）、分页参数为负数时返回400，响应体包含具体错误字段名。2）唯一性冲突（409）：创建项目时检测到项目名已存在，返回409 Conflict，响应体包含冲突字段名称和冲突值。3）数据库错误：数据库连接失败或查询超时（默认5秒超时），记录错误日志后返回500，不暴露数据库内部细节。4）内部错误（500）：所有未捕获异常统一返回500，响应体包含请求ID以便链路追踪。"
+  "error_handling": "Project Management Service 采用统一的异常处理策略：(1) 参数校验失败 — 请求体 JSON 解析错误或必填字段（如项目名称）为空时返回 400 Bad Request，附带具体校验错误详情；(2) 资源冲突 — 创建项目时名称已存在时返回 409 Conflict；(3) 资源不存在 — 删除或查询不存在的项目时返回 404 Not Found；(4) 权限校验 — 当前用户不是项目创建者时返回 403 Forbidden；(5) 数据库异常 — 数据库连接失败或超时（超时阈值 10s）时返回 500 Internal Server Error，并在服务器端记录错误栈用于排查。所有错误响应统一格式为: { code: integer, error: string, detail: string }。"
 }
