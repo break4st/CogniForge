@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LLD - Project Management Service — lld-Project Management Service-001</title>
+<title>Project Management Service — 详细设计 — lld-Project Management Service-001</title>
 <style>
   :root {
     --c-bg: #0b0f19; --c-surface: #131926; --c-card: #191e2e;
@@ -412,6 +412,305 @@
   .flow-step.end    { border-color: rgba(124,111,247,0.3);  color: var(--c-accent2); }
   .flow-arrow { color: var(--c-muted); font-size: 0.85em; flex-shrink: 0; }
 
+  /* ── Error Handling ── */
+  .err-strategy {
+    background: linear-gradient(135deg, rgba(251,191,36,0.06), rgba(248,113,113,0.04));
+    border: 1px solid rgba(251,191,36,0.2);
+    border-radius: var(--radius); padding: 20px 24px; margin-bottom: 20px;
+  }
+  .err-strategy .err-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-amber);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;
+  }
+  .err-strategy p { font-size: 0.92em; line-height: 1.8; color: var(--c-text); }
+
+  .err-format-box {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 20px;
+  }
+  .err-format-box .err-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;
+  }
+  .err-format-box pre {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.84em; color: var(--c-text);
+    background: rgba(0,0,0,0.2); padding: 14px 18px; border-radius: 6px;
+    overflow-x: auto; line-height: 1.7;
+  }
+
+  .err-categories { display: flex; flex-direction: column; gap: 10px; }
+  .err-category {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px;
+    display: flex; gap: 16px; align-items: flex-start;
+  }
+  .err-category:hover { border-color: rgba(255,255,255,0.1); }
+  .err-code-badge {
+    font-family: monospace; font-size: 0.85em; font-weight: 700;
+    padding: 6px 12px; border-radius: 6px; white-space: nowrap;
+    flex-shrink: 0; min-width: 48px; text-align: center;
+  }
+  .err-code-badge._4xx { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+  .err-code-badge._5xx { background: rgba(248,113,113,0.12); color: var(--c-red); }
+  .err-code-badge._other { background: rgba(124,111,247,0.1); color: var(--c-accent2); }
+  .err-category-body { flex: 1; min-width: 0; }
+  .err-category-body .err-cat-name {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 6px;
+  }
+  .err-category-body .err-cat-desc {
+    font-size: 0.85em; color: var(--c-muted); line-height: 1.7;
+  }
+
+  /* ── Domain Objects ── */
+  .domain-obj {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .domain-obj h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); margin-bottom: 6px; }
+  .obj-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 0.72em; font-weight: 600; margin-left: 6px;
+  }
+  .obj-tag.entity   { background: rgba(91,141,239,0.12);  color: var(--c-accent); }
+  .obj-tag.dto      { background: rgba(52,211,153,0.12);  color: var(--c-green); }
+  .obj-tag.value_object { background: rgba(124,111,247,0.1); color: var(--c-accent2); }
+  .obj-tag.enum     { background: rgba(251,191,36,0.1);   color: var(--c-amber); }
+  .attr-source-tag {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 0.7em; font-weight: 600; font-family: monospace;
+    color: var(--c-muted); background: rgba(107,115,148,0.1);
+  }
+
+  /* ── Service Contracts ── */
+  .svc-contract {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); margin-bottom: 12px; overflow: hidden;
+  }
+  .svc-contract summary {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 20px; cursor: pointer; user-select: none;
+    font-weight: 600; font-size: 0.95em; color: var(--c-heading);
+    background: rgba(255,255,255,0.015);
+  }
+  .svc-contract summary:hover { background: rgba(255,255,255,0.03); }
+  .svc-contract summary::-webkit-details-marker { display: none; }
+  .svc-contract summary::before {
+    content: "›"; display: inline-block; font-size: 1.3em; font-weight: 400;
+    width: 16px; color: var(--c-muted); transition: transform 0.2s;
+  }
+  .svc-contract[open] summary::before { transform: rotate(90deg); }
+  .svc-method {
+    padding: 16px 20px; border-top: 1px solid var(--c-border);
+  }
+  .svc-method-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .svc-method-header .method-name {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading);
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+  }
+  .svc-method-header .return-type {
+    font-size: 0.82em; color: var(--c-accent); font-family: monospace;
+    background: rgba(91,141,239,0.08); padding: 2px 8px; border-radius: 4px;
+  }
+  .sig-block {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.84em; color: var(--c-text);
+    background: rgba(255,255,255,0.02); padding: 10px 14px;
+    border-radius: 6px; margin: 8px 0; overflow-x: auto;
+    border: 1px solid var(--c-border);
+  }
+  .pre-post {
+    display: flex; gap: 12px; margin: 8px 0; flex-wrap: wrap;
+  }
+  .pre-post-item {
+    flex: 1; min-width: 180px;
+    background: rgba(255,255,255,0.015); border: 1px solid var(--c-border);
+    border-radius: 6px; padding: 10px 14px;
+  }
+  .pre-post-item .pp-label {
+    font-size: 0.68em; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .pre-post-item.pre .pp-label { color: var(--c-green); }
+  .pre-post-item.post .pp-label { color: var(--c-accent); }
+  .pre-post-item .pp-text { font-size: 0.84em; color: var(--c-text); }
+  .exc-item {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 14px; margin: 2px 4px 2px 0;
+    font-size: 0.8em; background: rgba(248,113,113,0.06);
+    border: 1px solid rgba(248,113,113,0.15);
+  }
+  .exc-item .exc-name { font-weight: 600; color: var(--c-red); font-family: monospace; font-size: 0.85em; }
+  .exc-item .exc-http { font-size: 0.82em; color: var(--c-muted); }
+  .repo-dep {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.82em; color: var(--c-muted);
+    padding: 2px 0 2px 12px; border-left: 2px solid var(--c-border);
+    margin: 2px 0 2px 8px;
+  }
+
+  /* ── Business Rules ── */
+  .invariant-list {
+    list-style: none; padding: 0; margin: 0;
+  }
+  .invariant-list li {
+    padding: 8px 14px; margin-bottom: 6px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 6px; font-size: 0.9em;
+    display: flex; align-items: flex-start; gap: 10px;
+  }
+  .invariant-list li .inv-icon {
+    color: var(--c-amber); font-weight: 700; flex-shrink: 0;
+  }
+  .state-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 20px; margin-bottom: 12px;
+  }
+  .state-diagram .sd-title {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 12px;
+  }
+  .state-row {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px;
+  }
+  .state-node {
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 8px 18px; border-radius: 20px; font-size: 0.85em; font-weight: 600;
+    border: 1px solid var(--c-border); background: var(--c-card);
+    color: var(--c-text);
+  }
+  .state-node.active { border-color: rgba(91,141,239,0.4); color: var(--c-accent); background: rgba(91,141,239,0.06); }
+  .state-node.terminal { border-color: rgba(52,211,153,0.3); color: var(--c-green); background: rgba(52,211,153,0.06); }
+  .state-node.error   { border-color: rgba(248,113,113,0.3); color: var(--c-red); background: rgba(248,113,113,0.06); }
+  .state-arrow {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 0.78em; color: var(--c-muted); padding: 0 4px;
+  }
+  .state-arrow .trigger-text {
+    font-size: 0.85em; background: rgba(107,115,148,0.1);
+    padding: 2px 8px; border-radius: 4px;
+  }
+  .irrev-rule {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 12px; border-radius: 14px; margin: 4px;
+    font-size: 0.8em; background: rgba(248,113,113,0.06);
+    border: 1px solid rgba(248,113,113,0.15); color: var(--c-red);
+  }
+  .cross-svc-rule {
+    padding: 6px 12px; margin: 4px 0;
+    font-size: 0.85em; color: var(--c-accent2);
+    background: rgba(124,111,247,0.05); border-left: 3px solid rgba(124,111,247,0.3);
+    border-radius: 4px;
+  }
+
+  /* ── Component Tree ── */
+  .comp-node {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 16px 20px; margin-bottom: 8px;
+    margin-left: 0;
+  }
+  .comp-node.child { margin-left: 20px; border-left: 2px solid rgba(91,141,239,0.2); }
+  .comp-node .cn-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;
+  }
+  .comp-node .cn-name { font-weight: 600; font-size: 0.95em; color: var(--c-heading); }
+  .comp-node .cn-path {
+    font-family: monospace; font-size: 0.78em; color: var(--c-accent);
+    background: rgba(91,141,239,0.08); padding: 2px 8px; border-radius: 4px;
+  }
+  .cn-section { margin: 8px 0; }
+  .cn-section .cn-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .cn-tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 4px; margin: 2px;
+    font-size: 0.78em; background: rgba(255,255,255,0.03);
+    border: 1px solid var(--c-border); color: var(--c-text);
+  }
+  .cn-tag.prop { border-color: rgba(91,141,239,0.2); color: var(--c-accent); }
+  .cn-tag.event { border-color: rgba(52,211,153,0.2); color: var(--c-green); }
+  .cn-tag.state { border-color: rgba(251,191,36,0.2); color: var(--c-amber); }
+  .cn-behavior { font-size: 0.84em; color: var(--c-text); }
+  .cn-edge { font-size: 0.82em; color: var(--c-muted); }
+  .cn-edge .edge-icon { color: var(--c-amber); }
+
+  /* ── State Design ── */
+  .state-global-item {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 10px 14px; margin-bottom: 6px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 6px;
+  }
+  .state-global-item .sg-name {
+    font-weight: 600; font-size: 0.9em; color: var(--c-heading); font-family: monospace;
+  }
+  .state-global-item .sg-type {
+    font-size: 0.82em; color: var(--c-accent); font-family: monospace;
+    background: rgba(91,141,239,0.06); padding: 1px 6px; border-radius: 3px;
+  }
+
+  /* ── Route Design ── */
+  .route-row {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 14px; border-bottom: 1px solid var(--c-border);
+  }
+  .route-row:last-child { border-bottom: none; }
+
+  /* ── Interaction Flows ── */
+  .flow-timeline {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 16px 20px; margin-bottom: 12px;
+  }
+  .flow-timeline .ft-title {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 10px;
+  }
+  .ft-step {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 6px 0; font-size: 0.86em;
+  }
+  .ft-step .ft-num {
+    width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+    background: rgba(91,141,239,0.1); color: var(--c-accent);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 0.8em;
+  }
+  .ft-step .ft-text { color: var(--c-text); padding-top: 2px; }
+
+  /* ── Gateway ── */
+  .mw-flow {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+    padding: 14px 18px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; margin-bottom: 12px;
+  }
+  .mw-node {
+    padding: 6px 14px; border-radius: 6px; font-size: 0.84em; font-weight: 500;
+    background: var(--c-card); border: 1px solid var(--c-border);
+    color: var(--c-text); white-space: nowrap;
+  }
+  .mw-node.special {
+    border-color: rgba(91,141,239,0.25); color: var(--c-accent);
+    background: rgba(91,141,239,0.06);
+  }
+  .mw-arrow { color: var(--c-muted); font-size: 0.85em; }
+
+  .auth-matrix {
+    width: 100%; border-collapse: collapse; font-size: 0.85em;
+  }
+  .auth-matrix th {
+    text-align: left; padding: 8px 12px; font-weight: 600;
+    color: var(--c-muted); border-bottom: 2px solid var(--c-border);
+  }
+  .auth-matrix td { padding: 8px 12px; border-bottom: 1px solid var(--c-border); }
+  .role-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px; margin: 1px 3px 1px 0;
+    font-size: 0.82em; background: rgba(91,141,239,0.08); color: var(--c-accent);
+  }
+
   @media (max-width: 700px) {
     body { padding: 24px 16px 48px; }
     h1 { font-size: 1.6em; }
@@ -491,14 +790,14 @@
 </head>
 <body>
 <div class="page-layout">
-<nav class="sidebar" id="sidebar"><div class="sidebar-header"><div class="sid">lld-Project Management Service-001</div><div class="stitle">LLD - Project Management Service</div></div><div class="sidebar-nav"><a href="#overview" class="sidebar-link"><span class="sl-icon">📄</span>概述</a><a href="#models" class="sidebar-link"><span class="sl-icon">🗄️</span>数据模型 (1)</a><a href="#interfaces" class="sidebar-link"><span class="sl-icon">🔌</span>接口定义 (3)</a><a href="#errors" class="sidebar-link"><span class="sl-icon">⚠️</span>错误处理</a></div></nav><button id="sidebar-toggle" class="sidebar-toggle" aria-label="菜单">☰</button>
+<nav class="sidebar" id="sidebar"><div class="sidebar-header"><div class="sid">lld-Project Management Service-001</div><div class="stitle">Project Management Service — 详细设计</div></div><div class="sidebar-nav"><a href="#overview" class="sidebar-link"><span class="sl-icon">📄</span>概述</a><a href="#models" class="sidebar-link"><span class="sl-icon">🗄️</span>数据模型 (2)</a><a href="#domain-objects" class="sidebar-link"><span class="sl-icon">📦</span>领域对象 (8)</a><a href="#service-contracts" class="sidebar-link"><span class="sl-icon">🔧</span>服务接口 (1)</a><a href="#business-rules" class="sidebar-link"><span class="sl-icon">📐</span>业务规则</a><a href="#interfaces" class="sidebar-link"><span class="sl-icon">🔌</span>接口定义 (5)</a><a href="#errors" class="sidebar-link"><span class="sl-icon">⚠️</span>错误处理</a></div></nav><button id="sidebar-toggle" class="sidebar-toggle" aria-label="菜单">☰</button>
 <div class="main-content">
 <div class="top-bar">
   <div class="doc-id">lld-Project Management Service-001</div>
   <div><span class="badge accent">详细设计文档</span></div>
 </div>
-<h1><span>详细设计文档</span> LLD - Project Management Service</h1>
-<div class="meta">2026-05-21 10:13 &middot; 作者: design_agent</div>
+<h1><span>详细设计文档</span> Project Management Service — 详细设计</h1>
+<div class="meta">2026-05-21 18:34 &middot; 作者: design_agent</div>
 
 <div class="section" id="overview">
   <div class="section-header">
@@ -507,34 +806,79 @@
   </div>
   <div class="section-body">
 
-<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap"><div class="arch-style-badge">Project Management Service</div></div>
-<div class="arch-desc">管理项目生命周期，提供项目的创建、查询、修改和删除功能</div>
-<div style="margin-bottom:12px"><span style="font-size:0.82em;color:var(--c-muted)">依赖: </span><span class="cc-consumer" style="margin:2px">API Gateway</span><span class="cc-consumer" style="margin:2px">PostgreSQL</span></div>
-<div style="margin-bottom:8px"><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Python</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>FastAPI</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>PostgreSQL 15</span></div>
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap"><div class="arch-style-badge">Project Management Service</div><span class="badge accent">⚙️ 业务服务</span></div>
+<div class="arch-desc">管理项目生命周期的微服务，基于 FastAPI 构建，负责项目的创建、编辑、删除、查询，项目与环境的关系绑定，以及项目级别的配置管理。服务通过 RESTful API 对外提供项目 CRUD 能力，关键操作后调用 Audit Service 记录审计日志，持久化数据写入 Primary Database（PostgreSQL）。</div>
+<div style="margin-bottom:12px"><span style="font-size:0.82em;color:var(--c-muted)">依赖: </span><span class="cc-consumer" style="margin:2px">API Gateway</span><span class="cc-consumer" style="margin:2px">Audit Service</span><span class="cc-consumer" style="margin:2px">Primary Database</span></div>
+<div style="margin-bottom:8px"><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Python 3.11+</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>FastAPI</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>PostgreSQL 15</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>OpenAPI 3.0 (自动生成)</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Docker + Docker Compose</span></div>
   </div>
 </div>
 
 <div class="section" id="models">
   <div class="section-header">
     <div class="icon" style="background:rgba(91,141,239,0.12)">🗄️</div>
-    <h2>数据模型 (1)</h2>
+    <h2>数据模型 (2)</h2>
   </div>
   <div class="section-body">
 
-<details class="contract-group" open><summary>引用模型 <span class="cg-count">1</span></summary><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🔗 project<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(91,141,239,0.12);color:var(--c-accent);margin-left:6px">引用</span></h3><div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↳ 引用自: lld-Primary Database-001 / project</div><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">项目表，存储项目基本信息。每个项目关联一个创建者用户，被 Environment Management Service 通过 project_id 引用作为环境归属</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">UUID</td><td>主键，项目唯一标识</td></tr><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(255)</td><td>项目名称</td></tr><tr><td>description</td><td class="field-type">TEXT</td><td>项目描述</td></tr><tr><td>created_by <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">UUID</td><td>创建者用户 ID，关联用户表，用于项目权限隔离和列表过滤</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMPTZ</td><td>创建时间</td></tr><tr><td>updated_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMPTZ</td><td>最后更新时间</td></tr></tbody></table></div></details>
+<details class="contract-group" open><summary>引用模型 <span class="cg-count">2</span></summary><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🔗 projects<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(91,141,239,0.12);color:var(--c-accent);margin-left:6px">引用</span></h3><div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↳ 引用自: lld-Primary Database-001 / projects</div><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">项目数据库表，存储项目核心信息。从 Primary Database 继承，本服务关注以下字段视图</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">uuid</td><td>项目唯一标识，主键</td></tr><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">varchar(255)</td><td>项目名称，系统中唯一</td></tr><tr><td>description</td><td class="field-type">text</td><td>项目描述</td></tr><tr><td>created_by <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">uuid</td><td>创建者用户 ID</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">timestamp</td><td>创建时间</td></tr><tr><td>updated_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">timestamp</td><td>最后更新时间</td></tr><tr><td>is_deleted <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">boolean</td><td>软删除标记，false 为正常，true 为已删除</td></tr></tbody></table><div class="body-label" style="margin-top:8px">索引</div><table class="body-table"><thead><tr><th>索引名</th><th>唯一</th><th>列</th></tr></thead><tbody><tr><td>idx_projects_name</td><td>✓</td><td style="font-family:monospace;font-size:0.85em">name</td></tr><tr><td>idx_projects_created_by</td><td></td><td style="font-family:monospace;font-size:0.85em">created_by</td></tr><tr><td>idx_projects_created_at</td><td></td><td style="font-family:monospace;font-size:0.85em">created_at, is_deleted</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🔗 environments<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(91,141,239,0.12);color:var(--c-accent);margin-left:6px">引用</span></h3><div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↳ 引用自: lld-Primary Database-001 / environments</div><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">环境表引用，本服务仅在删除项目时查询该项目下是否存在关联环境，不操作环境数据</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">uuid</td><td>环境唯一标识</td></tr><tr><td>project_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">uuid</td><td>所属项目 ID，关联 projects 表</td></tr><tr><td>is_deleted <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">boolean</td><td>软删除标记</td></tr></tbody></table><div class="body-label" style="margin-top:8px">索引</div><table class="body-table"><thead><tr><th>索引名</th><th>唯一</th><th>列</th></tr></thead><tbody><tr><td>idx_environments_project_id</td><td></td><td style="font-family:monospace;font-size:0.85em">project_id</td></tr></tbody></table></div></details>
+  </div>
+</div>
+
+<div class="section" id="domain-objects">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(91,141,239,0.12)">📦</div>
+    <h2>领域对象 (8)</h2>
+  </div>
+  <div class="section-body">
+
+<div class="domain-obj"><h3>🏷️ Project<span class="obj-tag entity">实体</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">项目实体，是系统的核心业务对象。一个项目代表一个可独立管理的部署单元，拥有自己的部署环境和配置</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">UUID</td><td>项目唯一标识</td></tr><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">String</td><td>项目名称，系统中唯一</td></tr><tr><td>description <span class="attr-source-tag">DB 透传</span></td><td class="field-type">String</td><td>项目描述</td></tr><tr><td>created_by <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">UUID</td><td>创建者用户 ID</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">DateTime</td><td>创建时间</td></tr><tr><td>updated_at <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">DateTime</td><td>最后更新时间</td></tr><tr><td>is_deleted <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">Boolean</td><td>软删除标记</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📌 PaginationInfo<span class="obj-tag value_object">值对象</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">不可变的分页信息值对象，统一用于所有列表类接口的分页元数据</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>page <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">计算</span></td><td class="field-type">Integer</td><td>当前页码，从 1 开始</td></tr><tr><td>size <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">计算</span></td><td class="field-type">Integer</td><td>每页记录数</td></tr><tr><td>total <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">计算</span></td><td class="field-type">Integer</td><td>符合条件的总记录数</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 CreateProjectRequest<span class="obj-tag dto">DTO</span></h3><div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↦ Project</div><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">创建项目时的请求 DTO，由前端通过 POST 请求体传入</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">String</td><td>项目名称，长度 1~255 字符，去除首尾空格后不能为空</td></tr><tr><td>description <span class="attr-source-tag">输入</span></td><td class="field-type">String</td><td>项目描述，可选</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 UpdateProjectRequest<span class="obj-tag dto">DTO</span></h3><div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↦ Project</div><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">更新项目信息时的请求 DTO，通过 PUT 请求体传入</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">String</td><td>新的项目名称</td></tr><tr><td>description <span class="attr-source-tag">输入</span></td><td class="field-type">String</td><td>新的项目描述</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 ProjectResponse<span class="obj-tag dto">DTO</span></h3><div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↦ Project</div><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">项目信息的响应 DTO，返回给 API 调用方。字段名和类型与 SAD 契约严格一致</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">UUID</td><td>项目唯一标识</td></tr><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">String</td><td>项目名称</td></tr><tr><td>description <span class="attr-source-tag">DB 透传</span></td><td class="field-type">String</td><td>项目描述</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">DateTime</td><td>创建时间</td></tr><tr><td>updated_at <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">DateTime</td><td>更新时间</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 ProjectListResponse<span class="obj-tag dto">DTO</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">分页项目列表的响应 DTO</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>items <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">派生</span></td><td class="field-type">List[ProjectResponse]</td><td>当前页的项目响应对象列表</td></tr><tr><td>pagination <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">派生</span></td><td class="field-type">PaginationInfo</td><td>分页元信息</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 DeleteResult<span class="obj-tag dto">DTO</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">删除操作的结果 DTO</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>success <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">派生</span></td><td class="field-type">Boolean</td><td>删除是否成功</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>🔢 AuditAction<span class="obj-tag enum">枚举</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">本服务产生的审计操作类型枚举</p><div class="body-label">值</div><div><span class="cn-tag prop">project.create</span> <span class="cn-tag prop">project.update</span> <span class="cn-tag prop">project.delete</span></div></div>
+  </div>
+</div>
+
+<div class="section" id="service-contracts">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(124,111,247,0.12)">🔧</div>
+    <h2>服务接口 (1)</h2>
+  </div>
+  <div class="section-body">
+
+<details class="svc-contract" open><summary>🔧 ProjectService <span class="cg-count">6 方法</span></summary><div class="svc-method"><div class="svc-method-header"><span class="method-name">createProject</span></div><div class="sig-block">(req: CreateProjectRequest, userId: UUID) -&gt; ProjectResponse</div><div class="cc-desc">创建新项目。校验名称唯一性后写入数据库，发送审计日志后返回完整的项目响应</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">req.name 非空且不超过 255 字符；数据库中不存在同名活跃项目（is_deleted=false）</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">新项目记录已写入 projects 表；审计日志已记录 project.create 事件</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">ProjectNameConflictException</span><span class="exc-http">→ 409</span><span style="font-size:0.82em;color:var(--c-muted)">req.name 与现有未删除项目的 name 字段重复</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">getProject</span></div><div class="sig-block">(projectId: UUID) -&gt; ProjectResponse</div><div class="cc-desc">根据项目 ID 查询项目详情，不包括已软删除的记录</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">projectId 格式合法</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">返回项目完整信息，不存在则抛出异常</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">ProjectNotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">projectId 对应的项目不存在或 is_deleted=true</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">updateProject</span></div><div class="sig-block">(projectId: UUID, req: UpdateProjectRequest, userId: UUID) -&gt; ProjectResponse</div><div class="cc-desc">更新项目名称和描述。校验新名称唯一性后更新数据库并发送审计日志</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">projectId 对应项目存在且未删除；若修改 name，新 name 不与现有其他项目重复</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">项目记录的 name 和 description 已更新，updated_at 已刷新；审计日志已记录 project.update 事件</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">ProjectNotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">projectId 对应的项目不存在</span></span><span class="exc-item"><span class="exc-name">ProjectNameConflictException</span><span class="exc-http">→ 409</span><span style="font-size:0.82em;color:var(--c-muted)">修改后的 name 与现有其他项目的 name 重复</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">deleteProject</span></div><div class="sig-block">(projectId: UUID, userId: UUID) -&gt; None</div><div class="cc-desc">软删除指定项目。删除前通过 environments 表检查是否有关联环境，通过后标记 is_deleted 字段并发送审计日志</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">projectId 对应项目存在且 is_deleted=false；该项目下的 environments 表中无关联环境记录</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">项目记录的 is_deleted 已设为 true；审计日志已记录 project.delete 事件</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">ProjectNotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">projectId 对应的项目不存在</span></span><span class="exc-item"><span class="exc-name">ProjectHasEnvironmentsException</span><span class="exc-http">→ 409</span><span style="font-size:0.82em;color:var(--c-muted)">environments 表中存在 project_id 等于该项目的记录且 is_deleted=false</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">listProjects</span></div><div class="sig-block">(page: int, size: int, keyword: Optional[str]) -&gt; ProjectListResponse</div><div class="cc-desc">分页查询项目列表，支持按关键词对项目名称进行 LIKE 模糊匹配。匹配模式和排除已删除由 repository 层实现</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">page &gt;= 1, size &gt;= 1 且 size &lt;= 100</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">返回指定页码的项目列表和分页信息；查询结果按 created_at 倒序排列，已软删除的记录不包含在结果中</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">InvalidParameterException</span><span class="exc-http">→ 400</span><span style="font-size:0.82em;color:var(--c-muted)">page &lt; 1 或 size &lt; 1 或 size &gt; 100</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">checkProjectExists</span></div><div class="sig-block">(projectId: UUID) -&gt; bool</div><div class="cc-desc">检查指定 ID 的项目是否存在且 is_deleted=false。供其他服务或内部调用，不触发审计日志</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">无</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">返回布尔值表示项目是否存在且未被删除</div></div></div></div><div style="padding:16px 20px;border-top:1px solid var(--c-border)"><div class="body-label">数据访问依赖</div><div class="repo-dep">findById(id: UUID) -&gt; Optional[Project]</div><div class="repo-dep">findByName(name: str) -&gt; Optional[Project]</div><div class="repo-dep">findByNameExcludingId(name: str, excludeId: UUID) -&gt; Optional[Project]</div><div class="repo-dep">findAllPaged(page: int, size: int, keyword: Optional[str]) -&gt; Tuple[List[Project], int]</div><div class="repo-dep">countEnvironmentsByProjectId(projectId: UUID) -&gt; int</div><div class="repo-dep">save(project: Project) -&gt; Project</div><div class="repo-dep">update(project: Project) -&gt; Project</div><div class="repo-dep">markDeleted(projectId: UUID) -&gt; None</div></div></details>
+  </div>
+</div>
+
+<div class="section" id="business-rules">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(251,191,36,0.12)">📐</div>
+    <h2>业务规则</h2>
+  </div>
+  <div class="section-body">
+
+<div class="body-label">不变量</div><ul class="invariant-list"><li><span class="inv-icon">!</span><span>项目名称在系统中必须唯一，不允许存在两个 is_deleted=false 的项目具有相同的 name</span></li><li><span class="inv-icon">!</span><span>项目删除采用软删除机制，is_deleted=true 的记录不应出现在正常查询和列表结果中</span></li><li><span class="inv-icon">!</span><span>删除项目前必须确保该项目下没有任何关联的部署环境（environments.project_id = projectId 且 is_deleted=false 的记录数为 0）</span></li><li><span class="inv-icon">!</span><span>项目的 created_by 字段在创建后不可修改，始终指向原始创建者</span></li><li><span class="inv-icon">!</span><span>项目名称不能为空字符串或仅含空白字符，去除首尾空格后的长度在 1~255 之间</span></li></ul>
+<div class="body-label" style="margin-top:16px">状态机</div>
+<div class="state-diagram"><div class="sd-title">🎯 Project</div><div class="state-row"><span class="state-node ">active</span><span class="state-node error">deleted</span></div><div style="margin:8px 0"><div class="state-arrow"><span>→</span><span class="trigger-text">调用 deleteProject 方法且环境关联检查通过</span><span style="font-size:0.78em;color:var(--c-muted)">by admin 或 operator 角色用户</span></div></div><div style="margin-top:8px"><span class="irrev-rule">🚫 项目从 active 变为 deleted 后不可逆，不允许恢复已删除的项目</span><span class="irrev-rule">🚫 deleted 状态为终态，不存在到其他状态的转换</span></div><div style="margin-top:8px;font-size:0.84em;color:var(--c-muted)">⚡ 删除操作使用数据库行级锁锁定 projects 行记录（SELECT ... FOR UPDATE），在事务中同时查询 environments 表，防止并发环境创建绕过关联检查</div></div>
+<div class="body-label" style="margin-top:16px">跨服务规则</div><div class="cross-svc-rule">项目创建、更新、删除操作完成后，必须同步调用 Audit Service 的 POST /internal/audit/log 接口记录审计日志，其中 actor 为当前操作用户 ID，action 按操作类型使用 project.create / project.update / project.delete，resource_type 固定为 project，result 根据操作结果填入 success 或 failure。若审计日志发送失败（网络超时或服务不可达），仅记录 WARN 级别日志，不阻塞业务主流程</div><div class="cross-svc-rule">删除项目前需查询 Primary Database 的 environments 表以确认该项目下是否存在关联环境。跨表查询在同一个数据库事务中完成，确保一致性</div><div class="cross-svc-rule">本服务不直接调用其他外部服务，仅通过数据库共享方式与 Environment Management Service 间接协作（共享 Primary Database 的 environments 表）</div>
   </div>
 </div>
 
 <div class="section" id="interfaces">
   <div class="section-header">
     <div class="icon" style="background:rgba(34,211,238,0.12)">🔌</div>
-    <h2>接口定义 (3)</h2>
+    <h2>接口定义 (5)</h2>
   </div>
   <div class="section-body">
 
-<div class="contract-card"><div class="cc-head"><span class="method-badge post">POST</span><span class="cc-endpoint">/api/projects</span><span class="cc-name">CreateProject</span></div><div class="cc-desc">创建一个新项目。从请求头中解析用户身份（由 API Gateway 鉴权后转发 JWT 上下文），校验项目名称非空且不重复后写入 PostgreSQL，返回包含项目 ID 的完整项目信息</div><div class="body-label">Response 201</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string</td></tr><tr><td>name</td><td class="field-type">string</td></tr><tr><td>description</td><td class="field-type">string</td></tr><tr><td>created_at</td><td class="field-type">string</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>请求参数不合法，项目名称不能为空</td></tr><tr><td>409</td><td>项目名称已存在</td></tr></tbody></table></div>
-<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/projects</span><span class="cc-name">ListProjects</span></div><div class="cc-desc">获取当前用户的项目列表（分页）。根据用户身份（created_by）过滤项目，支持 page 和 page_size 分页参数，按创建时间降序排列。items 数组中每个项目包含: id, name, description, created_at</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>page</td><td class="field-type">integer</td><td>查询参数，页码，从 1 开始，默认 1</td></tr><tr><td>page_size</td><td class="field-type">integer</td><td>查询参数，每页条数，默认 20</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>total</td><td class="field-type">integer</td></tr><tr><td>items</td><td class="field-type">array</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>分页参数不合法</td></tr></tbody></table></div>
-<div class="contract-card"><div class="cc-head"><span class="method-badge delete">DELETE</span><span class="cc-endpoint">/api/projects/{project_id}</span><span class="cc-name">DeleteProject</span></div><div class="cc-desc">删除指定项目。校验项目存在且属于当前用户后从 PostgreSQL 中删除记录，项目关联的环境等资源交由下游服务自行清理</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>project_id</td><td class="field-type">string</td><td>路径参数，项目 ID</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>404</td><td>项目不存在</td></tr><tr><td>403</td><td>无权限删除该项目</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/v1/projects</span><span class="cc-name">List Projects</span></div><div class="cc-desc">分页查询项目列表，支持按关键词模糊匹配项目名称。结果按创建时间倒序排列，排除已软删除的项目</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>page</td><td class="field-type">integer</td><td>分页页码，默认 1，最小 1</td></tr><tr><td>size</td><td class="field-type">integer</td><td>每页条数，默认 20，最小 1，最大 100</td></tr><tr><td>keyword</td><td class="field-type">string</td><td>搜索关键词，按项目名称进行 LIKE 模糊匹配</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>items</td><td class="field-type">array(ProjectResponse)</td></tr><tr><td>pagination</td><td class="field-type">PaginationInfo</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>参数校验失败，page 或 size 超出合法范围</td></tr><tr><td>500</td><td>服务器内部错误</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge post">POST</span><span class="cc-endpoint">/api/v1/projects</span><span class="cc-name">Create Project</span></div><div class="cc-desc">创建新项目。校验项目名称是否为空和是否已存在，写入数据库后异步调用 Audit Service 记录 project.create 审计日志</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>name</td><td class="field-type">string</td><td>项目名称，系统内唯一，长度 1~255 字符，不能为空</td></tr><tr><td>description</td><td class="field-type">string</td><td>项目描述，可选</td></tr></tbody></table><div class="body-label">Response 201</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string(uuid)</td></tr><tr><td>name</td><td class="field-type">string</td></tr><tr><td>description</td><td class="field-type">string</td></tr><tr><td>created_at</td><td class="field-type">string(date-time)</td></tr><tr><td>updated_at</td><td class="field-type">string(date-time)</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>参数校验失败，项目名称为必填字段</td></tr><tr><td>409</td><td>项目名称已存在，请使用其他名称</td></tr><tr><td>500</td><td>服务器内部错误</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/v1/projects/{id}</span><span class="cc-name">Get Project</span></div><div class="cc-desc">获取指定项目的详细信息，包含项目名称、描述、创建和更新时间</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string(uuid)</td><td>项目 ID（路径参数）</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string(uuid)</td></tr><tr><td>name</td><td class="field-type">string</td></tr><tr><td>description</td><td class="field-type">string</td></tr><tr><td>created_at</td><td class="field-type">string(date-time)</td></tr><tr><td>updated_at</td><td class="field-type">string(date-time)</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>404</td><td>项目不存在或已被删除</td></tr><tr><td>500</td><td>服务器内部错误</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge put">PUT</span><span class="cc-endpoint">/api/v1/projects/{id}</span><span class="cc-name">Update Project</span></div><div class="cc-desc">更新指定项目的信息。校验新名称是否与其他项目冲突，更新后调用 Audit Service 记录 project.update 审计日志</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string(uuid)</td><td>项目 ID（路径参数）</td></tr><tr><td>name</td><td class="field-type">string</td><td>新的项目名称</td></tr><tr><td>description</td><td class="field-type">string</td><td>新的项目描述</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string(uuid)</td></tr><tr><td>name</td><td class="field-type">string</td></tr><tr><td>description</td><td class="field-type">string</td></tr><tr><td>created_at</td><td class="field-type">string(date-time)</td></tr><tr><td>updated_at</td><td class="field-type">string(date-time)</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>参数校验失败</td></tr><tr><td>404</td><td>项目不存在或已被删除</td></tr><tr><td>409</td><td>修改后的项目名称与其他项目冲突</td></tr><tr><td>500</td><td>服务器内部错误</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge delete">DELETE</span><span class="cc-endpoint">/api/v1/projects/{id}</span><span class="cc-name">Delete Project</span></div><div class="cc-desc">删除指定项目（软删除）。删除前检查该项目下是否有关联的部署环境，有关联则拒绝删除。删除后调用 Audit Service 记录 project.delete 审计日志</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string(uuid)</td><td>项目 ID（路径参数）</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>success</td><td class="field-type">boolean</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>404</td><td>项目不存在或已被删除</td></tr><tr><td>409</td><td>项目下存在关联环境，请先删除所有环境后再删除项目</td></tr><tr><td>500</td><td>服务器内部错误</td></tr></tbody></table></div>
   </div>
 </div>
 
@@ -545,7 +889,9 @@
   </div>
   <div class="section-body">
 
-<p>Project Management Service 采用统一的异常处理策略：(1) 参数校验失败 — 请求体 JSON 解析错误或必填字段（如项目名称）为空时返回 400 Bad Request，附带具体校验错误详情；(2) 资源冲突 — 创建项目时名称已存在时返回 409 Conflict；(3) 资源不存在 — 删除或查询不存在的项目时返回 404 Not Found；(4) 权限校验 — 当前用户不是项目创建者时返回 403 Forbidden；(5) 数据库异常 — 数据库连接失败或超时（超时阈值 10s）时返回 500 Internal Server Error，并在服务器端记录错误栈用于排查。所有错误响应统一格式为: { code: integer, error: string, detail: string }。</p>
+<div class="err-strategy"><div class="err-label">处理策略</div><p>服务层采用统一的异常处理机制：业务异常以自定义异常类（如 ProjectNotFoundException）抛出，由 FastAPI 全局异常处理器捕获并转换为标准错误响应格式。参数校验由 FastAPI Pydantic 模型自动完成，校验失败返回 422。审计日志调用失败仅记录 WARN 日志，不阻塞业务主流程。数据库操作异常捕获后记录错误日志，避免泄露内部实现细节。所有未预期异常统一返回 500。</p></div>
+<div class="err-format-box"><div class="err-label">统一错误响应体</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td class="field-type">code</td><td class="field-type">integer</td></tr><tr><td class="field-type">error</td><td class="field-type">string</td></tr><tr><td class="field-type">detail</td><td class="field-type">string</td></tr></tbody></table></div>
+<div class="err-categories"><div class="err-category"><span class="err-code-badge _4xx">400</span><div class="err-category-body"><div class="err-cat-name">请求参数错误</div><div class="err-cat-desc">请求体或查询参数格式不正确，由 Pydantic 模型校验触发</div></div></div><div class="err-category"><span class="err-code-badge _4xx">404</span><div class="err-category-body"><div class="err-cat-name">资源不存在</div><div class="err-cat-desc">请求的项目 ID 在数据库中不存在或已被软删除，HTTP 返回 404</div></div></div><div class="err-category"><span class="err-code-badge _4xx">409</span><div class="err-category-body"><div class="err-cat-name">资源冲突</div><div class="err-cat-desc">创建项目时名称重复或删除项目时存在关联环境约束</div></div></div><div class="err-category"><span class="err-code-badge _4xx">422</span><div class="err-category-body"><div class="err-cat-name">参数校验失败</div><div class="err-cat-desc">FastAPI Pydantic 模型校验未通过，detail 中包含具体字段错误信息</div></div></div><div class="err-category"><span class="err-code-badge _5xx">500</span><div class="err-category-body"><div class="err-cat-name">服务器内部错误</div><div class="err-cat-desc">未预期异常，记录错误日志并返回通用错误信息，不泄露堆栈细节</div></div></div></div>
   </div>
 </div>
 
