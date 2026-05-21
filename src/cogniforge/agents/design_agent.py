@@ -513,13 +513,10 @@ class DesignAgent(BaseAgent):
             return self.format_result(status="failed", message=str(e))
 
     # SAD component type → ModuleType mapping
+    # SAD component types are normalized to canonical values by ArchitectAgent
     _SAD_TYPE_MAP: dict[str, str] = {
         "database": ModuleType.DATABASE,
-        "db": ModuleType.DATABASE,
-        "cache": ModuleType.INFRASTRUCTURE,
-        "mq": ModuleType.INFRASTRUCTURE,
         "infrastructure": ModuleType.INFRASTRUCTURE,
-        "file_storage": ModuleType.INFRASTRUCTURE,
         "service": ModuleType.SERVICE,
         "gateway": ModuleType.GATEWAY,
         "frontend": ModuleType.FRONTEND,

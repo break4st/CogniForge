@@ -107,11 +107,45 @@ class ArchitectAgent(BaseAgent):
         except Exception as e:
             return self.format_result(status="failed", message=str(e))
 
+    # Canonical component type values expected by downstream consumers
+    _COMPONENT_TYPE_CANONICAL: dict[str, str] = {
+        # Canonical
+        "frontend": "frontend", "gateway": "gateway", "service": "service",
+        "database": "database", "infrastructure": "infrastructure",
+        # LLM common variants → canonical
+        "db": "database", "DB": "database", "Database": "database",
+        "cache": "infrastructure", "redis": "infrastructure",
+        "mq": "infrastructure", "message_queue": "infrastructure",
+        "file_storage": "infrastructure", "storage": "infrastructure",
+        "api_gateway": "gateway", "web": "frontend", "ui": "frontend",
+    }
+
+    @classmethod
+    def _normalize_component_type(cls, raw: str) -> str:
+        return cls._COMPONENT_TYPE_CANONICAL.get(raw, "service")
+
     def _commit_and_result(self, json_path: Path, title: str, reasoning: str = "") -> dict:
         json_abs = Path(self.config.repo_path) / json_path
         if not json_abs.exists():
             return self.format_result(status="failed",
                                        message=f"Claude Code did not produce {json_path}")
+
+        # Normalize component types before commit
+        try:
+            data = json.loads(json_abs.read_text(encoding="utf-8"))
+            components = data.get("components", [])
+            fixed = 0
+            for c in components:
+                raw = c.get("type", "service")
+                canonical = self._normalize_component_type(raw)
+                if canonical != raw:
+                    c["type"] = canonical
+                    fixed += 1
+            if fixed:
+                json_abs.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                                    encoding="utf-8")
+        except Exception:
+            pass  # Don't block on normalization failure
 
         rel_json = str(json_path.relative_to(self.config.repo_path))
         self.wiki_system.git_storage.repo.index.add([rel_json])

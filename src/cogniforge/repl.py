@@ -351,9 +351,10 @@ class Repl:
     @staticmethod
     def _lld_layer(comp: dict) -> int:
         """Return dependency layer for topological sort.
-        Layer 0 (infra/db) → 1 (services) → 2 (gateway) → 3 (frontend)."""
+        Layer 0 (database/infrastructure) → 1 (service) → 2 (gateway) → 3 (frontend).
+        SAD component types are normalized to canonical values by ArchitectAgent."""
         ctype = comp.get("type", "service")
-        if ctype in ("database", "db", "cache", "mq", "infrastructure", "file_storage"):
+        if ctype in ("database", "infrastructure"):
             return 0
         if ctype == "service":
             return 1
