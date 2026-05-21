@@ -1,0 +1,446 @@
+{
+  "meta": {
+    "doc_id": "lld-PostgreSQL-001",
+    "type": "lld",
+    "module_type": "ModuleType.DATABASE",
+    "module": "PostgreSQL",
+    "title": "LLD - PostgreSQL",
+    "author": "design_agent",
+    "created": "2026-05-21 10:19"
+  },
+  "overview": {
+    "description": "主数据库，存储项目、环境、密钥元信息、部署记录和审计日志。所有业务服务（Project Management Service、Environment Management Service、Key Management Service、Deployment Orchestrator、Audit Service）的核心数据持久化层，通过 PostgreSQL Wire Protocol 为各服务提供结构化数据存储和事务性查询能力。使用 UUID 主键确保分布式唯一性，TIMESTAMPTZ 类型统一存储时间戳以支持多时区，JSONB 类型存储半结构化的扩展信息（审计详情）。",
+    "dependencies": [],
+    "tech_stack": [
+      "PostgreSQL 15"
+    ]
+  },
+  "data_models": [
+    {
+      "name": "users",
+      "type": "table",
+      "ownership": "canonical",
+      "description": "用户账号表，存储系统用户的身份认证信息和角色权限。所有用户操作（项目创建、环境配置、部署触发）均通过此表标识操作者身份。索引：username 唯一索引（uk_users_username）；role 普通索引（idx_users_role）用于按角色筛选用户。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID",
+          "required": true,
+          "description": "主键，用户唯一标识，默认 uuid_generate_v4()"
+        },
+        {
+          "name": "username",
+          "type": "VARCHAR(100)",
+          "required": true,
+          "description": "用户名，全局唯一，用于登录认证"
+        },
+        {
+          "name": "password_hash",
+          "type": "VARCHAR(255)",
+          "required": true,
+          "description": "经过 bcrypt 哈希的密码密文，不存储明文密码"
+        },
+        {
+          "name": "role",
+          "type": "VARCHAR(20)",
+          "required": true,
+          "description": "用户角色：admin（技术管理者）/ operator（运维工程师）/ developer（开发工程师）"
+        },
+        {
+          "name": "is_active",
+          "type": "BOOLEAN",
+          "required": true,
+          "description": "账户是否激活，禁用后无法登录，默认 true"
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "required": true,
+          "description": "账号创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "TIMESTAMPTZ",
+          "required": true,
+          "description": "账号信息最后更新时间"
+        }
+      ]
+    },
+    {
+      "name": "projects",
+      "type": "table",
+      "ownership": "canonical",
+      "description": "项目主表，存储项目基本信息。每个项目关联一个创建者用户（created_by 外键 users.id），Environment Management Service 通过 project_id 引用作为环境归属，Deployment Orchestrator 通过 project_id 关联部署记录。索引：created_by 外键索引（idx_projects_created_by）；created_at 降序索引（idx_projects_created_at_desc）用于项目列表按时间排序。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID",
+          "required": true,
+          "description": "主键，项目唯一标识，默认 uuid_generate_v4()"
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(255)",
+          "required": true,
+          "description": "项目名称，同一用户下不可重复"
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "required": false,
+          "description": "项目描述，简要说明项目用途"
+        },
+        {
+          "name": "created_by",
+          "type": "UUID",
+          "required": true,
+          "description": "创建者用户 ID，外键关联 users.id，用于项目权限隔离和列表过滤"
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "required": true,
+          "description": "项目创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "TIMESTAMPTZ",
+          "required": true,
+          "description": "项目信息最后更新时间"
+        }
+      ]
+    },
+    {
+      "name": "keys",
+      "type": "table",
+      "ownership": "canonical",
+      "description": "SSH 密钥表，存储密钥元数据和 AES-256-CBC 加密后的私钥内容。私钥在写入前使用系统主密钥加密（Base64 编码存储），密钥指纹在上传时自动计算（MD5 格式）。Environment Management Service 通过 key_id 外键引用关联环境配置。索引：name 唯一索引（uk_keys_name）；fingerprint 唯一索引（uk_keys_fingerprint）用于快速去重检测。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID",
+          "required": true,
+          "description": "密钥唯一标识，主键，默认 uuid_generate_v4()"
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(200)",
+          "required": true,
+          "description": "密钥名称，全局唯一，用于标识和检索"
+        },
+        {
+          "name": "fingerprint",
+          "type": "VARCHAR(100)",
+          "required": true,
+          "description": "SSH 公钥指纹（MD5 格式如 md5:ab:cd:ef...），上传时自动计算，用于密钥验证和展示"
+        },
+        {
+          "name": "encrypted_key",
+          "type": "TEXT",
+          "required": true,
+          "description": "AES-256-CBC 加密后的 SSH 私钥内容，Base64 编码存储"
+        },
+        {
+          "name": "passphrase_encrypted",
+          "type": "TEXT",
+          "required": false,
+          "description": "加密后的私钥密码短语，若上传时未提供密码则为 NULL"
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "required": true,
+          "description": "密钥创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "TIMESTAMPTZ",
+          "required": true,
+          "description": "密钥信息最后更新时间，如密钥内容更新或指纹重算时变更"
+        }
+      ]
+    },
+    {
+      "name": "environments",
+      "type": "table",
+      "ownership": "canonical",
+      "description": "部署环境配置表，记录每个项目的远程服务器部署环境信息，包括 SSH 连接参数和部署路径。一个项目可关联多个环境（如测试线、灰度线、正式线）。索引：project_id 外键索引（idx_environments_project_id）；联合唯一索引（uk_environments_project_label）保证同一项目内 label 不重复；key_id 外键索引（idx_environments_key_id）。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID",
+          "required": true,
+          "description": "环境唯一标识，主键，默认 uuid_generate_v4()"
+        },
+        {
+          "name": "project_id",
+          "type": "UUID",
+          "required": true,
+          "description": "所属项目 ID，外键关联 projects.id，用于环境归属和项目级联查询"
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(100)",
+          "required": true,
+          "description": "环境名称（如 测试线、灰度线、正式线），用于界面展示"
+        },
+        {
+          "name": "label",
+          "type": "VARCHAR(50)",
+          "required": true,
+          "description": "环境标识（如 test / staging / prod），同一项目内不可重复，用于程序化识别"
+        },
+        {
+          "name": "host",
+          "type": "VARCHAR(255)",
+          "required": true,
+          "description": "远程服务器主机地址（IP 或域名）"
+        },
+        {
+          "name": "port",
+          "type": "INTEGER",
+          "required": true,
+          "description": "SSH 连接端口，默认 22，范围 1-65535"
+        },
+        {
+          "name": "username",
+          "type": "VARCHAR(100)",
+          "required": true,
+          "description": "SSH 登录用户名"
+        },
+        {
+          "name": "key_id",
+          "type": "UUID",
+          "required": true,
+          "description": "关联的 SSH 密钥 ID，外键关联 keys.id，用于 SSH 认证"
+        },
+        {
+          "name": "deploy_path",
+          "type": "VARCHAR(500)",
+          "required": true,
+          "description": "远程部署根路径（如 /data/deploy），版本化子目录在此路径下自动创建"
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "required": true,
+          "description": "环境创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "TIMESTAMPTZ",
+          "required": true,
+          "description": "环境信息最后更新时间"
+        }
+      ]
+    },
+    {
+      "name": "deployments",
+      "type": "table",
+      "ownership": "canonical",
+      "description": "部署任务主表，记录每次部署请求的基本信息、目标环境、版本号及当前状态。每条记录对应一次完整的部署流程，状态沿 pending → running → success/failed 流转。索引：project_id 外键索引（idx_deployments_project_id）；environment_id 外键索引（idx_deployments_environment_id）；status 索引（idx_deployments_status）用于按状态筛选活跃部署；created_at 降序索引（idx_deployments_created_at_desc）用于部署列表按时间排序。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID",
+          "required": true,
+          "description": "部署任务唯一标识，主键，默认 uuid_generate_v4()"
+        },
+        {
+          "name": "project_id",
+          "type": "UUID",
+          "required": true,
+          "description": "所属项目 ID，外键关联 projects.id，用于项目级别部署查询"
+        },
+        {
+          "name": "environment_id",
+          "type": "UUID",
+          "required": true,
+          "description": "目标环境 ID，外键关联 environments.id，用于确定部署目标服务器"
+        },
+        {
+          "name": "version",
+          "type": "VARCHAR(50)",
+          "required": true,
+          "description": "部署版本号，如 v1.0.0、20260521_1630"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(20)",
+          "required": true,
+          "description": "部署状态：pending（等待执行）/ running（执行中）/ success（成功）/ failed（失败）"
+        },
+        {
+          "name": "file_path",
+          "type": "VARCHAR(500)",
+          "required": false,
+          "description": "已上传可执行文件在 File Storage 中的存储路径"
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "required": false,
+          "description": "部署说明，记录本次部署的变更说明或备注"
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "required": true,
+          "description": "部署任务创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "TIMESTAMPTZ",
+          "required": true,
+          "description": "部署状态最后更新时间，每次状态变更时更新"
+        }
+      ]
+    },
+    {
+      "name": "deployment_steps",
+      "type": "table",
+      "ownership": "canonical",
+      "description": "部署步骤明细表，记录每次部署中各步骤的执行状态和起止时间。部署任务拆分为多个步骤（如 create_directories / transfer_file / generate_script / execute_start），每个步骤独立跟踪状态。索引：deployment_id 外键索引（idx_deployment_steps_deploy_id）；联合索引（idx_deployment_steps_order）包含 deployment_id + step_order 用于按序查询步骤。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID",
+          "required": true,
+          "description": "步骤唯一标识，主键，默认 uuid_generate_v4()"
+        },
+        {
+          "name": "deployment_id",
+          "type": "UUID",
+          "required": true,
+          "description": "所属部署任务 ID，外键关联 deployments.id，级联删除"
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(100)",
+          "required": true,
+          "description": "步骤名称，枚举值：create_directories / transfer_file / generate_script / execute_start / execute_stop / execute_restart / verify_deployment"
+        },
+        {
+          "name": "step_order",
+          "type": "INTEGER",
+          "required": true,
+          "description": "步骤执行顺序序号，从 1 开始递增"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(20)",
+          "required": true,
+          "description": "步骤状态：pending / running / success / failed"
+        },
+        {
+          "name": "started_at",
+          "type": "TIMESTAMPTZ",
+          "required": false,
+          "description": "步骤开始执行时间，状态变为 running 时记录"
+        },
+        {
+          "name": "completed_at",
+          "type": "TIMESTAMPTZ",
+          "required": false,
+          "description": "步骤完成时间，状态变为 success 或 failed 时记录"
+        }
+      ]
+    },
+    {
+      "name": "deployment_logs",
+      "type": "table",
+      "ownership": "canonical",
+      "description": "部署日志明细表，持久化存储部署过程中产生的所有日志输出。WebSocket 实时推送的日志同时写入此表用于历史追溯，支持按部署任务和步骤筛选查询。索引：deployment_id 外键索引（idx_deployment_logs_deploy_id）；联合索引（idx_deployment_logs_step）包含 deployment_id + step_name 用于按步骤筛选日志；created_at 索引（idx_deployment_logs_created_at）用于时间范围查询。定期归档策略：保留 90 天，超期数据迁移至归档表。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "BIGSERIAL",
+          "required": true,
+          "description": "日志唯一标识，自增主键"
+        },
+        {
+          "name": "deployment_id",
+          "type": "UUID",
+          "required": true,
+          "description": "所属部署任务 ID，外键关联 deployments.id"
+        },
+        {
+          "name": "step_name",
+          "type": "VARCHAR(100)",
+          "required": false,
+          "description": "产生日志的步骤名称，系统级日志可为 NULL"
+        },
+        {
+          "name": "log_level",
+          "type": "VARCHAR(10)",
+          "required": true,
+          "description": "日志级别：DEBUG / INFO / WARN / ERROR"
+        },
+        {
+          "name": "message",
+          "type": "TEXT",
+          "required": true,
+          "description": "日志消息内容"
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "required": true,
+          "description": "日志产生时间"
+        }
+      ]
+    },
+    {
+      "name": "audit_logs",
+      "type": "table",
+      "ownership": "canonical",
+      "description": "审计日志表，记录系统中所有关键操作和变更事件。每次用户操作（项目创建、环境配置变更、密钥上传、部署触发等）在此表产生一条记录，用于安全审计和操作回溯。索引：project_id 索引（idx_audit_logs_project_id）用于按项目筛选审计记录；action 索引（idx_audit_logs_action）用于按操作类型筛选；actor 索引（idx_audit_logs_actor）用于按操作者查询；created_at 降序索引（idx_audit_logs_created_at_desc）用于审计列表默认排序。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID",
+          "required": true,
+          "description": "审计日志唯一标识，主键，默认 uuid_generate_v4()"
+        },
+        {
+          "name": "project_id",
+          "type": "UUID",
+          "required": false,
+          "description": "关联的项目 ID，外键关联 projects.id。系统级操作（如用户登录）可为 NULL"
+        },
+        {
+          "name": "action",
+          "type": "VARCHAR(100)",
+          "required": true,
+          "description": "操作类型标识，命名空间格式：project.create / project.delete / environment.create / environment.update / environment.delete / key.upload / key.delete / deployment.trigger / user.login / user.logout"
+        },
+        {
+          "name": "actor",
+          "type": "VARCHAR(255)",
+          "required": true,
+          "description": "操作执行者标识，通常为用户名"
+        },
+        {
+          "name": "details",
+          "type": "JSONB",
+          "required": false,
+          "description": "操作详情的 JSON 结构，包含请求参数快照、变更前后对比等扩展信息"
+        },
+        {
+          "name": "ip_address",
+          "type": "VARCHAR(45)",
+          "required": false,
+          "description": "操作发起方的 IP 地址，支持 IPv4 和 IPv6"
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "required": true,
+          "description": "审计日志记录创建时间，即操作发生的时间"
+        }
+      ]
+    }
+  ],
+  "interfaces": [],
+  "error_handling": "PostgreSQL 作为数据持久化层，自身不处理业务逻辑异常。各服务层通过连接池（配置最小 5 个 / 最大 20 个连接，空闲超时 300s）访问数据库，统一异常处理：(1) 连接异常 — 连接池耗尽或数据库不可用时抛出 ConnectionError，各服务层捕获后返回 500 Internal Server Error 或 502 Bad Gateway，并设置读超时 10s / 写超时 30s；(2) 唯一约束冲突 — 唯一索引冲突（如 username 重复、label 重复等）由各服务层捕获后返回 409 Conflict，错误信息包含冲突字段名；(3) 外键约束违反 — 引用的父表记录不存在时（如 project_id 指向不存在的项目）返回外键错误，各服务层捕获后映射为 404 Not Found；(4) 序列化异常 — 死锁检测或可串行化隔离级别下的序列化失败自动重试最多 3 次，重试间隔指数退避（50ms / 100ms / 200ms），重试耗尽后返回 500 Internal Server Error；(5) 数据类型错误 — 字段类型不匹配（如 UUID 格式错误、INTEGER 越界）返回数据异常，各服务层返回 400 Bad Request；(6) 超时控制 — 长查询（如审计日志批量查询）设置 statement_timeout = 30s，超过阈值自动中断并释放连接；(7) 迁移策略 — 使用 Alembic 管理数据库 schema 版本，所有 DDL 变更前备份目标表，大表变更采用零停机迁移模式（先创建新表、双写同步、逐步切换），回滚通过降级脚本实现。备份策略：每日全量备份（pg_dump）+ WAL 连续归档（PITR 支持恢复到任意时间点），保留 30 天备份集。"
+}
