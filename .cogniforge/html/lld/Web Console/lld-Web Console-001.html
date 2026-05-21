@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LLD - Web Console — lld-Web Console-001</title>
+<title>Web Console — 详细设计 — lld-Web Console-001</title>
 <style>
   :root {
     --c-bg: #0b0f19; --c-surface: #131926; --c-card: #191e2e;
@@ -412,6 +412,305 @@
   .flow-step.end    { border-color: rgba(124,111,247,0.3);  color: var(--c-accent2); }
   .flow-arrow { color: var(--c-muted); font-size: 0.85em; flex-shrink: 0; }
 
+  /* ── Error Handling ── */
+  .err-strategy {
+    background: linear-gradient(135deg, rgba(251,191,36,0.06), rgba(248,113,113,0.04));
+    border: 1px solid rgba(251,191,36,0.2);
+    border-radius: var(--radius); padding: 20px 24px; margin-bottom: 20px;
+  }
+  .err-strategy .err-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-amber);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;
+  }
+  .err-strategy p { font-size: 0.92em; line-height: 1.8; color: var(--c-text); }
+
+  .err-format-box {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 20px;
+  }
+  .err-format-box .err-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;
+  }
+  .err-format-box pre {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.84em; color: var(--c-text);
+    background: rgba(0,0,0,0.2); padding: 14px 18px; border-radius: 6px;
+    overflow-x: auto; line-height: 1.7;
+  }
+
+  .err-categories { display: flex; flex-direction: column; gap: 10px; }
+  .err-category {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px;
+    display: flex; gap: 16px; align-items: flex-start;
+  }
+  .err-category:hover { border-color: rgba(255,255,255,0.1); }
+  .err-code-badge {
+    font-family: monospace; font-size: 0.85em; font-weight: 700;
+    padding: 6px 12px; border-radius: 6px; white-space: nowrap;
+    flex-shrink: 0; min-width: 48px; text-align: center;
+  }
+  .err-code-badge._4xx { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+  .err-code-badge._5xx { background: rgba(248,113,113,0.12); color: var(--c-red); }
+  .err-code-badge._other { background: rgba(124,111,247,0.1); color: var(--c-accent2); }
+  .err-category-body { flex: 1; min-width: 0; }
+  .err-category-body .err-cat-name {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 6px;
+  }
+  .err-category-body .err-cat-desc {
+    font-size: 0.85em; color: var(--c-muted); line-height: 1.7;
+  }
+
+  /* ── Domain Objects ── */
+  .domain-obj {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .domain-obj h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); margin-bottom: 6px; }
+  .obj-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 0.72em; font-weight: 600; margin-left: 6px;
+  }
+  .obj-tag.entity   { background: rgba(91,141,239,0.12);  color: var(--c-accent); }
+  .obj-tag.dto      { background: rgba(52,211,153,0.12);  color: var(--c-green); }
+  .obj-tag.value_object { background: rgba(124,111,247,0.1); color: var(--c-accent2); }
+  .obj-tag.enum     { background: rgba(251,191,36,0.1);   color: var(--c-amber); }
+  .attr-source-tag {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 0.7em; font-weight: 600; font-family: monospace;
+    color: var(--c-muted); background: rgba(107,115,148,0.1);
+  }
+
+  /* ── Service Contracts ── */
+  .svc-contract {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); margin-bottom: 12px; overflow: hidden;
+  }
+  .svc-contract summary {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 20px; cursor: pointer; user-select: none;
+    font-weight: 600; font-size: 0.95em; color: var(--c-heading);
+    background: rgba(255,255,255,0.015);
+  }
+  .svc-contract summary:hover { background: rgba(255,255,255,0.03); }
+  .svc-contract summary::-webkit-details-marker { display: none; }
+  .svc-contract summary::before {
+    content: "›"; display: inline-block; font-size: 1.3em; font-weight: 400;
+    width: 16px; color: var(--c-muted); transition: transform 0.2s;
+  }
+  .svc-contract[open] summary::before { transform: rotate(90deg); }
+  .svc-method {
+    padding: 16px 20px; border-top: 1px solid var(--c-border);
+  }
+  .svc-method-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .svc-method-header .method-name {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading);
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+  }
+  .svc-method-header .return-type {
+    font-size: 0.82em; color: var(--c-accent); font-family: monospace;
+    background: rgba(91,141,239,0.08); padding: 2px 8px; border-radius: 4px;
+  }
+  .sig-block {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.84em; color: var(--c-text);
+    background: rgba(255,255,255,0.02); padding: 10px 14px;
+    border-radius: 6px; margin: 8px 0; overflow-x: auto;
+    border: 1px solid var(--c-border);
+  }
+  .pre-post {
+    display: flex; gap: 12px; margin: 8px 0; flex-wrap: wrap;
+  }
+  .pre-post-item {
+    flex: 1; min-width: 180px;
+    background: rgba(255,255,255,0.015); border: 1px solid var(--c-border);
+    border-radius: 6px; padding: 10px 14px;
+  }
+  .pre-post-item .pp-label {
+    font-size: 0.68em; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .pre-post-item.pre .pp-label { color: var(--c-green); }
+  .pre-post-item.post .pp-label { color: var(--c-accent); }
+  .pre-post-item .pp-text { font-size: 0.84em; color: var(--c-text); }
+  .exc-item {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 14px; margin: 2px 4px 2px 0;
+    font-size: 0.8em; background: rgba(248,113,113,0.06);
+    border: 1px solid rgba(248,113,113,0.15);
+  }
+  .exc-item .exc-name { font-weight: 600; color: var(--c-red); font-family: monospace; font-size: 0.85em; }
+  .exc-item .exc-http { font-size: 0.82em; color: var(--c-muted); }
+  .repo-dep {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.82em; color: var(--c-muted);
+    padding: 2px 0 2px 12px; border-left: 2px solid var(--c-border);
+    margin: 2px 0 2px 8px;
+  }
+
+  /* ── Business Rules ── */
+  .invariant-list {
+    list-style: none; padding: 0; margin: 0;
+  }
+  .invariant-list li {
+    padding: 8px 14px; margin-bottom: 6px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 6px; font-size: 0.9em;
+    display: flex; align-items: flex-start; gap: 10px;
+  }
+  .invariant-list li .inv-icon {
+    color: var(--c-amber); font-weight: 700; flex-shrink: 0;
+  }
+  .state-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 20px; margin-bottom: 12px;
+  }
+  .state-diagram .sd-title {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 12px;
+  }
+  .state-row {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px;
+  }
+  .state-node {
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 8px 18px; border-radius: 20px; font-size: 0.85em; font-weight: 600;
+    border: 1px solid var(--c-border); background: var(--c-card);
+    color: var(--c-text);
+  }
+  .state-node.active { border-color: rgba(91,141,239,0.4); color: var(--c-accent); background: rgba(91,141,239,0.06); }
+  .state-node.terminal { border-color: rgba(52,211,153,0.3); color: var(--c-green); background: rgba(52,211,153,0.06); }
+  .state-node.error   { border-color: rgba(248,113,113,0.3); color: var(--c-red); background: rgba(248,113,113,0.06); }
+  .state-arrow {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 0.78em; color: var(--c-muted); padding: 0 4px;
+  }
+  .state-arrow .trigger-text {
+    font-size: 0.85em; background: rgba(107,115,148,0.1);
+    padding: 2px 8px; border-radius: 4px;
+  }
+  .irrev-rule {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 12px; border-radius: 14px; margin: 4px;
+    font-size: 0.8em; background: rgba(248,113,113,0.06);
+    border: 1px solid rgba(248,113,113,0.15); color: var(--c-red);
+  }
+  .cross-svc-rule {
+    padding: 6px 12px; margin: 4px 0;
+    font-size: 0.85em; color: var(--c-accent2);
+    background: rgba(124,111,247,0.05); border-left: 3px solid rgba(124,111,247,0.3);
+    border-radius: 4px;
+  }
+
+  /* ── Component Tree ── */
+  .comp-node {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 16px 20px; margin-bottom: 8px;
+    margin-left: 0;
+  }
+  .comp-node.child { margin-left: 20px; border-left: 2px solid rgba(91,141,239,0.2); }
+  .comp-node .cn-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;
+  }
+  .comp-node .cn-name { font-weight: 600; font-size: 0.95em; color: var(--c-heading); }
+  .comp-node .cn-path {
+    font-family: monospace; font-size: 0.78em; color: var(--c-accent);
+    background: rgba(91,141,239,0.08); padding: 2px 8px; border-radius: 4px;
+  }
+  .cn-section { margin: 8px 0; }
+  .cn-section .cn-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .cn-tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 4px; margin: 2px;
+    font-size: 0.78em; background: rgba(255,255,255,0.03);
+    border: 1px solid var(--c-border); color: var(--c-text);
+  }
+  .cn-tag.prop { border-color: rgba(91,141,239,0.2); color: var(--c-accent); }
+  .cn-tag.event { border-color: rgba(52,211,153,0.2); color: var(--c-green); }
+  .cn-tag.state { border-color: rgba(251,191,36,0.2); color: var(--c-amber); }
+  .cn-behavior { font-size: 0.84em; color: var(--c-text); }
+  .cn-edge { font-size: 0.82em; color: var(--c-muted); }
+  .cn-edge .edge-icon { color: var(--c-amber); }
+
+  /* ── State Design ── */
+  .state-global-item {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 10px 14px; margin-bottom: 6px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 6px;
+  }
+  .state-global-item .sg-name {
+    font-weight: 600; font-size: 0.9em; color: var(--c-heading); font-family: monospace;
+  }
+  .state-global-item .sg-type {
+    font-size: 0.82em; color: var(--c-accent); font-family: monospace;
+    background: rgba(91,141,239,0.06); padding: 1px 6px; border-radius: 3px;
+  }
+
+  /* ── Route Design ── */
+  .route-row {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 14px; border-bottom: 1px solid var(--c-border);
+  }
+  .route-row:last-child { border-bottom: none; }
+
+  /* ── Interaction Flows ── */
+  .flow-timeline {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 16px 20px; margin-bottom: 12px;
+  }
+  .flow-timeline .ft-title {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 10px;
+  }
+  .ft-step {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 6px 0; font-size: 0.86em;
+  }
+  .ft-step .ft-num {
+    width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+    background: rgba(91,141,239,0.1); color: var(--c-accent);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 0.8em;
+  }
+  .ft-step .ft-text { color: var(--c-text); padding-top: 2px; }
+
+  /* ── Gateway ── */
+  .mw-flow {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+    padding: 14px 18px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; margin-bottom: 12px;
+  }
+  .mw-node {
+    padding: 6px 14px; border-radius: 6px; font-size: 0.84em; font-weight: 500;
+    background: var(--c-card); border: 1px solid var(--c-border);
+    color: var(--c-text); white-space: nowrap;
+  }
+  .mw-node.special {
+    border-color: rgba(91,141,239,0.25); color: var(--c-accent);
+    background: rgba(91,141,239,0.06);
+  }
+  .mw-arrow { color: var(--c-muted); font-size: 0.85em; }
+
+  .auth-matrix {
+    width: 100%; border-collapse: collapse; font-size: 0.85em;
+  }
+  .auth-matrix th {
+    text-align: left; padding: 8px 12px; font-weight: 600;
+    color: var(--c-muted); border-bottom: 2px solid var(--c-border);
+  }
+  .auth-matrix td { padding: 8px 12px; border-bottom: 1px solid var(--c-border); }
+  .role-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px; margin: 1px 3px 1px 0;
+    font-size: 0.82em; background: rgba(91,141,239,0.08); color: var(--c-accent);
+  }
+
   @media (max-width: 700px) {
     body { padding: 24px 16px 48px; }
     h1 { font-size: 1.6em; }
@@ -491,14 +790,14 @@
 </head>
 <body>
 <div class="page-layout">
-<nav class="sidebar" id="sidebar"><div class="sidebar-header"><div class="sid">lld-Web Console-001</div><div class="stitle">LLD - Web Console</div></div><div class="sidebar-nav"><a href="#overview" class="sidebar-link"><span class="sl-icon">📄</span>概述</a><a href="#models" class="sidebar-link"><span class="sl-icon">🗄️</span>数据模型 (5)</a><a href="#interfaces" class="sidebar-link"><span class="sl-icon">🔌</span>接口定义 (6)</a><a href="#errors" class="sidebar-link"><span class="sl-icon">⚠️</span>错误处理</a></div></nav><button id="sidebar-toggle" class="sidebar-toggle" aria-label="菜单">☰</button>
+<nav class="sidebar" id="sidebar"><div class="sidebar-header"><div class="sid">lld-Web Console-001</div><div class="stitle">Web Console — 详细设计</div></div><div class="sidebar-nav"><a href="#overview" class="sidebar-link"><span class="sl-icon">📄</span>概述</a><a href="#component-tree" class="sidebar-link"><span class="sl-icon">🧩</span>组件树 (1)</a><a href="#state-design" class="sidebar-link"><span class="sl-icon">🗃️</span>状态设计</a><a href="#route-design" class="sidebar-link"><span class="sl-icon">🗺️</span>路由 (9)</a><a href="#interaction-flows" class="sidebar-link"><span class="sl-icon">🔄</span>交互流 (5)</a><a href="#api-integration" class="sidebar-link"><span class="sl-icon">🔗</span>API 映射 (21)</a><a href="#models" class="sidebar-link"><span class="sl-icon">🗄️</span>数据模型 (7)</a><a href="#interfaces" class="sidebar-link"><span class="sl-icon">🔌</span>接口定义 (9)</a><a href="#errors" class="sidebar-link"><span class="sl-icon">⚠️</span>错误处理</a></div></nav><button id="sidebar-toggle" class="sidebar-toggle" aria-label="菜单">☰</button>
 <div class="main-content">
 <div class="top-bar">
   <div class="doc-id">lld-Web Console-001</div>
   <div><span class="badge accent">详细设计文档</span></div>
 </div>
-<h1><span>详细设计文档</span> LLD - Web Console</h1>
-<div class="meta">2026-05-21 10:10 &middot; 作者: design_agent</div>
+<h1><span>详细设计文档</span> Web Console — 详细设计</h1>
+<div class="meta">2026-05-21 13:36 &middot; 作者: design_agent</div>
 
 <div class="section" id="overview">
   <div class="section-header">
@@ -507,37 +806,113 @@
   </div>
   <div class="section-body">
 
-<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap"><div class="arch-style-badge">Web Console</div></div>
-<div class="arch-desc">单页应用前端，提供项目、环境、密钥管理和部署操作的可视化界面。基于 React 18 + Ant Design 5 构建，通过 Pinia 管理全局状态，通过 API Gateway 与后端服务通信，使用 WebSocket 实时接收部署日志推送。</div>
-<div style="margin-bottom:12px"><span style="font-size:0.82em;color:var(--c-muted)">依赖: </span><span class="cc-consumer" style="margin:2px">API Gateway</span><span class="cc-consumer" style="margin:2px">Deployment Orchestrator</span></div>
-<div style="margin-bottom:8px"><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>React 18</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Ant Design 5</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>WebSocket (FastAPI WebSocket)</span></div>
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap"><div class="arch-style-badge">Web Console</div><span class="badge accent">🖥️ 前端</span></div>
+<div class="arch-desc">基于 React 18 + Ant Design 5 的单页应用，提供远程自动化部署系统的用户操作界面。通过 API Gateway 与后端微服务通信，覆盖项目管理、环境配置与 SSH 密钥绑定、一键部署与进度可视化、部署历史与审计日志查询等核心功能。</div>
+<div style="margin-bottom:12px"><span style="font-size:0.82em;color:var(--c-muted)">依赖: </span><span class="cc-consumer" style="margin:2px">API Gateway</span></div>
+<div style="margin-bottom:8px"><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>React 18</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Ant Design 5</span></div>
+  </div>
+</div>
+
+<div class="section" id="component-tree">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(34,211,238,0.12)">🧩</div>
+    <h2>组件树 (1)</h2>
+  </div>
+  <div class="section-body">
+
+<div class="comp-node"><div class="cn-header"><span class="cn-name">App</span><span class="cn-path">/</span></div><p style="font-size:0.84em;color:var(--c-muted);margin-bottom:8px">根组件，注入全局 Store 和路由配置，执行认证检查和路由守卫</p><div class="cn-section"><div class="cn-label">行为</div><ul class="cn-behavior" style="list-style:disc;padding-left:20px"><li>mount 时检查 localStorage 中是否存在 Token，存在则调用 POST /api/v1/auth/verify 验证会话有效性</li><li>根据认证状态动态加载对应的路由表（已认证加载 MainLayout，未认证加载 LoginPage）</li></ul></div><div class="cn-section"><div class="cn-label">边界情况</div><ul class="cn-edge" style="list-style:none;padding-left:0"><li><span class="edge-icon">⚠️</span> Token 过期时自动清理 localStorage 并跳转登录页</li><li><span class="edge-icon">⚠️</span> API Gateway 不可达时展示白屏fallback提示</li></ul></div></div>
+<div class="comp-node child"><div class="cn-header"><span class="cn-name">LoginPage</span><span class="cn-path">/login</span></div><p style="font-size:0.84em;color:var(--c-muted);margin-bottom:8px">用户登录页面，提供用户名密码表单进行身份认证</p><div class="cn-section"><div class="cn-label">Events</div><div><span class="cn-tag event">@onLoginSuccess({ token: string, user: UserInfo })</span></div></div><div class="cn-section"><div class="cn-label">State</div><div><span class="cn-tag state">loading: boolean</span><span class="cn-tag state">error: string | null</span></div></div><div class="cn-section"><div class="cn-label">行为</div><ul class="cn-behavior" style="list-style:disc;padding-left:20px"><li>用户提交表单时调用 POST /api/v1/auth/login 进行认证</li><li>认证成功后保存 Token 到 localStorage，更新 AuthStore，跳转到 /projects</li><li>认证失败时展示错误提示信息</li></ul></div><div class="cn-section"><div class="cn-label">边界情况</div><ul class="cn-edge" style="list-style:none;padding-left:0"><li><span class="edge-icon">⚠️</span> 连续登录失败超过 5 次时展示错误倒计时，防止暴力破解</li><li><span class="edge-icon">⚠️</span> 已登录用户访问 /login 时自动跳转到 /projects</li><li><span class="edge-icon">⚠️</span> 浏览器禁用了 localStorage 时提示用户开启</li></ul></div></div>
+<div class="comp-node child"><div class="cn-header"><span class="cn-name">MainLayout</span><span class="cn-path">/*</span></div><p style="font-size:0.84em;color:var(--c-muted);margin-bottom:8px">主布局组件，包含侧边栏导航菜单和内容区</p><div class="cn-section"><div class="cn-label">State</div><div><span class="cn-tag state">collapsed: boolean</span><span class="cn-tag state">menuItems: MenuItem[]</span></div></div><div class="cn-section"><div class="cn-label">行为</div><ul class="cn-behavior" style="list-style:disc;padding-left:20px"><li>mount 时读取 AuthStore 按角色生成菜单（admin 显示全部菜单，operator 不含审计日志，developer 仅显示项目、部署相关）</li><li>侧边栏根据当前路由 path 自动高亮对应的菜单项</li><li>侧边栏折叠状态持久化到 localStorage</li></ul></div><div class="cn-section"><div class="cn-label">边界情况</div><ul class="cn-edge" style="list-style:none;padding-left:0"><li><span class="edge-icon">⚠️</span> 用户在无权限页面 URL 直接访问时展示 403 页面</li></ul></div></div>
+<div class="comp-node child"><div class="cn-header"><span class="cn-name">ProjectListPage</span><span class="cn-path">/projects</span></div><p style="font-size:0.84em;color:var(--c-muted);margin-bottom:8px">项目列表页面，以卡片或表格形式展示所有项目，支持 CRUD 操作</p><div class="cn-section"><div class="cn-label">Events</div><div><span class="cn-tag event">@onProjectClick({ id: string })</span><span class="cn-tag event">@onCreateProject({ name: string, description: string })</span><span class="cn-tag event">@onEditProject({ id: string, name: string, description: string })</span><span class="cn-tag event">@onDeleteProject({ id: string })</span></div></div><div class="cn-section"><div class="cn-label">State</div><div><span class="cn-tag state">projects: Project[]</span><span class="cn-tag state">loading: boolean</span><span class="cn-tag state">modalVisible: boolean</span><span class="cn-tag state">editingProject: Project | null</span></div></div><div class="cn-section"><div class="cn-label">行为</div><ul class="cn-behavior" style="list-style:disc;padding-left:20px"><li>mount 时调用 GET /api/v1/projects?page=1&amp;size=20 加载项目列表</li><li>点击「新建项目」按钮弹出表单弹窗，提交时调用 POST /api/v1/projects，成功后刷新列表</li><li>点击项目行跳转到 /projects/:id 进入项目详情</li><li>点击编辑按钮弹出表单弹窗（预填当前数据），提交时调用 PUT /api/v1/projects/{id}，成功后刷新列表</li><li>点击删除时弹出确认框，确认后调用 DELETE /api/v1/projects/{id}，成功后刷新列表</li><li>分页切换或修改每页条数时重新请求对应页数据</li><li>搜索框输入时切换为搜索模式，调用 GET /api/v1/projects?keyword=xxx</li></ul></div><div class="cn-section"><div class="cn-label">边界情况</div><ul class="cn-edge" style="list-style:none;padding-left:0"><li><span class="edge-icon">⚠️</span> 项目列表为空时展示空状态占位图（包含「新建项目」引导按钮）</li><li><span class="edge-icon">⚠️</span> 删除项目时若关联有环境，后端返回 409 冲突，前端提示「请先删除该项目下的所有环境」</li><li><span class="edge-icon">⚠️</span> 网络请求失败时展示错误状态和重试按钮</li><li><span class="edge-icon">⚠️</span> 搜索无结果时展示「未找到匹配项目」空状态</li></ul></div></div>
+<div class="comp-node child"><div class="cn-header"><span class="cn-name">ProjectDetailPage</span><span class="cn-path">/projects/:id</span></div><p style="font-size:0.84em;color:var(--c-muted);margin-bottom:8px">项目详情页面，展示项目基本信息和快捷操作入口</p><div class="cn-section"><div class="cn-label">State</div><div><span class="cn-tag state">project: Project | null</span><span class="cn-tag state">loading: boolean</span></div></div><div class="cn-section"><div class="cn-label">行为</div><ul class="cn-behavior" style="list-style:disc;padding-left:20px"><li>mount 时调用 GET /api/v1/projects/{id} 获取项目详情</li><li>展示项目名称、描述、创建时间、更新时间</li><li>提供「环境管理」「一键部署」「部署历史」三个快捷入口按钮</li></ul></div><div class="cn-section"><div class="cn-label">边界情况</div><ul class="cn-edge" style="list-style:none;padding-left:0"><li><span class="edge-icon">⚠️</span> 项目 ID 不存在（404）时展示 404 提示页和返回列表按钮</li></ul></div></div>
+<div class="comp-node child"><div class="cn-header"><span class="cn-name">EnvironmentListPage</span><span class="cn-path">/projects/:id/environments</span></div><p style="font-size:0.84em;color:var(--c-muted);margin-bottom:8px">环境管理列表页面，展示指定项目的所有部署环境</p><div class="cn-section"><div class="cn-label">Events</div><div><span class="cn-tag event">@onCreateEnvironment({ project_id: string, name: string, host: string, port: number, username: string, key_id: string })</span><span class="cn-tag event">@onDeleteEnvironment({ id: string })</span><span class="cn-tag event">@onTestConnection({ id: string })</span></div></div><div class="cn-section"><div class="cn-label">State</div><div><span class="cn-tag state">environments: Environment[]</span><span class="cn-tag state">loading: boolean</span><span class="cn-tag state">modalVisible: boolean</span><span class="cn-tag state">testingId: string | null</span></div></div><div class="cn-section"><div class="cn-label">行为</div><ul class="cn-behavior" style="list-style:disc;padding-left:20px"><li>mount 时调用 GET /api/v1/environments?project_id={id} 加载环境列表</li><li>点击「新建环境」弹出表单弹窗，提交时调用 POST /api/v1/environments，成功后刷新列表</li><li>点击环境名跳转到 /projects/:id/environments/:envId 查看详情</li><li>点击删除弹出确认框，确认后调用 DELETE /api/v1/environments/{envId}，成功后刷新列表</li><li>每行提供「测试连接」按钮，点击调用 POST /api/v1/environments/{envId}/test-connection，结果以 Tag 标签展示在行尾</li></ul></div><div class="cn-section"><div class="cn-label">边界情况</div><ul class="cn-edge" style="list-style:none;padding-left:0"><li><span class="edge-icon">⚠️</span> 环境列表为空时展示「请先创建部署环境」引导提示卡片</li><li><span class="edge-icon">⚠️</span> 「测试连接」按钮设置 5 秒节流，防止频繁点击</li><li><span class="edge-icon">⚠️</span> 测试连接失败时在行内展示红色失败标签和错误消息 tooltip</li><li><span class="edge-icon">⚠️</span> 环境关联的项目不存在时展示错误提示和返回按钮</li></ul></div></div>
+<div class="comp-node child"><div class="cn-header"><span class="cn-name">EnvironmentDetailPage</span><span class="cn-path">/projects/:id/environments/:envId</span></div><p style="font-size:0.84em;color:var(--c-muted);margin-bottom:8px">环境详情页面，支持编辑环境参数、导入 SSH 密钥和测试 SSH 连接</p><div class="cn-section"><div class="cn-label">Events</div><div><span class="cn-tag event">@onUpdateEnvironment({ name: string, host: string, port: integer, username: string })</span><span class="cn-tag event">@onTestConnection({})</span><span class="cn-tag event">@onImportKey({ private_key: string, passphrase: string | null })</span></div></div><div class="cn-section"><div class="cn-label">State</div><div><span class="cn-tag state">environment: Environment | null</span><span class="cn-tag state">loading: boolean</span><span class="cn-tag state">testResult: ConnectionTestResult | null</span><span class="cn-tag state">testing: boolean</span><span class="cn-tag state">editMode: boolean</span><span class="cn-tag state">keyModalVisible: boolean</span></div></div><div class="cn-section"><div class="cn-label">行为</div><ul class="cn-behavior" style="list-style:disc;padding-left:20px"><li>mount 时调用 GET /api/v1/environments/{envId} 获取环境详情</li><li>点击「编辑」切换为编辑模式，表单预填当前数据</li><li>编辑表单提交时调用 PUT /api/v1/environments/{envId}，成功后退出编辑模式并刷新数据</li><li>点击「测试连接」调用 POST /api/v1/environments/{envId}/test-connection，展示连接状态和延迟 latency_ms</li><li>点击「导入 SSH 密钥」弹出弹窗，支持粘贴私钥内容或选择文件上传，提交时调用 POST /api/v1/environments/{envId}/import-key</li></ul></div><div class="cn-section"><div class="cn-label">边界情况</div><ul class="cn-edge" style="list-style:none;padding-left:0"><li><span class="edge-icon">⚠️</span> 环境 ID 不存在时展示 404 页面</li><li><span class="edge-icon">⚠️</span> 测试连接超时（超过 30 秒）时展示「连接超时，请检查服务器地址和端口」</li><li><span class="edge-icon">⚠️</span> SSH 密钥导入时校验私钥格式（必须以 -----BEGIN... 开头），格式错误时提示</li><li><span class="edge-icon">⚠️</span> 编辑时取消修改需确认（「是否放弃未保存的更改？」）</li></ul></div></div>
+<div class="comp-node child"><div class="cn-header"><span class="cn-name">DeployPage</span><span class="cn-path">/projects/:id/deploy</span></div><p style="font-size:0.84em;color:var(--c-muted);margin-bottom:8px">一键部署页面，选择目标部署环境和部署文件参数后触发部署</p><div class="cn-section"><div class="cn-label">Events</div><div><span class="cn-tag event">@onDeploy({ environment_id: string, file_path: string, version: string })</span></div></div><div class="cn-section"><div class="cn-label">State</div><div><span class="cn-tag state">environments: Environment[]</span><span class="cn-tag state">selectedEnvId: string | null</span><span class="cn-tag state">filePath: string</span><span class="cn-tag state">version: string</span><span class="cn-tag state">submitting: boolean</span><span class="cn-tag state">deployResult: DeployTriggerResult | null</span></div></div><div class="cn-section"><div class="cn-label">行为</div><ul class="cn-behavior" style="list-style:disc;padding-left:20px"><li>mount 时调用 GET /api/v1/environments?project_id={id} 加载环境下拉选项</li><li>用户从下拉框选择目标环境，填写文件路径和版本号</li><li>点击「立即部署」按钮时校验表单必填字段</li><li>提交时调用 POST /api/v1/projects/{id}/deploy</li><li>部署提交成功后自动跳转到 /deployments/{deployment_id} 查看实时进度</li></ul></div><div class="cn-section"><div class="cn-label">边界情况</div><ul class="cn-edge" style="list-style:none;padding-left:0"><li><span class="edge-icon">⚠️</span> 无可用环境时展示「暂无可用环境，请先配置」提示并附带跳转链接</li><li><span class="edge-icon">⚠️</span> 文件路径校验：非空、以 / 开头（绝对路径）</li><li><span class="edge-icon">⚠️</span> 版本号格式校验：建议遵循 semver（如 v1.2.3），不符合时展示警告但允许提交</li><li><span class="edge-icon">⚠️</span> 提交按钮添加 loading 状态防止重复提交</li></ul></div></div>
+<div class="comp-node child"><div class="cn-header"><span class="cn-name">DeployStatusPage</span><span class="cn-path">/deployments/:deployId</span></div><p style="font-size:0.84em;color:var(--c-muted);margin-bottom:8px">部署进度实时可视化页面，包含进度条、步骤状态列表和实时日志</p><div class="cn-section"><div class="cn-label">State</div><div><span class="cn-tag state">status: DeploymentStatus | null</span><span class="cn-tag state">loading: boolean</span><span class="cn-tag state">pollingActive: boolean</span><span class="cn-tag state">logExpanded: boolean</span></div></div><div class="cn-section"><div class="cn-label">行为</div><ul class="cn-behavior" style="list-style:disc;padding-left:20px"><li>mount 时调用 GET /api/v1/deployments/{deployId}/status 获取初始状态</li><li>如果状态为 pending 或 running，启动定时轮询（每 3 秒一次）</li><li>每次轮询更新：进度条百分比、当前步骤高亮状态、步骤列表、日志行追加</li><li>状态变为 success 或 failed 时停止轮询</li><li>提供「展开完整日志」按钮和「返回部署历史」链接</li></ul></div><div class="cn-section"><div class="cn-label">边界情况</div><ul class="cn-edge" style="list-style:none;padding-left:0"><li><span class="edge-icon">⚠️</span> 部署 ID 不存在时展示 404 页面</li><li><span class="edge-icon">⚠️</span> 浏览器标签页不可见时（Page Visibility API）暂停轮询以减少请求，切回时恢复</li><li><span class="edge-icon">⚠️</span> 轮询连续失败 3 次时停止轮询并提示「状态获取异常，请手动刷新页面」</li><li><span class="edge-icon">⚠️</span> 部署执行超过 30 分钟时在页面顶部展示提示横幅</li></ul></div></div>
+<div class="comp-node child"><div class="cn-header"><span class="cn-name">DeployHistoryPage</span><span class="cn-path">/projects/:id/deployments</span></div><p style="font-size:0.84em;color:var(--c-muted);margin-bottom:8px">部署历史记录列表页面，展示指定项目的所有历史部署记录</p><div class="cn-section"><div class="cn-label">Events</div><div><span class="cn-tag event">@onViewDetail({ deploymentId: string })</span></div></div><div class="cn-section"><div class="cn-label">State</div><div><span class="cn-tag state">history: DeploymentRecord[]</span><span class="cn-tag state">loading: boolean</span><span class="cn-tag state">pagination: PaginationInfo</span></div></div><div class="cn-section"><div class="cn-label">行为</div><ul class="cn-behavior" style="list-style:disc;padding-left:20px"><li>mount 时调用 GET /api/v1/projects/{id}/deployments?page=1&amp;size=20 加载历史记录</li><li>表格列：版本号、目标环境名、部署状态、触发时间、持续时间</li><li>点击行跳转到 /deployments/{deploymentId} 查看详情</li><li>分页切换或修改每页条数时重新请求数据</li></ul></div><div class="cn-section"><div class="cn-label">边界情况</div><ul class="cn-edge" style="list-style:none;padding-left:0"><li><span class="edge-icon">⚠️</span> 无部署历史时展示「暂无部署记录」空状态</li><li><span class="edge-icon">⚠️</span> 部署状态用彩色标签区分：success=绿色、failed=红色、running=蓝色旋转图标</li><li><span class="edge-icon">⚠️</span> 持续时间列在部署未完成时展示「进行中…」</li></ul></div></div>
+<div class="comp-node child"><div class="cn-header"><span class="cn-name">AuditLogPage</span><span class="cn-path">/audit-logs</span></div><p style="font-size:0.84em;color:var(--c-muted);margin-bottom:8px">审计日志查询页面，支持多维度筛选和 CSV 导出</p><div class="cn-section"><div class="cn-label">State</div><div><span class="cn-tag state">logs: AuditLogEntry[]</span><span class="cn-tag state">loading: boolean</span><span class="cn-tag state">filters: object</span><span class="cn-tag state">pagination: PaginationInfo</span><span class="cn-tag state">exporting: boolean</span></div></div><div class="cn-section"><div class="cn-label">行为</div><ul class="cn-behavior" style="list-style:disc;padding-left:20px"><li>mount 时调用 GET /api/v1/audit/logs?page=1&amp;size=20 加载最近审计日志</li><li>筛选条件变更（操作类型、资源类型、时间范围）时重新请求数据</li><li>点击「导出 CSV」调用 GET /api/v1/audit/logs/export，下载文件</li></ul></div><div class="cn-section"><div class="cn-label">边界情况</div><ul class="cn-edge" style="list-style:none;padding-left:0"><li><span class="edge-icon">⚠️</span> 查询时间范围超过 30 天时弹出性能确认对话框</li><li><span class="edge-icon">⚠️</span> 筛选结果为空时展示「无匹配的审计日志」</li><li><span class="edge-icon">⚠️</span> 导出大文件时使用流式下载，展示进度百分比</li><li><span class="edge-icon">⚠️</span> 非 admin 用户访问时展示 403 无权限页面</li></ul></div></div>
+  </div>
+</div>
+
+<div class="section" id="state-design">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(251,191,36,0.12)">🗃️</div>
+    <h2>状态设计</h2>
+  </div>
+  <div class="section-body">
+
+<div class="body-label" style="margin-bottom:8px">全局状态</div>
+<div class="state-global-item"><div style="flex:1"><div class="sg-name">AuthStore</div><div style="font-size:0.84em;color:var(--c-muted);margin-top:2px">全局认证状态，管理用户 Token、当前用户信息和权限列表。Token 持久化到 localStorage，页面刷新后通过 API 验证有效性。</div></div><span class="sg-type">AuthStore</span><div style="margin-top:4px"><span class="cn-tag state">App</span> <span class="cn-tag state">LoginPage</span> <span class="cn-tag state">MainLayout</span></div></div>
+<div class="state-global-item"><div style="flex:1"><div class="sg-name">ProjectStore</div><div style="font-size:0.84em;color:var(--c-muted);margin-top:2px">项目列表全局状态，缓存项目数据减少重复请求。页面切换时不重新加载，仅在 CRUD 操作后刷新。</div></div><span class="sg-type">ProjectStore</span><div style="margin-top:4px"><span class="cn-tag state">MainLayout</span> <span class="cn-tag state">ProjectListPage</span> <span class="cn-tag state">ProjectDetailPage</span> <span class="cn-tag state">DeployPage</span></div></div>
+<div class="body-label" style="margin-top:12px">缓存策略</div><p style="font-size:0.88em;color:var(--c-muted)">项目列表缓存至 ProjectStore，页面间切换不重复请求，创建/编辑/删除操作后重新加载。AuthStore 的 Token 持久化至 localStorage，页面刷新后调用 POST /api/v1/auth/verify 验证。部署状态轮询数据仅在 DeployStatusPage 页面级状态中维护，离开页面时销毁。环境列表和审计日志数据不全局缓存，每次进入页面重新请求。</p>
+  </div>
+</div>
+
+<div class="section" id="route-design">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(52,211,153,0.12)">🗺️</div>
+    <h2>路由设计 (9)</h2>
+  </div>
+  <div class="section-body">
+
+<div style="background:var(--c-surface);border:1px solid var(--c-border);border-radius:var(--radius);padding:4px 0"><div class="route-row"><span class="cc-endpoint" style="min-width:180px">/login</span><span style="font-weight:600;font-size:0.9em;color:var(--c-heading);flex:1">LoginPage</span><span class="role-tag">all</span></div><div class="route-row"><span class="cc-endpoint" style="min-width:180px">/projects</span><span style="font-weight:600;font-size:0.9em;color:var(--c-heading);flex:1">ProjectListPage</span><span class="role-tag">all</span></div><div class="route-row"><span class="cc-endpoint" style="min-width:180px">/projects/:id</span><span style="font-weight:600;font-size:0.9em;color:var(--c-heading);flex:1">ProjectDetailPage</span><span class="role-tag">all</span></div><div class="route-row"><span class="cc-endpoint" style="min-width:180px">/projects/:id/environments</span><span style="font-weight:600;font-size:0.9em;color:var(--c-heading);flex:1">EnvironmentListPage</span><span class="role-tag">admin,operator</span></div><div class="route-row"><span class="cc-endpoint" style="min-width:180px">/projects/:id/environments/:envId</span><span style="font-weight:600;font-size:0.9em;color:var(--c-heading);flex:1">EnvironmentDetailPage</span><span class="role-tag">admin,operator</span></div><div class="route-row"><span class="cc-endpoint" style="min-width:180px">/projects/:id/deploy</span><span style="font-weight:600;font-size:0.9em;color:var(--c-heading);flex:1">DeployPage</span><span class="role-tag">all</span></div><div class="route-row"><span class="cc-endpoint" style="min-width:180px">/deployments/:deployId</span><span style="font-weight:600;font-size:0.9em;color:var(--c-heading);flex:1">DeployStatusPage</span><span class="role-tag">all</span></div><div class="route-row"><span class="cc-endpoint" style="min-width:180px">/projects/:id/deployments</span><span style="font-weight:600;font-size:0.9em;color:var(--c-heading);flex:1">DeployHistoryPage</span><span class="role-tag">all</span></div><div class="route-row"><span class="cc-endpoint" style="min-width:180px">/audit-logs</span><span style="font-weight:600;font-size:0.9em;color:var(--c-heading);flex:1">AuditLogPage</span><span class="role-tag">admin</span></div></div>
+  </div>
+</div>
+
+<div class="section" id="interaction-flows">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(124,111,247,0.12)">🔄</div>
+    <h2>交互流程 (5)</h2>
+  </div>
+  <div class="section-body">
+
+<div class="flow-timeline"><div class="ft-title">项目管理流程</div><p style="font-size:0.84em;color:var(--c-muted);margin-bottom:8px">用户在 Web Console 中创建和管理项目的完整操作流程</p><div class="ft-step"><div class="ft-num">1</div><div class="ft-text">用户登录后进入 /projects 项目列表页</div></div><div class="ft-step"><div class="ft-num">2</div><div class="ft-text">点击「新建项目」按钮，在弹出的表单 Modal 中填写项目名称和描述</div></div><div class="ft-step"><div class="ft-num">3</div><div class="ft-text">提交表单后调用 POST /api/v1/projects，创建成功后列表自动刷新</div></div><div class="ft-step"><div class="ft-num">4</div><div class="ft-text">点击已有项目行进入项目详情页 /projects/:id</div></div><div class="ft-step"><div class="ft-num">5</div><div class="ft-text">在详情页可点击编辑按钮修改项目信息（PUT /api/v1/projects/{id}）或删除项目（DELETE /api/v1/projects/{id}）</div></div></div>
+<div class="flow-timeline"><div class="ft-title">环境配置与连接测试流程</div><p style="font-size:0.84em;color:var(--c-muted);margin-bottom:8px">用户为项目配置部署环境、导入 SSH 密钥并测试连接可用性的完整流程</p><div class="ft-step"><div class="ft-num">1</div><div class="ft-text">进入项目详情页后点击「环境管理」进入 /projects/:id/environments</div></div><div class="ft-step"><div class="ft-num">2</div><div class="ft-text">点击「新建环境」填写表单：环境名称、服务器地址、SSH 端口（默认 22）、登录用户名</div></div><div class="ft-step"><div class="ft-num">3</div><div class="ft-text">提交表单后调用 POST /api/v1/environments，创建成功后在列表中选择该环境</div></div><div class="ft-step"><div class="ft-num">4</div><div class="ft-text">进入环境详情页 /projects/:id/environments/:envId</div></div><div class="ft-step"><div class="ft-num">5</div><div class="ft-text">点击「导入 SSH 密钥」弹窗，粘贴私钥内容或选择文件上传，提交后调用 POST /api/v1/environments/{envId}/import-key</div></div><div class="ft-step"><div class="ft-num">6</div><div class="ft-text">点击「测试连接」按钮调用 POST /api/v1/environments/{envId}/test-connection</div></div><div class="ft-step"><div class="ft-num">7</div><div class="ft-text">等待测试结果返回（loading 状态），展示成功/失败状态和延迟 latency_ms</div></div></div>
+<div class="flow-timeline"><div class="ft-title">一键部署流程</div><p style="font-size:0.84em;color:var(--c-muted);margin-bottom:8px">用户选择环境和部署文件执行一键部署，并实时查看部署进度的完整流程</p><div class="ft-step"><div class="ft-num">1</div><div class="ft-text">进入项目详情页后点击「一键部署」进入 /projects/:id/deploy</div></div><div class="ft-step"><div class="ft-num">2</div><div class="ft-text">从下拉框选择目标部署环境（展示所有可用环境列表）</div></div><div class="ft-step"><div class="ft-num">3</div><div class="ft-text">填写部署文件路径（远程服务器上可执行文件的绝对路径）</div></div><div class="ft-step"><div class="ft-num">4</div><div class="ft-text">填写版本标识（如 v1.2.3）</div></div><div class="ft-step"><div class="ft-num">5</div><div class="ft-text">点击「立即部署」按钮，前端校验必填字段</div></div><div class="ft-step"><div class="ft-num">6</div><div class="ft-text">调用 POST /api/v1/projects/{id}/deploy 提交部署请求</div></div><div class="ft-step"><div class="ft-num">7</div><div class="ft-text">提交成功后自动跳转到 /deployments/{deployment_id} 进度页面</div></div><div class="ft-step"><div class="ft-num">8</div><div class="ft-text">页面自动轮询 GET /api/v1/deployments/{deployId}/status（每 3 秒），展示进度条和步骤状态</div></div><div class="ft-step"><div class="ft-num">9</div><div class="ft-text">日志面板实时滚动追加输出日志行</div></div><div class="ft-step"><div class="ft-num">10</div><div class="ft-text">部署完成（success/failed）时停止轮询，展示最终结果和操作建议</div></div></div>
+<div class="flow-timeline"><div class="ft-title">部署历史查看流程</div><p style="font-size:0.84em;color:var(--c-muted);margin-bottom:8px">用户查看指定项目的所有历史部署记录并浏览详细日志</p><div class="ft-step"><div class="ft-num">1</div><div class="ft-text">进入项目详情页后点击「部署历史」进入 /projects/:id/deployments</div></div><div class="ft-step"><div class="ft-num">2</div><div class="ft-text">页面以表格形式展示所有历史部署记录（版本号、目标环境、状态、触发时间、持续时间）</div></div><div class="ft-step"><div class="ft-num">3</div><div class="ft-text">用户可翻页浏览更多历史记录</div></div><div class="ft-step"><div class="ft-num">4</div><div class="ft-text">点击某条部署记录行跳转到 /deployments/{deploymentId} 查看详细步骤和日志</div></div></div>
+<div class="flow-timeline"><div class="ft-title">审计日志查询流程</div><p style="font-size:0.84em;color:var(--c-muted);margin-bottom:8px">管理员用户查询和导出系统操作审计日志</p><div class="ft-step"><div class="ft-num">1</div><div class="ft-text">管理员从侧边栏导航点击「审计日志」进入 /audit-logs</div></div><div class="ft-step"><div class="ft-num">2</div><div class="ft-text">页面默认展示最近 24 小时的操作审计日志</div></div><div class="ft-step"><div class="ft-num">3</div><div class="ft-text">通过筛选面板选择操作类型（action）、资源类型（resource_type）、时间范围</div></div><div class="ft-step"><div class="ft-num">4</div><div class="ft-text">筛选条件变更后自动重新请求数据</div></div><div class="ft-step"><div class="ft-num">5</div><div class="ft-text">点击「导出 CSV」按钮触发下载，浏览器下载审计日志文件</div></div></div>
+  </div>
+</div>
+
+<div class="section" id="api-integration">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(34,211,238,0.12)">🔗</div>
+    <h2>API 集成映射 (21)</h2>
+  </div>
+  <div class="section-body">
+
+<table class="body-table"><thead><tr><th>页面</th><th>API / Endpoint</th><th>映射到</th></tr></thead><tbody><tr><td><strong>App</strong></td><td style="font-family:monospace;font-size:0.85em">POST /api/v1/auth/verify</td><td>App 初始化时验证 Token 有效性</td></tr><tr><td><strong>LoginPage</strong></td><td style="font-family:monospace;font-size:0.85em">POST /api/v1/auth/login</td><td>LoginPage.onLoginSuccess → AuthStore</td></tr><tr><td><strong>ProjectListPage</strong></td><td style="font-family:monospace;font-size:0.85em">GET /api/v1/projects?page=&amp;size=</td><td>ProjectListPage.projects + ProjectStore</td></tr><tr><td><strong>ProjectListPage</strong></td><td style="font-family:monospace;font-size:0.85em">POST /api/v1/projects</td><td>ProjectListPage.onCreateProject → 刷新列表</td></tr><tr><td><strong>ProjectListPage</strong></td><td style="font-family:monospace;font-size:0.85em">PUT /api/v1/projects/{id}</td><td>ProjectListPage.onEditProject → 刷新列表</td></tr><tr><td><strong>ProjectListPage</strong></td><td style="font-family:monospace;font-size:0.85em">DELETE /api/v1/projects/{id}</td><td>ProjectListPage.onDeleteProject → 刷新列表</td></tr><tr><td><strong>ProjectDetailPage</strong></td><td style="font-family:monospace;font-size:0.85em">GET /api/v1/projects/{id}</td><td>ProjectDetailPage.project</td></tr><tr><td><strong>EnvironmentListPage</strong></td><td style="font-family:monospace;font-size:0.85em">GET /api/v1/environments?project_id={id}</td><td>EnvironmentListPage.environments</td></tr><tr><td><strong>EnvironmentListPage</strong></td><td style="font-family:monospace;font-size:0.85em">POST /api/v1/environments</td><td>EnvironmentListPage.onCreateEnvironment → 刷新列表</td></tr><tr><td><strong>EnvironmentListPage</strong></td><td style="font-family:monospace;font-size:0.85em">DELETE /api/v1/environments/{envId}</td><td>EnvironmentListPage.onDeleteEnvironment → 刷新列表</td></tr><tr><td><strong>EnvironmentListPage</strong></td><td style="font-family:monospace;font-size:0.85em">POST /api/v1/environments/{envId}/test-connection</td><td>EnvironmentListPage 行内测试连接结果标签</td></tr><tr><td><strong>EnvironmentDetailPage</strong></td><td style="font-family:monospace;font-size:0.85em">GET /api/v1/environments/{envId}</td><td>EnvironmentDetailPage.environment</td></tr><tr><td><strong>EnvironmentDetailPage</strong></td><td style="font-family:monospace;font-size:0.85em">PUT /api/v1/environments/{envId}</td><td>EnvironmentDetailPage.onUpdateEnvironment → 刷新数据</td></tr><tr><td><strong>EnvironmentDetailPage</strong></td><td style="font-family:monospace;font-size:0.85em">POST /api/v1/environments/{envId}/test-connection</td><td>EnvironmentDetailPage.testResult</td></tr><tr><td><strong>EnvironmentDetailPage</strong></td><td style="font-family:monospace;font-size:0.85em">POST /api/v1/environments/{envId}/import-key</td><td>EnvironmentDetailPage.onImportKey → 提示导入结果</td></tr><tr><td><strong>DeployPage</strong></td><td style="font-family:monospace;font-size:0.85em">GET /api/v1/environments?project_id={id}</td><td>DeployPage.environments（下拉选项）</td></tr><tr><td><strong>DeployPage</strong></td><td style="font-family:monospace;font-size:0.85em">POST /api/v1/projects/{id}/deploy</td><td>DeployPage.deployResult → 跳转进度页</td></tr><tr><td><strong>DeployStatusPage</strong></td><td style="font-family:monospace;font-size:0.85em">GET /api/v1/deployments/{deployId}/status</td><td>DeployStatusPage.status（轮询更新）</td></tr><tr><td><strong>DeployHistoryPage</strong></td><td style="font-family:monospace;font-size:0.85em">GET /api/v1/projects/{id}/deployments?page=&amp;size=</td><td>DeployHistoryPage.history</td></tr><tr><td><strong>AuditLogPage</strong></td><td style="font-family:monospace;font-size:0.85em">GET /api/v1/audit/logs?page=&amp;size=&amp;action=&amp;resource_type=&amp;start_time=&amp;end_time=</td><td>AuditLogPage.logs</td></tr><tr><td><strong>AuditLogPage</strong></td><td style="font-family:monospace;font-size:0.85em">GET /api/v1/audit/logs/export</td><td>AuditLogPage CSV 文件下载</td></tr></tbody></table>
   </div>
 </div>
 
 <div class="section" id="models">
   <div class="section-header">
     <div class="icon" style="background:rgba(91,141,239,0.12)">🗄️</div>
-    <h2>数据模型 (5)</h2>
+    <h2>数据模型 (7)</h2>
   </div>
   <div class="section-body">
 
-<details class="contract-group" open><summary>状态存储 <span class="cg-count">5</span></summary><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗃️ projectStore<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(107,115,148,0.12);color:var(--c-muted);margin-left:6px">自有</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">Pinia store，管理项目列表和当前选中项目状态，数据来自 API Gateway 转发的 Project Management Service 接口</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>projects <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">Array&lt;{id: string, name: string, description?: string, created_at: string}&gt;</td><td>项目列表，由 ListProjects 接口填充</td></tr><tr><td>total <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">number</td><td>项目总数，用于分页</td></tr><tr><td>currentProject</td><td class="field-type">{id: string, name: string, description?: string, created_at: string} | null</td><td>当前选中的项目，用于详情页和状态缓存</td></tr><tr><td>loading <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">boolean</td><td>列表加载状态</td></tr><tr><td>page <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">number</td><td>当前分页页码</td></tr><tr><td>pageSize <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">number</td><td>每页条数</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗃️ environmentStore<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(107,115,148,0.12);color:var(--c-muted);margin-left:6px">自有</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">Pinia store，管理当前项目下的部署环境列表和配置状态</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>environments <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">Array&lt;{id: string, name: string, label: string, host: string, port: number, username: string, deploy_path: string, created_at: string}&gt;</td><td>当前项目的环境列表</td></tr><tr><td>currentEnvironment</td><td class="field-type">{id: string, name: string, label: string, host: string, port: number, username: string, deploy_path: string, created_at: string} | null</td><td>当前选中的环境详情</td></tr><tr><td>loading <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">boolean</td><td>加载状态</td></tr><tr><td>connectionTestResult</td><td class="field-type">{success: boolean, message: string} | null</td><td>SSH 连接测试结果，由 TestConnection 接口返回</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗃️ keyStore<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(107,115,148,0.12);color:var(--c-muted);margin-left:6px">自有</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">Pinia store，管理 SSH 密钥列表和上传状态</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>keys <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">Array&lt;{id: string, name: string, fingerprint: string, created_at: string}&gt;</td><td>已上传的 SSH 密钥列表</td></tr><tr><td>loading <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">boolean</td><td>加载状态</td></tr><tr><td>uploading <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">boolean</td><td>密钥上传中状态</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗃️ deploymentStore<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(107,115,148,0.12);color:var(--c-muted);margin-left:6px">自有</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">Pinia store，管理部署记录列表和当前部署详情，对应 GetDeploymentStatus 契约</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>currentDeployment</td><td class="field-type">{id: string, project_id: string, environment_id: string, version: string, status: string, steps: Array&lt;object&gt;, created_at: string, updated_at: string} | null</td><td>当前正在查看的部署详情，由 GetDeploymentStatus 接口填充</td></tr><tr><td>deploymentHistory <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">Array&lt;{id: string, project_id: string, environment_id: string, version: string, status: string, created_at: string}&gt;</td><td>部署历史记录列表</td></tr><tr><td>loading <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">boolean</td><td>加载状态</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗃️ deploymentLogStore<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(107,115,148,0.12);color:var(--c-muted);margin-left:6px">自有</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">Pinia store，管理 WebSocket 实时部署日志流状态，对应 DeploymentLogStream 契约</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>logs <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">Array&lt;{type: string, data: string, timestamp: string}&gt;</td><td>实时日志条目列表，由 WebSocket 消息持续追加</td></tr><tr><td>connected <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">boolean</td><td>WebSocket 连接状态</td></tr><tr><td>deploymentId</td><td class="field-type">string | null</td><td>当前 WebSocket 订阅的部署 ID</td></tr></tbody></table></div></details>
+<details class="contract-group" open><summary>状态存储 <span class="cg-count">3</span></summary><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗃️ AuthStore<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(107,115,148,0.12);color:var(--c-muted);margin-left:6px">自有</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">全局认证状态存储，管理用户登录态、会话 Token 和权限信息</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>token</td><td class="field-type">string | null</td><td>JWT 会话令牌</td></tr><tr><td>currentUser</td><td class="field-type">UserInfo | null</td><td>当前登录用户信息</td></tr><tr><td>permissions <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string[]</td><td>当前用户权限列表</td></tr><tr><td>isAuthenticated <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">boolean</td><td>是否已通过认证</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗃️ ProjectStore<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(107,115,148,0.12);color:var(--c-muted);margin-left:6px">自有</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">项目列表全局状态，缓存项目数据以减少重复请求</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>projects <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">Project[]</td><td>项目列表数据</td></tr><tr><td>currentProject</td><td class="field-type">Project | null</td><td>当前选中的项目</td></tr><tr><td>loading <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">boolean</td><td>加载状态</td></tr><tr><td>pagination <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">PaginationInfo</td><td>分页信息</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗃️ DeployStore<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(107,115,148,0.12);color:var(--c-muted);margin-left:6px">自有</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署相关状态管理，维护实时部署进度和轮询控制</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>currentDeployment</td><td class="field-type">DeploymentStatus | null</td><td>当前实时部署状态</td></tr><tr><td>pollingInterval <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">number</td><td>轮询间隔（毫秒）</td></tr><tr><td>history <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">DeploymentRecord[]</td><td>部署历史列表</td></tr><tr><td>historyPagination <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">PaginationInfo</td><td>历史记录分页信息</td></tr></tbody></table></div></details>
+<details class="contract-group" open><summary>数据结构 <span class="cg-count">4</span></summary><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">📦 UserInfo<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(107,115,148,0.12);color:var(--c-muted);margin-left:6px">自有</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">当前登录用户信息的数据结构</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>用户 ID</td></tr><tr><td>username <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>用户名</td></tr><tr><td>role <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>用户角色（admin / operator / developer）</td></tr><tr><td>avatar</td><td class="field-type">string</td><td>头像 URL</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">📦 PaginationInfo<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(107,115,148,0.12);color:var(--c-muted);margin-left:6px">自有</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">前端通用分页信息数据结构</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>page <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">integer</td><td>当前页码</td></tr><tr><td>size <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">integer</td><td>每页记录数</td></tr><tr><td>total <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">integer</td><td>总记录数</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">📦 ConnectionTestResult<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(107,115,148,0.12);color:var(--c-muted);margin-left:6px">自有</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">环境连接测试结果数据结构</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>success <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">boolean</td><td>连接是否成功</td></tr><tr><td>message <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>结果描述信息</td></tr><tr><td>latency_ms <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">integer</td><td>连接延迟（毫秒）</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">📦 DeployTriggerResult<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(107,115,148,0.12);color:var(--c-muted);margin-left:6px">自有</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署触发请求的返回结果</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>deployment_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>部署记录 ID</td></tr><tr><td>status <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>部署状态（pending / running / success / failed）</td></tr><tr><td>message <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>提示消息</td></tr></tbody></table></div></details>
   </div>
 </div>
 
 <div class="section" id="interfaces">
   <div class="section-header">
     <div class="icon" style="background:rgba(34,211,238,0.12)">🔌</div>
-    <h2>接口定义 (6)</h2>
+    <h2>接口定义 (9)</h2>
   </div>
   <div class="section-body">
 
-<div class="contract-card"><div class="cc-head"><span class="method-badge frontend">frontend</span><span class="cc-endpoint">/</span><span class="cc-name">ProjectListPage</span></div><div class="cc-desc">项目列表首页。加载时调用 ListProjects 获取全量项目列表；顶部提供「新建项目」按钮调用 CreateProject；每个项目卡片提供删除操作调用 DeleteProject</div><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>projects</td><td class="field-type">array&lt;Project&gt;</td></tr><tr><td>total</td><td class="field-type">integer</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>请求参数错误，分页参数不合法</td></tr><tr><td>500</td><td>服务端错误，无法获取项目列表</td></tr></tbody></table></div>
-<div class="contract-card"><div class="cc-head"><span class="method-badge frontend">frontend</span><span class="cc-endpoint">/projects/:projectId</span><span class="cc-name">ProjectDetailPage</span></div><div class="cc-desc">项目详情页，展示项目基本信息以及该项目的所有部署环境列表。支持创建新环境（CreateEnvironment）和删除环境操作；每个环境项提供连接测试按钮（TestConnection）。通过 projectStore.currentProject 和 environmentStore.environments 渲染页面</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>projectId</td><td class="field-type">string</td><td>项目 ID，路由路径参数</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>project</td><td class="field-type">Project</td></tr><tr><td>environments</td><td class="field-type">array&lt;Environment&gt;</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>404</td><td>项目不存在或已被删除</td></tr><tr><td>500</td><td>服务端错误，无法加载项目详情</td></tr></tbody></table></div>
-<div class="contract-card"><div class="cc-head"><span class="method-badge frontend">frontend</span><span class="cc-endpoint">/projects/:projectId/environments/:envId</span><span class="cc-name">EnvironmentDetailPage</span></div><div class="cc-desc">环境详情页，展示单个部署环境的完整配置信息（主机、端口、用户名、部署路径等）。提供编辑配置和连接测试入口（TestConnection）。关联的 SSH 密钥信息从 keyStore 中读取</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>projectId</td><td class="field-type">string</td><td>项目 ID</td></tr><tr><td>envId</td><td class="field-type">string</td><td>环境 ID</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>environment</td><td class="field-type">Environment</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>404</td><td>环境不存在或已被删除</td></tr><tr><td>500</td><td>服务端错误</td></tr></tbody></table></div>
-<div class="contract-card"><div class="cc-head"><span class="method-badge frontend">frontend</span><span class="cc-endpoint">/keys</span><span class="cc-name">KeyManagementPage</span></div><div class="cc-desc">SSH 密钥管理页面，展示所有已上传的密钥列表。支持上传新密钥（UploadKey，PEM 格式私钥，可选密码），删除已有密钥（DeleteKey）。密钥指纹用于标识和验证</div><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>keys</td><td class="field-type">array&lt;Key&gt;</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>密钥格式错误或密钥内容不合法</td></tr><tr><td>500</td><td>服务端错误，密钥存储失败</td></tr></tbody></table></div>
-<div class="contract-card"><div class="cc-head"><span class="method-badge frontend">frontend</span><span class="cc-endpoint">/projects/:projectId/environments/:envId/deploy</span><span class="cc-name">DeploymentTriggerPage</span></div><div class="cc-desc">部署触发页面，用户选择或上传可执行文件（UploadFile），填写版本号和部署说明后点击部署按钮。调用 TriggerDeployment 创建部署任务，成功后跳转至部署详情页。文件上传通过 UploadFile 接口上传至 File Storage</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>projectId</td><td class="field-type">string</td><td>项目 ID</td></tr><tr><td>envId</td><td class="field-type">string</td><td>目标部署环境 ID</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>project</td><td class="field-type">Project</td></tr><tr><td>environment</td><td class="field-type">Environment</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>参数校验失败，版本号或文件路径不合法</td></tr><tr><td>422</td><td>文件上传失败或格式不正确</td></tr><tr><td>500</td><td>服务端错误，部署创建失败</td></tr></tbody></table></div>
-<div class="contract-card"><div class="cc-head"><span class="method-badge frontend">frontend</span><span class="cc-endpoint">/deployments/:deploymentId</span><span class="cc-name">DeploymentDetailPage</span></div><div class="cc-desc">部署详情页面，实时展示部署状态和日志。页面加载时调用 GetDeploymentStatus 获取初始状态；同时建立 WebSocket 连接（DeploymentLogStream: /ws/deployments/{deployment_id}/logs）接收实时日志和状态推送。使用 deploymentLogStore 管理 WebSocket 数据流，实时渲染日志列表和进度条。部署结束后自动关闭 WebSocket</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>deploymentId</td><td class="field-type">string</td><td>部署任务 ID</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string</td></tr><tr><td>project_id</td><td class="field-type">string</td></tr><tr><td>environment_id</td><td class="field-type">string</td></tr><tr><td>version</td><td class="field-type">string</td></tr><tr><td>status</td><td class="field-type">string</td></tr><tr><td>steps</td><td class="field-type">array</td></tr><tr><td>created_at</td><td class="field-type">string</td></tr><tr><td>updated_at</td><td class="field-type">string</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>404</td><td>部署记录不存在</td></tr><tr><td>500</td><td>服务端错误，无法获取部署状态</td></tr><tr><td>1010</td><td>WebSocket 连接失败，无法接收实时日志</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge frontend">frontend</span><span class="cc-endpoint">/login</span><span class="cc-name">登录页</span></div><div class="cc-desc">用户登录页面，提供用户名密码表单进行身份认证</div><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>page</td><td class="field-type">LoginPage</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge frontend">frontend</span><span class="cc-endpoint">/projects</span><span class="cc-name">项目列表页</span></div><div class="cc-desc">项目列表展示页面，支持项目的增删改查操作</div><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>page</td><td class="field-type">ProjectListPage</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge frontend">frontend</span><span class="cc-endpoint">/projects/:id</span><span class="cc-name">项目详情页</span></div><div class="cc-desc">项目详情查看页面，展示项目基本信息和关联环境、部署等操作入口</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string</td><td>项目 ID（路由参数）</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>page</td><td class="field-type">ProjectDetailPage</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge frontend">frontend</span><span class="cc-endpoint">/projects/:id/environments</span><span class="cc-name">环境管理列表页</span></div><div class="cc-desc">环境配置管理页面，展示指定项目下的所有部署环境列表</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string</td><td>项目 ID（路由参数）</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>page</td><td class="field-type">EnvironmentListPage</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge frontend">frontend</span><span class="cc-endpoint">/projects/:id/environments/:envId</span><span class="cc-name">环境详情页</span></div><div class="cc-desc">环境详情查看页面，支持编辑环境参数、导入 SSH 密钥和测试连接</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string</td><td>项目 ID</td></tr><tr><td>envId</td><td class="field-type">string</td><td>环境 ID</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>page</td><td class="field-type">EnvironmentDetailPage</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge frontend">frontend</span><span class="cc-endpoint">/projects/:id/deploy</span><span class="cc-name">一键部署页</span></div><div class="cc-desc">部署操作页面，选择目标环境和部署文件后触发一键部署</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string</td><td>项目 ID（路由参数）</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>page</td><td class="field-type">DeployPage</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge frontend">frontend</span><span class="cc-endpoint">/deployments/:deployId</span><span class="cc-name">部署进度页</span></div><div class="cc-desc">部署进度实时可视化页面，展示步骤状态和实时日志输出</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>deployId</td><td class="field-type">string</td><td>部署记录 ID（路由参数）</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>page</td><td class="field-type">DeployStatusPage</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge frontend">frontend</span><span class="cc-endpoint">/projects/:id/deployments</span><span class="cc-name">部署历史页</span></div><div class="cc-desc">部署历史记录列表页面，可查看指定项目的所有历史部署记录</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id</td><td class="field-type">string</td><td>项目 ID（路由参数）</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>page</td><td class="field-type">DeployHistoryPage</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge frontend">frontend</span><span class="cc-endpoint">/audit-logs</span><span class="cc-name">审计日志页</span></div><div class="cc-desc">审计日志查看页面，支持按操作类型、时间范围筛选和日志导出</div><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>page</td><td class="field-type">AuditLogPage</td></tr></tbody></table></div>
   </div>
 </div>
 
@@ -548,7 +923,9 @@
   </div>
   <div class="section-body">
 
-<p>Web Console 前端采用统一的错误处理策略：（1）API 请求失败：通过 Axios 拦截器捕获 HTTP 错误状态码，根据状态码分类处理——4xx 错误在页面顶部展示 Ant Design 警告提示（Alert），5xx 错误展示全局异常提示并记录日志；（2）WebSocket 异常：断线时自动重连（指数退避策略，最多重试 5 次），重连期间展示「连接中断，正在重连…」提示条；连接最终失败时展示错误页并提供手动刷新按钮；（3）表单验证：使用 Ant Design Form 内置校验规则，在提交前对必填项、格式（版本号、主机地址、端口号等）进行客户端校验，校验不通过时聚焦到第一个错误字段；（4）加载与空状态：列表页使用 Skeleton 骨架屏展示加载中，空数据时展示 Ant Design Empty 空状态组件与引导提示；（5）并发请求管理：页面卸载时通过 AbortController 取消未完成的 API 请求，避免内存泄漏和状态污染。</p>
+<div class="err-strategy"><div class="err-label">处理策略</div><p>前端采用统一错误处理机制：API 请求错误通过 Ant Design message 组件展示通知；网络异常展示友好提示带重试按钮；路由鉴权失败自动重定向到登录页；表单校验由 Ant Design Form 统一处理并展示字段级别错误。</p></div>
+<div class="err-format-box"><div class="err-label">统一错误响应体</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td class="field-type">code</td><td class="field-type">integer</td></tr><tr><td class="field-type">error</td><td class="field-type">string</td></tr><tr><td class="field-type">detail</td><td class="field-type">string</td></tr></tbody></table></div>
+<div class="err-categories"><div class="err-category"><span class="err-code-badge _4xx">401</span><div class="err-category-body"><div class="err-cat-name">未认证</div><div class="err-cat-desc">Token 过期或未登录，自动清理认证状态并重定向至 /login</div></div></div><div class="err-category"><span class="err-code-badge _4xx">403</span><div class="err-category-body"><div class="err-cat-name">无权限</div><div class="err-cat-desc">当前用户角色无权执行该操作，展示无权限提示信息</div></div></div><div class="err-category"><span class="err-code-badge _4xx">422</span><div class="err-category-body"><div class="err-cat-name">参数校验失败</div><div class="err-cat-desc">表单提交或 API 请求参数格式错误，展示具体字段错误信息</div></div></div><div class="err-category"><span class="err-code-badge _5xx">500</span><div class="err-category-body"><div class="err-cat-name">服务端错误</div><div class="err-cat-desc">后端服务异常，展示「系统繁忙，请稍后重试」通知</div></div></div><div class="err-category"><span class="err-code-badge _other">-1</span><div class="err-category-body"><div class="err-cat-name">网络异常</div><div class="err-cat-desc">浏览器网络请求失败（断网/超时），展示「网络连接异常，请检查网络」和重试按钮</div></div></div></div>
   </div>
 </div>
 
