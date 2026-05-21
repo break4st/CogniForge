@@ -1,0 +1,361 @@
+{
+  "meta": {
+    "doc_id": "lld-Redis缓存-001",
+    "type": "lld",
+    "module_type": "infrastructure",
+    "module": "Redis缓存",
+    "title": "Redis缓存详细设计 - 高性能缓存与发布订阅中间件",
+    "author": "design_agent",
+    "created": "2026-05-21T00:00:00Z"
+  },
+  "overview": {
+    "description": "提供高性能缓存服务，用于部署状态实时推送、会话管理、数据缓存等场景。支持Redis Pub/Sub实现部署任务状态的实时推送，分布式锁确保关键资源的互斥访问，数据缓存加速频繁查询的响应速度。",
+    "dependencies": ["部署编排服务", "项目管理服务", "环境管理服务"],
+    "tech_stack": ["Redis 7", "Python"]
+  },
+  "data_models": [
+    {
+      "name": "deployment_status",
+      "type": "store",
+      "ownership": "owned",
+      "description": "部署任务实时状态缓存，支持WebSocket实时推送部署进度。使用String类型存储JSON序列化的状态对象。",
+      "fields": [
+        {"name": "task_id", "type": "string", "required": true, "description": "部署任务ID，作为key的一部分"},
+        {"name": "status", "type": "string", "required": true, "description": "部署状态：pending/running/success/failed"},
+        {"name": "progress", "type": "integer", "required": true, "description": "部署进度百分比 0-100"},
+        {"name": "log_summary", "type": "string", "required": false, "description": "实时日志摘要"},
+        {"name": "started_at", "type": "string", "required": false, "description": "部署开始时间 ISO8601"},
+        {"name": "finished_at", "type": "string", "required": false, "description": "部署完成时间 ISO8601"},
+        {"name": "error_message", "type": "string", "required": false, "description": "失败时的错误信息"}
+      ]
+    },
+    {
+      "name": "session_cache",
+      "type": "store",
+      "ownership": "owned",
+      "description": "用户会话信息缓存，使用Hash类型存储，支持滑动TTL续期。",
+      "fields": [
+        {"name": "session_id", "type": "string", "required": true, "description": "会话ID，作为key"},
+        {"name": "user_id", "type": "string", "required": true, "description": "用户ID"},
+        {"name": "username", "type": "string", "required": true, "description": "用户名"},
+        {"name": "role", "type": "string", "required": true, "description": "用户角色"},
+        {"name": "token", "type": "string", "required": true, "description": "JWT token"},
+        {"name": "expires_at", "type": "string", "required": true, "description": "会话过期时间 ISO8601"},
+        {"name": "ip_address", "type": "string", "required": false, "description": "客户端IP地址"}
+      ]
+    },
+    {
+      "name": "data_cache",
+      "type": "store",
+      "ownership": "owned",
+      "description": "通用数据缓存，用于缓存频繁查询的业务数据。使用String类型存储JSON序列化的业务数据。",
+      "fields": [
+        {"name": "cache_key", "type": "string", "required": true, "description": "缓存键，格式 cache:{module}:{业务标识}"},
+        {"name": "cache_value", "type": "string", "required": true, "description": "缓存值，JSON序列化的业务数据"},
+        {"name": "ttl_seconds", "type": "integer", "required": true, "description": "缓存过期时间（秒），默认300"},
+        {"name": "cached_at", "type": "string", "required": false, "description": "缓存创建时间 ISO8601"}
+      ]
+    },
+    {
+      "name": "distributed_lock",
+      "type": "store",
+      "ownership": "owned",
+      "description": "基于Redis SET NX PX实现的分布式锁，确保分布式环境下关键资源的互斥访问。",
+      "fields": [
+        {"name": "lock_key", "type": "string", "required": true, "description": "锁键，格式 lock:{resource_type}:{resource_id}"},
+        {"name": "lock_token", "type": "string", "required": true, "description": "唯一标识锁持有者的随机token（UUID），用于安全释放锁"},
+        {"name": "ttl_milliseconds", "type": "integer", "required": true, "description": "锁自动释放时间（毫秒），默认30000"},
+        {"name": "acquired_at", "type": "string", "required": false, "description": "锁获取时间 ISO8601"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "设置缓存",
+      "method": "INTERNAL",
+      "endpoint": "SET key value [EX seconds] [NX|XX]",
+      "description": "设置缓存键值，支持TTL和条件写入。对应Redis SET命令。",
+      "parameters": [
+        {"name": "key", "type": "string", "description": "缓存键"},
+        {"name": "value", "type": "string", "description": "缓存值（JSON序列化）"},
+        {"name": "ttl_seconds", "type": "integer", "description": "过期时间（秒），0表示永不过期"},
+        {"name": "condition", "type": "string", "description": "写入条件：NX（键不存在时）/XX（键存在时）/不传（始终写入）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "message": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 5001, "message": "Redis连接超时，操作失败"},
+        {"code": 5002, "message": "Redis命令执行异常，如OOM或LOADING状态"}
+      ]
+    },
+    {
+      "name": "获取缓存",
+      "method": "INTERNAL",
+      "endpoint": "GET key",
+      "description": "根据键获取缓存值。对应Redis GET命令。",
+      "parameters": [
+        {"name": "key", "type": "string", "description": "缓存键"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "value": "string",
+          "exists": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 5001, "message": "Redis连接超时，操作失败"},
+        {"code": 5004, "message": "缓存键不存在，返回空值"}
+      ]
+    },
+    {
+      "name": "删除缓存",
+      "method": "INTERNAL",
+      "endpoint": "DEL key [key ...]",
+      "description": "删除一个或多个缓存键。对应Redis DEL命令。",
+      "parameters": [
+        {"name": "keys", "type": "array<string>", "description": "要删除的缓存键列表"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "deleted_count": "integer"
+        }
+      },
+      "error_codes": [
+        {"code": 5001, "message": "Redis连接超时，操作失败"}
+      ]
+    },
+    {
+      "name": "缓存键是否存在",
+      "method": "INTERNAL",
+      "endpoint": "EXISTS key [key ...]",
+      "description": "检查缓存键是否存在。对应Redis EXISTS命令。",
+      "parameters": [
+        {"name": "key", "type": "string", "description": "缓存键"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "exists": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 5001, "message": "Redis连接超时，操作失败"}
+      ]
+    },
+    {
+      "name": "设置键过期时间",
+      "method": "INTERNAL",
+      "endpoint": "EXPIRE key seconds",
+      "description": "为已有缓存键设置过期时间。对应Redis EXPIRE命令。",
+      "parameters": [
+        {"name": "key", "type": "string", "description": "缓存键"},
+        {"name": "ttl_seconds", "type": "integer", "description": "过期时间（秒）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 5004, "message": "指定的缓存键不存在"},
+        {"code": 5001, "message": "Redis连接超时，操作失败"}
+      ]
+    },
+    {
+      "name": "发布消息",
+      "method": "INTERNAL",
+      "endpoint": "PUBLISH channel message",
+      "description": "向指定Redis频道发布消息，订阅该频道的所有客户端将收到消息。对应Redis PUBLISH命令。",
+      "parameters": [
+        {"name": "channel", "type": "string", "description": "频道名称"},
+        {"name": "message", "type": "string", "description": "消息内容（JSON序列化）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "subscriber_count": "integer"
+        }
+      },
+      "error_codes": [
+        {"code": 5001, "message": "Redis连接超时，发布失败"}
+      ]
+    },
+    {
+      "name": "订阅频道（WebSocket桥接）",
+      "method": "WS",
+      "endpoint": "/ws/cache/subscribe",
+      "description": "通过WebSocket桥接订阅Redis Pub/Sub频道，前端可通过此接口接收实时部署状态推送。",
+      "parameters": [
+        {"name": "channel", "type": "string", "description": "要订阅的Redis频道名称"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "channel": "string",
+          "message": "string",
+          "published_at": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 4001, "message": "频道名称无效，包含非法字符"},
+        {"code": 5001, "message": "WebSocket连接建立失败或Redis订阅异常"}
+      ]
+    },
+    {
+      "name": "获取分布式锁",
+      "method": "INTERNAL",
+      "endpoint": "SET lock_key token NX PX ttl_ms",
+      "description": "基于SET NX PX指令实现分布式锁获取，确保同一时间只有一个服务实例能持有锁。",
+      "parameters": [
+        {"name": "lock_key", "type": "string", "description": "锁键"},
+        {"name": "token", "type": "string", "description": "唯一标识锁持有者的随机token（UUID）"},
+        {"name": "ttl_milliseconds", "type": "integer", "description": "锁超时时间（毫秒），默认30000"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "acquired": "boolean",
+          "token": "string",
+          "ttl_ms": "integer"
+        }
+      },
+      "error_codes": [
+        {"code": 5003, "message": "锁已被其他实例持有，获取失败"},
+        {"code": 5001, "message": "Redis连接超时，锁操作结果不确定"}
+      ]
+    },
+    {
+      "name": "释放分布式锁",
+      "method": "INTERNAL",
+      "endpoint": "EVAL release_script 1 lock_key token",
+      "description": "使用Lua脚本安全释放分布式锁，确保只有锁的持有者才能释放锁。对应Redis EVAL命令执行原子性释放脚本。",
+      "parameters": [
+        {"name": "lock_key", "type": "string", "description": "锁键"},
+        {"name": "token", "type": "string", "description": "锁持有者token，用于验证持有者身份"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "released": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 5003, "message": "token不匹配，当前实例不是锁的持有者"},
+        {"code": 5004, "message": "锁已自动释放或不存在"},
+        {"code": 5001, "message": "Redis连接超时，释放结果不确定"}
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "Redis操作失败时先进行自动重试（指数退避），重试耗尽后向上层服务返回结构化错误码，由调用方决定降级策略。连接异常时触发哨兵模式自动切换或集群重连，期间对调用方透明。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": 5001,
+        "name": "连接超时",
+        "description": "Redis连接超时（超时阈值5s），自动重试3次（指数退避1s→2s→4s），重试耗尽后返回错误"
+      },
+      {
+        "code": 5002,
+        "name": "命令执行异常",
+        "description": "Redis服务端返回异常（如OOM、LOADING、READONLY等），记录详细错误信息后返回调用方"
+      },
+      {
+        "code": 5003,
+        "name": "锁竞争",
+        "description": "分布式锁获取失败，锁已被其他实例持有，返回锁剩余TTL信息供调用方决定等待策略"
+      },
+      {
+        "code": 5004,
+        "name": "数据不存在",
+        "description": "缓存键不存在或已过期，返回空结果供调用方触发回源加载"
+      },
+      {
+        "code": 5005,
+        "name": "集群不可用",
+        "description": "Redis哨兵检测到主节点故障，触发故障转移，期间操作返回服务不可用错误"
+      }
+    ]
+  },
+  "topology": {
+    "namespaces": [
+      {
+        "name": "deploy:status",
+        "description": "部署任务实时状态，String类型存储JSON序列化的部署进度和状态",
+        "key_pattern": "deploy:status:{task_id}"
+      },
+      {
+        "name": "session",
+        "description": "用户会话信息，Hash类型存储用户认证数据和角色信息",
+        "key_pattern": "session:{session_id}"
+      },
+      {
+        "name": "cache",
+        "description": "通用业务数据缓存，String类型存储JSON序列化的业务查询结果",
+        "key_pattern": "cache:{module}:{business_key}"
+      },
+      {
+        "name": "lock",
+        "description": "分布式锁，基于SET NX PX实现的互斥锁",
+        "key_pattern": "lock:{resource_type}:{resource_id}"
+      }
+    ],
+    "key_patterns": [
+      "deploy:status:{task_id} — 部署状态键，String类型，TTL=3600s，部署完成后自动过期",
+      "session:{session_id} — 会话键，Hash类型，TTL=1800s，每次访问触发滑动续期",
+      "cache:{module}:{business_key} — 缓存键，String类型，TTL按业务配置（默认300s）",
+      "lock:{resource_type}:{resource_id} — 锁键，String类型，TTL=30s，防死锁自动释放"
+    ],
+    "expiry_strategy": "部署状态缓存TTL=3600s（部署完成后清理），会话缓存TTL=1800s并支持滑动续期（每次访问重置TTL），数据缓存默认TTL=300s可配置（各模块按业务特点自定义），分布式锁TTL=30s防止死锁。采用惰性删除+定期淘汰策略，内存接近maxmemory时按allkeys-lru策略淘汰。",
+    "pub_sub_channels": [
+      {
+        "name": "deploy:status:{task_id}",
+        "description": "部署任务状态推送频道，部署编排服务推送进度，WebSocket桥接后推送到前端"
+      },
+      {
+        "name": "system:notifications",
+        "description": "系统级通知广播频道，用于全局消息推送"
+      },
+      {
+        "name": "session:invalidate",
+        "description": "会话失效通知频道，强制指定会话下线"
+      }
+    ]
+  },
+  "connection_contracts": {
+    "connection_pool": {
+      "min_connections": 5,
+      "max_connections": 50,
+      "max_idle_connections": 10,
+      "idle_timeout_seconds": 300,
+      "health_check_interval_seconds": 60
+    },
+    "timeout": {
+      "connect_timeout_seconds": 5,
+      "read_timeout_seconds": 3,
+      "write_timeout_seconds": 3,
+      "retry_strategy": "指数退避，最多重试3次（1s→2s→4s），所有重试耗尽后返回错误"
+    },
+    "high_availability": {
+      "mode": "sentinel",
+      "description": "采用Redis Sentinel实现高可用，主节点故障时自动完成故障转移",
+      "sentinel_hosts": ["sentinel:26379"],
+      "master_name": "mymaster",
+      "min_sentinel_required": 2
+    }
+  }
+}
