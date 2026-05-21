@@ -2,142 +2,118 @@
   "meta": {
     "doc_id": "lld-File Storage-001",
     "type": "lld",
-    "module_type": "ModuleType.INFRASTRUCTURE",
+    "module_type": "ModuleType.SERVICE",
     "module": "File Storage",
     "title": "LLD - File Storage",
     "author": "design_agent",
-    "created": "2026-05-21 10:23"
+    "created": "2026-05-21 10:42"
   },
   "overview": {
-    "description": "存储用户上传的可执行文件和部署产物，为部署任务提供文件下载/传输路径，管理文件版本，存储部署生成的脚本等中间产物。后端采用本地文件系统或对象存储（MinIO），通过 FileRecord 元数据实现文件生命周期管理。",
-    "dependencies": [],
-    "tech_stack": ["本地文件系统 / 对象存储 (MinIO)"]
+    "description": "文件存储服务，管理上传的部署包文件，支持版本化和归档",
+    "dependencies": ["Primary Database"],
+    "tech_stack": ["Python", "FastAPI", "PostgreSQL"]
   },
   "data_models": [
     {
-      "name": "FileRecord",
-      "type": "struct",
-      "ownership": "owned",
-      "description": "文件元数据记录。每个上传到文件存储的文件对应一条记录，记录文件的基本信息、存储路径和关联项目。元数据可存储在本地 SQLite 或 MinIO 对象标签/元数据字段中，不依赖外部数据库。",
+      "name": "files",
+      "type": "reference",
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "files"
+      },
+      "description": "部署包文件存储表，文件二进制内容以bytea格式直接存储在数据库中，由File Storage服务负责读写",
       "fields": [
-        {"name": "file_id", "type": "string", "required": true, "description": "文件唯一标识（UUID v4）"},
-        {"name": "file_name", "type": "string", "required": true, "description": "原始文件名（包含扩展名）"},
-        {"name": "project_id", "type": "string", "required": true, "description": "文件关联的项目 ID"},
-        {"name": "size", "type": "integer", "required": true, "description": "文件大小（字节）"},
-        {"name": "content_type", "type": "string", "required": false, "description": "文件 MIME 类型，由文件扩展名或 Magic Number 检测"},
-        {"name": "storage_path", "type": "string", "required": true, "description": "文件在存储后端中的相对路径，格式：files/{file_id}/{file_name}"},
-        {"name": "checksum", "type": "string", "required": false, "description": "文件 SHA-256 校验和（十六进制），上传完成后计算并记录，下载时用于完整性验证"},
-        {"name": "uploaded_at", "type": "datetime", "required": true, "description": "文件上传完成时间（ISO 8601 格式）"}
-      ]
-    },
-    {
-      "name": "StorageConfig",
-      "type": "config",
-      "ownership": "owned",
-      "description": "文件存储后端配置。支持本地文件系统和 MinIO 对象存储两种后端，通过 backend_type 切换。应用启动时加载配置并初始化对应存储驱动。",
-      "fields": [
-        {"name": "backend_type", "type": "string", "required": true, "description": "存储后端类型：local（本地文件系统）或 minio（对象存储）"},
-        {"name": "root_path", "type": "string", "required": true, "description": "存储根路径（本地模式为绝对路径，MinIO 模式为 bucket 名称）"},
-        {"name": "max_file_size_mb", "type": "integer", "required": true, "description": "单文件大小上限（MB），默认 500，超过返回 413"},
-        {"name": "allowed_extensions", "type": "array<string>", "required": false, "description": "允许上传的文件扩展名列表（如 [\"exe\", \"sh\", \"tar.gz\"]），空表示不限制"},
-        {"name": "minio_endpoint", "type": "string", "required": false, "description": "MinIO 服务端点（仅 backend_type=minio 时需要），格式：host:port"},
-        {"name": "minio_access_key", "type": "string", "required": false, "description": "MinIO 访问密钥（仅 backend_type=minio 时需要）"},
-        {"name": "minio_secret_key", "type": "string", "required": false, "description": "MinIO 秘密密钥（仅 backend_type=minio 时需要），应用内加密存储"},
-        {"name": "minio_use_ssl", "type": "boolean", "required": false, "description": "MinIO 是否使用 SSL/TLS 连接，默认 false"}
+        {"name": "id", "type": "uuid", "required": true, "description": "文件唯一标识（主键），服务层自动生成UUID v4"},
+        {"name": "project_id", "type": "uuid", "required": true, "description": "所属项目ID，关联projects表，实现项目间文件隔离"},
+        {"name": "name", "type": "varchar(255)", "required": true, "description": "文件名称，包含扩展名，如deploy.tar.gz"},
+        {"name": "size", "type": "bigint", "required": true, "description": "文件大小，单位字节"},
+        {"name": "checksum", "type": "varchar(64)", "required": true, "description": "文件内容SHA256校验和，十六进制字符串，上传时由服务计算"},
+        {"name": "uploaded_by", "type": "uuid", "required": true, "description": "上传者用户ID，关联users表"},
+        {"name": "created_at", "type": "timestamp", "required": true, "description": "上传时间，默认为当前UTC时间"},
+        {"name": "version", "type": "varchar(50)", "required": true, "description": "文件版本号，服务层根据项目内文件上传序号自动生成（local_extension），格式v{序号}"}
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "UploadFile",
+      "name": "File Upload API",
       "method": "POST",
       "endpoint": "/api/files/upload",
-      "description": "上传可执行文件到文件存储。接收 multipart/form-data，验证文件大小和类型后写入存储后端并创建 FileRecord 元数据。消费者：API Gateway（代理客户端上传请求）。",
+      "description": "上传部署包文件，接收multipart/form-data格式文件上传，自动计算SHA256校验和并生成版本号",
       "parameters": [
-        {"name": "file", "type": "binary", "description": "可执行文件，以 multipart/form-data 格式上传"},
-        {"name": "project_id", "type": "string", "description": "文件关联的项目 ID（UUID）"}
+        {"name": "file", "type": "binary (multipart/form-data)", "description": "待上传的部署包文件内容"},
+        {"name": "project_id", "type": "string", "description": "文件所属项目ID，UUID格式"},
+        {"name": "notes", "type": "string (optional)", "description": "上传备注说明，可选字段"}
       ],
       "response": {
-        "status": 200,
+        "status": 201,
         "body": {
-          "file_id": "string",
+          "id": "string",
           "file_name": "string",
-          "size": "integer",
-          "storage_path": "string",
-          "uploaded_at": "string"
-        }
-      },
-      "error_codes": [
-        {"code": 400, "message": "请求参数无效：未提供文件或 project_id 为空"},
-        {"code": 413, "message": "文件大小超过限制（默认 500MB），拒绝写入"},
-        {"code": 415, "message": "不支持的文件类型，不在 allowed_extensions 范围内"},
-        {"code": 507, "message": "存储后端写入失败：磁盘空间不足或 MinIO 返回拒绝"}
-      ]
-    },
-    {
-      "name": "DownloadFile",
-      "method": "GET",
-      "endpoint": "/api/files/{file_id}",
-      "description": "下载已存储的文件。根据 file_id 查找 FileRecord，从存储后端读取文件内容并以二进制流返回。消费者：SSH Execution Service（部署时从文件存储下载可执行文件传输到远程服务器）。",
-      "parameters": [
-        {"name": "file_id", "type": "string", "description": "文件唯一标识（UUID），路径参数"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "file": "binary"
-        }
-      },
-      "error_codes": [
-        {"code": 404, "message": "文件不存在：file_id 对应的 FileRecord 未找到"},
-        {"code": 500, "message": "文件读取失败：存储后端连接超时或 I/O 错误"}
-      ]
-    },
-    {
-      "name": "GetFileInfo",
-      "method": "GET",
-      "endpoint": "/api/files/{file_id}/info",
-      "description": "获取文件元数据信息。查询 FileRecord 记录并返回完整的元数据字段，不包含文件内容。消费者：Deployment Orchestrator（编排部署时获取文件路径和校验信息）。",
-      "parameters": [
-        {"name": "file_id", "type": "string", "description": "文件唯一标识（UUID），路径参数"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "file_id": "string",
-          "file_name": "string",
+          "file_size": "integer",
           "project_id": "string",
-          "size": "integer",
-          "content_type": "string",
-          "storage_path": "string",
-          "checksum": "string",
-          "uploaded_at": "datetime"
+          "version": "string",
+          "created_at": "datetime"
         }
       },
       "error_codes": [
-        {"code": 404, "message": "文件不存在：file_id 对应的 FileRecord 未找到"},
-        {"code": 500, "message": "元数据查询失败：元数据存储不可用"}
+        {"code": 400, "message": "请求参数缺失或格式错误，如缺少project_id或上传文件为空"},
+        {"code": 404, "message": "指定的project_id不存在"},
+        {"code": 413, "message": "上传文件大小超过服务限制"},
+        {"code": 500, "message": "服务端存储文件时发生内部错误"}
       ]
     },
     {
-      "name": "DeleteFile",
-      "method": "DELETE",
-      "endpoint": "/api/files/{file_id}",
-      "description": "删除已存储的文件。从存储后端删除文件实体并移除对应的 FileRecord 元数据。消费者：API Gateway（代理客户端删除请求）、Deployment Orchestrator（部署完成后清理过期产物）。",
+      "name": "File Download (Internal)",
+      "method": "GET",
+      "endpoint": "/internal/files/{id}/download",
+      "description": "Deployment Orchestrator获取部署文件二进制内容，仅限内部服务调用，返回文件字节流",
       "parameters": [
-        {"name": "file_id", "type": "string", "description": "文件唯一标识（UUID），路径参数"}
+        {"name": "id", "type": "string", "description": "文件ID（路径参数）"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "result": "boolean"
+          "file": "binary stream"
         }
       },
       "error_codes": [
-        {"code": 404, "message": "文件不存在：file_id 对应的 FileRecord 未找到，视为已删除"},
-        {"code": 500, "message": "文件删除失败：存储后端 I/O 错误"}
+        {"code": 404, "message": "指定的文件ID不存在"},
+        {"code": 500, "message": "服务端读取文件时发生内部错误"}
       ]
     }
   ],
-  "error_handling": "文件存储模块采用防御式校验和降级策略：(1) 文件合法性校验 — 上传请求在写入存储前执行三层校验：① 文件是否为空（size=0 直接拒绝）；② 文件大小是否超过 max_file_size_mb 限制（超限返回 413）；③ 文件扩展名是否在 allowed_extensions 白名单中（配置为空则跳过此校验）。校验不通过立即拒绝，不产生脏数据。(2) 存储后端故障处理 — 本地文件系统模式：目录不存在时自动递归创建（os.makedirs exist_ok=True），磁盘写入失败（IOError/OSError）统一返回 507。MinIO 模式：客户端连接超时设定为 5s，超时或连接拒绝时返回 500。两种后端均支持启动时健康检查（写入探针文件验证 I/O 可用性），检查失败则应用拒绝启动。(3) 文件完整性 — 文件上传完成后后台计算 SHA-256 校验和，记录到 FileRecord.checksum。DownloadFile 接口可接受可选参数 ?verify=checksum，查询时返回校验和由客户端自行验证，避免服务端重复计算的开销。(4) 资源清理 — 上传过程中写入存储失败（如写入 50% 时报错），已写入的部分文件由后台协程根据超时未完成标记清理。资源泄漏防护：上传文件写入临时路径（files/.tmp/{uuid}），FileRecord 创建完成并成功后原子重命名至正式路径。上传失败或超时（默认 5 分钟）的临时文件由定时清理任务（每小时执行）批量删除。(5) 删除操作 — DeleteFile 接口幂等：文件已不存在时仍返回 200（result: true），元数据存储删除失败时返回 500 并记录审计日志。(6) 并发安全 — 文件通过 file_id（UUID）唯一标识，天然避免名称冲突。同一项目下不同用户同时上传同名文件时各自生成独立 file_id，互不影响。文件删除和下载的并发由存储后端保证（MinIO 对象版本 / 本地文件系统通过原子重命名和硬链接计数避免部分读取）。(7) 磁盘空间监控 — 后台定时（每 5 分钟）检查存储根目录所在分区的剩余空间，低于阈值（默认可用空间 < 1GB）时触发告警并拒绝新的上传请求，返回 507。"
+  "error_handling": {
+    "strategy": "File Storage服务采用统一错误处理策略，所有接口返回标准JSON错误响应（Content-Type: application/json），输入校验错误返回4xx，服务端异常返回5xx；二进制下载接口在出错时同样返回JSON格式错误体而非二进制流",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": 400,
+        "name": "参数校验错误",
+        "description": "请求参数缺失、格式错误或校验不通过时触发，包括：project_id不是合法UUID格式、上传文件内容为空（0字节）、notes字段超长等；服务层拒绝请求并返回具体错误详情"
+      },
+      {
+        "code": 404,
+        "name": "资源不存在",
+        "description": "引用的project_id或文件ID在数据库中不存在时触发；上传接口通过查询projects表验证项目存在性，下载接口校验文件ID有效性"
+      },
+      {
+        "code": 413,
+        "name": "文件大小超限",
+        "description": "上传的部署包文件超过服务配置的最大大小限制时触发，默认限制1GB；服务在接收请求体的文件流时即进行大小判断，拒绝超限文件并返回错误"
+      },
+      {
+        "code": 500,
+        "name": "服务端内部错误",
+        "description": "数据库读写异常、文件内容校验和不匹配、磁盘空间不足等不可预见的服务端错误时触发；返回通用错误信息，具体异常堆栈记录至服务端日志"
+      }
+    ]
+  }
 }
