@@ -1,0 +1,878 @@
+{
+  "meta": {
+    "doc_id": "sad-002",
+    "type": "sad",
+    "title": "一键自动化部署系统 — 系统架构设计",
+    "author": "architect_agent",
+    "created": "2026-05-21 16:39"
+  },
+  "system_overview": {
+    "description": "一键自动化部署系统是一个基于 Web 的部署管理平台，采用前后端分离的分层微服务架构。核心能力包括：多项目独立管理与灵活切换、多套部署环境（测试/灰度/正式）自定义配置、SSH 密钥安全连接、一键式自动化部署编排、部署过程实时可视化与日志推送、部署历史追溯与版本回滚。系统通过 API 网关统一接入和认证，长时部署任务通过消息队列异步解耦，SSH 执行引擎负责远程服务器操作，全操作审计日志确保可追溯性。架构遵循最小权限原则，各服务无状态设计支持独立水平扩展。",
+    "roles": [
+      {
+        "name": "运维人员",
+        "permissions": [
+          "创建、编辑、删除部署环境",
+          "配置环境 SSH 连接参数（主机、端口、用户名）",
+          "导入和管理 SSH 密钥",
+          "执行环境连接测试验证配置有效性",
+          "查看部署历史和日志",
+          "执行版本回滚操作"
+        ]
+      },
+      {
+        "name": "开发人员",
+        "permissions": [
+          "查看项目列表和环境列表",
+          "选择项目和目标环境执行一键部署",
+          "查看部署进度和实时日志",
+          "查看部署结果通知"
+        ]
+      },
+      {
+        "name": "项目管理者",
+        "permissions": [
+          "创建、编辑、删除项目",
+          "在多个项目间切换管理",
+          "查看全局部署状态和统计",
+          "查看审计日志"
+        ]
+      }
+    ]
+  },
+  "architecture": {
+    "style": "分层微服务架构",
+    "description": "系统采用严格的分层微服务架构，从上到下分为五层：展示层（Web 控制台 SPA）→ 网关层（API 网关统一路由、认证、限流、跨域）→ 服务层（六个领域服务 + 一个回滚管理服务，各自承担单一职责）→ 数据层（PostgreSQL 持久化、Redis 缓存与实时状态、RabbitMQ 异步消息）→ 外部集成层（SSH 协议连接远程服务器）。服务间同步通信采用 RESTful API，长时部署任务通过消息队列异步编排实现削峰填谷和任务解耦。部署进度通过 SSE（Server-Sent Events）实现前端实时推送，避免轮询开销。",
+    "layers": [
+      {
+        "name": "展示层",
+        "components": ["Web Console"]
+      },
+      {
+        "name": "网关层",
+        "components": ["API Gateway"]
+      },
+      {
+        "name": "服务层",
+        "components": [
+          "Project Management Service",
+          "Environment Management Service",
+          "Key Management Service",
+          "SSH Execution Service",
+          "Deployment Orchestrator",
+          "Rollback Manager",
+          "Audit Service"
+        ]
+      },
+      {
+        "name": "数据层",
+        "components": ["Primary Database", "Redis", "RabbitMQ"]
+      },
+      {
+        "name": "外部集成层",
+        "components": ["Remote Servers"]
+      }
+    ],
+    "connections": [
+      {
+        "protocol": "HTTPS/REST（Web Console ↔ API Gateway）、SSE（API Gateway → Web Console 实时推送）"
+      },
+      {
+        "protocol": "HTTPS/REST（API Gateway ↔ 各微服务）"
+      },
+      {
+        "protocol": "SQL（PostgreSQL）/ Redis Protocol / AMQP（RabbitMQ）"
+      },
+      {
+        "protocol": "SSH-2（SSH Execution Service ↔ Remote Servers）"
+      }
+    ],
+    "features": [
+      "前后端分离，React SPA + FastAPI 微服务",
+      "API 网关统一入口，集中鉴权与限流",
+      "服务无状态设计，支持独立水平扩展",
+      "异步消息驱动部署流程，削峰填谷",
+      "SSH 密钥 AES-256 加密存储",
+      "部署进度 SSE 实时推送，可视化展示",
+      "全操作审计日志，所有变更可追溯",
+      "版本回滚支持，一键恢复历史部署"
+    ]
+  },
+  "tech_stack": {
+    "backend": {
+      "language": "Python 3.11+",
+      "framework": "FastAPI",
+      "async_support": "asyncio + uvicorn"
+    },
+    "frontend": {
+      "framework": "React 18",
+      "ui_library": "Ant Design 5.x",
+      "state_management": "React Query + Context API",
+      "real_time": "Server-Sent Events (SSE)"
+    },
+    "database": "PostgreSQL 15",
+    "cache": "Redis 7",
+    "mq": "RabbitMQ 3.12",
+    "deployment_protocol": "SSH-2",
+    "containerization": "Docker + Docker Compose",
+    "api_gateway": "Nginx + OpenResty"
+  },
+  "components": [
+    {
+      "name": "Web Console",
+      "type": "frontend",
+      "description": "基于 React 18 + Ant Design 5.x 的单页应用，提供完整的用户操作界面和部署可视化体验",
+      "responsibilities": [
+        "项目列表展示与 CRUD 操作界面",
+        "部署环境配置表单与 SSH 密钥管理界面",
+        "一键部署触发按钮与进度可视化（进度条 + 实时日志流）",
+        "部署历史记录查看与版本回滚操作",
+        "审计日志查询与导出",
+        "多项目间快速切换导航"
+      ]
+    },
+    {
+      "name": "API Gateway",
+      "type": "gateway",
+      "description": "基于 Nginx + OpenResty 的统一入口网关，负责请求路由转发、身份认证、限流和 SSE 连接管理",
+      "responsibilities": [
+        "统一路由转发至各微服务",
+        "JWT 请求身份认证与会话校验",
+        "API 限流与防滥用",
+        "SSE 连接代理与长连接管理",
+        "跨域策略（CORS）管理",
+        "请求响应日志记录"
+      ]
+    },
+    {
+      "name": "Project Management Service",
+      "type": "service",
+      "description": "管理项目生命周期的领域服务，每个项目拥有独立的环境配置和部署历史",
+      "responsibilities": [
+        "项目的创建、编辑、删除、查询",
+        "项目与环境的关系绑定与管理",
+        "项目级别的配置参数管理",
+        "项目列表分页和搜索"
+      ]
+    },
+    {
+      "name": "Environment Management Service",
+      "type": "service",
+      "description": "管理部署环境配置的领域服务，负责环境参数管理与连接测试",
+      "responsibilities": [
+        "环境的创建、编辑、删除、查询",
+        "环境连接参数（主机、端口、用户名、标签）管理",
+        "SSH 密钥与环境的绑定关系管理",
+        "触发环境连接测试并返回结果"
+      ]
+    },
+    {
+      "name": "Key Management Service",
+      "type": "service",
+      "description": "SSH 密钥安全管理的专用服务，负责密钥的加密存储、解密使用和访问控制",
+      "responsibilities": [
+        "SSH 私钥的导入、验证和 AES-256 加密存储",
+        "按需解密并提供 SSH 连接使用的密钥",
+        "密钥访问权限控制（按项目隔离）",
+        "密钥指纹计算与展示",
+        "支持密钥轮换"
+      ]
+    },
+    {
+      "name": "SSH Execution Service",
+      "type": "service",
+      "description": "核心执行引擎，通过 SSH-2 协议在远程服务器上执行命令、传输文件、生成管理脚本",
+      "responsibilities": [
+        "SSH 会话建立与密钥认证",
+        "远程目录创建（带版本标识的部署目录）",
+        "可执行文件上传传输",
+        "远程管理脚本生成（启动/停止/重启/状态检查）与执行",
+        "命令执行结果收集、解析与返回",
+        "执行进度实时发布到消息队列"
+      ]
+    },
+    {
+      "name": "Deployment Orchestrator",
+      "type": "service",
+      "description": "部署流程的编排引擎，负责任务接收、状态管理、步骤编排和进度分发",
+      "responsibilities": [
+        "部署任务接收、校验与状态管理",
+        "部署步骤编排与执行调度",
+        "通过 RabbitMQ 异步下发执行任务",
+        "消费进度消息并更新实时状态（Redis + DB）",
+        "部署结果汇总与通知",
+        "部署历史记录持久化维护"
+      ]
+    },
+    {
+      "name": "Rollback Manager",
+      "type": "service",
+      "description": "版本回滚管理服务，负责回滚操作编排和历史版本管理",
+      "responsibilities": [
+        "查询指定部署的历史版本列表",
+        "回滚操作请求接收与校验",
+        "回滚步骤编排（备份当前版本 → 恢复目标版本 → 验证）",
+        "回滚过程中的进度跟踪与推送",
+        "回滚操作记录审计"
+      ]
+    },
+    {
+      "name": "Audit Service",
+      "type": "service",
+      "description": "全操作审计日志服务，记录所有关键操作事件，支持查询和导出",
+      "responsibilities": [
+        "记录项目创建、修改、删除操作",
+        "记录环境配置变更",
+        "记录 SSH 密钥导入和使用",
+        "记录每次部署请求与结果",
+        "记录回滚操作",
+        "审计日志持久化存储、查询与导出"
+      ]
+    },
+    {
+      "name": "Primary Database",
+      "type": "database",
+      "description": "PostgreSQL 15 关系型数据库，存储系统全部持久化数据",
+      "responsibilities": [
+        "项目数据的持久化存储（projects 表）",
+        "环境配置数据的持久化（environments 表）",
+        "SSH 密钥密文存储（keys 表）",
+        "部署历史记录存储（deployments 表）",
+        "版本快照记录存储（deployment_snapshots 表）",
+        "审计日志存储（audit_logs 表）",
+        "数据完整性与一致性保障"
+      ]
+    },
+    {
+      "name": "Redis",
+      "type": "cache",
+      "description": "Redis 7 内存缓存，加速数据访问和实时状态追踪",
+      "responsibilities": [
+        "用户会话缓存与分布式 session",
+        "部署任务实时状态缓存（status + progress + logs）",
+        "环境连接测试结果缓存",
+        "配置缓存降低数据库查询压力"
+      ]
+    },
+    {
+      "name": "RabbitMQ",
+      "type": "mq",
+      "description": "RabbitMQ 3.12 消息队列，用于解耦部署请求与执行，支持异步事件驱动",
+      "responsibilities": [
+        "部署任务消息异步投递（deploy.tasks 交换机）",
+        "部署进度状态变更通知分发（deploy.progress 交换机）",
+        "回滚任务异步投递（rollback.tasks 交换机）",
+        "服务间事件驱动通信",
+        "削峰填谷，平滑处理并发部署高峰"
+      ]
+    },
+    {
+      "name": "Remote Servers",
+      "type": "service",
+      "description": "外部远程 Linux 服务器，承载部署目标环境，通过 SSH-2 协议接入",
+      "responsibilities": [
+        "提供 SSH 可访问的远程执行环境",
+        "接收部署文件并存储到版本目录",
+        "执行部署管理脚本（启动/停止/重启）",
+        "返回命令执行结果与退出码"
+      ]
+    }
+  ],
+  "contracts": [
+    {
+      "interface": "ProjectCRUD",
+      "provider": "Project Management Service",
+      "consumers": ["API Gateway", "Web Console"],
+      "type": "REST",
+      "endpoint": "POST /api/v1/projects",
+      "request": {
+        "path_params": {},
+        "query_params": {},
+        "body": {
+          "name": "string",
+          "description": "string (optional)",
+          "tags": "string[] (optional)"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string (uuid)",
+          "name": "string",
+          "description": "string",
+          "tags": "string[]",
+          "created_at": "string (datetime)"
+        }
+      },
+      "description": "创建新项目，返回项目完整信息"
+    },
+    {
+      "interface": "ProjectQuery",
+      "provider": "Project Management Service",
+      "consumers": ["API Gateway", "Web Console"],
+      "type": "REST",
+      "endpoint": "GET /api/v1/projects",
+      "request": {
+        "path_params": {},
+        "query_params": {
+          "page": "int (default 1)",
+          "page_size": "int (default 20)",
+          "search": "string (optional)"
+        },
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "items": "Project[]",
+          "total": "int",
+          "page": "int",
+          "page_size": "int"
+        }
+      },
+      "description": "分页查询项目列表，支持按名称模糊搜索"
+    },
+    {
+      "interface": "EnvironmentCRUD",
+      "provider": "Environment Management Service",
+      "consumers": ["API Gateway", "Web Console"],
+      "type": "REST",
+      "endpoint": "POST /api/v1/projects/{project_id}/environments",
+      "request": {
+        "path_params": {
+          "project_id": "string (uuid)"
+        },
+        "query_params": {},
+        "body": {
+          "name": "string",
+          "label": "string (enum: test/gray/prod)",
+          "host": "string",
+          "port": "int (default 22)",
+          "username": "string",
+          "key_id": "string (uuid, optional)"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string (uuid)",
+          "project_id": "string (uuid)",
+          "name": "string",
+          "label": "string",
+          "host": "string",
+          "port": "int",
+          "username": "string",
+          "created_at": "string (datetime)"
+        }
+      },
+      "description": "为指定项目创建新的部署环境，可绑定 SSH 密钥"
+    },
+    {
+      "interface": "ConnectionTest",
+      "provider": "Environment Management Service",
+      "consumers": ["API Gateway", "Web Console"],
+      "type": "REST",
+      "endpoint": "POST /api/v1/environments/{id}/test",
+      "request": {
+        "path_params": {
+          "id": "string (uuid)"
+        },
+        "query_params": {},
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "message": "string",
+          "latency_ms": "int (optional)"
+        }
+      },
+      "description": "测试指定环境的 SSH 连接可达性，返回连接延迟和结果"
+    },
+    {
+      "interface": "KeyImport",
+      "provider": "Key Management Service",
+      "consumers": ["API Gateway", "Web Console"],
+      "type": "REST",
+      "endpoint": "POST /api/v1/keys/import",
+      "request": {
+        "path_params": {},
+        "query_params": {},
+        "body": {
+          "name": "string",
+          "private_key": "string (PEM format)",
+          "passphrase": "string (optional)",
+          "project_id": "string (uuid)"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "key_id": "string (uuid)",
+          "name": "string",
+          "fingerprint": "string (SHA256)",
+          "created_at": "string (datetime)"
+        }
+      },
+      "description": "导入 SSH 私钥，系统自动校验格式、计算指纹并 AES-256 加密存储"
+    },
+    {
+      "interface": "KeyDecrypt",
+      "provider": "Key Management Service",
+      "consumers": ["SSH Execution Service"],
+      "type": "REST",
+      "endpoint": "POST /internal/keys/decrypt",
+      "request": {
+        "path_params": {},
+        "query_params": {},
+        "body": {
+          "key_id": "string (uuid)",
+          "requestor": "string (service_name)"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "key_id": "string (uuid)",
+          "private_key_pem": "string (decrypted PEM)",
+          "expires_in_seconds": "int"
+        }
+      },
+      "description": "内部接口，按需解密 SSH 私钥并返回明文用于建立连接，解密结果带有过期时间"
+    },
+    {
+      "interface": "DeployRequest",
+      "provider": "Deployment Orchestrator",
+      "consumers": ["API Gateway", "Web Console"],
+      "type": "REST",
+      "endpoint": "POST /api/v1/projects/{project_id}/deploy",
+      "request": {
+        "path_params": {
+          "project_id": "string (uuid)"
+        },
+        "query_params": {},
+        "body": {
+          "environment_id": "string (uuid)",
+          "file_content_base64": "string",
+          "version": "string",
+          "description": "string (optional)"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "deployment_id": "string (uuid)",
+          "status": "string (enum: pending)",
+          "created_at": "string (datetime)"
+        }
+      },
+      "description": "提交一键部署请求，可执行文件以 base64 编码上传，返回 deployment_id 用于订阅进度"
+    },
+    {
+      "interface": "DeployStatusStream",
+      "provider": "Deployment Orchestrator",
+      "consumers": ["API Gateway", "Web Console"],
+      "type": "SSE",
+      "endpoint": "GET /api/v1/deployments/{id}/stream",
+      "request": {
+        "path_params": {
+          "id": "string (uuid)"
+        },
+        "query_params": {},
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "event": "string (enum: progress/step/log/complete/error)",
+          "data": {
+            "deployment_id": "string (uuid)",
+            "status": "string",
+            "current_step": "string",
+            "progress_pct": "int (0-100)",
+            "log_line": "string (optional)",
+            "timestamp": "string (datetime)"
+          }
+        }
+      },
+      "description": "SSE 长连接端点，实时推送部署进度、步骤变更和日志行，前端无需轮询"
+    },
+    {
+      "interface": "DeployHistoryQuery",
+      "provider": "Deployment Orchestrator",
+      "consumers": ["API Gateway", "Web Console"],
+      "type": "REST",
+      "endpoint": "GET /api/v1/projects/{project_id}/deployments",
+      "request": {
+        "path_params": {
+          "project_id": "string (uuid)"
+        },
+        "query_params": {
+          "page": "int (default 1)",
+          "page_size": "int (default 20)",
+          "environment_id": "string (uuid, optional)"
+        },
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "items": "DeploymentRecord[]",
+          "total": "int",
+          "page": "int",
+          "page_size": "int"
+        }
+      },
+      "description": "分页查询项目的历史部署记录，支持按环境筛选"
+    },
+    {
+      "interface": "RollbackRequest",
+      "provider": "Rollback Manager",
+      "consumers": ["API Gateway", "Web Console"],
+      "type": "REST",
+      "endpoint": "POST /api/v1/projects/{project_id}/rollback",
+      "request": {
+        "path_params": {
+          "project_id": "string (uuid)"
+        },
+        "query_params": {},
+        "body": {
+          "deployment_id": "string (uuid - 要回滚到的目标部署记录)"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "rollback_id": "string (uuid)",
+          "status": "string (enum: pending)",
+          "target_deployment_id": "string (uuid)",
+          "created_at": "string (datetime)"
+        }
+      },
+      "description": "提交回滚请求，指定要恢复到的历史部署版本，返回 rollback_id 用于进度追踪"
+    },
+    {
+      "interface": "RollbackVersionList",
+      "provider": "Rollback Manager",
+      "consumers": ["API Gateway", "Web Console"],
+      "type": "REST",
+      "endpoint": "GET /api/v1/projects/{project_id}/deployments/{deployment_id}/versions",
+      "request": {
+        "path_params": {
+          "project_id": "string (uuid)",
+          "deployment_id": "string (uuid)"
+        },
+        "query_params": {},
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "versions": [
+            {
+              "deployment_id": "string (uuid)",
+              "version": "string",
+              "status": "string",
+              "created_at": "string (datetime)"
+            }
+          ]
+        }
+      },
+      "description": "查询指定部署的历史版本快照列表，供用户选择回滚目标"
+    },
+    {
+      "interface": "SSHExecute",
+      "provider": "SSH Execution Service",
+      "consumers": ["Environment Management Service", "Deployment Orchestrator"],
+      "type": "REST",
+      "endpoint": "POST /internal/ssh/execute",
+      "request": {
+        "path_params": {},
+        "query_params": {},
+        "body": {
+          "host": "string",
+          "port": "int",
+          "username": "string",
+          "key_id": "string (uuid)",
+          "command": "string",
+          "timeout_seconds": "int (default 300)"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "stdout": "string",
+          "stderr": "string",
+          "exit_code": "int",
+          "duration_ms": "int"
+        }
+      },
+      "description": "内部接口，在远程服务器上执行指定 shell 命令并返回完整结果"
+    },
+    {
+      "interface": "SSHFileTransfer",
+      "provider": "SSH Execution Service",
+      "consumers": ["Deployment Orchestrator"],
+      "type": "REST",
+      "endpoint": "POST /internal/ssh/upload",
+      "request": {
+        "path_params": {},
+        "query_params": {},
+        "body": {
+          "host": "string",
+          "port": "int",
+          "username": "string",
+          "key_id": "string (uuid)",
+          "remote_path": "string",
+          "file_content_base64": "string",
+          "file_mode": "string (default '0755')"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "file_size": "int",
+          "checksum": "string (sha256)"
+        }
+      },
+      "description": "内部接口，将可执行文件以 base64 形式传输到远程服务器的指定路径"
+    },
+    {
+      "interface": "AuditLog",
+      "provider": "Audit Service",
+      "consumers": [
+        "Project Management Service",
+        "Environment Management Service",
+        "Key Management Service",
+        "SSH Execution Service",
+        "Deployment Orchestrator",
+        "Rollback Manager"
+      ],
+      "type": "REST",
+      "endpoint": "POST /internal/audit/log",
+      "request": {
+        "path_params": {},
+        "query_params": {},
+        "body": {
+          "action": "string",
+          "actor": "string (user_id)",
+          "resource_type": "string",
+          "resource_id": "string (uuid)",
+          "detail": "object",
+          "result": "string (enum: success/failure)"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "audit_id": "string (uuid)",
+          "logged_at": "string (datetime)"
+        }
+      },
+      "description": "内部接口，各微服务在执行关键操作后调用以记录审计日志"
+    },
+    {
+      "interface": "AuditLogQuery",
+      "provider": "Audit Service",
+      "consumers": ["API Gateway", "Web Console"],
+      "type": "REST",
+      "endpoint": "GET /api/v1/audit/logs",
+      "request": {
+        "path_params": {},
+        "query_params": {
+          "page": "int (default 1)",
+          "page_size": "int (default 20)",
+          "action": "string (optional)",
+          "actor": "string (optional)",
+          "resource_type": "string (optional)",
+          "start_date": "string (datetime, optional)",
+          "end_date": "string (datetime, optional)"
+        },
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "items": "AuditLogEntry[]",
+          "total": "int",
+          "page": "int",
+          "page_size": "int"
+        }
+      },
+      "description": "分页查询审计日志，支持按操作类型、操作者、资源类型和时间范围筛选"
+    },
+    {
+      "interface": "DeployTaskQueue",
+      "provider": "RabbitMQ",
+      "consumers": ["Deployment Orchestrator", "SSH Execution Service"],
+      "type": "MQ",
+      "endpoint": "exchange: deploy.tasks / routing_key: deploy.execute",
+      "request": {
+        "path_params": {},
+        "query_params": {},
+        "body": {
+          "deployment_id": "string (uuid)",
+          "project_id": "string (uuid)",
+          "environment_id": "string (uuid)",
+          "version": "string",
+          "file_content_base64": "string",
+          "ssh_config": {
+            "host": "string",
+            "port": "int",
+            "username": "string",
+            "key_id": "string (uuid)"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "deployment_id": "string (uuid)",
+          "status": "string",
+          "message": "string"
+        }
+      },
+      "description": "Deployment Orchestrator 发布部署任务消息，SSH Execution Service 消费并执行远程部署"
+    },
+    {
+      "interface": "DeployProgressQueue",
+      "provider": "RabbitMQ",
+      "consumers": ["SSH Execution Service", "Deployment Orchestrator"],
+      "type": "MQ",
+      "endpoint": "exchange: deploy.progress / routing_key: deploy.progress.update",
+      "request": {
+        "path_params": {},
+        "query_params": {},
+        "body": {
+          "deployment_id": "string (uuid)",
+          "status": "string (enum: running/success/failed)",
+          "current_step": "string",
+          "progress_pct": "int (0-100)",
+          "logs": "string[]",
+          "timestamp": "string (datetime)"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "received": "boolean"
+        }
+      },
+      "description": "SSH Execution Service 在执行过程中发布进度消息，Deployment Orchestrator 消费并更新状态缓存"
+    },
+    {
+      "interface": "RollbackTaskQueue",
+      "provider": "RabbitMQ",
+      "consumers": ["Rollback Manager", "SSH Execution Service"],
+      "type": "MQ",
+      "endpoint": "exchange: rollback.tasks / routing_key: rollback.execute",
+      "request": {
+        "path_params": {},
+        "query_params": {},
+        "body": {
+          "rollback_id": "string (uuid)",
+          "project_id": "string (uuid)",
+          "target_deployment_id": "string (uuid)",
+          "ssh_config": {
+            "host": "string",
+            "port": "int",
+            "username": "string",
+            "key_id": "string (uuid)"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "rollback_id": "string (uuid)",
+          "status": "string",
+          "message": "string"
+        }
+      },
+      "description": "Rollback Manager 发布回滚任务消息，SSH Execution Service 消费并执行远程回滚操作"
+    }
+  ],
+  "data_flow": [
+    {
+      "name": "项目管理流程",
+      "steps": [
+        "用户通过 Web Console 填写项目表单（名称、描述、标签）",
+        "Web Console 调用 POST /api/v1/projects 经 API Gateway 转发",
+        "API Gateway 校验 JWT 身份认证",
+        "Gateway 转发请求到 Project Management Service",
+        "Project Management Service 校验项目参数合法性",
+        "写入 Primary Database projects 表持久化",
+        "发送审计事件到 Audit Service (/internal/audit/log)",
+        "返回 201 创建结果经 Gateway 到前端展示"
+      ]
+    },
+    {
+      "name": "环境配置与密钥导入流程",
+      "steps": [
+        "用户在 Web Console 选择目标项目，进入环境管理页面",
+        "填写环境参数或导入 SSH 私钥",
+        "导入密钥：调用 POST /api/v1/keys/import 经 Gateway 到 Key Management Service",
+        "Key Management Service 验证密钥格式，计算指纹",
+        "密钥 AES-256 加密后存入 Primary Database keys 表",
+        "返回 key_id 给 Environment Management Service 绑定环境",
+        "创建环境：调用 POST /api/v1/projects/{id}/environments 写入 DB",
+        "用户点击「测试连接」→ Environment Management Service 调用 SSH Execution Service 执行探测命令",
+        "连接测试结果经 Gateway 返回前端展示"
+      ]
+    },
+    {
+      "name": "一键部署流程",
+      "steps": [
+        "用户在 Web Console 选择项目、目标环境和可执行文件（拖拽/选择上传）",
+        "Web Console 将文件编码为 base64，调用 POST /api/v1/projects/{id}/deploy",
+        "API Gateway 认证后转发到 Deployment Orchestrator",
+        "Orchestrator 创建部署记录写入数据库，状态 pending",
+        "Orchestrator 发布任务消息到 RabbitMQ deploy.tasks 交换机",
+        "Orchestrator 将部署 ID 和状态写入 Redis 缓存",
+        "Web Console 建立 SSE 连接 GET /api/v1/deployments/{id}/stream 监听实时推送",
+        "SSH Execution Service 消费队列消息，开始执行部署",
+        "在远程服务器创建版本目录 /opt/deploy/{project}/{version}/",
+        "上传可执行文件到远程服务器",
+        "生成启动/停止/重启/状态检查脚本并传输",
+        "执行部署脚本（启动服务），收集输出和退出码",
+        "每完成一步，SSH Execution Service 通过 deploy.progress 交换机发布进度消息",
+        "Orchestrator 消费进度消息，更新 Redis 实时状态和数据库记录",
+        "Orchestrator 通过 SSE push 进度给 Web Console",
+        "部署完成，前端展示成功/失败结果和完整日志"
+      ]
+    },
+    {
+      "name": "部署历史查看与回滚流程",
+      "steps": [
+        "用户在 Web Console 进入项目部署历史页面",
+        "Web Console 调用 GET /api/v1/projects/{id}/deployments 分页查询历史记录",
+        "历史列表展示每次部署的时间、环境、版本号、状态",
+        "用户选择一条历史记录查看详情（日志、文件清单等）",
+        "用户点击「回滚到此版本」确认回滚操作",
+        "Web Console 调用 POST /api/v1/projects/{id}/rollback 提交回滚请求",
+        "API Gateway 认证后转发到 Rollback Manager",
+        "Rollback Manager 创建回滚记录写入数据库，状态 pending",
+        "Rollback Manager 发布回滚任务到 RabbitMQ rollback.tasks 交换机",
+        "SSH Execution Service 消费回滚消息",
+        "在远程服务器备份当前版本目录",
+        "将目标历史版本的部署文件恢复到部署目录",
+        "执行服务重启脚本验证恢复状态",
+        "回滚进度通过 SSE 实时推送到前端",
+        "回滚完成，更新数据库记录和审计日志"
+      ]
+    },
+    {
+      "name": "审计日志记录流程",
+      "steps": [
+        "各微服务在执行关键操作时构建标准化审计事件",
+        "调用 Audit Service 的 POST /internal/audit/log 接口",
+        "Audit Service 校验事件格式，补充时间戳和来源标识",
+        "审计日志写入 Primary Database audit_logs 表",
+        "审计日志通过 Web Console 管理界面查询和导出"
+      ]
+    }
+  ]
+}
