@@ -1,0 +1,454 @@
+{
+  "meta": {
+    "doc_id": "lld-Remote Servers-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "Remote Servers",
+    "title": "Remote Servers 外部远程服务器集成规范",
+    "author": "design_agent",
+    "created": "2026-05-21T00:00:00Z"
+  },
+  "overview": {
+    "description": "Remote Servers 是部署流程的外部目标环境，由用户自行管理的 SSH 可达服务器集群。本模块定义远程服务器的接入规范、预期运行环境、目录结构约定和执行契约。SSH Execution Service 通过 SSH-2 协议连接远程服务器，上传部署产物并执行部署脚本，获取命令执行结果。远程服务器本身不部署任何 CogniForge 组件，仅提供标准的 SSH-2 服务和 POSIX shell 环境。",
+    "dependencies": [],
+    "tech_stack": ["SSH-2"]
+  },
+  "data_models": [
+    {
+      "name": "environments",
+      "type": "reference",
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "environments"
+      },
+      "description": "部署环境配置表，包含远程服务器的连接参数（host/port/username/key_id）。Remote Servers 作为外部集成层，通过 environments 表中的连接信息被 SSH Execution Service 访问。本模块只关心与建立 SSH 连接相关的字段子集。",
+      "fields": [
+        {"name": "id", "type": "UUID", "required": true, "description": "环境唯一标识，关联 remote server 身份"},
+        {"name": "host", "type": "VARCHAR(255)", "required": true, "description": "远程服务器主机地址（IP 或 FQDN），连接目标"},
+        {"name": "port", "type": "INTEGER", "required": true, "description": "SSH 端口号，范围 1-65535"},
+        {"name": "username", "type": "VARCHAR(100)", "required": true, "description": "SSH 登录用户名"},
+        {"name": "key_id", "type": "UUID", "required": false, "description": "绑定的 SSH 密钥 ID，用于认证远程服务器"}
+      ]
+    },
+    {
+      "name": "deployments",
+      "type": "reference",
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "deployments"
+      },
+      "description": "部署记录表，远程服务器上的部署操作会由此表中的记录驱动。本模块关心部署版本标识（version）和产物路径（artifact_path），用于在远程服务器上创建版本化目录结构和传输文件。",
+      "fields": [
+        {"name": "id", "type": "UUID", "required": true, "description": "部署记录唯一标识"},
+        {"name": "environment_id", "type": "UUID", "required": true, "description": "目标环境 ID，关联远程服务器"},
+        {"name": "version", "type": "VARCHAR(255)", "required": true, "description": "部署版本标识，用于远程目录命名"},
+        {"name": "artifact_path", "type": "TEXT", "required": true, "description": "部署产物路径，需传输到远程服务器"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "SSH 连接建立",
+      "method": "SSH",
+      "endpoint": "ssh://{host}:{port}",
+      "description": "通过 SSH-2 协议与远程服务器建立加密连接，使用公钥认证。SSH 握手阶段协商加密算法、交换主机密钥并完成用户认证。这是所有后续 SSH 操作的前置接口。",
+      "parameters": [
+        {"name": "host", "type": "String", "description": "远程服务器主机地址（IP 或 FQDN）"},
+        {"name": "port", "type": "Integer", "description": "SSH 端口号，默认 22"},
+        {"name": "username", "type": "String", "description": "SSH 登录用户名"},
+        {"name": "private_key", "type": "String", "description": "PEM 格式的 RSA/ECDSA/ED25519 私钥内容"},
+        {"name": "passphrase", "type": "String", "description": "私钥保护口令，密钥导入时若提供则需要解密（可选）"},
+        {"name": "timeout_seconds", "type": "Integer", "description": "连接建立超时秒数，默认 10"},
+        {"name": "fingerprint", "type": "String", "description": "期望的主机密钥 SHA256 指纹，格式 SHA256:base64hash（可选）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "session_id": "String",
+          "server_banner": "String",
+          "fingerprint": "String"
+        }
+      },
+      "error_codes": [
+        {"code": 1, "message": "SSH_CONNECTION_TIMEOUT — TCP 连接超时，服务器不可达或防火墙拦截"},
+        {"code": 2, "message": "SSH_AUTHENTICATION_FAILED — 公钥认证失败，私钥与远程 authorized_keys 不匹配"},
+        {"code": 3, "message": "SSH_HOST_KEY_MISMATCH — 主机密钥指纹与预期值不一致，可能存在中间人攻击"},
+        {"code": 4, "message": "SSH_CONNECTION_REFUSED — 连接被拒绝，端口未开放或 SSH 服务未运行"},
+        {"code": 5, "message": "SSH_PROTOCOL_ERROR — SSH 协议版本不兼容或算法协商失败"}
+      ]
+    },
+    {
+      "name": "执行远程命令",
+      "method": "SSH",
+      "endpoint": "session/{session_id}/exec",
+      "description": "在已建立的 SSH 会话中通过远程 shell（/bin/bash）执行单条命令，获取 stdout、stderr 和退出码。命令在远程服务器的默认 shell 环境中运行，支持环境变量注入和工作目录切换。",
+      "parameters": [
+        {"name": "session_id", "type": "String", "description": "已建立的 SSH 会话标识"},
+        {"name": "command", "type": "String", "description": "要在远程 shell 中执行的命令字符串"},
+        {"name": "timeout_seconds", "type": "Integer", "description": "命令执行超时秒数，默认 300"},
+        {"name": "working_directory", "type": "String", "description": "命令工作目录（可选），通过 cd 切换"},
+        {"name": "env_vars", "type": "Map<String,String>", "description": "注入的环境变量键值对（可选）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "stdout": "String",
+          "stderr": "String",
+          "exit_code": "Integer"
+        }
+      },
+      "error_codes": [
+        {"code": 10, "message": "EXEC_TIMEOUT — 命令执行超过 timeout_seconds 未返回，SSH 通道关闭"},
+        {"code": 11, "message": "EXEC_NON_ZERO_EXIT — 命令退出码非零，命令执行失败（属于业务数据，不阻断流程）"},
+        {"code": 12, "message": "SESSION_CLOSED — SSH 会话已关闭或网络中断，无法执行命令"},
+        {"code": 13, "message": "EXEC_INTERRUPTED — 命令被远程系统信号中断（如 SIGKILL、SIGTERM）"},
+        {"code": 14, "message": "SHELL_UNAVAILABLE — 远程 shell（/bin/bash）不可用或无法启动"}
+      ]
+    },
+    {
+      "name": "上传文件到远程服务器",
+      "method": "SSH",
+      "endpoint": "session/{session_id}/sftp/upload",
+      "description": "通过 SFTP 子协议将文件从 SSH 客户端（SSH Execution Service）传输到远程服务器的指定路径。用于上传部署产物可执行文件和部署脚本。传输完成后计算文件 SHA256 校验和。",
+      "parameters": [
+        {"name": "session_id", "type": "String", "description": "已建立的 SSH 会话标识"},
+        {"name": "local_path", "type": "String", "description": "本地源文件的绝对路径"},
+        {"name": "remote_path", "type": "String", "description": "远程目标绝对路径（包含文件名）"},
+        {"name": "file_mode", "type": "String", "description": "上传后文件的权限模式，如 0755（可选，默认 0644）"},
+        {"name": "overwrite", "type": "Boolean", "description": "是否覆盖已存在的远程文件，默认 true"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "remote_path": "String",
+          "size": "Long",
+          "checksum": "String"
+        }
+      },
+      "error_codes": [
+        {"code": 20, "message": "SFTP_PROTOCOL_ERROR — SFTP 协议层错误（协议版本不兼容或传输中断）"},
+        {"code": 21, "message": "SFTP_PERMISSION_DENIED — 远程用户对目标路径无写入权限"},
+        {"code": 22, "message": "SFTP_DISK_FULL — 远程服务器磁盘空间不足，无法写入文件"},
+        {"code": 23, "message": "SFTP_FILE_EXISTS — 目标文件已存在且 overwrite=false"},
+        {"code": 24, "message": "SFTP_PATH_INVALID — 远程目标路径不合法或父目录不存在"}
+      ]
+    },
+    {
+      "name": "部署脚本执行（复合操作序列）",
+      "method": "SSH",
+      "endpoint": "deploy/{environment_id}/execute",
+      "description": "部署流程在远程服务器上的复合执行阶段：创建版本化部署目录结构（mkdir -p）→ 上传部署产物 → 生成并传输部署脚本（写入文件 + chmod +x）→ 在版本目录下执行脚本 → 收集执行结果 → 成功后更新 current 符号链接。该序列由 SSH Execution Service 在单个 SSH 会话中编排完成。",
+      "parameters": [
+        {"name": "environment_id", "type": "UUID", "description": "目标环境 ID，用于确定远程连接参数"},
+        {"name": "version", "type": "String", "description": "部署版本标识字符串，如 v1.2.3"},
+        {"name": "artifact_path", "type": "String", "description": "部署产物本地路径或可下载 URL"},
+        {"name": "deploy_script", "type": "String", "description": "自动生成的部署脚本内容（bash 脚本）"},
+        {"name": "timeout_seconds", "type": "Integer", "description": "整体部署执行超时秒数，默认 600"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "stdout": "String",
+          "stderr": "String",
+          "exit_code": "Integer",
+          "deploy_path": "String"
+        }
+      },
+      "error_codes": [
+        {"code": 30, "message": "DEPLOY_DIR_CREATE_FAILED — 远程版本目录创建失败（权限不足或路径冲突）"},
+        {"code": 31, "message": "DEPLOY_SCRIPT_TRANSFER_FAILED — 部署脚本写入远程服务器失败"},
+        {"code": 32, "message": "DEPLOY_EXECUTION_FAILED — 部署脚本执行退出码非零，部署失败"},
+        {"code": 33, "message": "DEPLOY_SYMLINK_FAILED — 更新 current 符号链接失败"}
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "Remote Servers 作为外部系统，错误以 SSH 协议异常的形式暴露。所有 SSH 操作（连接/命令/文件传输）必须设置超时，通过重试策略（最多 3 次，指数退避 1s/3s/9s）处理临时性网络故障。认证类和权限类错误不可重试，需直接上报给用户排查。非零退出码不自动视为系统错误，作为业务数据由上层（SSH Execution Service）记录和评估。stderr 输出按最大 1MB 截断。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {"code": 1, "name": "网络层错误", "description": "SSH 连接超时、连接被拒绝、网络中断。触发指数退避重试（最多 3 次），3 次后上报不可恢复错误。重试间隔 1s/3s/9s 并附加 20% 随机 jitter。"},
+      {"code": 2, "name": "认证错误", "description": "私钥被远程服务器拒绝、用户不存在、主机密钥指纹不匹配。不可重试，必须由用户检查密钥绑定和远程 authorized_keys 配置。"},
+      {"code": 3, "name": "文件传输错误", "description": "远程路径权限不足、磁盘空间不足、SFTP 协议错误。记录远程磁盘状态（df -h）到日志辅助排查，不可重试。磁盘满时触发告警。"},
+      {"code": 4, "name": "命令执行错误", "description": "命令超时、退出码非零、被信号中断。stderr 和退出码完整记录到部署日志。超时（30 分钟上限）时自动终止远程进程。"},
+      {"code": 5, "name": "环境预检错误", "description": "远程服务器缺少必需工具（bash、mkdir、chmod）、磁盘不足、基础路径不可写。在部署前置检查阶段识别，以 ConnectionProbeResult 或 ServerEnvironmentCheck 返回。"}
+    ]
+  },
+  "domain_objects": [
+    {
+      "name": "RemoteConnection",
+      "object_type": "value_object",
+      "description": "远程服务器的 SSH 连接参数不可变值对象。封装建立 SSH 会话所需的所有连接信息，创建后不可修改，每次使用新建实例。连接参数来源于 Primary Database environments 表和解密后的密钥材料。",
+      "attributes": [
+        {"name": "host", "type": "String", "required": true, "source": "input", "description": "远程服务器 IP 地址或 FQDN"},
+        {"name": "port", "type": "Integer", "required": true, "source": "input", "description": "SSH 端口号，范围 1-65535"},
+        {"name": "username", "type": "String", "required": true, "source": "input", "description": "SSH 登录用户名"},
+        {"name": "privateKey", "type": "String", "required": true, "source": "input", "description": "解密后的 PEM 格式私钥内容，使用后立即从内存清除"},
+        {"name": "passphrase", "type": "String", "required": false, "source": "input", "description": "私钥保护口令（密钥导入时若设置了口令保护则需要）"},
+        {"name": "timeoutSeconds", "type": "Integer", "required": true, "source": "input", "description": "连接建立超时秒数，默认 10"},
+        {"name": "expectedFingerprint", "type": "String", "required": false, "source": "input", "description": "期望的远程主机密钥 SHA256 指纹，格式 SHA256:base64hash"}
+      ]
+    },
+    {
+      "name": "RemoteCommand",
+      "object_type": "value_object",
+      "description": "要在远程服务器上执行的命令不可变值对象。封装命令字符串和执行参数，用于传递给 SSH channel 的 exec 请求。",
+      "attributes": [
+        {"name": "commandLine", "type": "String", "required": true, "source": "input", "description": "要在远程 shell 中执行的完整命令字符串"},
+        {"name": "timeoutSeconds", "type": "Integer", "required": true, "source": "input", "description": "命令执行超时秒数，默认 300，最大 1800"},
+        {"name": "workingDirectory", "type": "String", "required": false, "source": "input", "description": "命令工作目录，执行前通过 cd 切换"},
+        {"name": "environmentVariables", "type": "Map<String,String>", "required": false, "source": "input", "description": "注入到命令执行环境的环境变量键值对"}
+      ]
+    },
+    {
+      "name": "CommandExecutionResult",
+      "object_type": "dto",
+      "description": "远程命令执行结果 DTO。包含命令的完整输出（stdout/stderr）、退出码和执行耗时。由 SSH channel 的 exec 请求返回，用于上层（SSH Execution Service）判断部署步骤执行状态。",
+      "attributes": [
+        {"name": "stdout", "type": "String", "required": true, "source": "derived", "description": "命令的标准输出内容，超过 1MB 时截断"},
+        {"name": "stderr", "type": "String", "required": true, "source": "derived", "description": "命令的标准错误输出内容，超过 1MB 时截断"},
+        {"name": "exitCode", "type": "Integer", "required": true, "source": "derived", "description": "命令退出码，0 表示成功执行"},
+        {"name": "executedAt", "type": "DateTime", "required": true, "source": "computed", "description": "命令执行完成的时间戳"},
+        {"name": "durationMs", "type": "Long", "required": true, "source": "computed", "description": "命令执行耗时（毫秒精度）"},
+        {"name": "timedOut", "type": "Boolean", "required": true, "source": "derived", "description": "命令是否因超时被强制终止"}
+      ]
+    },
+    {
+      "name": "FileTransferRequest",
+      "object_type": "dto",
+      "description": "文件传输请求 DTO。定义需要上传到远程服务器的文件及其属性和权限。由 Deployment Orchestrator 构造，SSH Execution Service 消费执行 SFTP 传输。",
+      "attributes": [
+        {"name": "localPath", "type": "String", "required": true, "source": "input", "description": "本地源文件绝对路径"},
+        {"name": "remotePath", "type": "String", "required": true, "source": "input", "description": "远程目标文件绝对路径"},
+        {"name": "fileMode", "type": "String", "required": false, "source": "input", "description": "远程文件权限模式（Unix 八进制），如 0755"},
+        {"name": "overwrite", "type": "Boolean", "required": true, "source": "input", "description": "是否覆盖远程已存在的文件，默认 true"}
+      ]
+    },
+    {
+      "name": "FileTransferResult",
+      "object_type": "dto",
+      "description": "文件传输结果 DTO。包含文件上传到远程服务器后的目标路径、文件大小和完整性校验信息。",
+      "attributes": [
+        {"name": "remotePath", "type": "String", "required": true, "source": "derived", "description": "文件在远程服务器上的完整路径"},
+        {"name": "size", "type": "Long", "required": true, "source": "computed", "description": "上传文件的大小（字节）"},
+        {"name": "checksum", "type": "String", "required": true, "source": "computed", "description": "文件的 SHA256 校验和（十六进制小写）"}
+      ]
+    },
+    {
+      "name": "RemoteDirectoryLayout",
+      "object_type": "value_object",
+      "description": "远程服务器上的部署目录结构值对象。定义版本化的部署目录布局规范，每次部署在远程服务器上创建按版本隔离的子目录，通过 current 符号链接实现版本切换。",
+      "attributes": [
+        {"name": "basePath", "type": "String", "required": true, "source": "input", "description": "部署基础路径，格式 /opt/deploy/{project_name}"},
+        {"name": "version", "type": "String", "required": true, "source": "input", "description": "当前部署版本标识，如 v1.2.3"},
+        {"name": "versionDir", "type": "String", "required": true, "source": "computed", "description": "版本目录完整路径 = {basePath}/versions/{version}"},
+        {"name": "artifactDir", "type": "String", "required": true, "source": "computed", "description": "部署产物存放目录 = {versionDir}/artifact"},
+        {"name": "scriptDir", "type": "String", "required": true, "source": "computed", "description": "部署脚本存放目录 = {versionDir}/scripts"},
+        {"name": "logDir", "type": "String", "required": true, "source": "computed", "description": "部署日志存放目录 = {versionDir}/logs"},
+        {"name": "currentSymlink", "type": "String", "required": true, "source": "computed", "description": "current 符号链接路径 = {basePath}/current，指向当前活跃版本目录"}
+      ]
+    },
+    {
+      "name": "ConnectionProbeResult",
+      "object_type": "dto",
+      "description": "远程服务器连接探测结果 DTO。用于「测试连接」功能，返回远程服务器的连通性、认证状态和基本环境信息。由 SSH Execution Service 填充并返回给 Environment Management Service。",
+      "attributes": [
+        {"name": "reachable", "type": "Boolean", "required": true, "source": "derived", "description": "远程服务器是否可通过 SSH 协议访问"},
+        {"name": "authenticated", "type": "Boolean", "required": true, "source": "derived", "description": "SSH 密钥认证是否成功"},
+        {"name": "osType", "type": "String", "required": false, "source": "derived", "description": "远程操作系统类型，如 Linux / FreeBSD"},
+        {"name": "kernelVersion", "type": "String", "required": false, "source": "derived", "description": "远程内核版本号（uname -r 输出）"},
+        {"name": "diskAvailable", "type": "String", "required": false, "source": "derived", "description": "远程可用磁盘空间概要，如 50G"},
+        {"name": "memoryAvailable", "type": "String", "required": false, "source": "derived", "description": "远程可用内存概要，如 2G"},
+        {"name": "sshVersion", "type": "String", "required": false, "source": "derived", "description": "远程 SSH 服务版本信息（sshd 版本）"},
+        {"name": "latencyMs", "type": "Integer", "required": true, "source": "computed", "description": "SSH 连接往返延迟（毫秒精度）"}
+      ]
+    },
+    {
+      "name": "ServerEnvironmentCheck",
+      "object_type": "value_object",
+      "description": "远程服务器部署环境预检结果值对象。确认远程服务器满足部署运行的最低要求：基础工具可用、磁盘充足、路径可写。在部署前由 SSH Execution Service 执行探测命令收集。",
+      "attributes": [
+        {"name": "hasBash", "type": "Boolean", "required": true, "source": "derived", "description": "远程服务器是否可用 /bin/bash shell"},
+        {"name": "hasMkdir", "type": "Boolean", "required": true, "source": "derived", "description": "远程服务器是否可用 mkdir 命令"},
+        {"name": "hasChmod", "type": "Boolean", "required": true, "source": "derived", "description": "远程服务器是否可用 chmod 命令"},
+        {"name": "hasSftp", "type": "Boolean", "required": true, "source": "derived", "description": "远程服务器是否支持 SFTP 子系统"},
+        {"name": "hasPython3", "type": "Boolean", "required": false, "source": "derived", "description": "远程服务器是否可用 python3（可选依赖，用于高级脚本）"},
+        {"name": "hasDocker", "type": "Boolean", "required": false, "source": "derived", "description": "远程服务器是否可用 docker 命令（可选依赖，容器化部署）"},
+        {"name": "diskSufficient", "type": "Boolean", "required": true, "source": "derived", "description": "远程可用磁盘空间是否大于最低阈值（默认 1GB）"},
+        {"name": "writableBasePath", "type": "Boolean", "required": true, "source": "derived", "description": "部署基础路径是否可写（mkdir -p 测试）"}
+      ]
+    },
+    {
+      "name": "DeployEnvironmentLabel",
+      "object_type": "enum",
+      "description": "部署环境标签枚举，标识远程服务器的用途和环境隔离级别。",
+      "values": ["test", "gray", "prod"]
+    },
+    {
+      "name": "SSHKeyAlgorithm",
+      "object_type": "enum",
+      "description": "远程服务器支持的 SSH 密钥算法类型，用于 SSH 公钥认证。",
+      "values": ["RSA-2048", "RSA-4096", "ECDSA-P256", "ECDSA-P384", "ED25519"]
+    }
+  ],
+  "service_contracts": [
+    {
+      "name": "RemoteServerConnector",
+      "description": "远程服务器 SSH 连接管理器。封装 SSH-2 协议连接的生命周期管理，包括连接建立、命令执行、文件传输、连接测试和会话关闭。所有操作基于一个已认证的 SSH 会话执行。",
+      "methods": [
+        {
+          "name": "connect",
+          "signature": "(connection: RemoteConnection) -> SSHClientSession",
+          "precondition": "connection 所有必填字段通过基础校验（host 非空合法 FQDN/IP、port ∈ [1,65535]、privateKey 为合法 PEM 格式）。远程服务器已开机且端口对客户端 IP 开放。",
+          "postcondition": "返回已认证的 SSHClientSession 实例，TCP 握手→SSH 协议协商→密钥交换→用户认证均成功完成。若 expectedFingerprint 提供则已校验一致。若连接失败不泄漏任何 TCP 或 SSH 会话资源。",
+          "description": "建立到远程服务器的 SSH-2 加密连接，执行 TCP 握手、SSH 协议版本协商、密钥交换和公钥用户认证。",
+          "exceptions": [
+            {"name": "ConnectionTimeoutException", "trigger": "SSH 连接握手超过 timeoutSeconds 未完成", "http_status": 504},
+            {"name": "AuthenticationFailedException", "trigger": "私钥被远程服务器拒绝，所有认证方法均失败", "http_status": 401},
+            {"name": "HostKeyMismatchException", "trigger": "远程服务器主机密钥指纹与 expectedFingerprint 不匹配", "http_status": 403},
+            {"name": "ConnectionRefusedException", "trigger": "远程服务器主动拒绝 TCP 连接（端口未开放或防火墙拦截）", "http_status": 502},
+            {"name": "ProtocolVersionException", "trigger": "远程 SSH 服务协议版本不兼容（低于 SSH-2.0）", "http_status": 500}
+          ]
+        },
+        {
+          "name": "executeCommand",
+          "signature": "(session: SSHClientSession, command: RemoteCommand) -> CommandExecutionResult",
+          "precondition": "session 为已认证的活跃 SSH 会话（is_active() == true）。command.commandLine 非空且长度 ≤ 65535 字符。远程服务器的默认 shell（/bin/bash）可用。",
+          "postcondition": "命令在远程 shell 中以非交互模式完整执行。返回完整的 CommandExecutionResult（stdout、stderr、exitCode）。退出码非零不视为异常——退出码属于业务数据，由调用方根据上下文决定后续处理。",
+          "description": "在已建立的 SSH 会话中通过远程 shell 执行一条命令，收集 stdout、stderr 和退出码。",
+          "exceptions": [
+            {"name": "SessionClosedException", "trigger": "SSH 会话在执行命令前已关闭或网络中断无法恢复", "http_status": 502},
+            {"name": "CommandTimeoutException", "trigger": "命令执行超过 timeoutSeconds 未返回，SSH channel 已关闭", "http_status": 504},
+            {"name": "CommandInterruptedException", "trigger": "命令被远程系统信号中断（SIGKILL/SIGTERM），非正常退出", "http_status": 500}
+          ]
+        },
+        {
+          "name": "uploadFile",
+          "signature": "(session: SSHClientSession, request: FileTransferRequest) -> FileTransferResult",
+          "precondition": "session 为已认证的活跃 SSH 会话。request.localPath 对应的本地文件存在且可读（由调用方确保）。request.remotePath 为合法 Unix 绝对路径。远程服务器 SFTP 子系统可用。",
+          "postcondition": "文件通过 SFTP 协议传输到远程 request.remotePath 位置。若 parent 目录不存在则自动创建。返回 FileTransferResult（remotePath、size、checksum）。若 overwrite=false 且远程文件已存在则不覆盖并抛出异常。",
+          "description": "通过 SFTP 子协议将本地文件传输到远程服务器的指定路径。支持自动创建父目录和设置文件权限。",
+          "exceptions": [
+            {"name": "SftpProtocolException", "trigger": "SFTP 协议层错误（协议版本不兼容或传输中断）", "http_status": 502},
+            {"name": "PermissionDeniedException", "trigger": "远程用户对目标路径无写入权限", "http_status": 403},
+            {"name": "DiskFullException", "trigger": "远程服务器磁盘空间不足以存放传输文件", "http_status": 507},
+            {"name": "FileExistsException", "trigger": "远程文件已存在且 request.overwrite=false", "http_status": 409}
+          ]
+        },
+        {
+          "name": "testConnection",
+          "signature": "(connection: RemoteConnection) -> ConnectionProbeResult",
+          "precondition": "connection 必填字段通过基础格式校验（host 非空、port ∈ [1,65535]）。",
+          "postcondition": "返回 ConnectionProbeResult 包含连通性、认证状态和基础环境信息。不抛出任何异常——所有 SSH 错误被内部捕获并映射为 result 字段（reachable=false、authenticated=false）。不保留任何 SSH 会话、连接或通道资源。",
+          "description": "快速探测远程服务器的连通性和认证有效性。用于 Web Console 的「测试连接」功能。自动清理所有临时会话资源。",
+          "exceptions": []
+        },
+        {
+          "name": "checkEnvironment",
+          "signature": "(session: SSHClientSession) -> ServerEnvironmentCheck",
+          "precondition": "session 为已认证的活跃 SSH 会话。",
+          "postcondition": "通过远程执行探测命令（which bash、mkdir --version、df -h 等）收集环境信息。返回 ServerEnvironmentCheck 结果。不修改远程服务器任何状态。",
+          "description": "通过远程执行一系列探测命令，验证部署所需的基础工具、磁盘空间和路径可写性是否满足要求。",
+          "exceptions": [
+            {"name": "SessionClosedException", "trigger": "SSH 会话在执行探测命令前已关闭", "http_status": 502}
+          ]
+        },
+        {
+          "name": "closeSession",
+          "signature": "(session: SSHClientSession) -> void",
+          "precondition": "session 非 null（已关闭或未关闭均可安全调用）。",
+          "postcondition": "SSH 会话已关闭，TCP 连接已断开，所有相关资源（channel、socket 等）已释放。重复调用无副作用（幂等）。",
+          "description": "关闭 SSH 会话，释放 TCP 连接和所有关联资源。幂等操作。",
+          "exceptions": []
+        }
+      ],
+      "repository_dependencies": []
+    },
+    {
+      "name": "RemoteDeployExecutor",
+      "description": "远程部署执行器。在远程服务器上编排完整的部署流程：创建版本化目录结构 → 上传部署产物 → 生成并传输部署脚本 → 执行脚本 → 更新 current 符号链接。所有操作复用同一个 SSH 会话。",
+      "methods": [
+        {
+          "name": "prepareDirectories",
+          "signature": "(session: SSHClientSession, layout: RemoteDirectoryLayout) -> void",
+          "precondition": "layout 所有字段已通过计算（versionDir、artifactDir、scriptDir、logDir 均有确定值）。session 对应远程用户对 layout.basePath 的父目录有写权限。",
+          "postcondition": "远程服务器上已通过 mkdir -p 创建 artifactDir、scriptDir、logDir 三个子目录。若目录已存在则静默跳过（幂等）。目录权限默认 0755。",
+          "description": "在远程服务器上使用 mkdir -p 递归创建版本化的部署目录结构，包括产物、脚本和日志子目录。",
+          "exceptions": [
+            {"name": "DirectoryCreateFailedException", "trigger": "远程 mkdir -p 命令返回非零退出码（权限错误或磁盘故障）", "http_status": 500},
+            {"name": "SessionClosedException", "trigger": "SSH 会话在目录创建操作期间关闭", "http_status": 502}
+          ]
+        },
+        {
+          "name": "executeDeployScript",
+          "signature": "(session: SSHClientSession, scriptContent: String, layout: RemoteDirectoryLayout, timeoutSeconds: Integer) -> CommandExecutionResult",
+          "precondition": "scriptContent 为非空合法 bash 脚本。layout.versionDir 已通过 prepareDirectories 创建。session 为活跃 SSH 会话。",
+          "postcondition": "脚本内容写入 layout.scriptDir/deploy.sh 文件 → chmod +x 设置可执行 → cd layout.versionDir → bash layout.scriptDir/deploy.sh 执行 → 返回 CommandExecutionResult。脚本文件保留在远程服务器上供后续审计。退出码非零时脚本文件仍保留。",
+          "description": "将部署脚本写入远程服务器文件，设置可执行权限，在版本目录上下文中执行并收集结果。这是部署流程在远程环境中的核心步骤。",
+          "exceptions": [
+            {"name": "ScriptWriteFailedException", "trigger": "部署脚本文件写入远程服务器失败（磁盘空间不足或权限错误）", "http_status": 500},
+            {"name": "ScriptExecutionFailedException", "trigger": "部署脚本执行退出码非零，部署失败", "http_status": 200},
+            {"name": "CommandTimeoutException", "trigger": "部署脚本执行超过 timeoutSeconds 未返回", "http_status": 504}
+          ]
+        },
+        {
+          "name": "updateCurrentSymlink",
+          "signature": "(session: SSHClientSession, layout: RemoteDirectoryLayout) -> void",
+          "precondition": "layout.versionDir 目录在远程服务器上已存在且部署脚本已成功执行。layout.currentSymlink 路径已确定。",
+          "postcondition": "远程 layout.currentSymlink 符号链接已原子性指向 layout.versionDir（ln -sfn）。之前的 current 目标（如有）维持不变——旧版本目录不被删除。",
+          "description": "原子性地更新 current 符号链接指向最新成功部署的版本目录。实现部署版本切换和快速回滚（只需重新指向旧版本目录）。",
+          "exceptions": [
+            {"name": "SymlinkUpdateFailedException", "trigger": "远程 ln -sfn 命令失败（文件系统不支持符号链接或路径错误）", "http_status": 500},
+            {"name": "SessionClosedException", "trigger": "SSH 会话在更新符号链接期间关闭", "http_status": 502}
+          ]
+        }
+      ],
+      "repository_dependencies": []
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "远程服务器的主机地址（host）和 SSH 端口（port）一旦在 environments 表中创建即不可修改——如需变更连接目标必须新建环境记录。",
+      "同一时间最多只能有一个活跃的部署任务操作同一个远程服务器（由 SSH Execution Service 通过 RabbitMQ 队列 prefetch=1 保证）。",
+      "远程服务器上的版本目录一旦由部署创建即进入只读状态——部署回滚通过切换 current 符号链接指向旧版本目录实现，不删除或修改已存在的版本目录。",
+      "远程服务器的 SSH 密钥指纹必须在环境创建时记录，后续每次连接校验指纹一致性，防止中间人攻击。",
+      "部署脚本在远程服务器上的执行必须设定最大超时时间（默认 600 秒，上限 1800 秒），防止脚本失控无限执行。"
+    ],
+    "state_machines": [
+      {
+        "entity": "RemoteServer 连接状态",
+        "states": ["unknown", "reachable", "ready", "deploying", "error"],
+        "transitions": [
+          {"from": "unknown", "to": "reachable", "trigger": "SSH 连接测试成功返回 reachable=true", "actor": "SSH Execution Service"},
+          {"from": "reachable", "to": "ready", "trigger": "环境预检通过（ServerEnvironmentCheck 全部 required 字段为 true）", "actor": "SSH Execution Service"},
+          {"from": "ready", "to": "deploying", "trigger": "部署任务开始执行（消费 RabbitMQ deploy.tasks 消息）", "actor": "SSH Execution Service"},
+          {"from": "deploying", "to": "ready", "trigger": "部署脚本执行完成（成功或失败均已结束）", "actor": "SSH Execution Service"},
+          {"from": "reachable", "to": "unknown", "trigger": "后续定期探活连续 3 次失败或服务器主动下线", "actor": "SSH Execution Service"},
+          {"from": "ready", "to": "unknown", "trigger": "定期探活失败或服务器在部署间隙离线", "actor": "SSH Execution Service"},
+          {"from": "deploying", "to": "error", "trigger": "部署过程中 SSH 连接中断且重试 3 次后仍不可恢复", "actor": "SSH Execution Service"},
+          {"from": "error", "to": "ready", "trigger": "运维人员手动恢复或重新执行环境预检通过", "actor": "Operator"},
+          {"from": "error", "to": "unknown", "trigger": "环境配置变更（更换密钥、修改连接参数）后重新探测", "actor": "System"}
+        ],
+        "irreversible_rules": [
+          "部署进行中（deploying 状态）不可强行关闭 SSH 连接——必须等待脚本正常完成或超时自动终止。",
+          "版本目录一旦部署完成即不可被后续任何操作覆盖或删除——只能通过创建新版本目录实现更新。",
+          "error 状态的远程服务器在人工确认前不可自动进入 deploying 状态。"
+        ],
+        "concurrency": "每个 RemoteServer（environments.id）同一时间只能被一个部署流程操作。SSH Execution Service 通过 RabbitMQ 队列消费者预取计数 prefetch=1 保证单消费者串行处理同一环境 ID 的部署任务。跨环境的部署任务可并行执行，并发数由 SSH Execution Service max_concurrent_tasks 配置控制（默认 5）。"
+      }
+    ],
+    "cross_service_rules": [
+      "SSH Execution Service 必须在每次连接远程服务器前调用 Key Management Service 解密 SSH 私钥，禁止在本地持久化缓存私钥明文。私钥使用后立即从内存清除。",
+      "远程服务器上命令执行结果的 stdout/stderr 必须由 SSH Execution Service 转发到 Audit Service 进行持久化审计记录。",
+      "远程服务器的连接参数（host/port/username/key_id）的权威来源为 Primary Database 的 environments 表。SSH Execution Service 可以在 Redis 中缓存这些参数，但 TTL 不得超过 60 秒。",
+      "远程服务器的部署目录结构（RemoteDirectoryLayout）由 SSH Execution Service 在部署执行时按规范计算，目录布局参数（basePath）可通过 Project Management Service 的项目级配置定制。"
+    ]
+  }
+}
