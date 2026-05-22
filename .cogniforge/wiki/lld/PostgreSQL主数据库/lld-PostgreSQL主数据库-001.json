@@ -4,431 +4,285 @@
     "type": "lld",
     "module_type": "database",
     "module": "PostgreSQL主数据库",
-    "title": "PostgreSQL主数据库详细设计",
+    "title": "LLD - PostgreSQL主数据库",
     "author": "design_agent",
-    "created": "2026-05-22"
+    "created": "2026-05-22 14:35"
   },
   "overview": {
-    "description": "持久化存储所有业务数据，涵盖项目信息、部署环境配置、加密SSH密钥、部署版本历史、审计日志及用户权限信息。作为系统的核心数据层，为项目管理服务、环境管理服务、部署编排服务、密钥管理服务、版本管理服务、审计日志服务及认证中间件提供统一、可靠、高性能的数据存取能力。",
+    "description": "关系型数据库，持久化存储项目、环境配置、部署记录、审计日志等全部结构化业务数据。使用 PostgreSQL 15，所有业务服务通过 SQL 协议直接访问本数据库，是本系统的唯一结构化数据持久化层",
     "dependencies": [],
-    "tech_stack": ["PostgreSQL 15+"]
+    "tech_stack": ["PostgreSQL 15"]
   },
   "data_models": [
-    {
-      "name": "users",
-      "type": "table",
-      "ownership": "canonical",
-      "description": "系统用户账号信息，用于身份认证和权限管理",
-      "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "用户标识，主键"},
-        {"name": "username", "type": "VARCHAR(64)", "required": true, "description": "用户名，唯一标识"},
-        {"name": "password_hash", "type": "VARCHAR(256)", "required": true, "description": "密码bcrypt哈希值"},
-        {"name": "display_name", "type": "VARCHAR(128)", "required": false, "description": "用户显示名称"},
-        {"name": "role", "type": "VARCHAR(32)", "required": true, "description": "角色：admin/manager/operator/developer/tester"},
-        {"name": "status", "type": "VARCHAR(16)", "required": true, "description": "状态：active/disabled"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "记录创建时间"},
-        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": true, "description": "记录更新时间"}
-      ],
-      "indexes": [
-        {"name": "idx_users_username", "unique": true, "columns": ["username"]},
-        {"name": "idx_users_role", "unique": false, "columns": ["role"]},
-        {"name": "idx_users_status", "unique": false, "columns": ["status"]}
-      ]
-    },
     {
       "name": "projects",
       "type": "table",
       "ownership": "canonical",
-      "description": "项目定义信息，每个项目包含独立的部署环境和配置",
+      "description": "项目信息表，存储所有项目的名称、描述等基本信息，支持软删除",
       "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "项目标识，主键"},
-        {"name": "name", "type": "VARCHAR(256)", "required": true, "description": "项目名称"},
-        {"name": "description", "type": "TEXT", "required": false, "description": "项目描述"},
-        {"name": "created_by", "type": "UUID", "required": true, "description": "创建者用户ID，外键关联users"},
-        {"name": "status", "type": "VARCHAR(16)", "required": true, "description": "状态：active/archived"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "记录创建时间"},
-        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": true, "description": "记录更新时间"}
+        {"name": "id", "type": "uuid", "required": true, "description": "项目唯一标识，使用 UUID v4"},
+        {"name": "name", "type": "varchar(128)", "required": true, "description": "项目名称"},
+        {"name": "description", "type": "varchar(500)", "required": false, "description": "项目描述信息"},
+        {"name": "created_at", "type": "timestamptz", "required": true, "description": "创建时间，默认为当前时间"},
+        {"name": "updated_at", "type": "timestamptz", "required": true, "description": "最后更新时间，由触发器自动维护"},
+        {"name": "deleted_at", "type": "timestamptz", "required": false, "description": "软删除时间，非空表示已删除"}
       ],
       "indexes": [
-        {"name": "idx_projects_name", "unique": false, "columns": ["name"]},
-        {"name": "idx_projects_created_by", "unique": false, "columns": ["created_by"]}
-      ]
-    },
-    {
-      "name": "project_members",
-      "type": "table",
-      "ownership": "canonical",
-      "description": "项目成员关联表，记录用户与项目的多对多关系及角色权限",
-      "fields": [
-        {"name": "project_id", "type": "UUID", "required": true, "description": "项目标识，复合主键，外键关联projects"},
-        {"name": "user_id", "type": "UUID", "required": true, "description": "用户标识，复合主键，外键关联users"},
-        {"name": "role", "type": "VARCHAR(32)", "required": true, "description": "成员角色：admin/maintainer/developer/viewer"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "记录创建时间"}
-      ],
-      "indexes": [
-        {"name": "idx_project_members_user_id", "unique": false, "columns": ["user_id"]}
-      ]
-    },
-    {
-      "name": "ssh_keys",
-      "type": "table",
-      "ownership": "canonical",
-      "description": "加密存储的SSH密钥信息，密钥内容使用AES-256加密后保存",
-      "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "密钥标识，主键"},
-        {"name": "name", "type": "VARCHAR(256)", "required": true, "description": "密钥名称"},
-        {"name": "encrypted_content", "type": "TEXT", "required": true, "description": "AES-256加密后的密钥内容（Base64编码）"},
-        {"name": "key_type", "type": "VARCHAR(16)", "required": true, "description": "密钥类型：rsa/ecdsa/ed25519"},
-        {"name": "fingerprint", "type": "VARCHAR(128)", "required": true, "description": "密钥指纹（SHA256摘要）"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "记录创建时间"},
-        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": true, "description": "记录更新时间"}
-      ],
-      "indexes": [
-        {"name": "idx_ssh_keys_fingerprint", "unique": true, "columns": ["fingerprint"]}
+        {"name": "pk_projects", "unique": true, "columns": ["id"]},
+        {"name": "idx_projects_deleted_at", "unique": false, "columns": ["deleted_at"]},
+        {"name": "idx_projects_name", "unique": false, "columns": ["name"]}
       ]
     },
     {
       "name": "environments",
       "type": "table",
       "ownership": "canonical",
-      "description": "部署环境配置信息，关联项目和SSH密钥，定义目标服务器的连接参数",
+      "description": "部署环境配置表，存储远程服务器的连接参数，包括地址、端口、登录用户和关联的 SSH 密钥",
       "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "环境标识，主键"},
-        {"name": "project_id", "type": "UUID", "required": true, "description": "所属项目ID，外键关联projects"},
-        {"name": "name", "type": "VARCHAR(64)", "required": true, "description": "环境名称，如「测试线」「灰度线」「正式线」"},
-        {"name": "host", "type": "VARCHAR(256)", "required": true, "description": "目标服务器地址（IP或域名）"},
-        {"name": "port", "type": "INTEGER", "required": true, "description": "SSH端口号，默认22"},
-        {"name": "key_id", "type": "UUID", "required": false, "description": "绑定的SSH密钥ID，外键关联ssh_keys"},
-        {"name": "status", "type": "VARCHAR(16)", "required": true, "description": "连接健康状态：online/offline/unknown"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "记录创建时间"},
-        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": true, "description": "记录更新时间"}
+        {"name": "id", "type": "uuid", "required": true, "description": "环境唯一标识，使用 UUID v4"},
+        {"name": "name", "type": "varchar(64)", "required": true, "description": "环境名称，如「测试线」「灰度线」「正式线」"},
+        {"name": "host", "type": "varchar(255)", "required": true, "description": "远程服务器 IP 地址或主机名"},
+        {"name": "port", "type": "integer", "required": true, "description": "SSH 端口号，默认 22，范围 1-65535"},
+        {"name": "login_user", "type": "varchar(64)", "required": true, "description": "SSH 登录用户名"},
+        {"name": "key_id", "type": "uuid", "required": true, "description": "关联的 SSH 密钥 ID，逻辑外键引用 ssh_keys 表"},
+        {"name": "status", "type": "varchar(20)", "required": true, "description": "环境连接状态：unknown/online/offline，默认 unknown"},
+        {"name": "created_at", "type": "timestamptz", "required": true, "description": "创建时间"},
+        {"name": "updated_at", "type": "timestamptz", "required": true, "description": "最后更新时间"},
+        {"name": "deleted_at", "type": "timestamptz", "required": false, "description": "软删除时间"}
       ],
       "indexes": [
-        {"name": "idx_environments_project_id", "unique": false, "columns": ["project_id"]},
-        {"name": "idx_environments_key_id", "unique": false, "columns": ["key_id"]}
+        {"name": "pk_environments", "unique": true, "columns": ["id"]},
+        {"name": "idx_environments_key_id", "unique": false, "columns": ["key_id"]},
+        {"name": "idx_environments_status", "unique": false, "columns": ["status"]},
+        {"name": "idx_environments_deleted_at", "unique": false, "columns": ["deleted_at"]}
       ]
     },
     {
-      "name": "deployment_tasks",
+      "name": "project_environments",
       "type": "table",
       "ownership": "canonical",
-      "description": "部署任务记录，跟踪每次部署或回滚操作的执行状态和进度",
+      "description": "项目与环境的关联关系表，支持多对多关系，一个项目可绑定多个环境，一个环境可被多个项目复用",
       "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "任务标识，主键"},
-        {"name": "project_id", "type": "UUID", "required": true, "description": "所属项目ID，外键关联projects"},
-        {"name": "environment_id", "type": "UUID", "required": true, "description": "目标环境ID，外键关联environments"},
-        {"name": "type", "type": "VARCHAR(16)", "required": true, "description": "任务类型：deploy/rollback"},
-        {"name": "file_path", "type": "VARCHAR(1024)", "required": false, "description": "部署文件路径或文件标识"},
-        {"name": "version", "type": "VARCHAR(64)", "required": false, "description": "部署版本号"},
-        {"name": "description", "type": "TEXT", "required": false, "description": "任务描述或备注"},
-        {"name": "status", "type": "VARCHAR(16)", "required": true, "description": "任务状态：pending/running/success/failed/rolled_back"},
-        {"name": "progress", "type": "INTEGER", "required": true, "description": "进度百分比0-100"},
-        {"name": "current_step", "type": "VARCHAR(256)", "required": false, "description": "当前执行步骤描述"},
-        {"name": "error_message", "type": "TEXT", "required": false, "description": "错误信息（任务失败时填写）"},
-        {"name": "started_by", "type": "UUID", "required": true, "description": "发起人用户ID，外键关联users"},
-        {"name": "started_at", "type": "TIMESTAMPTZ", "required": false, "description": "任务开始执行时间"},
-        {"name": "completed_at", "type": "TIMESTAMPTZ", "required": false, "description": "任务完成时间"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "记录创建时间"}
+        {"name": "id", "type": "uuid", "required": true, "description": "关联记录唯一标识"},
+        {"name": "project_id", "type": "uuid", "required": true, "description": "项目 ID，外键关联 projects.id"},
+        {"name": "environment_id", "type": "uuid", "required": true, "description": "环境 ID，外键关联 environments.id"},
+        {"name": "created_at", "type": "timestamptz", "required": true, "description": "绑定时间"}
       ],
       "indexes": [
-        {"name": "idx_deployment_tasks_project_id", "unique": false, "columns": ["project_id"]},
-        {"name": "idx_deployment_tasks_environment_id", "unique": false, "columns": ["environment_id"]},
-        {"name": "idx_deployment_tasks_status", "unique": false, "columns": ["status"]},
-        {"name": "idx_deployment_tasks_started_by", "unique": false, "columns": ["started_by"]},
-        {"name": "idx_deployment_tasks_created_at", "unique": false, "columns": ["created_at"]}
+        {"name": "pk_project_environments", "unique": true, "columns": ["id"]},
+        {"name": "uq_project_env_pair", "unique": true, "columns": ["project_id", "environment_id"]},
+        {"name": "idx_pe_project_id", "unique": false, "columns": ["project_id"]},
+        {"name": "idx_pe_environment_id", "unique": false, "columns": ["environment_id"]}
       ]
     },
     {
-      "name": "deployment_task_logs",
+      "name": "deployments",
       "type": "table",
       "ownership": "canonical",
-      "description": "部署任务执行日志行，通过WebSocket实时推送到前端看板",
+      "description": "部署记录表，记录每次部署任务的全量信息，包括目标项目/环境、版本号、文件名称、状态和起止时间",
       "fields": [
-        {"name": "id", "type": "BIGSERIAL", "required": true, "description": "日志行标识，自增主键"},
-        {"name": "task_id", "type": "UUID", "required": true, "description": "所属任务ID，外键关联deployment_tasks"},
-        {"name": "sequence", "type": "INTEGER", "required": true, "description": "日志行序号，用于保持顺序"},
-        {"name": "message", "type": "TEXT", "required": true, "description": "日志消息内容"},
-        {"name": "level", "type": "VARCHAR(8)", "required": true, "description": "日志级别：info/warn/error"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "记录创建时间"}
+        {"name": "id", "type": "uuid", "required": true, "description": "部署记录唯一标识"},
+        {"name": "project_id", "type": "uuid", "required": true, "description": "所属项目 ID，外键关联 projects.id"},
+        {"name": "environment_id", "type": "uuid", "required": true, "description": "目标环境 ID，外键关联 environments.id"},
+        {"name": "version", "type": "varchar(20)", "required": true, "description": "部署版本号，格式 vYYYYMMDD-HHmmss"},
+        {"name": "file_name", "type": "varchar(255)", "required": true, "description": "部署的可执行文件名"},
+        {"name": "status", "type": "varchar(20)", "required": true, "description": "部署状态：pending/running/success/failed，默认 pending"},
+        {"name": "started_at", "type": "timestamptz", "required": false, "description": "部署开始执行时间"},
+        {"name": "finished_at", "type": "timestamptz", "required": false, "description": "部署完成时间"},
+        {"name": "log_summary", "type": "text", "required": false, "description": "部署日志摘要，截取关键信息"},
+        {"name": "created_at", "type": "timestamptz", "required": true, "description": "记录创建时间"},
+        {"name": "updated_at", "type": "timestamptz", "required": true, "description": "记录更新时间"}
       ],
       "indexes": [
-        {"name": "idx_task_logs_task_sequence", "unique": false, "columns": ["task_id", "sequence"]},
-        {"name": "idx_task_logs_created_at", "unique": false, "columns": ["created_at"]}
+        {"name": "pk_deployments", "unique": true, "columns": ["id"]},
+        {"name": "idx_deployments_project_id", "unique": false, "columns": ["project_id"]},
+        {"name": "idx_deployments_environment_id", "unique": false, "columns": ["environment_id"]},
+        {"name": "idx_deployments_status", "unique": false, "columns": ["status"]},
+        {"name": "idx_deployments_created_at", "unique": false, "columns": ["created_at"]},
+        {"name": "idx_deployments_project_status", "unique": false, "columns": ["project_id", "status"]}
       ]
     },
     {
-      "name": "deployment_versions",
+      "name": "deployment_logs",
       "type": "table",
       "ownership": "canonical",
-      "description": "部署版本历史记录，追踪每次成功部署的版本信息和远程目录位置",
+      "description": "部署执行日志明细表，存储每次部署过程中产生的逐行日志，按时间递增记录",
       "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "版本记录标识，主键"},
-        {"name": "project_id", "type": "UUID", "required": true, "description": "所属项目ID，外键关联projects"},
-        {"name": "environment_id", "type": "UUID", "required": true, "description": "目标环境ID，外键关联environments"},
-        {"name": "task_id", "type": "UUID", "required": true, "description": "关联部署任务ID，外键关联deployment_tasks"},
-        {"name": "version", "type": "VARCHAR(64)", "required": true, "description": "版本号（自动生成或用户指定）"},
-        {"name": "deploy_path", "type": "VARCHAR(1024)", "required": true, "description": "远程服务器上的部署目录路径"},
-        {"name": "file_path", "type": "VARCHAR(1024)", "required": false, "description": "部署使用的文件路径，用于回滚时重新传输"},
-        {"name": "status", "type": "VARCHAR(16)", "required": true, "description": "版本状态：active/inactive/rolled_back"},
-        {"name": "deployed_by", "type": "UUID", "required": true, "description": "部署人用户ID，外键关联users"},
-        {"name": "description", "type": "TEXT", "required": false, "description": "部署说明"},
-        {"name": "deployed_at", "type": "TIMESTAMPTZ", "required": true, "description": "部署完成时间"},
-        {"name": "rolled_back_at", "type": "TIMESTAMPTZ", "required": false, "description": "回滚时间"},
-        {"name": "rolled_back_to", "type": "UUID", "required": false, "description": "回滚目标版本ID，自关联deployment_versions"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "记录创建时间"}
+        {"name": "id", "type": "bigserial", "required": true, "description": "日志记录自增 ID"},
+        {"name": "deployment_id", "type": "uuid", "required": true, "description": "所属部署记录 ID，外键关联 deployments.id"},
+        {"name": "log_level", "type": "varchar(10)", "required": true, "description": "日志级别：info/warn/error"},
+        {"name": "message", "type": "text", "required": true, "description": "日志消息内容"},
+        {"name": "created_at", "type": "timestamptz", "required": true, "description": "日志产生时间"}
       ],
       "indexes": [
-        {"name": "idx_versions_project_env", "unique": false, "columns": ["project_id", "environment_id"]},
-        {"name": "idx_versions_version", "unique": false, "columns": ["version"]},
-        {"name": "idx_versions_task_id", "unique": true, "columns": ["task_id"]},
-        {"name": "idx_versions_status", "unique": false, "columns": ["status"]},
-        {"name": "idx_versions_deployed_at", "unique": false, "columns": ["deployed_at"]}
+        {"name": "pk_deployment_logs", "unique": true, "columns": ["id"]},
+        {"name": "idx_dl_deployment_id", "unique": false, "columns": ["deployment_id"]},
+        {"name": "idx_dl_created_at", "unique": false, "columns": ["created_at"]},
+        {"name": "idx_dl_deployment_time", "unique": false, "columns": ["deployment_id", "created_at"]}
       ]
     },
     {
       "name": "audit_logs",
       "type": "table",
       "ownership": "canonical",
-      "description": "审计日志记录，捕获所有操作行为以满足可审核性要求，按月份分区存储",
+      "description": "审计日志表，记录所有用户操作和系统事件的审计追踪信息，支持多维筛选查询",
       "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "日志标识，主键"},
-        {"name": "timestamp", "type": "TIMESTAMPTZ", "required": true, "description": "操作发生时间"},
-        {"name": "operator", "type": "VARCHAR(64)", "required": true, "description": "操作人用户名"},
-        {"name": "operator_id", "type": "UUID", "required": false, "description": "操作人用户ID，外键关联users"},
-        {"name": "action", "type": "VARCHAR(256)", "required": true, "description": "操作描述，如「一键部署」「创建项目」「回滚版本」"},
-        {"name": "action_type", "type": "VARCHAR(64)", "required": true, "description": "操作类型分类：deploy/project/environment/key/rollback/auth"},
-        {"name": "target", "type": "VARCHAR(256)", "required": true, "description": "操作对象标识，如项目名/环境名/版本号"},
-        {"name": "target_type", "type": "VARCHAR(64)", "required": true, "description": "操作对象类型：project/environment/key/version/task"},
-        {"name": "result", "type": "VARCHAR(16)", "required": true, "description": "操作结果：success/failure"},
-        {"name": "detail", "type": "TEXT", "required": false, "description": "操作详情JSON"},
-        {"name": "ip_address", "type": "VARCHAR(45)", "required": true, "description": "来源IP地址（支持IPv6）"},
-        {"name": "request_id", "type": "VARCHAR(64)", "required": false, "description": "请求追踪ID"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "记录创建时间"}
+        {"name": "id", "type": "uuid", "required": true, "description": "审计日志唯一标识"},
+        {"name": "action", "type": "varchar(64)", "required": true, "description": "操作动作，如 create_project、trigger_deploy 等"},
+        {"name": "actor", "type": "varchar(64)", "required": true, "description": "操作者标识，用户 ID 或 system"},
+        {"name": "resource_type", "type": "varchar(32)", "required": true, "description": "资源类型：project/environment/deployment/key"},
+        {"name": "resource_id", "type": "uuid", "required": true, "description": "操作资源 ID"},
+        {"name": "detail", "type": "text", "required": false, "description": "操作详情描述，最长 1000 字符"},
+        {"name": "result", "type": "varchar(10)", "required": true, "description": "操作结果：success/failure"},
+        {"name": "created_at", "type": "timestamptz", "required": true, "description": "日志记录时间"}
       ],
       "indexes": [
-        {"name": "idx_audit_logs_timestamp", "unique": false, "columns": ["timestamp"]},
-        {"name": "idx_audit_logs_operator", "unique": false, "columns": ["operator"]},
-        {"name": "idx_audit_logs_operator_id", "unique": false, "columns": ["operator_id"]},
-        {"name": "idx_audit_logs_action_type", "unique": false, "columns": ["action_type"]},
-        {"name": "idx_audit_logs_result", "unique": false, "columns": ["result"]}
-      ]
-    }
-  ],
-  "interfaces": [
-    {
-      "name": "PostgreSQLConnection",
-      "method": "INTERNAL",
-      "endpoint": "postgresql://[host]:5432/cogniforge",
-      "description": "PostgreSQL数据库连接接口。所有业务服务通过连接池建立TCP连接，使用SQL语句进行数据存取操作。连接参数由连接池管理，服务层不直接处理连接生命周期。",
-      "parameters": [
-        {"name": "host", "type": "string", "description": "数据库服务器地址，默认为localhost"},
-        {"name": "port", "type": "integer", "description": "数据库端口，默认5432"},
-        {"name": "dbname", "type": "string", "description": "数据库名称：cogniforge"},
-        {"name": "sslmode", "type": "string", "description": "SSL连接模式：require/verify-full/disable"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "connection": "pgx.Conn（Go驱动连接句柄）",
-          "max_pool_size": "integer（最大连接数）",
-          "idle_connections": "integer（空闲连接数）"
-        }
-      },
-      "error_codes": [
-        {"code": "28P01", "message": "密码认证失败，用户名或密码错误"},
-        {"code": "3D000", "message": "数据库不存在"},
-        {"code": "08001", "message": "无法连接到服务器，请检查网络和地址配置"},
-        {"code": "08006", "message": "数据库连接中断，正在重连"},
-        {"code": "53300", "message": "连接数超限，已达到max_connections上限"}
+        {"name": "pk_audit_logs", "unique": true, "columns": ["id"]},
+        {"name": "idx_audit_actor", "unique": false, "columns": ["actor"]},
+        {"name": "idx_audit_resource", "unique": false, "columns": ["resource_type", "resource_id"]},
+        {"name": "idx_audit_created_at", "unique": false, "columns": ["created_at"]},
+        {"name": "idx_audit_resource_time", "unique": false, "columns": ["resource_type", "created_at"]}
       ]
     },
     {
-      "name": "TransactionSupport",
-      "method": "INTERNAL",
-      "endpoint": "BEGIN/COMMIT/ROLLBACK",
-      "description": "数据库事务接口，保证多个数据表操作之间的原子性和一致性。部署流程中的多步骤写入操作必须使用事务。",
-      "parameters": [
-        {"name": "isolation_level", "type": "string", "description": "隔离级别：Read Committed（默认）/ Repeatable Read / Serializable"},
-        {"name": "timeout", "type": "integer", "description": "事务超时时间（秒），默认30s"}
+      "name": "ssh_keys",
+      "type": "table",
+      "ownership": "canonical",
+      "description": "SSH 密钥元数据表，存储密钥的名称和指纹信息，实际私钥密文存储在独立的加密密钥存储模块中",
+      "fields": [
+        {"name": "id", "type": "uuid", "required": true, "description": "密钥唯一标识"},
+        {"name": "name", "type": "varchar(64)", "required": true, "description": "密钥名称，便于用户识别"},
+        {"name": "fingerprint", "type": "varchar(64)", "required": true, "description": "密钥指纹（MD5），用于唯一性校验和展示"},
+        {"name": "created_at", "type": "timestamptz", "required": true, "description": "创建时间"},
+        {"name": "updated_at", "type": "timestamptz", "required": true, "description": "最后更新时间"},
+        {"name": "deleted_at", "type": "timestamptz", "required": false, "description": "软删除时间"}
       ],
-      "response": {
-        "status": 200,
-        "body": {
-          "transaction_id": "string（内部事务句柄）",
-          "status": "string（committed/rolled_back）"
-        }
-      },
-      "error_codes": [
-        {"code": "40001", "message": "序列化冲突，事务无法提交，需重试"},
-        {"code": "40P01", "message": "检测到死锁，事务被终止，需重试"},
-        {"code": "25P02", "message": "当前事务已中止，命令被忽略直到事务块结束"}
+      "indexes": [
+        {"name": "pk_ssh_keys", "unique": true, "columns": ["id"]},
+        {"name": "idx_ssh_keys_fingerprint", "unique": false, "columns": ["fingerprint"]},
+        {"name": "idx_ssh_keys_deleted_at", "unique": false, "columns": ["deleted_at"]}
       ]
     }
   ],
+  "interfaces": [],
   "error_handling": {
-    "strategy": "所有数据库操作统一使用连接池管理，上层业务服务层捕获数据库驱动返回的错误码（SQLSTATE），按分类转换为业务错误响应。连接中断时启用自动重试机制（最多3次，指数退避），数据完整性冲突时向上返回精确的错误描述以支持用户快速定位问题。",
+    "strategy": "数据库层通过约束（主键、唯一键、外键、NOT NULL）保证数据完整性，连接错误和查询异常由业务服务层捕获并返回统一错误响应。数据库连接使用连接池管理，超时和断开自动重试",
     "response_format": {
-      "body": {
-        "code": "integer（HTTP状态码或自定义业务码）",
-        "error": "string（错误分类标识）",
-        "detail": "string（详细错误描述，包含SQLSTATE码）"
-      }
+      "body": {"code": "integer", "error": "string", "detail": "string"}
     },
     "categories": [
-      {
-        "code": "08000-08007",
-        "name": "连接异常",
-        "description": "数据库连接失败、中断或拒绝。触发条件包括：网络故障、数据库服务重启、防火墙拦截、连接数超限。处理方式：连接池自动重试（指数退避），重试3次仍失败则返回503给前端。"
-      },
-      {
-        "code": "23505",
-        "name": "唯一约束冲突",
-        "description": "INSERT或UPDATE违反UNIQUE约束。触发条件：创建同名项目、重复用户名、重复密钥指纹。处理方式：返回409 Conflict，detail字段注明冲突字段和已存在的值。"
-      },
-      {
-        "code": "23503",
-        "name": "外键约束冲突",
-        "description": "INSERT或UPDATE违反FOREIGN KEY约束。触发条件：引用的项目/环境/密钥不存在时执行操作。处理方式：返回409 Conflict，指示被引用的记录不存在，引导用户检查关联数据。"
-      },
-      {
-        "code": "40P01",
-        "name": "死锁检测",
-        "description": "并发事务发生死锁，PostgreSQL自动终止其中一个事务。处理方式：捕获后自动重试（最多2次），重试仍失败则返回500，提示用户稍后重试。"
-      },
-      {
-        "code": "55P03",
-        "name": "锁等待超时",
-        "description": "语句在锁等待时间内未能获取锁。处理方式：返回503，引导用户减少并发操作或稍后重试。"
-      },
-      {
-        "code": "57014",
-        "name": "查询取消/超时",
-        "description": "查询执行时间超过statement_timeout或锁等待超过lock_timeout。触发条件：审计日志大范围查询未加索引、复杂聚合查询。处理方式：优化查询计划，确保走索引，返回504并提示添加筛选条件。"
-      }
+      {"code": "08000", "name": "连接异常", "description": "数据库连接失败、连接超时或连接池耗尽，业务服务应重试或返回 503"},
+      {"code": "23000", "name": "约束冲突", "description": "主键冲突、唯一键冲突或外键约束失败，业务服务应返回 409"},
+      {"code": "22000", "name": "数据校验失败", "description": "数据类型不匹配、非空约束违反或超出字段长度，业务服务应返回 400"},
+      {"code": "40000", "name": "事务回滚", "description": "死锁检测或序列化失败导致事务回滚，业务服务应重试"},
+      {"code": "42XXX", "name": "语法或权限错误", "description": "SQL 语法错误或权限不足，属于内部错误，业务服务应返回 500"}
     ]
   },
   "index_strategy": [
     {
-      "table": "users",
-      "indexes": [
-        {"name": "idx_users_username", "columns": ["username"], "unique": true, "type": "B-tree", "purpose": "用户登录时按用户名精确查找，唯一索引防止用户名重复"},
-        {"name": "idx_users_role", "columns": ["role"], "unique": false, "type": "B-tree", "purpose": "按角色筛选用户列表，用于管理员界面"},
-        {"name": "idx_users_status", "columns": ["status"], "unique": false, "type": "B-tree", "purpose": "按状态过滤用户（active/disabled），支持账号管理场景"}
-      ]
-    },
-    {
       "table": "projects",
       "indexes": [
-        {"name": "idx_projects_name", "columns": ["name"], "unique": false, "type": "B-tree", "purpose": "项目列表按名称排序和模糊搜索"},
-        {"name": "idx_projects_created_by", "columns": ["created_by"], "unique": false, "type": "B-tree", "purpose": "按创建者查询项目列表，用于用户个人项目视图"}
-      ]
-    },
-    {
-      "table": "project_members",
-      "indexes": [
-        {"name": "idx_project_members_user_id", "columns": ["user_id"], "unique": false, "type": "B-tree", "purpose": "按用户查询其加入的所有项目，支持项目切换功能"}
-      ]
-    },
-    {
-      "table": "ssh_keys",
-      "indexes": [
-        {"name": "idx_ssh_keys_fingerprint", "columns": ["fingerprint"], "unique": true, "type": "B-tree", "purpose": "按指纹精确查找密钥，唯一索引防止同一密钥重复录入"}
+        {"name": "pk_projects", "columns": ["id"], "unique": true, "type": "B-tree", "purpose": "主键索引，支持按 ID 快速查询项目"},
+        {"name": "idx_projects_deleted_at", "columns": ["deleted_at"], "unique": false, "type": "B-tree", "purpose": "加速软删除过滤，默认查询排除已删除项目"},
+        {"name": "idx_projects_name", "columns": ["name"], "unique": false, "type": "B-tree", "purpose": "支持按项目名称模糊搜索和排序"}
       ]
     },
     {
       "table": "environments",
       "indexes": [
-        {"name": "idx_environments_project_id", "columns": ["project_id"], "unique": false, "type": "B-tree", "purpose": "查询指定项目的所有环境配置，环境配置界面核心查询"},
-        {"name": "idx_environments_key_id", "columns": ["key_id"], "unique": false, "type": "B-tree", "purpose": "按绑定的密钥ID反向查询环境，用于密钥被删除时的级联检查"}
+        {"name": "pk_environments", "columns": ["id"], "unique": true, "type": "B-tree", "purpose": "主键索引"},
+        {"name": "idx_environments_key_id", "columns": ["key_id"], "unique": false, "type": "B-tree", "purpose": "按密钥 ID 查询关联的环境列表"},
+        {"name": "idx_environments_status", "columns": ["status"], "unique": false, "type": "B-tree", "purpose": "按状态过滤环境（online/offline/unknown）"},
+        {"name": "idx_environments_deleted_at", "columns": ["deleted_at"], "unique": false, "type": "B-tree", "purpose": "加速软删除过滤"}
       ]
     },
     {
-      "table": "deployment_tasks",
+      "table": "project_environments",
       "indexes": [
-        {"name": "idx_deployment_tasks_project_id", "columns": ["project_id"], "unique": false, "type": "B-tree", "purpose": "查询指定项目的所有部署任务列表"},
-        {"name": "idx_deployment_tasks_environment_id", "columns": ["environment_id"], "unique": false, "type": "B-tree", "purpose": "按环境筛选部署任务记录"},
-        {"name": "idx_deployment_tasks_status", "columns": ["status"], "unique": false, "type": "B-tree", "purpose": "按状态过滤任务（pending/running/success/failed），支持看板视图"},
-        {"name": "idx_deployment_tasks_started_by", "columns": ["started_by"], "unique": false, "type": "B-tree", "purpose": "按发起人查询部署历史"},
-        {"name": "idx_deployment_tasks_created_at", "columns": ["created_at"], "unique": false, "type": "B-tree", "purpose": "按时间排序和分页查询部署任务列表"}
+        {"name": "pk_project_environments", "columns": ["id"], "unique": true, "type": "B-tree", "purpose": "主键索引"},
+        {"name": "uq_project_env_pair", "columns": ["project_id", "environment_id"], "unique": true, "type": "B-tree", "purpose": "唯一约束，防止重复绑定"},
+        {"name": "idx_pe_project_id", "columns": ["project_id"], "unique": false, "type": "B-tree", "purpose": "按项目 ID 查询绑定的环境列表"},
+        {"name": "idx_pe_environment_id", "columns": ["environment_id"], "unique": false, "type": "B-tree", "purpose": "按环境 ID 查询关联的项目列表"}
       ]
     },
     {
-      "table": "deployment_task_logs",
+      "table": "deployments",
       "indexes": [
-        {"name": "idx_task_logs_task_sequence", "columns": ["task_id", "sequence"], "unique": false, "type": "B-tree", "purpose": "按任务ID查询有序日志行，支持WebSocket实时推送和断线重连时的日志补发"},
-        {"name": "idx_task_logs_created_at", "columns": ["created_at"], "unique": false, "type": "B-tree", "purpose": "日志按时间清理时的范围删除条件，用于定期归档"}
+        {"name": "pk_deployments", "columns": ["id"], "unique": true, "type": "B-tree", "purpose": "主键索引"},
+        {"name": "idx_deployments_project_id", "columns": ["project_id"], "unique": false, "type": "B-tree", "purpose": "按项目查询部署历史"},
+        {"name": "idx_deployments_environment_id", "columns": ["environment_id"], "unique": false, "type": "B-tree", "purpose": "按环境查询部署历史"},
+        {"name": "idx_deployments_status", "columns": ["status"], "unique": false, "type": "B-tree", "purpose": "按状态过滤部署记录（pending/running/success/failed）"},
+        {"name": "idx_deployments_created_at", "columns": ["created_at"], "unique": false, "type": "B-tree", "purpose": "按时间倒序展示部署列表"},
+        {"name": "idx_deployments_project_status", "columns": ["project_id", "status"], "unique": false, "type": "B-tree", "purpose": "复合索引，加速项目维度的状态筛选查询"}
       ]
     },
     {
-      "table": "deployment_versions",
+      "table": "deployment_logs",
       "indexes": [
-        {"name": "idx_versions_project_env", "columns": ["project_id", "environment_id"], "unique": false, "type": "B-tree", "purpose": "按项目和环境查询版本历史列表，VersionAPI核心查询路径"},
-        {"name": "idx_versions_version", "columns": ["version"], "unique": false, "type": "B-tree", "purpose": "按版本号精确查找，用于回滚时的版本确认"},
-        {"name": "idx_versions_task_id", "columns": ["task_id"], "unique": true, "type": "B-tree", "purpose": "版本记录与部署任务一对一关联，唯一索引保证引用完整性"},
-        {"name": "idx_versions_status", "columns": ["status"], "unique": false, "type": "B-tree", "purpose": "按状态筛选版本（active/inactive/rolled_back），获取当前运行版本"},
-        {"name": "idx_versions_deployed_at", "columns": ["deployed_at"], "unique": false, "type": "B-tree", "purpose": "按部署时间排序版本历史，支持时间范围查询"}
+        {"name": "pk_deployment_logs", "columns": ["id"], "unique": true, "type": "B-tree", "purpose": "主键索引"},
+        {"name": "idx_dl_deployment_id", "columns": ["deployment_id"], "unique": false, "type": "B-tree", "purpose": "按部署记录查询完整执行日志"},
+        {"name": "idx_dl_created_at", "columns": ["created_at"], "unique": false, "type": "B-tree", "purpose": "按时间范围过滤日志"},
+        {"name": "idx_dl_deployment_time", "columns": ["deployment_id", "created_at"], "unique": false, "type": "B-tree", "purpose": "复合索引，按部署和时间顺序展示日志"}
       ]
     },
     {
       "table": "audit_logs",
       "indexes": [
-        {"name": "idx_audit_logs_timestamp", "columns": ["timestamp"], "unique": false, "type": "B-tree", "purpose": "按时间范围查询审计日志（AuditLogAPI核心查询路径），按月分区裁剪的前导列"},
-        {"name": "idx_audit_logs_operator", "columns": ["operator"], "unique": false, "type": "B-tree", "purpose": "按操作人筛选审计记录"},
-        {"name": "idx_audit_logs_operator_id", "columns": ["operator_id"], "unique": false, "type": "B-tree", "purpose": "按用户ID关联查询，用于用户详情页面的操作记录"},
-        {"name": "idx_audit_logs_action_type", "columns": ["action_type"], "unique": false, "type": "B-tree", "purpose": "按操作类型分组统计和筛选（deploy/project/environment/key等）"},
-        {"name": "idx_audit_logs_result", "columns": ["result"], "unique": false, "type": "B-tree", "purpose": "按操作结果过滤（success/failure），支持异常操作告警查询"}
+        {"name": "pk_audit_logs", "columns": ["id"], "unique": true, "type": "B-tree", "purpose": "主键索引"},
+        {"name": "idx_audit_actor", "columns": ["actor"], "unique": false, "type": "B-tree", "purpose": "按操作者查询审计记录"},
+        {"name": "idx_audit_resource", "columns": ["resource_type", "resource_id"], "unique": false, "type": "B-tree", "purpose": "按资源类型和 ID 查询操作历史"},
+        {"name": "idx_audit_created_at", "columns": ["created_at"], "unique": false, "type": "B-tree", "purpose": "按时间范围筛选审计日志"},
+        {"name": "idx_audit_resource_time", "columns": ["resource_type", "created_at"], "unique": false, "type": "B-tree", "purpose": "复合索引，加速按资源类型+时间维度的组合查询"}
+      ]
+    },
+    {
+      "table": "ssh_keys",
+      "indexes": [
+        {"name": "pk_ssh_keys", "columns": ["id"], "unique": true, "type": "B-tree", "purpose": "主键索引"},
+        {"name": "idx_ssh_keys_fingerprint", "columns": ["fingerprint"], "unique": false, "type": "B-tree", "purpose": "按指纹查询和去重校验"},
+        {"name": "idx_ssh_keys_deleted_at", "columns": ["deleted_at"], "unique": false, "type": "B-tree", "purpose": "加速软删除过滤"}
       ]
     }
   ],
   "migration_strategy": {
-    "tool": "golang-migrate/migrate",
-    "naming": "{timestamp}_{描述}.up.sql / {timestamp}_{描述}.down.sql",
-    "rollback": "每个迁移版本必须提供对应的 .down.sql 回滚脚本。回滚时使用 golang-migrate down 命令按版本逆序回退。正式环境的回滚操作必须经过审批流程，禁止直接在生产环境执行 down 回退。紧急回滚场景：先执行 down 脚本回退至上一版本，再通过部署系统的版本回滚功能恢复服务状态。"
+    "tool": "Alembic",
+    "naming": "V{序号}__{描述}.sql",
+    "rollback": "每个迁移必须包含对应的 downgrade 脚本，支持版本回退。生产环境回滚需先执行 downgrade 至目标版本，再应用修复迁移。不允许跳过中间版本的直接回滚"
   },
   "capacity_estimation": {
-    "estimated_rows_1y": "约150万行。其中：audit_logs约100万行（日均2740条操作日志），deployment_task_logs约36.5万行（日均1000条部署日志行），deployment_tasks约3.65万行（日均100次部署），deployment_versions约3.65万行，其余配置类表（users/projects/environments/ssh_keys/project_members）合计约5000行。",
-    "estimated_rows_3y": "约450万行。配置类表增长趋于平缓，日志类表（audit_logs + deployment_task_logs）随业务量线性增长，占总量的90%以上。考虑历史数据归档策略，核心审计日志保留3年，超过3年的按季度归档到离线存储。",
-    "hot_tables": ["audit_logs", "deployment_versions", "deployment_tasks", "deployment_task_logs"],
-    "partition_strategy": "audit_logs 表按月份范围分区（PARTITION BY RANGE (created_at)），每月一个独立分区。分区命名格式：audit_logs_2026_01、audit_logs_2026_02。过期分区通过 DETACH 后归档存储，不直接 DELETE 以防止 VACUUM 膨胀。其他表暂不分区，若 deployment_task_logs 单表超1000万行时参考 audit_logs 方案按月份分区。"
+    "estimated_rows_1y": "projects: ~500, environments: ~2,000, project_environments: ~3,000, deployments: ~50,000, deployment_logs: ~3,000,000, audit_logs: ~200,000, ssh_keys: ~1,000",
+    "estimated_rows_3y": "projects: ~2,000, environments: ~10,000, project_environments: ~15,000, deployments: ~300,000, deployment_logs: ~15,000,000, audit_logs: ~1,200,000, ssh_keys: ~5,000",
+    "hot_tables": ["deployments", "deployment_logs", "audit_logs"],
+    "partition_strategy": "deployment_logs 和 audit_logs 按 created_at 按月分区（PARTITION BY RANGE）。deployments 表在数据量超过 100 万行后按 created_at 按月分区"
   },
   "connection_contracts": {
-    "pool_size": "各服务独立连接池，默认最小5/最大20。总连接数上限100（含预留）。",
-    "timeout": "连接超时10s，空闲超时30min，最大生命周期60min，语句执行超时30s（statement_timeout=30s），事务锁等待超时5s（lock_timeout=5s）。",
+    "pool_size": "每个服务连接池最小 5 个连接，最大 20 个连接",
+    "timeout": "连接超时 5 秒，查询超时 30 秒，连接空闲回收 300 秒",
     "service_accounts": [
       {
-        "service": "认证中间件",
-        "db_user": "cogniforge_auth",
-        "privileges": ["SELECT ON users"]
-      },
-      {
         "service": "项目管理服务",
-        "db_user": "cogniforge_pm",
-        "privileges": ["SELECT, INSERT, UPDATE, DELETE ON projects", "SELECT, INSERT, UPDATE, DELETE ON project_members", "SELECT ON users"]
+        "db_user": "svc_project_mgr",
+        "privileges": ["SELECT", "INSERT", "UPDATE", "DELETE"]
       },
       {
-        "service": "环境管理服务",
-        "db_user": "cogniforge_env",
-        "privileges": ["SELECT, INSERT, UPDATE, DELETE ON environments", "SELECT ON ssh_keys", "SELECT ON projects"]
+        "service": "环境配置服务",
+        "db_user": "svc_env_config",
+        "privileges": ["SELECT", "INSERT", "UPDATE", "DELETE"]
       },
       {
-        "service": "密钥管理服务",
-        "db_user": "cogniforge_key",
-        "privileges": ["SELECT, INSERT, UPDATE, DELETE ON ssh_keys"]
-      },
-      {
-        "service": "部署编排服务",
-        "db_user": "cogniforge_orch",
-        "privileges": ["SELECT, INSERT, UPDATE ON deployment_tasks", "SELECT, INSERT ON deployment_task_logs", "SELECT, INSERT, UPDATE ON deployment_versions", "SELECT ON environments", "SELECT ON ssh_keys", "SELECT ON projects"]
-      },
-      {
-        "service": "版本管理服务",
-        "db_user": "cogniforge_version",
-        "privileges": ["SELECT, UPDATE ON deployment_versions", "SELECT ON deployment_tasks"]
+        "service": "部署引擎服务",
+        "db_user": "svc_deploy_engine",
+        "privileges": ["SELECT", "INSERT", "UPDATE"]
       },
       {
         "service": "审计日志服务",
-        "db_user": "cogniforge_audit",
-        "privileges": ["INSERT, SELECT ON audit_logs"]
+        "db_user": "svc_audit_log",
+        "privileges": ["SELECT", "INSERT"]
+      },
+      {
+        "service": "密钥管理服务",
+        "db_user": "svc_key_manager",
+        "privileges": ["SELECT", "INSERT", "UPDATE", "DELETE"]
       }
     ]
   }
