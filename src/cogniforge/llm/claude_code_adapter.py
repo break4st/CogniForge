@@ -147,6 +147,11 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
         """Pure text generation via ``claude -p`` (no tools)."""
         full_prompt = self._build_prompt(prompt, context)
         model = kwargs.get("model", self.model)
+        # Use stdin for large prompts to avoid ARG_MAX
+        if len(full_prompt) > 100000:
+            command = [self.claude_cli_path, "-p", "-",
+                        "--output-format", "json", "--model", model]
+            return self._invoke_cli_stdin(command, full_prompt)
         command = [self.claude_cli_path, "-p", full_prompt,
                     "--output-format", "json", "--model", model]
         return self._invoke_cli(command)
@@ -311,17 +316,18 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
     # ------------------------------------------------------------------
 
     def _fallback_agentic(self, prompt, *, role=None, **kwargs) -> LLMResponse:
-        """Fallback: use ``claude -p`` with tools flags."""
+        """Fallback: use ``claude -p`` with tools flags.  Passes prompt via
+        stdin to avoid OS ARG_MAX limit when prompt is large."""
         model = kwargs.get("model", self.model)
         cmd = [
-            self.claude_cli_path, "-p", prompt,
+            self.claude_cli_path, "-p", "-",
             "--output-format", "json", "--model", model,
             "--tools", "Read,Write,Edit,Bash",
             "--permission-mode", "acceptEdits",
         ]
         if role and role in ROLE_PROMPTS:
             cmd.extend(["--append-system-prompt", ROLE_PROMPTS[role]])
-        return self._invoke_cli(cmd)
+        return self._invoke_cli_stdin(cmd, prompt)
 
     def _get_anthropic_client(self):
         """Create an Anthropic client.  Reads auth from env vars set by claude."""
@@ -364,6 +370,38 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
                 command, capture_output=True, text=True,
                 cwd=str(self.repo_path), timeout=self.timeout,
                 env=env, check=False,
+            )
+        except FileNotFoundError:
+            raise RuntimeError("Claude Code CLI not found.")
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"Claude Code CLI timeout after {self.timeout}s")
+
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()
+            if "error" in err.lower() and "tool" not in err.lower():
+                raise RuntimeError(f"Claude CLI failed (exit {result.returncode}): {err}")
+
+        content, usage = self._parse_output(result.stdout)
+        if not content:
+            content = result.stderr or result.stdout or ""
+        if not content:
+            raise RuntimeError("Claude Code CLI returned empty response")
+
+        return LLMResponse(
+            content=content, model=self.model, provider="claude_code", usage=usage,
+        )
+
+    def _invoke_cli_stdin(self, command: list[str], stdin_text: str) -> LLMResponse:
+        """Invoke CLI with prompt passed via stdin (avoids ARG_MAX limit)."""
+        env = os.environ.copy()
+        if self.api_key:
+            env["ANTHROPIC_API_KEY"] = self.api_key
+
+        try:
+            result = subprocess.run(
+                command, capture_output=True, text=True,
+                cwd=str(self.repo_path), timeout=self.timeout,
+                env=env, check=False, input=stdin_text,
             )
         except FileNotFoundError:
             raise RuntimeError("Claude Code CLI not found.")

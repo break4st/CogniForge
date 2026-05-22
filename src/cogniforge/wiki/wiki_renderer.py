@@ -1594,6 +1594,13 @@ def _render_lld(d: dict) -> str:
     workflow = d.get("workflow")
     domain_objects = d.get("domain_objects", [])
     service_contracts = d.get("service_contracts", [])
+    # Defend against LLM generating this as a dict instead of a list
+    if isinstance(service_contracts, dict):
+        # Common variants: {"name": ...} (single object) or {"service": {...}} (extra wrapper)
+        if "service" in service_contracts and isinstance(service_contracts["service"], dict):
+            service_contracts = [service_contracts["service"]]
+        else:
+            service_contracts = [service_contracts]
     business_rules = d.get("business_rules")
     component_tree = d.get("component_tree", [])
     state_design = d.get("state_design")

@@ -619,25 +619,21 @@ class Repl:
         return ""
 
     def _exec_wbs_auto_all(self, modules: list[dict]) -> str:
-        """Generate WBS for all modules with batched LLM enrichment.
+        """Generate WBS for all modules in parallel.
 
-        Phase 1: mechanical stub generation for all modules (local, fast)
-        Phase 2: single LLM call to enrich all stubs (one network round trip)
-        Phase 3: task registration and coverage validation per module
+        Each module gets its own LLM call; all modules run concurrently
+        via ThreadPoolExecutor.  Task registration (git I/O) runs
+        sequentially after all LLM work completes.
         """
-        from cogniforge.wbs.enriched_wbs_assembler import WBSAssembler
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from cogniforge.wbs.enriched_wbs_assembler import WBSAssembler, WBSResult
 
         total = len(modules)
         agent = self.agents.get("techlead")
         if agent is None:
             return AGENT_NO_ROLE.format(role="techlead")
 
-        module_names = ", ".join(c.get("name", "?") for c in modules)
-        click.echo(
-            f"\n  [{C_AMBER}1-{total}/{total}{C_RESET}] "
-            f"批量 WBS: {module_names}"
-        )
-
+        # ── Build (module_name, lld_path) specs ──
         specs: list[tuple[str, Path]] = []
         for comp in modules:
             mod_name = comp.get("name", "unknown")
@@ -646,26 +642,74 @@ class Repl:
             if lld_files:
                 specs.append((mod_name, lld_files[-1]))
 
-        assembler = WBSAssembler(
-            agent.wiki_system, agent.task_engine, agent.agent,
+        if not specs:
+            return f"  [{C_RED}✗{C_RESET}] 没有找到 LLD JSON 文件"
+
+        total = len(specs)
+        max_w = min(total, 10)
+        module_names = ", ".join(name for name, _ in specs)
+        click.echo(
+            f"\n  [{C_AMBER}1-{total}/{total}{C_RESET}] "
+            f"并行 WBS ({max_w} 并发): {module_names}"
         )
 
-        spinner = Spinner(SPINNER_RUNNING.format(agent="techlead"))
-        spinner.start()
-        try:
-            results = assembler.assemble_batch(specs)
-        except Exception as e:
-            spinner.stop()
-            return f"  [{C_RED}✗{C_RESET}] 批处理失败: {e}"
-        finally:
-            spinner.stop()
+        # ── Per-module worker (runs in thread) ──
+        def _assemble_one(mod_name: str, lld_path: Path):
+            """Run full assemble pipeline for one module.  Each thread gets
+            its own WBSAssembler so there is no shared mutable state."""
+            assembler = WBSAssembler(
+                agent.wiki_system, agent.task_engine, agent.agent,
+            )
+            return assembler.assemble(mod_name, lld_path)
 
-        final_results: list[dict] = []
-        for (mod_name, _), result in zip(specs, results):
+        # ── Parallel phase: LLM enrichment per module ──
+        progress = ParallelProgress()
+        future_map: dict = {}
+        with ThreadPoolExecutor(max_workers=max_w) as executor:
+            for mod_name, lld_path in specs:
+                progress.register(mod_name)
+                future = executor.submit(_assemble_one, mod_name, lld_path)
+                future_map[future] = mod_name
+
+            progress.start()
+            per_module: dict[str, WBSResult | Exception] = {}
             try:
-                count = agent._register_wbs_tasks(result.tasks, mod_name)
-                report = result.coverage
-                coverage_msg = f", coverage={report.coverage_pct:.0f}%" if report else ""
+                for future in as_completed(future_map):
+                    mod_name = future_map[future]
+                    progress.stop()
+                    try:
+                        per_module[mod_name] = future.result()
+                    except Exception as exc:
+                        per_module[mod_name] = exc
+                    progress.remove(mod_name)
+                    if progress.active:
+                        progress.start()
+            finally:
+                progress.stop()
+
+        # ── Sequential phase: register tasks & print (git I/O serialised) ──
+        final_results: list[dict] = []
+        for mod_name, _ in specs:
+            raw = per_module.get(mod_name)
+            if raw is None:
+                err = {"status": "failed", "message": "no result (unexpected)"}
+                self._print_lld_result(mod_name, err)
+                final_results.append(err)
+                continue
+
+            if isinstance(raw, Exception):
+                err = {"status": "failed", "message": str(raw)}
+                self._print_lld_result(mod_name, err)
+                final_results.append(err)
+                continue
+
+            # raw is WBSResult
+            try:
+                count = agent._register_wbs_tasks(raw.tasks, mod_name)
+                report = raw.coverage
+                coverage_msg = (
+                    f", coverage={report.coverage_pct:.0f}%" if report else ""
+                )
                 res = agent.format_result(
                     status="success",
                     message=f"WBS: {count} tasks for {mod_name}{coverage_msg}",
@@ -673,8 +717,8 @@ class Repl:
                 )
                 self._print_lld_result(mod_name, res)
                 final_results.append(res)
-            except Exception as e:
-                err = {"status": "failed", "message": str(e)}
+            except Exception as exc:
+                err = {"status": "failed", "message": str(exc)}
                 self._print_lld_result(mod_name, err)
                 final_results.append(err)
 
@@ -683,6 +727,7 @@ class Repl:
             f"\n  {C_GREEN}{success_count}/{total} 模块 WBS 生成成功{C_RESET}"
         )
 
+        # ── Post-agent menu ──
         step = self.workflow.current_step
         if step:
             action_choice = self._post_agent_menu(step)

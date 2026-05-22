@@ -214,6 +214,8 @@ class WBSAssembler:
         # Merge enriched data back
         merged: dict[str, list[TaskStub]] = {m["module"]: [] for m in all_stubs}
         for ed in enriched_dicts:
+            if not isinstance(ed, dict):
+                continue
             eidx = ed.get("index", -1)
             if eidx in flat_stub_map:
                 mod, stub = flat_stub_map[eidx]
@@ -297,6 +299,9 @@ class WBSAssembler:
         enriched_dicts = _parse_llm_json_array(response.content)
         if not enriched_dicts:
             return stubs  # Parse failed, return originals
+
+        # Filter out any non-dict entries (LLM may embed strings in arrays)
+        enriched_dicts = [d for d in enriched_dicts if isinstance(d, dict)]
 
         # Merge LLM output back into stubs
         merged: list[TaskStub] = []

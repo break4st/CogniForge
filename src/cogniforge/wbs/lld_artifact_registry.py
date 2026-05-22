@@ -135,6 +135,10 @@ class LLDArtifactRegistry:
     # ── section parsers ────────────────────────────────────────────────
 
     def _parse_data_models(self, items: list) -> None:
+        if isinstance(items, dict):
+            items = [items]
+        if not isinstance(items, list):
+            return
         for dm in items:
             name = dm.get("name", "?")
             dtype = dm.get("type", "?")
@@ -148,6 +152,10 @@ class LLDArtifactRegistry:
             ))
 
     def _parse_domain_objects(self, items: list) -> None:
+        if isinstance(items, dict):
+            items = [items]
+        if not isinstance(items, list):
+            return
         for dobj in items:
             name = dobj.get("name", "?")
             ot = dobj.get("object_type", "?")
@@ -163,6 +171,14 @@ class LLDArtifactRegistry:
             ))
 
     def _parse_service_contracts(self, items: list) -> None:
+        if isinstance(items, dict):
+            # Defend against LLM generating this as a dict instead of a list
+            if "service" in items and isinstance(items["service"], dict):
+                items = [items["service"]]
+            else:
+                items = [items]
+        if not isinstance(items, list):
+            return
         for svc in items:
             name = svc.get("name", "?")
             methods = svc.get("methods", [])
@@ -205,6 +221,10 @@ class LLDArtifactRegistry:
             ))
 
     def _parse_interfaces(self, items: list) -> None:
+        if isinstance(items, dict):
+            items = [items]
+        if not isinstance(items, list):
+            return
         for iface in items:
             name = iface.get("name", "?")
             method = iface.get("method", "?")
