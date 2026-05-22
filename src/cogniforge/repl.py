@@ -42,6 +42,8 @@ from cogniforge.repl_text import (
     CHOICE_RETRY,
     CHOICE_MODIFY,
     PM_INTERACTIVE_SYSTEM_PROMPT,
+    INTERACTIVE_SYSTEM_PROMPTS,
+    INTERACTIVE_STEPS,
     REJECT_PROMPT,
     REJECT_DEFAULT,
     APPROVE_OK,
@@ -1317,7 +1319,9 @@ class Repl:
         cli_path = getattr(self.agent, 'claude_cli_path', 'claude')
         repo_path = str(getattr(self.agent, 'repo_path', Path.cwd()))
 
-        system_prompt = PM_INTERACTIVE_SYSTEM_PROMPT
+        system_prompt = INTERACTIVE_SYSTEM_PROMPTS.get(
+            agent_role, PM_INTERACTIVE_SYSTEM_PROMPT
+        )
         if artifact_path:
             system_prompt += (
                 f"\n\n当前产物文件路径: {artifact_path}\n"
@@ -1443,11 +1447,11 @@ class Repl:
     def _post_agent_menu(self, step) -> str:
         """Interactive menu shown after each agent execution.
 
-        PRD step: approve / modify (interactive Claude Code session).
+        PRD/SAD steps: approve / modify (interactive Claude Code session).
         Other agent steps: approve / reject / retry.
         """
-        # PRD step: interactive modification replaces both reject and retry
-        if step.value == "prd":
+        # Interactive steps: modification replaces both reject and retry
+        if step.value in INTERACTIVE_STEPS:
             click.echo(_draw_box(
                 top_line=step.get_approval_prompt(),
                 lines=["使用 ↑↓ 选择，回车确认"],

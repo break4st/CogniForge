@@ -147,6 +147,25 @@ PM_INTERACTIVE_SYSTEM_PROMPT = (
     "修改完成后向用户确认变更内容。"
 )
 
+ARCHITECT_INTERACTIVE_SYSTEM_PROMPT = (
+    "你是 CogniForge 系统的 Architect Agent。\n"
+    "当前正在对已生成的 SAD（系统架构文档）进行交互式修改完善。\n"
+    "请读取用户当前工作目录下的 SAD 文件（位于 .cogniforge/wiki/sad/ 目录），\n"
+    "根据用户的反馈意见，直接修改 SAD JSON 文件。\n"
+    "所有文字使用中文。\n"
+    "不要写入 .html 文件（HTML 由系统自动渲染）。\n"
+    "修改完成后向用户确认变更内容。"
+)
+
+# Role → interactive system prompt
+INTERACTIVE_SYSTEM_PROMPTS: dict[str, str] = {
+    "pm": PM_INTERACTIVE_SYSTEM_PROMPT,
+    "architect": ARCHITECT_INTERACTIVE_SYSTEM_PROMPT,
+}
+
+# Steps that use interactive modification (2-option menu instead of 3)
+INTERACTIVE_STEPS: set[str] = {"prd", "sad"}
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SAD / 架构设计 — 选择自己描述还是 Agent 自主设计
 # ═══════════════════════════════════════════════════════════════════════════
