@@ -1,7 +1,7 @@
 {
   "task_id": "密钥管理服务-010",
-  "name": "实现删除密钥接口",
-  "description": "实现 DELETE /api/v1/environments/:eid/keys/:kid。路径参数 eid(环境ID), kid(密钥ID) 解析为 int64。调用 KeyService.DeleteKey。删除后不可恢复。成功返回 200 JSON {success: true}。错误映射: 404(环境或密钥不存在), 500(数据库删除失败)。产出物: Gin handler + 路由注册。",
+  "name": "实现 KeyManagementService (part 2)",
+  "description": "实现 KeyManagementService 服务方法: getKey, listKeys, validateKeyBinding\n  - getKey: (id: UUID) -> SshKey pre=id对应的密钥在ssh_keys表中存在且deleted_at为NULL\n  - listKeys: (page: int, pageSize: int) -> PageResult<SshKey> pre=page >= 1，pageSize >= 1 且 <= 100\n  - validateKeyBinding: (keyId: UUID, environmentId: UUID) -> boolean pre=keyId对应的密钥存在且未删除；environmentId对应的环境在environments表中存在",
   "module": "密钥管理服务",
   "deps": [],
   "status": "pending",
@@ -11,182 +11,13 @@
   "actual_hours": null,
   "category": "service",
   "changed_files": [],
-  "created_at": "2026-05-22T12:29:18.883910",
-  "updated_at": "2026-05-22T12:29:18.883938",
+  "created_at": "2026-05-22T15:03:26.826305",
+  "updated_at": "2026-05-22T15:03:26.826330",
   "result": null,
   "error": null,
-  "lld_refs": [
-    {
-      "module": "",
-      "doc_id": "",
-      "section": "service_contracts",
-      "item_name": "KeyService",
-      "artifact_type": "service_contract",
-      "sub_item": null
-    }
-  ],
+  "lld_refs": [],
   "acceptance_criteria": [],
-  "context": {
-    "module_type": "service",
-    "lld_path": ".cogniforge/wiki/lld/密钥管理服务/lld-密钥管理服务-001.json",
-    "module_overview": "安全存储和管理 SSH 密钥，提供密钥的上传、绑定和验证功能。所有 SSH 私钥在落库前使用 AES-256-GCM 算法加密，仅在部署时由部署引擎通过内部接口获取解密后的密钥会话。",
-    "scope": {
-      "data_models": [],
-      "domain_objects": [],
-      "interfaces": [],
-      "service_contracts": [
-        {
-          "name": "KeyService",
-          "description": "SSH 密钥管理的核心业务服务，负责密钥的加密存储、绑定管理、有效性验证和解密提供。",
-          "methods": [
-            {
-              "name": "BindKey",
-              "signature": "(ctx context.Context, req BindKeyRequest, environmentId int64, actor string) -> BindKeyResponse",
-              "precondition": "environmentId 对应的环境必须存在于 environments 表中；该环境下不存在同名 (key_name) 密钥；private_key 必须是有效的 PEM 格式 SSH 私钥",
-              "postcondition": "私钥已通过 AES-256-GCM 加密后写入 ssh_keys 表；密钥已与环境绑定 (bound_at 已设置为当前时间)；审计日志已记录 key.bind 操作",
-              "description": "解析并校验 SSH 私钥，提取公钥指纹，AES-256-GCM 加密私钥后落库并绑定到指定环境",
-              "exceptions": [
-                {
-                  "name": "EnvironmentNotFound",
-                  "trigger": "environmentId 在 environments 表中不存在",
-                  "http_status": 404
-                },
-                {
-                  "name": "KeyNameConflict",
-                  "trigger": "同一环境下已存在同名密钥",
-                  "http_status": 409
-                },
-                {
-                  "name": "InvalidPrivateKeyFormat",
-                  "trigger": "private_key 不是有效的 PEM 格式或无法从私钥中解析出公钥",
-                  "http_status": 400
-                },
-                {
-                  "name": "InvalidPassphrase",
-                  "trigger": "私钥需要 passphrase 但提供的 passphrase 不正确，无法解密私钥",
-                  "http_status": 400
-                },
-                {
-                  "name": "EncryptionFailure",
-                  "trigger": "AES-256-GCM 加密过程中发生错误（如密钥衍生失败）",
-                  "http_status": 500
-                }
-              ]
-            },
-            {
-              "name": "ListKeysByEnvironment",
-              "signature": "(ctx context.Context, environmentId int64) -> []KeyInfo",
-              "precondition": "environmentId 对应的环境必须存在",
-              "postcondition": "返回该环境绑定的所有密钥摘要列表（按 bound_at 降序排列），每个 KeyInfo 不包含私钥内容",
-              "description": "查询指定环境下的所有 SSH 密钥摘要信息",
-              "exceptions": [
-                {
-                  "name": "EnvironmentNotFound",
-                  "trigger": "environmentId 在 environments 表中不存在",
-                  "http_status": 404
-                }
-              ]
-            },
-            {
-              "name": "GetKeyDetail",
-              "signature": "(ctx context.Context, keyId int64) -> KeyDetail",
-              "precondition": "keyId 对应的密钥记录必须存在于 ssh_keys 表中",
-              "postcondition": "返回密钥的完整元信息 KeyDetail（不含 encrypted_private_key 和 passphrase_salt）",
-              "description": "获取单个密钥的详细元信息，仅返回可见元数据不返回私钥",
-              "exceptions": [
-                {
-                  "name": "KeyNotFound",
-                  "trigger": "keyId 在 ssh_keys 表中不存在",
-                  "http_status": 404
-                }
-              ]
-            },
-            {
-              "name": "DeleteKey",
-              "signature": "(ctx context.Context, keyId int64, actor string) -> void",
-              "precondition": "keyId 对应的密钥记录必须存在于 ssh_keys 表中",
-              "postcondition": "密钥记录已从 ssh_keys 表中物理删除；审计日志已记录 key.delete 操作",
-              "description": "物理删除指定的 SSH 密钥及其环境绑定关系。删除后不可恢复。",
-              "exceptions": [
-                {
-                  "name": "KeyNotFound",
-                  "trigger": "keyId 在 ssh_keys 表中不存在",
-                  "http_status": 404
-                }
-              ]
-            },
-            {
-              "name": "VerifyKeyConnection",
-              "signature": "(ctx context.Context, keyId int64, serverHost string, serverPort int) -> VerificationResult",
-              "precondition": "keyId 对应的密钥必须存在且可解密；serverHost 和 serverPort 必须来自已验证的环境配置",
-              "postcondition": "密钥已解密并建立 SSH 连接尝试。Success=true 时表示连接成功；Success=false 时 Message 包含具体失败原因。不修改任何持久化数据。",
-              "description": "解密指定密钥，尝试 SSH 连接到目标服务器，验证密钥有效性和服务器可达性",
-              "exceptions": [
-                {
-                  "name": "KeyNotFound",
-                  "trigger": "keyId 在 ssh_keys 表中不存在",
-                  "http_status": 404
-                },
-                {
-                  "name": "DecryptionFailure",
-                  "trigger": "密钥解密失败（加密密钥错误或数据损坏）",
-                  "http_status": 500
-                },
-                {
-                  "name": "ConnectionFailed",
-                  "trigger": "SSH 连接握手失败（认证被拒、主机密钥不匹配、连接超时等）",
-                  "http_status": 502
-                }
-              ]
-            },
-            {
-              "name": "GetDecryptedKeySession",
-              "signature": "(ctx context.Context, keyId int64) -> DecryptedKeySession",
-              "precondition": "keyId 对应的密钥必须存在于 ssh_keys 表中且可正常解密",
-              "postcondition": "密钥已解密并返回 DecryptedKeySession（包含私钥内容和指纹）。本服务不缓存解密后的密钥。调用方必须在使用后立即清零内存中的私钥数据。",
-              "description": "内部方法。解密指定密钥并返回完整的密钥会话信息，供部署引擎建立 SSH 连接",
-              "exceptions": [
-                {
-                  "name": "KeyNotFound",
-                  "trigger": "keyId 在 ssh_keys 表中不存在",
-                  "http_status": 404
-                },
-                {
-                  "name": "DecryptionFailure",
-                  "trigger": "密钥解密失败（加密密钥错误或数据损坏）",
-                  "http_status": 500
-                }
-              ]
-            }
-          ],
-          "repository_dependencies": [
-            "FindById(id int64) -> SshKey?",
-            "FindByEnvironmentId(environmentId int64) -> []SshKey",
-            "FindByEnvironmentIdAndKeyName(environmentId int64, keyName string) -> SshKey?",
-            "Insert(key *SshKey) -> SshKey",
-            "Delete(id int64) -> error",
-            "ExistsByFingerprint(fingerprint string) -> bool"
-          ]
-        }
-      ],
-      "business_rules": {},
-      "error_handling": {},
-      "extra_sections": {}
-    },
-    "external_contracts": [],
-    "cross_module_deps": [],
-    "tech_stack": [
-      "Go",
-      "Gin",
-      "Go 1.22+",
-      "PostgreSQL 15",
-      "golang.org/x/crypto/ssh",
-      "RESTful JSON API"
-    ],
-    "upstream_artifacts": []
-  },
-  "expected_output_files": [
-    "src/密钥管理服务/service/keyservice.go"
-  ],
-  "layer": 1
+  "context": null,
+  "expected_output_files": [],
+  "layer": 0
 }

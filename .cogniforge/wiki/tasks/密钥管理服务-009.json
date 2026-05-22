@@ -15,9 +15,186 @@
   "updated_at": "2026-05-22T15:03:26.749496",
   "result": null,
   "error": null,
-  "lld_refs": [],
+  "lld_refs": [
+    {
+      "module": "",
+      "doc_id": "",
+      "section": "service_contracts",
+      "item_name": "KeyManagementService",
+      "artifact_type": "service_contract",
+      "sub_item": null
+    }
+  ],
   "acceptance_criteria": [],
-  "context": null,
-  "expected_output_files": [],
-  "layer": 0
+  "context": {
+    "module_type": "service",
+    "lld_path": ".cogniforge/wiki/lld/密钥管理服务/lld-密钥管理服务-001.json",
+    "module_overview": "SSH密钥全生命周期管理服务，提供安全存储、加解密和验证能力。接收用户上传的SSH密钥对，私钥经AES-256-GCM加密后由加密密钥存储模块持久化，公钥和元数据存入PostgreSQL主数据库。对外提供密钥上传API，对内提供密钥解密API供部署引擎和SSH连接池调用",
+    "scope": {
+      "data_models": [],
+      "domain_objects": [],
+      "interfaces": [],
+      "service_contracts": [
+        {
+          "name": "KeyManagementService",
+          "description": "密钥管理服务核心业务类，负责SSH密钥的全生命周期管理：上传、解密、删除和查询",
+          "methods": [
+            {
+              "name": "uploadKey",
+              "signature": "(name: String, publicKey: String, privateKey: String) -> KeyUploadResponse",
+              "precondition": "name 非空且长度不超过64字符；publicKey 为合法SSH公钥格式（以ssh-rsa/ssh-ed25519/ecdsa-sha2-等开头），且其指纹在系统中不重复；privateKey 为合法SSH私钥格式（PEM或OpenSSH格式）",
+              "postcondition": "ssh_keys表新增一条记录（id自动生成、fingerprint从公钥计算）；加密密钥存储模块写入一条加密记录（私钥经AES-256-GCM加密）；审计日志服务记录一条 upload_key 操作；返回的响应包含id/name/fingerprint/created_at",
+              "description": "处理SSH密钥上传，校验密钥格式合法性，生成指纹，加密私钥并分库持久化",
+              "exceptions": [
+                {
+                  "name": "InvalidKeyFormatException",
+                  "trigger": "publicKey或privateKey格式不符合SSH规范，或公钥前缀无法识别",
+                  "http_status": 400
+                },
+                {
+                  "name": "DuplicateFingerprintException",
+                  "trigger": "从publicKey计算出的fingerprint在ssh_keys表中已存在（包括未软删除的）",
+                  "http_status": 409
+                },
+                {
+                  "name": "EncryptionFailedException",
+                  "trigger": "AES-256-GCM加密过程中发生内部错误",
+                  "http_status": 500
+                },
+                {
+                  "name": "StorageWriteException",
+                  "trigger": "加密密钥存储模块写入密文或PostgreSQL写入元数据失败",
+                  "http_status": 500
+                }
+              ]
+            },
+            {
+              "name": "decryptKey",
+              "signature": "(id: UUID) -> KeyDecryptResponse",
+              "precondition": "id 对应的密钥在ssh_keys表中存在且deleted_at为NULL；加密密钥存储模块中对应密钥的status为active",
+              "postcondition": "返回解密后的私钥明文（KeyDecryptResponse.private_key）；审计日志服务记录一条 decrypt_key 操作；密钥解密操作次数计数递增",
+              "description": "内部接口，从加密密钥存储模块读取密文，使用对应版本的主密钥解密后返回私钥明文",
+              "exceptions": [
+                {
+                  "name": "KeyNotFoundException",
+                  "trigger": "id对应的记录在ssh_keys表中不存在或deleted_at非空",
+                  "http_status": 404
+                },
+                {
+                  "name": "KeyRevokedException",
+                  "trigger": "加密密钥存储模块中对应密钥的status不为active（revoked或compromised）",
+                  "http_status": 403
+                },
+                {
+                  "name": "DecryptionFailedException",
+                  "trigger": "主密钥版本不匹配、密钥材料损坏或校验和不一致导致解密失败",
+                  "http_status": 500
+                },
+                {
+                  "name": "EncryptedStoreUnavailableException",
+                  "trigger": "加密密钥存储模块网络不可达或返回500错误",
+                  "http_status": 500
+                }
+              ]
+            },
+            {
+              "name": "deleteKey",
+              "signature": "(id: UUID, actor: String) -> void",
+              "precondition": "id对应的密钥在ssh_keys表中存在且deleted_at为NULL；environments表中不存在key_id指向该id的记录",
+              "postcondition": "ssh_keys表设置该记录的deleted_at为当前时间（软删除）；加密密钥存储模块将对应记录的status更新为revoked；审计日志服务记录一条 delete_key 操作",
+              "description": "软删除SSH密钥，标记元数据已删除并吊销加密存储中的密钥状态",
+              "exceptions": [
+                {
+                  "name": "KeyNotFoundException",
+                  "trigger": "id对应的记录在ssh_keys表中不存在或deleted_at已非空",
+                  "http_status": 404
+                },
+                {
+                  "name": "KeyInUseException",
+                  "trigger": "environments表中存在key_id指向该id的记录，密钥正被环境绑定使用",
+                  "http_status": 409
+                },
+                {
+                  "name": "StorageUpdateException",
+                  "trigger": "加密密钥存储模块更新密钥状态失败",
+                  "http_status": 500
+                }
+              ]
+            },
+            {
+              "name": "getKey",
+              "signature": "(id: UUID) -> SshKey",
+              "precondition": "id对应的密钥在ssh_keys表中存在且deleted_at为NULL",
+              "postcondition": "返回密钥的完整业务视图（含元数据和从加密密钥存储同步的状态），不含私钥明文",
+              "description": "查询单个SSH密钥的详细信息，同步加密密钥存储中的状态字段",
+              "exceptions": [
+                {
+                  "name": "KeyNotFoundException",
+                  "trigger": "id对应的记录在ssh_keys表中不存在或deleted_at非空",
+                  "http_status": 404
+                }
+              ]
+            },
+            {
+              "name": "listKeys",
+              "signature": "(page: int, pageSize: int) -> PageResult<SshKey>",
+              "precondition": "page >= 1，pageSize >= 1 且 <= 100",
+              "postcondition": "返回分页后的密钥列表（按created_at倒序），不含私钥明文，total为符合条件（未软删除）的记录总数",
+              "description": "分页查询所有未软删除的SSH密钥列表，用于展示密钥管理页面",
+              "exceptions": [
+                {
+                  "name": "InvalidPageParameterException",
+                  "trigger": "page < 1 或 pageSize < 1 或 pageSize > 100",
+                  "http_status": 400
+                }
+              ]
+            },
+            {
+              "name": "validateKeyBinding",
+              "signature": "(keyId: UUID, environmentId: UUID) -> boolean",
+              "precondition": "keyId对应的密钥存在且未删除；environmentId对应的环境在environments表中存在",
+              "postcondition": "返回true表示该密钥可以绑定到该环境（密钥状态为active且未被其他环境占用绑定检查），返回false表示不可绑定",
+              "description": "校验SSH密钥是否可用于目标环境绑定，检查密钥状态和兼容性",
+              "exceptions": [
+                {
+                  "name": "KeyNotFoundException",
+                  "trigger": "keyId对应的记录在ssh_keys表中不存在",
+                  "http_status": 404
+                },
+                {
+                  "name": "EnvironmentNotFoundException",
+                  "trigger": "environmentId对应的环境记录在environments表中不存在",
+                  "http_status": 404
+                }
+              ]
+            }
+          ],
+          "repository_dependencies": [
+            "findById(id: UUID) -> Optional<SshKey>",
+            "findByFingerprint(fingerprint: String) -> Optional<SshKey>",
+            "findAllActive(page: int, pageSize: int) -> PageResult<SshKey>",
+            "softDeleteById(id: UUID) -> void",
+            "countByFingerprint(fingerprint: String) -> long"
+          ]
+        }
+      ],
+      "business_rules": {},
+      "error_handling": {},
+      "extra_sections": {}
+    },
+    "external_contracts": [],
+    "cross_module_deps": [],
+    "tech_stack": [
+      "Python",
+      "FastAPI",
+      "PostgreSQL 15",
+      "JWT",
+      "Paramiko"
+    ],
+    "upstream_artifacts": []
+  },
+  "expected_output_files": [
+    "src/密钥管理服务/service/keymanagementservice.go"
+  ],
+  "layer": 1
 }
