@@ -1,0 +1,546 @@
+{
+  "meta": {
+    "doc_id": "lld-API网关-001",
+    "type": "lld",
+    "module_type": "gateway",
+    "module": "API网关",
+    "title": "统一API网关 - 详细设计",
+    "author": "design_agent",
+    "created": "2026-05-22"
+  },
+  "overview": {
+    "description": "统一API入口，负责请求路由、认证鉴权与流量控制。作为整个系统的前端门户，所有客户端请求首先到达API网关，网关完成JWT身份认证、RBAC权限校验、三级限流检查后将请求路由至对应的下游微服务。同时提供跨域处理（CORS）、请求日志审计记录和统一的错误响应格式。网关自身提供登录认证接口（颁发JWT令牌），其余业务接口均为透传代理至后端服务。",
+    "dependencies": ["项目管理服务", "环境管理服务", "部署引擎服务", "缓存"],
+    "tech_stack": ["Python 3.11+", "FastAPI", "Redis 7"]
+  },
+  "data_models": [
+    {
+      "name": "auth_tokens",
+      "type": "store",
+      "ownership": "owned",
+      "description": "JWT令牌管理存储（Redis），管理访问令牌与刷新令牌的黑名单、过期策略和项目会话上下文",
+      "fields": [
+        {"name": "jti", "type": "string", "required": true, "description": "JWT令牌唯一标识（JWT ID）"},
+        {"name": "user_id", "type": "string (uuid)", "required": true, "description": "用户唯一标识"},
+        {"name": "token_type", "type": "enum (access|refresh)", "required": true, "description": "令牌类型：access（短期访问令牌，2小时过期）或 refresh（长期刷新令牌，7天过期）"},
+        {"name": "expires_at", "type": "integer (unix_timestamp)", "required": true, "description": "令牌过期时间戳，Redis自动过期（TTL）"},
+        {"name": "blacklisted", "type": "boolean", "required": true, "description": "是否已被加入黑名单（用户登出或刷新后置为true）"}
+      ]
+    },
+    {
+      "name": "api_routes",
+      "type": "config",
+      "ownership": "owned",
+      "description": "API路由配置表，定义路径模式到上游服务的映射规则，网关启动时加载到内存",
+      "fields": [
+        {"name": "path_pattern", "type": "string", "required": true, "description": "路径匹配模式，支持 ** 通配符"},
+        {"name": "upstream", "type": "string", "required": true, "description": "上游服务名称"},
+        {"name": "methods", "type": "array<string>", "required": true, "description": "允许的HTTP方法列表"},
+        {"name": "auth_required", "type": "boolean", "required": true, "description": "是否需要JWT身份认证"},
+        {"name": "rate_limit_profile", "type": "string", "required": true, "description": "限流策略配置名称（default|strict|relaxed）"}
+      ]
+    },
+    {
+      "name": "rate_limit_config",
+      "type": "config",
+      "ownership": "owned",
+      "description": "限流策略全局配置，定义全局、每用户和特殊端点的三级限流规则，通过Redis计数器实现滑动窗口算法",
+      "fields": [
+        {"name": "policy_name", "type": "string", "required": true, "description": "限流策略名称标识"},
+        {"name": "global_rps", "type": "integer", "required": true, "description": "全局每秒请求数上限"},
+        {"name": "user_rpm", "type": "integer", "required": true, "description": "每用户每分钟请求数上限"},
+        {"name": "burst_size", "type": "integer", "required": true, "description": "突发流量允许的额外请求数（令牌桶容量）"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "AuthLogin",
+      "method": "POST",
+      "endpoint": "/api/v1/auth/login",
+      "description": "用户登录认证，校验用户名密码成功后颁发JWT访问令牌（access_token，有效期2小时）和刷新令牌（refresh_token，有效期7天）。网关自身处理，不路由至下游服务。",
+      "parameters": [
+        {"name": "username", "type": "string", "description": "用户名"},
+        {"name": "password", "type": "string", "description": "用户密码（传输加密）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "access_token": "string",
+          "refresh_token": "string",
+          "token_type": "string (Bearer)",
+          "expires_in": "integer (7200)"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "用户名或密码错误，认证失败"},
+        {"code": 429, "message": "登录请求过于频繁，触发限流"}
+      ]
+    },
+    {
+      "name": "AuthRefresh",
+      "method": "POST",
+      "endpoint": "/api/v1/auth/refresh",
+      "description": "使用刷新令牌（refresh_token）获取新的访问令牌。刷新令牌7天内有效且未被撤销时，颁发新的access_token。旧refresh_token同时失效。",
+      "parameters": [
+        {"name": "refresh_token", "type": "string", "description": "登录时颁发的刷新令牌"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "access_token": "string",
+          "refresh_token": "string",
+          "token_type": "string (Bearer)",
+          "expires_in": "integer (7200)"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "refresh_token 无效或已过期"},
+        {"code": 401, "message": "refresh_token 已被撤销（已用于刷新或用户登出）"}
+      ]
+    },
+    {
+      "name": "AuthLogout",
+      "method": "POST",
+      "endpoint": "/api/v1/auth/logout",
+      "description": "用户登出，将当前JWT令牌加入Redis黑名单，使其在过期前立即失效。需要Bearer Token认证。",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "未提供有效的JWT令牌或令牌已加入黑名单"}
+      ]
+    },
+    {
+      "name": "HealthCheck",
+      "method": "GET",
+      "endpoint": "/api/v1/health",
+      "description": "网关健康检查端点，返回网关自身的运行状态。无需认证，用于负载均衡器健康探测和运维监控。",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "status": "string (ok|degraded|down)",
+          "version": "string",
+          "uptime": "string"
+        }
+      },
+      "error_codes": []
+    },
+    {
+      "name": "CreateProject",
+      "method": "POST",
+      "endpoint": "/api/v1/projects",
+      "description": "创建新项目。网关认证鉴权后路由至项目管理服务。routes_to: 项目管理服务",
+      "parameters": [
+        {"name": "name", "type": "string", "description": "项目名称，同一用户下不可重复，1-255字符"},
+        {"name": "description", "type": "string (optional)", "description": "项目描述信息，不超过2000字符"}
+      ],
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string (uuid)",
+          "name": "string",
+          "description": "string",
+          "created_at": "string (datetime)"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数校验失败（项目名称为空或超过长度限制）"},
+        {"code": 401, "message": "JWT令牌无效或已过期"},
+        {"code": 403, "message": "用户无创建项目的权限"},
+        {"code": 409, "message": "项目名称已存在，同一用户下不允许重复项目名"},
+        {"code": 429, "message": "请求速率超过限流阈值"}
+      ]
+    },
+    {
+      "name": "ListProjects",
+      "method": "GET",
+      "endpoint": "/api/v1/projects",
+      "description": "获取项目列表（分页）。网关认证鉴权后路由至项目管理服务。routes_to: 项目管理服务",
+      "parameters": [
+        {"name": "page", "type": "integer (query)", "description": "页码，从1开始，默认1"},
+        {"name": "page_size", "type": "integer (query)", "description": "每页条数，默认20，最大100"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "items": "array<Project>",
+          "total": "integer",
+          "page": "integer",
+          "page_size": "integer"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "分页参数无效（page小于1或page_size超过最大值100）"},
+        {"code": 401, "message": "JWT令牌无效或已过期"}
+      ]
+    },
+    {
+      "name": "GetProject",
+      "method": "GET",
+      "endpoint": "/api/v1/projects/{project_id}",
+      "description": "获取单个项目详情（含关联环境列表）。网关认证鉴权后路由至项目管理服务。routes_to: 项目管理服务",
+      "parameters": [
+        {"name": "project_id", "type": "string (uuid)", "description": "项目唯一标识（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string (uuid)",
+          "name": "string",
+          "description": "string",
+          "environments": "array<Environment>",
+          "created_at": "string (datetime)",
+          "updated_at": "string (datetime)"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "JWT令牌无效或已过期"},
+        {"code": 403, "message": "无权限访问该项目"},
+        {"code": 404, "message": "项目不存在或已被删除"}
+      ]
+    },
+    {
+      "name": "SwitchProject",
+      "method": "POST",
+      "endpoint": "/api/v1/projects/{project_id}/switch",
+      "description": "切换当前激活项目，返回目标项目的环境配置列表和新的会话令牌。网关认证鉴权后路由至项目管理服务。routes_to: 项目管理服务",
+      "parameters": [
+        {"name": "project_id", "type": "string (uuid)", "description": "目标项目唯一标识（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "project_id": "string (uuid)",
+          "environments": "array<Environment>",
+          "session_token": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "JWT令牌无效或已过期"},
+        {"code": 403, "message": "无权限切换到该项目"},
+        {"code": 404, "message": "目标项目不存在"}
+      ]
+    },
+    {
+      "name": "CreateEnvironment",
+      "method": "POST",
+      "endpoint": "/api/v1/environments",
+      "description": "创建部署环境配置。网关认证鉴权后路由至环境管理服务。routes_to: 环境管理服务",
+      "parameters": [
+        {"name": "project_id", "type": "string (uuid)", "description": "所属项目ID"},
+        {"name": "name", "type": "string", "description": "环境名称，同一项目下唯一"},
+        {"name": "type", "type": "enum (test|staging|production)", "description": "环境类型"},
+        {"name": "host", "type": "string", "description": "远程服务器IP或域名"},
+        {"name": "port", "type": "integer (default: 22)", "description": "SSH端口号"},
+        {"name": "username", "type": "string", "description": "SSH登录用户名"},
+        {"name": "auth_type", "type": "enum (password|key)", "description": "认证类型"},
+        {"name": "key_id", "type": "string (uuid, optional)", "description": "关联密钥ID，auth_type=key时必填"}
+      ],
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string (uuid)",
+          "name": "string",
+          "type": "string",
+          "host": "string",
+          "port": "integer",
+          "status": "enum (connected|disconnected|unknown)"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数校验失败（name为空、type不合法、port超出范围、缺少必填字段）"},
+        {"code": 401, "message": "JWT令牌无效或已过期"},
+        {"code": 404, "message": "指定的 project_id 不存在"},
+        {"code": 404, "message": "auth_type=key 但指定的 key_id 不存在"},
+        {"code": 409, "message": "同一项目下已存在同名环境"}
+      ]
+    },
+    {
+      "name": "UploadKey",
+      "method": "POST",
+      "endpoint": "/api/v1/keys",
+      "description": "上传SSH密钥对。网关认证鉴权后路由至环境管理服务。私钥传输加密，服务端AES-256-GCM加密存储。routes_to: 环境管理服务",
+      "parameters": [
+        {"name": "name", "type": "string", "description": "密钥名称，用于分辨用途"},
+        {"name": "public_key", "type": "string", "description": "SSH公钥内容（OpenSSH格式）"},
+        {"name": "private_key", "type": "string (encrypted on receipt)", "description": "SSH私钥内容（服务端加密存储，传输建议使用HTTPS加密）"}
+      ],
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string (uuid)",
+          "name": "string",
+          "fingerprint": "string",
+          "created_at": "string (datetime)"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "密钥内容为空或格式不合法（公钥/私钥必须是有效的OpenSSH格式）"},
+        {"code": 401, "message": "JWT令牌无效或已过期"},
+        {"code": 409, "message": "密钥指纹已存在（重复导入同一密钥对）"},
+        {"code": 409, "message": "密钥名称已存在"}
+      ]
+    },
+    {
+      "name": "TestConnection",
+      "method": "POST",
+      "endpoint": "/api/v1/environments/{env_id}/test",
+      "description": "测试指定环境的SSH连接是否可用。网关认证鉴权后路由至环境管理服务。routes_to: 环境管理服务",
+      "parameters": [
+        {"name": "env_id", "type": "string (uuid)", "description": "环境ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "reachable": "boolean",
+          "latency_ms": "integer",
+          "error": "string (optional)"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "JWT令牌无效或已过期"},
+        {"code": 404, "message": "环境不存在"},
+        {"code": 500, "message": "密钥解密失败（加密数据损坏或算法不匹配）"},
+        {"code": 502, "message": "SSH连接认证失败（用户名或密钥不正确）"},
+        {"code": 502, "message": "SSH连接超时（远程主机不可达或防火墙拦截）"}
+      ]
+    },
+    {
+      "name": "CreateDeployment",
+      "method": "POST",
+      "endpoint": "/api/v1/deployments",
+      "description": "触发一键部署任务。网关认证鉴权后路由至部署引擎服务。返回部署ID用于后续状态查询。routes_to: 部署引擎服务",
+      "parameters": [
+        {"name": "project_id", "type": "string (uuid)", "description": "目标项目ID"},
+        {"name": "environment_id", "type": "string (uuid)", "description": "目标环境ID"},
+        {"name": "version", "type": "string", "description": "部署版本号"},
+        {"name": "artifact_path", "type": "string", "description": "部署包本地路径"},
+        {"name": "rollback_on_failure", "type": "boolean (default: false)", "description": "失败时是否自动触发回滚"}
+      ],
+      "response": {
+        "status": 202,
+        "body": {
+          "deployment_id": "string (uuid)",
+          "status": "enum (pending|running|success|failed)",
+          "created_at": "string (datetime)"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数不合法（版本号格式错误、artifact_path为空等）"},
+        {"code": 401, "message": "JWT令牌无效或已过期"},
+        {"code": 404, "message": "项目或环境不存在"},
+        {"code": 409, "message": "目标环境中已有进行中的部署任务"},
+        {"code": 429, "message": "部署请求速率超过限流阈值（每用户10 req/min）"},
+        {"code": 503, "message": "部署引擎过载，超过最大并发限制"}
+      ]
+    },
+    {
+      "name": "GetDeploymentStatus",
+      "method": "GET",
+      "endpoint": "/api/v1/deployments/{deployment_id}/status",
+      "description": "查询部署状态与日志。网关认证鉴权后路由至部署引擎服务。WebSocket推送使用相同的响应数据结构。routes_to: 部署引擎服务",
+      "parameters": [
+        {"name": "deployment_id", "type": "string (uuid)", "description": "部署记录ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "deployment_id": "string (uuid)",
+          "status": "string",
+          "progress": "integer (0-100)",
+          "current_step": "string",
+          "logs": "array<LogEntry>",
+          "started_at": "string (datetime)",
+          "finished_at": "string (datetime, optional)"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "JWT令牌无效或已过期"},
+        {"code": 404, "message": "部署记录不存在"}
+      ]
+    },
+    {
+      "name": "RollbackDeployment",
+      "method": "POST",
+      "endpoint": "/api/v1/deployments/{deployment_id}/rollback",
+      "description": "发起版本回滚。网关认证鉴权后路由至部署引擎服务。创建新的回滚部署任务并返回回滚部署记录ID。routes_to: 部署引擎服务",
+      "parameters": [
+        {"name": "deployment_id", "type": "string (uuid)", "description": "要回滚的部署记录ID（路径参数）"},
+        {"name": "target_version", "type": "string", "description": "回滚目标版本号"}
+      ],
+      "response": {
+        "status": 202,
+        "body": {
+          "rollback_deployment_id": "string (uuid)",
+          "status": "string",
+          "target_version": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "target_version 为空或格式不合法"},
+        {"code": 401, "message": "JWT令牌无效或已过期"},
+        {"code": 404, "message": "部署记录不存在或目标版本不存在"},
+        {"code": 409, "message": "原始部署未完成或目标环境中已有进行中的部署任务"}
+      ]
+    },
+    {
+      "name": "DeployLogStream",
+      "method": "WS",
+      "endpoint": "/api/v1/deployments/{deployment_id}/logs/ws",
+      "description": "WebSocket实时推送部署日志。网关认证鉴权后代理至部署引擎服务的WebSocket端点。客户端需在查询参数中携带JWT token进行认证，连接建立后服务端持续推送LogEntry结构。routes_to: 部署引擎服务",
+      "parameters": [
+        {"name": "deployment_id", "type": "string (uuid)", "description": "部署记录ID（路径参数）"},
+        {"name": "token", "type": "string (JWT)", "description": "WebSocket认证令牌（查询参数）"}
+      ],
+      "response": {
+        "status": 101,
+        "body": {
+          "stream": "array<LogEntry> (持续推送)"
+        }
+      },
+      "error_codes": [
+        {"code": 401, "message": "token 无效或已过期，WebSocket握手拒绝"},
+        {"code": 404, "message": "部署记录不存在，WebSocket握手拒绝"}
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "采用统一错误处理策略。所有下游微服务返回的错误被网关透传至客户端，保持原始错误码和消息结构。网关自身产生的错误（认证失败、限流触发、请求超时）在网关层拦截并以标准格式返回。认证失败返回401，权限不足返回403，资源不存在返回404，速率超限返回429，上游服务不可达返回502。所有错误响应均记录审计日志，包括客户端IP、请求路径、用户标识和错误详情。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {"code": 400, "name": "请求参数错误", "description": "请求参数缺失、格式错误或值不合法，由网关层Pydantic模型校验触发，返回第一个校验失败的字段名和原因"},
+      {"code": 401, "name": "认证失败", "description": "JWT令牌缺失、无效、已过期或已被加入黑名单。包括：token格式错误（40101）、token过期（40102）、token已撤销（40103）"},
+      {"code": 403, "name": "权限不足", "description": "用户身份认证通过但无权访问指定资源或执行指定操作，由网关RBAC校验触发"},
+      {"code": 404, "name": "资源不存在", "description": "请求的资源在对应上游服务中不存在，由上游服务返回后网关透传"},
+      {"code": 409, "name": "资源冲突", "description": "创建资源时名称/标识重复或删除资源时存在关联引用，由上游服务返回后网关透传"},
+      {"code": 429, "name": "请求速率超限", "description": "触发全局、每用户或特殊端点的限流策略。响应头包含 X-RateLimit-Reset 字段告知客户端重试时间"},
+      {"code": 500, "name": "网关内部错误", "description": "网关自身未预期的运行时异常，记录错误详情到审计日志并返回通用错误消息，不暴露内部实现细节"},
+      {"code": 502, "name": "上游服务不可达", "description": "网关无法连接到上游微服务（连接超时、连接拒绝、DNS解析失败），返回上游服务名称便于运维排查"},
+      {"code": 504, "name": "上游请求超时", "description": "上游服务处理时间超过网关配置的超时阈值（默认30秒）"}
+    ]
+  },
+  "route_table": [
+    {
+      "path_pattern": "/api/v1/auth/login",
+      "upstream": "API网关（本地处理）",
+      "description": "用户登录认证，网关自身处理，不路由至下游"
+    },
+    {
+      "path_pattern": "/api/v1/auth/refresh",
+      "upstream": "API网关（本地处理）",
+      "description": "令牌刷新，网关自身处理"
+    },
+    {
+      "path_pattern": "/api/v1/auth/logout",
+      "upstream": "API网关（本地处理）",
+      "description": "用户登出，令牌撤销，网关自身处理"
+    },
+    {
+      "path_pattern": "/api/v1/health",
+      "upstream": "API网关（本地处理）",
+      "description": "健康检查，网关自身处理"
+    },
+    {
+      "path_pattern": "/api/v1/projects",
+      "upstream": "项目管理服务",
+      "description": "项目创建（POST）与列表查询（GET），路由至项目管理服务"
+    },
+    {
+      "path_pattern": "/api/v1/projects/{project_id}",
+      "upstream": "项目管理服务",
+      "description": "项目详情查询（GET），路由至项目管理服务"
+    },
+    {
+      "path_pattern": "/api/v1/projects/{project_id}/switch",
+      "upstream": "项目管理服务",
+      "description": "项目切换（POST），路由至项目管理服务"
+    },
+    {
+      "path_pattern": "/api/v1/environments",
+      "upstream": "环境管理服务",
+      "description": "环境创建（POST），路由至环境管理服务"
+    },
+    {
+      "path_pattern": "/api/v1/environments/{env_id}/test",
+      "upstream": "环境管理服务",
+      "description": "环境连接测试（POST），路由至环境管理服务"
+    },
+    {
+      "path_pattern": "/api/v1/keys",
+      "upstream": "环境管理服务",
+      "description": "SSH密钥上传（POST），路由至环境管理服务"
+    },
+    {
+      "path_pattern": "/api/v1/deployments",
+      "upstream": "部署引擎服务",
+      "description": "创建部署任务（POST），路由至部署引擎服务"
+    },
+    {
+      "path_pattern": "/api/v1/deployments/{deployment_id}/status",
+      "upstream": "部署引擎服务",
+      "description": "查询部署状态（GET），路由至部署引擎服务"
+    },
+    {
+      "path_pattern": "/api/v1/deployments/{deployment_id}/rollback",
+      "upstream": "部署引擎服务",
+      "description": "发起版本回滚（POST），路由至部署引擎服务"
+    },
+    {
+      "path_pattern": "/api/v1/deployments/{deployment_id}/logs/ws",
+      "upstream": "部署引擎服务",
+      "description": "WebSocket部署日志流推送，路由至部署引擎服务"
+    }
+  ],
+  "middleware_chain": [
+    "Request → CORS → RequestLogging → RateLimiter → Auth → RBAC → Router → Upstream → ResponseLogging → Response"
+  ],
+  "auth_policy": {
+    "public_endpoints": [
+      "/api/v1/auth/login",
+      "/api/v1/auth/refresh",
+      "/api/v1/health"
+    ],
+    "auth_method": "JWT Bearer Token（HS256签发，Redis黑名单校验）",
+    "role_path_map": [
+      {"path": "GET /api/v1/health", "roles": ["*（无需认证）"]},
+      {"path": "POST /api/v1/auth/login", "roles": ["*（无需认证）"]},
+      {"path": "POST /api/v1/auth/refresh", "roles": ["*（无需认证）"]},
+      {"path": "POST /api/v1/auth/logout", "roles": ["*（已认证用户）"]},
+      {"path": "GET /api/v1/projects", "roles": ["viewer", "operator", "admin"]},
+      {"path": "POST /api/v1/projects", "roles": ["operator", "admin"]},
+      {"path": "GET /api/v1/projects/{project_id}", "roles": ["viewer", "operator", "admin"]},
+      {"path": "POST /api/v1/projects/{project_id}/switch", "roles": ["viewer", "operator", "admin"]},
+      {"path": "POST /api/v1/environments", "roles": ["operator", "admin"]},
+      {"path": "POST /api/v1/keys", "roles": ["operator", "admin"]},
+      {"path": "POST /api/v1/environments/{env_id}/test", "roles": ["operator", "admin"]},
+      {"path": "POST /api/v1/deployments", "roles": ["operator", "admin"]},
+      {"path": "GET /api/v1/deployments/{deployment_id}/status", "roles": ["viewer", "operator", "admin"]},
+      {"path": "POST /api/v1/deployments/{deployment_id}/rollback", "roles": ["admin"]},
+      {"path": "WS /api/v1/deployments/{deployment_id}/logs/ws", "roles": ["viewer", "operator", "admin"]}
+    ],
+    "token_expiry": "access 2h, refresh 7d"
+  },
+  "rate_limiting": {
+    "global": "每 IP 100 req/s（Redis滑动窗口计数器，全局限流保护网关不被DDoS）",
+    "per_user": "每 user 1000 req/min（基于JWT sub声明标识，超出返回429）",
+    "special_endpoints": [
+      {"endpoint": "POST /api/v1/auth/login", "limit": "每 IP 5 req/min（防暴力破解，超出返回429）"},
+      {"endpoint": "POST /api/v1/deployments", "limit": "每 user 10 req/min（部署操作频率限制，防止误操作）"},
+      {"endpoint": "POST /api/v1/deployments/{deployment_id}/rollback", "limit": "每 user 3 req/min（回滚操作频率限制）"},
+      {"endpoint": "POST /api/v1/environments/{env_id}/test", "limit": "每 user 30 req/min（连接测试频率限制）"},
+      {"endpoint": "GET /api/v1/health", "limit": "每 IP 200 req/s（健康检查放宽限流）"}
+    ]
+  }
+}
