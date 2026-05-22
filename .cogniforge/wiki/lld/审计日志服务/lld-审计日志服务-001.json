@@ -1,0 +1,349 @@
+{
+  "meta": {
+    "doc_id": "lld-审计日志服务-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "审计日志服务",
+    "title": "LLD - 审计日志服务",
+    "author": "design_agent",
+    "created": "2026-05-22 10:30"
+  },
+  "overview": {
+    "description": "记录所有操作行为和部署历史，支持追溯审查",
+    "dependencies": ["PostgreSQL数据库", "文件存储"],
+    "tech_stack": ["Go", "Gin", "PostgreSQL 15"]
+  },
+  "data_models": [
+    {
+      "name": "AuditLog",
+      "type": "reference",
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-PostgreSQL数据库-001",
+        "model_name": "audit_logs"
+      },
+      "description": "审计日志表（引用 Primary Database），记录所有用户操作行为和系统事件，本服务关心的字段视图",
+      "fields": [
+        {"name": "id", "type": "BIGSERIAL", "required": true, "description": "日志自增ID，主键"},
+        {"name": "project_id", "type": "UUID", "required": false, "description": "关联项目ID，外键关联 projects.id"},
+        {"name": "action", "type": "VARCHAR(255)", "required": true, "description": "操作类型，如: project.create/deploy.trigger/key.add"},
+        {"name": "resource_type", "type": "VARCHAR(255)", "required": true, "description": "资源类型，如: project/environment/deployment/key"},
+        {"name": "resource_id", "type": "VARCHAR(255)", "required": false, "description": "资源ID"},
+        {"name": "operator", "type": "VARCHAR(255)", "required": true, "description": "操作人标识"},
+        {"name": "detail", "type": "JSONB", "required": false, "description": "操作详情，JSON格式存储变更内容"},
+        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "日志生成时间，默认当前时间"}
+      ]
+    },
+    {
+      "name": "LogArchiveConfig",
+      "type": "config",
+      "ownership": "owned",
+      "description": "日志归档配置，定义归档策略、存储路径和保留期限",
+      "fields": [
+        {"name": "retention_days", "type": "int", "required": true, "description": "在线日志保留天数，超过此期限的日志将被归档"},
+        {"name": "archive_storage_path", "type": "string", "required": true, "description": "归档文件存储路径，对接文件存储模块"},
+        {"name": "archive_format", "type": "string", "required": true, "description": "归档文件格式，枚举值: json/csv"},
+        {"name": "cron_schedule", "type": "string", "required": false, "description": "归档定时任务Cron表达式，默认每日凌晨2点执行: 0 2 * * *"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "查询审计日志",
+      "method": "GET",
+      "endpoint": "/api/v1/audit-logs",
+      "description": "查询操作审计日志和部署历史，支持按项目、操作类型分页查询。对应 SAD 契约 GET /api/v1/audit-logs",
+      "parameters": [
+        {"name": "project_id", "type": "string", "description": "项目ID，过滤指定项目的日志"},
+        {"name": "action", "type": "string", "description": "操作类型过滤，如 project.create/deploy.trigger"},
+        {"name": "page", "type": "int", "description": "页码，从1开始"},
+        {"name": "page_size", "type": "int", "description": "每页条数，默认20，最大100"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "total": "int",
+          "items": "[]AuditLog"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数校验失败，page 或 page_size 超出合法范围"},
+        {"code": 500, "message": "服务器内部错误，数据库查询异常"}
+      ]
+    },
+    {
+      "name": "记录审计日志",
+      "method": "INTERNAL",
+      "endpoint": "/internal/api/v1/audit-logs",
+      "description": "内部接口，供项目管理服务、部署编排服务等其他服务调用以记录用户操作日志或系统事件",
+      "parameters": [
+        {"name": "project_id", "type": "string", "description": "关联项目ID"},
+        {"name": "action", "type": "string", "description": "操作类型，必须是 AuditActionType 枚举中的合法值"},
+        {"name": "resource_type", "type": "string", "description": "资源类型，必须是 ResourceType 枚举中的合法值"},
+        {"name": "resource_id", "type": "string", "description": "资源ID"},
+        {"name": "operator", "type": "string", "description": "操作人标识，如用户名或系统账号"},
+        {"name": "detail", "type": "object", "description": "操作详情JSON，记录变更内容"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "int64",
+          "created_at": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数校验失败，必填字段缺失或枚举值不合法"},
+        {"code": 500, "message": "服务器内部错误，日志写入失败"}
+      ]
+    },
+    {
+      "name": "触发日志归档",
+      "method": "POST",
+      "endpoint": "/api/v1/audit-logs/archive",
+      "description": "手动触发审计日志归档任务，将指定日期前的日志从数据库导出并写入文件存储",
+      "parameters": [
+        {"name": "before_date", "type": "string", "description": "归档截止日期（YYYY-MM-DD），归档此日期之前的所有日志"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "archived_count": "int",
+          "archive_file": "string",
+          "message": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数校验失败，日期格式不正确或晚于当前日期"},
+        {"code": 409, "message": "已有归档任务正在执行，请稍后重试"},
+        {"code": 500, "message": "归档过程发生异常"},
+        {"code": 503, "message": "文件存储服务不可用，归档任务暂停"}
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "审计日志服务采用分层错误处理。参数校验错误直接返回4xx明确提示；数据库操作错误捕获后统一转换为结构化错误响应并记录详细日志；归档任务失败时输出错误信息并告警，不阻塞后续请求。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": 400,
+        "name": "参数校验错误",
+        "description": "请求参数格式不正确、必填字段缺失或枚举值不合法，返回明确错误字段引导用户或调用方修正"
+      },
+      {
+        "code": 404,
+        "name": "资源不存在",
+        "description": "查询的日志记录或归档文件不存在"
+      },
+      {
+        "code": 409,
+        "name": "并发冲突",
+        "description": "归档任务已在进行中，同时触发多个归档请求时返回此错误"
+      },
+      {
+        "code": 500,
+        "name": "服务内部错误",
+        "description": "数据库查询/写入异常等不可预知错误，返回通用错误信息并在服务端记录完整异常堆栈"
+      },
+      {
+        "code": 503,
+        "name": "依赖服务不可用",
+        "description": "文件存储服务不可用或数据库连接池耗尽，归档任务暂停等待恢复"
+      }
+    ]
+  },
+  "domain_objects": [
+    {
+      "name": "AuditLog",
+      "object_type": "entity",
+      "description": "审计日志实体，对应 audit_logs 表的一条记录，记录用户操作行为或系统事件",
+      "attributes": [
+        {"name": "id", "type": "int64", "required": true, "source": "db", "description": "日志自增ID，主键"},
+        {"name": "project_id", "type": "string", "required": false, "source": "db", "description": "关联项目ID"},
+        {"name": "action", "type": "string", "required": true, "source": "db", "description": "操作类型，来自 AuditActionType 枚举"},
+        {"name": "resource_type", "type": "string", "required": true, "source": "db", "description": "资源类型，来自 ResourceType 枚举"},
+        {"name": "resource_id", "type": "string", "required": false, "source": "db", "description": "资源ID"},
+        {"name": "operator", "type": "string", "required": true, "source": "db", "description": "操作人标识"},
+        {"name": "detail", "type": "map[string]interface{}", "required": false, "source": "db", "description": "操作详情JSON"},
+        {"name": "created_at", "type": "time.Time", "required": true, "source": "db", "description": "日志生成时间"}
+      ]
+    },
+    {
+      "name": "AuditLogQuery",
+      "object_type": "dto",
+      "description": "审计日志查询参数DTO，封装查询请求的过滤条件和分页参数",
+      "attributes": [
+        {"name": "project_id", "type": "string", "required": false, "source": "input", "description": "项目ID过滤"},
+        {"name": "action", "type": "string", "required": false, "source": "input", "description": "操作类型过滤"},
+        {"name": "page", "type": "int", "required": false, "source": "input", "description": "页码，从1开始"},
+        {"name": "page_size", "type": "int", "required": false, "source": "input", "description": "每页条数，默认20，范围1-100"}
+      ],
+      "maps_to_entity": ""
+    },
+    {
+      "name": "AuditLogListResponse",
+      "object_type": "dto",
+      "description": "审计日志列表响应DTO，包含总条数和日志条目列表",
+      "attributes": [
+        {"name": "total", "type": "int", "required": true, "source": "computed", "description": "匹配查询条件的日志总条数"},
+        {"name": "items", "type": "[]AuditLog", "required": true, "source": "computed", "description": "当前页的日志条目列表"}
+      ],
+      "maps_to_entity": ""
+    },
+    {
+      "name": "RecordLogRequest",
+      "object_type": "dto",
+      "description": "记录审计日志请求DTO，由其他服务通过内部接口传入",
+      "attributes": [
+        {"name": "project_id", "type": "string", "required": false, "source": "input", "description": "关联项目ID"},
+        {"name": "action", "type": "string", "required": true, "source": "input", "description": "操作类型"},
+        {"name": "resource_type", "type": "string", "required": true, "source": "input", "description": "资源类型"},
+        {"name": "resource_id", "type": "string", "required": false, "source": "input", "description": "资源ID"},
+        {"name": "operator", "type": "string", "required": true, "source": "input", "description": "操作人标识"},
+        {"name": "detail", "type": "map[string]interface{}", "required": false, "source": "input", "description": "操作详情JSON"}
+      ],
+      "maps_to_entity": "AuditLog"
+    },
+    {
+      "name": "ArchiveRequest",
+      "object_type": "dto",
+      "description": "日志归档请求DTO",
+      "attributes": [
+        {"name": "before_date", "type": "string", "required": true, "source": "input", "description": "归档截止日期，格式 YYYY-MM-DD"}
+      ],
+      "maps_to_entity": ""
+    },
+    {
+      "name": "ArchiveResult",
+      "object_type": "dto",
+      "description": "日志归档结果DTO",
+      "attributes": [
+        {"name": "archived_count", "type": "int", "required": true, "source": "computed", "description": "已归档的日志条数"},
+        {"name": "archive_file", "type": "string", "required": true, "source": "computed", "description": "归档文件路径"},
+        {"name": "message", "type": "string", "required": true, "source": "computed", "description": "归档结果描述"}
+      ],
+      "maps_to_entity": ""
+    },
+    {
+      "name": "AuditActionType",
+      "object_type": "enum",
+      "description": "审计操作类型枚举，定义系统支持的所有可审计操作",
+      "values": [
+        "project.create",
+        "project.update",
+        "project.delete",
+        "environment.create",
+        "environment.update",
+        "environment.delete",
+        "deploy.trigger",
+        "deploy.success",
+        "deploy.failed",
+        "deploy.rollback",
+        "key.add",
+        "key.delete",
+        "user.login",
+        "user.logout",
+        "audit.archive"
+      ]
+    },
+    {
+      "name": "ResourceType",
+      "object_type": "enum",
+      "description": "资源类型枚举，标识操作影响的资源类别",
+      "values": [
+        "project",
+        "environment",
+        "deployment",
+        "key",
+        "user",
+        "audit_log"
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "name": "AuditLogService",
+      "description": "审计日志服务，提供审计日志的记录、查询和归档能力，是系统操作追溯的核心服务",
+      "methods": [
+        {
+          "name": "RecordLog",
+          "signature": "(req: RecordLogRequest) -> (AuditLog, error)",
+          "precondition": "req.action 和 req.operator 非空；req.action 为 AuditActionType 枚举中的合法值；req.resource_type 为 ResourceType 枚举中的合法值",
+          "postcondition": "日志写入 audit_logs 表并返回完整记录（含自增 id 和 created_at）；写入失败返回 error",
+          "description": "记录一条审计日志，供其他服务在完成关键操作后调用，确保操作可追溯",
+          "exceptions": [
+            {"name": "InvalidArgumentError", "trigger": "必填字段 action/operator/resource_type 为空", "http_status": 400},
+            {"name": "InvalidEnumValueError", "trigger": "action 不在 AuditActionType 枚举范围或 resource_type 不在 ResourceType 枚举范围", "http_status": 400},
+            {"name": "LogWriteError", "trigger": "数据库写入失败（连接异常/约束冲突）", "http_status": 500}
+          ]
+        },
+        {
+          "name": "QueryLogs",
+          "signature": "(query: AuditLogQuery) -> (AuditLogListResponse, error)",
+          "precondition": "query.page >= 1；query.page_size 在 1-100 范围内（含边界）",
+          "postcondition": "返回匹配条件的日志列表（按 created_at 降序）和总条数；无匹配记录时返回 total=0、items 为空数组",
+          "description": "按过滤条件和分页参数查询审计日志，支持按 project_id 和 action 过滤",
+          "exceptions": [
+            {"name": "InvalidPageError", "trigger": "page < 1 或 page_size 超出 1-100 范围", "http_status": 400},
+            {"name": "QueryError", "trigger": "数据库查询异常（超时/连接断开）", "http_status": 500}
+          ]
+        },
+        {
+          "name": "ArchiveLogs",
+          "signature": "(req: ArchiveRequest) -> (ArchiveResult, error)",
+          "precondition": "req.before_date 格式为 YYYY-MM-DD 且不晚于当前日期；当前无正在执行的归档任务",
+          "postcondition": "指定日期前的日志从 audit_logs 表导出到文件存储并删除原始记录；返回归档条数和文件路径",
+          "description": "将指定日期前的审计日志归档到文件存储，释放数据库存储空间",
+          "exceptions": [
+            {"name": "InvalidDateError", "trigger": "日期格式不正确或晚于当前日期", "http_status": 400},
+            {"name": "ArchiveInProgressError", "trigger": "已有归档任务正在执行", "http_status": 409},
+            {"name": "FileStorageError", "trigger": "文件存储服务不可用或写入失败", "http_status": 503},
+            {"name": "ArchiveError", "trigger": "归档过程中的其他异常（数据导出/删除失败）", "http_status": 500}
+          ]
+        }
+      ],
+      "repository_dependencies": [
+        "insert(auditLog: AuditLog) -> (AuditLog, error)",
+        "findByFilters(projectId: string?, action: string?, page: int, pageSize: int) -> (total: int, items: []AuditLog, error)",
+        "deleteBefore(before: time.Time) -> (deletedCount: int, error)"
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "审计日志写入后不可修改、不可单条删除，保证操作记录的不可篡改性",
+      "每条审计日志必须至少包含 action、resource_type 和 operator 三个字段",
+      "审计日志按 created_at 降序排列返回，确保最新操作优先展示",
+      "归档操作必须遵循先导出后删除的时序：确认归档文件完整写入后再删除原始记录，避免数据丢失",
+      "归档后的日志在数据库中被批量删除，如需查询归档日志需从文件存储中恢复"
+    ],
+    "state_machines": [
+      {
+        "entity": "ArchiveTask",
+        "states": ["idle", "archiving", "completed", "failed"],
+        "transitions": [
+          {"from": "idle", "to": "archiving", "trigger": "手动触发 POST /api/v1/audit-logs/archive 或定时调度到达归档窗口", "actor": "用户或Cron调度器"},
+          {"from": "archiving", "to": "completed", "trigger": "日志导出完成、文件写入并校验通过、原始记录删除完毕", "actor": "系统"},
+          {"from": "archiving", "to": "failed", "trigger": "归档过程出现异常（数据库查询失败/文件写入失败/删除失败）", "actor": "系统"},
+          {"from": "failed", "to": "idle", "trigger": "人工排查异常原因并手动重置归档状态", "actor": "系统管理员"}
+        ],
+        "irreversible_rules": [
+          "archiving -> idle 不可逆，归档开始后必须完成或失败才能进入下一个 idle",
+          "completed 状态为终态，不允许从 completed 流转到其他状态"
+        ],
+        "concurrency": "同一时间只允许一个归档任务处于 archiving 状态，使用数据库行锁或分布式锁防止并发归档触发"
+      }
+    ],
+    "cross_service_rules": [
+      "项目管理服务、环境配置服务、部署编排服务、密钥存储服务在完成关键操作后必须调用审计日志服务的 INTERNAL 记录日志接口，确保操作可追溯",
+      "部署编排服务在部署任务状态变更时（pending/running/success/failed）必须记录对应审计日志，日志中 detail 字段应包含部署版本和目标环境等上下文",
+      "Web控制台通过 API 网关的 GET /api/v1/audit-logs 接口查询日志数据，不得直接访问数据库",
+      "归档操作需要调用文件存储模块写入归档文件，归档文件命名格式为 audit_logs_{yyyy_mm_dd}.json"
+    ]
+  }
+}
