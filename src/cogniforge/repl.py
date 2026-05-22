@@ -75,6 +75,9 @@ from cogniforge.repl_text import (
     LLD_MODULES_FOUND,
     LLD_AUTO_ALL_CHOICE,
     LLD_PROGRESS,
+    WBS_MODULES_FOUND,
+    WBS_AUTO_ALL_CHOICE,
+    WBS_PROGRESS,
     STEP_SEPARATOR,
 )
 
@@ -454,6 +457,22 @@ class Repl:
         except Exception:
             return []
 
+    def _get_lld_modules(self) -> list[dict]:
+        """Return SAD components that have an existing LLD JSON file."""
+        import glob as _glob
+        from pathlib import Path as _Path
+
+        sad_modules = self._get_sad_modules()
+        lld_dir = _Path.cwd() / ".cogniforge/wiki/lld"
+        result: list[dict] = []
+        for comp in sad_modules:
+            mod_name = comp.get("name", "")
+            pattern = str(lld_dir / mod_name / "*.json")
+            files = sorted(_glob.glob(pattern))
+            if files:
+                result.append(comp)
+        return result
+
     @staticmethod
     def _lld_layer(comp: dict) -> int:
         """Return dependency layer for topological sort.
@@ -599,6 +618,82 @@ class Repl:
 
         return ""
 
+    def _exec_wbs_auto_all(self, modules: list[dict]) -> str:
+        """Generate WBS for all modules with batched LLM enrichment.
+
+        Phase 1: mechanical stub generation for all modules (local, fast)
+        Phase 2: single LLM call to enrich all stubs (one network round trip)
+        Phase 3: task registration and coverage validation per module
+        """
+        from cogniforge.wbs.enriched_wbs_assembler import WBSAssembler
+
+        total = len(modules)
+        agent = self.agents.get("techlead")
+        if agent is None:
+            return AGENT_NO_ROLE.format(role="techlead")
+
+        module_names = ", ".join(c.get("name", "?") for c in modules)
+        click.echo(
+            f"\n  [{C_AMBER}1-{total}/{total}{C_RESET}] "
+            f"批量 WBS: {module_names}"
+        )
+
+        specs: list[tuple[str, Path]] = []
+        for comp in modules:
+            mod_name = comp.get("name", "unknown")
+            lld_dir = Path.cwd() / ".cogniforge/wiki/lld" / mod_name
+            lld_files = sorted(lld_dir.glob("*.json"))
+            if lld_files:
+                specs.append((mod_name, lld_files[-1]))
+
+        assembler = WBSAssembler(
+            agent.wiki_system, agent.task_engine, agent.agent,
+        )
+
+        spinner = Spinner(SPINNER_RUNNING.format(agent="techlead"))
+        spinner.start()
+        try:
+            results = assembler.assemble_batch(specs)
+        except Exception as e:
+            spinner.stop()
+            return f"  [{C_RED}✗{C_RESET}] 批处理失败: {e}"
+        finally:
+            spinner.stop()
+
+        final_results: list[dict] = []
+        for (mod_name, _), result in zip(specs, results):
+            try:
+                count = agent._register_wbs_tasks(result.tasks, mod_name)
+                report = result.coverage
+                coverage_msg = f", coverage={report.coverage_pct:.0f}%" if report else ""
+                res = agent.format_result(
+                    status="success",
+                    message=f"WBS: {count} tasks for {mod_name}{coverage_msg}",
+                    data={"task_count": count},
+                )
+                self._print_lld_result(mod_name, res)
+                final_results.append(res)
+            except Exception as e:
+                err = {"status": "failed", "message": str(e)}
+                self._print_lld_result(mod_name, err)
+                final_results.append(err)
+
+        success_count = sum(1 for r in final_results if r.get("status") == "success")
+        click.echo(
+            f"\n  {C_GREEN}{success_count}/{total} 模块 WBS 生成成功{C_RESET}"
+        )
+
+        step = self.workflow.current_step
+        if step:
+            action_choice = self._post_agent_menu(step)
+            if action_choice == "approve":
+                return self._exec_approve({"comment": ""})
+            elif action_choice == "reject":
+                reason = click.prompt(REJECT_PROMPT, default=REJECT_DEFAULT)
+                return self._exec_reject({"comment": reason})
+
+        return ""
+
     # ---- main loop -------------------------------------------------------
 
     def run(self) -> None:
@@ -648,12 +743,24 @@ class Repl:
                     click.echo(self._exec_approve({"comment": ""}))
                     continue
 
-                # Design steps (SAD/LLD): let user choose between manual and auto-design
+                # Design steps (SAD/LLD/WBS): let user choose between manual and auto-design
                 if step and step.value in DESIGN_STEP_CHOICES:
                     _, label_auto, label_manual, auto_prompt = DESIGN_STEP_CHOICES[step.value]
 
-                    # For LLD: check for multi-module support
-                    modules = self._get_sad_modules() if step.value == "lld" else []
+                    # Multi-module support
+                    if step.value == "lld":
+                        modules = self._get_sad_modules()
+                    elif step.value == "wbs":
+                        modules = self._get_lld_modules()
+                    else:
+                        modules = []
+
+                    if step.value == "wbs" and len(modules) == 0:
+                        click.echo(
+                            f"\n  {C_AMBER}没有找到 LLD 文档，无法生成 WBS。"
+                            f"请先完成 LLD 步骤。{C_RESET}"
+                        )
+                        continue
 
                     if step.value == "lld" and len(modules) > 1:
                         # Multi-module: offer "generate all" option
@@ -685,20 +792,74 @@ class Repl:
                         else:
                             click.echo()
                             user_input = input("cogniforge []: ").strip()
-                    else:
-                        # Single module or SAD: existing two-option menu unchanged
+                    elif step.value == "wbs" and len(modules) > 1:
+                        # WBS multi-module: auto-decompose for all modules with LLD
+                        module_names = ", ".join(
+                            c.get("name", "?") for c in modules
+                        )
+                        click.echo(
+                            WBS_MODULES_FOUND.format(
+                                count=len(modules), modules=module_names
+                            )
+                        )
                         choice = _select(
                             [
+                                (
+                                    "auto_all",
+                                    WBS_AUTO_ALL_CHOICE.format(count=len(modules)),
+                                ),
                                 ("auto", label_auto),
                                 ("manual", label_manual),
                             ],
                             default=0,
                         )
-                        if choice == "auto":
+                        if choice == "auto_all":
+                            result_text = self._exec_wbs_auto_all(modules)
+                            click.echo(result_text)
+                            continue
+                        elif choice == "auto":
                             user_input = auto_prompt
                         else:
                             click.echo()
                             user_input = input("cogniforge []: ").strip()
+                    else:
+                        # Single module (or SAD) — if WBS has exactly 1 LLD module, go direct
+                        if step.value == "wbs" and len(modules) == 1:
+                            click.echo(
+                                WBS_MODULES_FOUND.format(
+                                    count=1, modules=modules[0].get("name", "?")
+                                )
+                            )
+                            choice = _select(
+                                [
+                                    ("auto_all", WBS_AUTO_ALL_CHOICE.format(count=1)),
+                                    ("auto", label_auto),
+                                    ("manual", label_manual),
+                                ],
+                                default=0,
+                            )
+                            if choice == "auto_all":
+                                result_text = self._exec_wbs_auto_all(modules)
+                                click.echo(result_text)
+                                continue
+                            elif choice == "auto":
+                                user_input = auto_prompt
+                            else:
+                                click.echo()
+                                user_input = input("cogniforge []: ").strip()
+                        else:
+                            choice = _select(
+                                [
+                                    ("auto", label_auto),
+                                    ("manual", label_manual),
+                                ],
+                                default=0,
+                            )
+                            if choice == "auto":
+                                user_input = auto_prompt
+                            else:
+                                click.echo()
+                                user_input = input("cogniforge []: ").strip()
                 else:
                     user_input = input("cogniforge []: ").strip()
 

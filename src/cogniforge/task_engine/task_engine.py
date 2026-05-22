@@ -371,25 +371,83 @@ class TaskEngine:
 
     def get_parallel_tasks(self, max_count: int = 4) -> list[Task]:
         """Get tasks that can be executed in parallel"""
+        return self.get_parallel_tasks_with_conflict_check(max_count)
+
+    def get_parallel_tasks_with_conflict_check(self, max_count: int = 4) -> list[Task]:
+        """Get parallel-ready tasks with file conflict detection.
+
+        Two tasks cannot run in parallel if they write to the same files.
+        """
         ready = self.get_ready_tasks()
 
-        parallel = []
-        remaining = ready
+        parallel: list[Task] = []
+        remaining = list(ready)
+        files_locked: set[str] = set()
 
         while remaining and len(parallel) < max_count:
             task = remaining.pop(0)
 
+            # Dep already in parallel → skip
             has_dep_in_parallel = any(
                 dep in [t.task_id for t in parallel]
                 for dep in task.deps
             )
+            if has_dep_in_parallel:
+                continue
 
-            if not has_dep_in_parallel:
-                parallel.append(task)
-            else:
-                remaining.append(task)
+            # File conflict check
+            task_files = set(getattr(task, "expected_output_files", []) or [])
+            if task_files & files_locked:
+                continue  # Would write to same file as a parallel task
+
+            parallel.append(task)
+            files_locked |= task_files
 
         return parallel
+
+    def inject_upstream_context(self, task: Task) -> Task:
+        """Inject upstream artifacts into task context before DEV execution.
+
+        Looks up all completed dependency tasks and collects their
+        changed_files, then writes them into task.context.upstream_artifacts.
+        """
+        upstream: list[dict] = []
+        for dep_id in task.deps:
+            dep_task = self._tasks.get(dep_id)
+            if dep_task and dep_task.status == TaskStatus.DONE:
+                upstream.append({
+                    "task_id": dep_task.task_id,
+                    "name": dep_task.name,
+                    "files": dep_task.changed_files,
+                    "category": dep_task.category or "",
+                })
+
+        if upstream and task.context:
+            task.context.upstream_artifacts = upstream
+
+        return task
+
+    def get_external_artifacts(self, module: str, exclude_task_id: str = "") -> list[dict]:
+        """Get completed task artifacts from a different module.
+
+        Used when a task depends on another module's interface being implemented.
+        """
+        artifacts: list[dict] = []
+        for t in self._tasks.values():
+            if t.module != module:
+                continue
+            if t.task_id == exclude_task_id:
+                continue
+            if t.status != TaskStatus.DONE:
+                continue
+            artifacts.append({
+                "task_id": t.task_id,
+                "name": t.name,
+                "module": t.module,
+                "files": t.changed_files,
+                "category": t.category or "",
+            })
+        return artifacts
 
     def is_complete(self) -> bool:
         """Check if all tasks are done or failed"""

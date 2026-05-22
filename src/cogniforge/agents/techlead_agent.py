@@ -29,7 +29,7 @@ class TechLeadAgent(BaseAgent):
                 raise AgentError("TechLeadAgent requires a Claude Code agent for this action")
 
             if action == "create_wbs":
-                return self._agentic_create_wbs(input_data)
+                return self._structured_create_wbs(input_data)
             elif action == "evaluate_quality":
                 return self._agentic_evaluate_quality(input_data)
             else:
@@ -40,59 +40,83 @@ class TechLeadAgent(BaseAgent):
         except Exception as e:
             return self.format_result(status="failed", message=str(e))
 
-    def _agentic_create_wbs(self, input_data: dict) -> dict:
-        module = input_data.get("module", "unknown")
-        tasks = input_data.get("tasks", [])
-        now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        task_id = f"wbs_{module}"
-        json_path = self.wiki_system.agent_path(DocumentType.TASK, task_id=task_id)
+    def _register_wbs_tasks(self, tasks: list[dict], module: str) -> int:
+        """Register pre-built WBS task dicts with TaskEngine. Returns count created."""
+        count = 0
+        for t_dict in tasks:
+            try:
+                ctx = t_dict.pop("context", None)
+                lld_refs_data = t_dict.pop("lld_refs", [])
+                exp_files = t_dict.pop("expected_output_files", [])
+                layer_val = t_dict.pop("layer", 0)
 
-        prompt = (
-            f"根据以下信息创建工作分解结构 (WBS)，以 JSON 格式输出并写入:\n\n"
-            f"输出路径: {json_path}\n"
-            f"JSON 结构: {{\"meta\": {{\"doc_id\": \"{task_id}\", \"type\": \"task\", "
-            f"\"title\": \"WBS - {module}\", "
-            f"\"author\": \"techlead_agent\", \"created\": \"{now}\"}},\n"
-            f" \"tasks\": [{{\"name\": \"...\", \"description\": \"...\", "
-            f"\"deps\": [\"...\"], \"priority\": 1, \"assignee\": \"dev\", "
-            f"\"estimated_hours\": 4, \"category\": \"service\"}}]}}\n\n"
-            f"输入数据:\n"
-            f"module: {module}\n"
-            f"tasks: {json.dumps(tasks, ensure_ascii=False, indent=2)}\n\n"
-            f"要求:\n"
-            f"1. 先阅读 .cogniforge/wiki/prd/、.cogniforge/wiki/sad/、.cogniforge/wiki/lld/{module}/ 了解上下文\n"
-            f"2. 每个任务粒度: 2-8 小时，对应一个可验证的产出物 (文件、函数、API 端点、测试套件)\n"
-            f"3. 按依赖关系拓扑排序，标注优先级 (0=阻塞 1=高 2=中 3=低) 和预估工时\n"
-            f"4. 每个任务必须指定 category: model | service | endpoint | test | config | migration | doc | fix\n"
-            f"5. 使用中文、只写 JSON 不写 HTML、完成后回复确认"
+                task = self.task_engine.create_task(
+                    name=t_dict["name"],
+                    module=t_dict["module"],
+                    description=t_dict.get("description", ""),
+                    deps=t_dict.get("deps", []),
+                    priority=TaskPriority(t_dict.get("priority", 2)),
+                    assignee=t_dict.get("assignee"),
+                    estimated_hours=t_dict.get("estimated_hours"),
+                    category=t_dict.get("category"),
+                )
+                if ctx:
+                    from cogniforge.models.task import TaskContext
+                    if isinstance(ctx, dict):
+                        task.context = TaskContext(**ctx)
+                    else:
+                        task.context = ctx
+                task.expected_output_files = exp_files
+                task.layer = layer_val
+                if lld_refs_data:
+                    from cogniforge.models.task import LLDReference
+                    task.lld_refs = [LLDReference(**r) for r in lld_refs_data]
+                self._save_task(task, "feat: create WBS task")
+                count += 1
+            except Exception:
+                pass
+        return count
+
+    def _structured_create_wbs(self, input_data: dict) -> dict:
+        """Structured WBS creation: mechanical decomposition + LLM enrichment."""
+        module = input_data.get("module", "unknown")
+
+        lld_docs = self.wiki_system.list_documents(DocumentType.LLD, module=module)
+        if not lld_docs:
+            raise AgentError(f"No LLD found for module {module} — cannot create WBS")
+
+        lld_path = Path(self.config.repo_path) / lld_docs[-1].path
+        if not lld_path.exists():
+            raise AgentError(f"LLD file not found: {lld_path}")
+
+        from cogniforge.wbs.enriched_wbs_assembler import WBSAssembler
+        assembler = WBSAssembler(self.wiki_system, self.task_engine, self.agent)
+        result = assembler.assemble(module, lld_path)
+
+        count = self._register_wbs_tasks(result.tasks, module)
+
+        report = result.coverage
+        coverage_msg = f", coverage={report.coverage_pct:.0f}%" if report else ""
+
+        return self.format_result(
+            status="success",
+            message=f"WBS created: {count} tasks for {module}{coverage_msg}",
+            data={"task_count": count, "coverage": report.coverage_pct if report else 0},
+            decisions=[f"stubs={result.stubs_count}"],
         )
 
-        response = self.agent.generate_agentic(prompt, role="techlead")
-
-        # Read back the generated WBS JSON and create individual tasks
-        if hasattr(self, "task_engine") and json_path.exists():
-            try:
-                wbs_data = json.loads(json_path.read_text(encoding="utf-8"))
-                wbs_tasks = wbs_data.get("tasks", [])
-                for i, t in enumerate(wbs_tasks):
-                    try:
-                        self.task_engine.create_task(
-                            name=t.get("name", f"task-{i}"),
-                            module=module,
-                            description=t.get("description", ""),
-                            deps=t.get("deps", []),
-                            priority=TaskPriority(t.get("priority", 2)),
-                            assignee=t.get("assignee"),
-                            estimated_hours=t.get("estimated_hours"),
-                            category=t.get("category"),
-                        )
-                    except Exception:
-                        pass
-            except (json.JSONDecodeError, IOError):
-                pass
-
-        return self._commit_result(json_path, f"WBS - {module}", "techlead_agent",
-                                   f"feat: add WBS for {module}", response.content)
+    def _save_task(self, task, commit_message: str) -> None:
+        try:
+            task_path = Path(f".cogniforge/wiki/tasks/{task.task_id}.json")
+            full_path = self.config.repo_path / task_path
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(
+                json.dumps(task.to_json(), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            self.wiki_system.git_storage.repo.index.add([str(task_path)])
+        except Exception:
+            pass
 
     def _agentic_evaluate_quality(self, input_data: dict) -> dict:
         module = input_data.get("module", "unknown")

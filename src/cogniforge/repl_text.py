@@ -154,6 +154,11 @@ LLD_MODULES_FOUND = "  SAD 定义了 {count} 个模块: {modules}"
 LLD_AUTO_ALL_CHOICE = "让 Agent 自动生成全部 {count} 个模块的 LLD"
 LLD_PROGRESS = "正在生成 LLD: {module}"
 
+# Multi-module WBS
+WBS_MODULES_FOUND = "  已生成 LLD 的模块 ({count} 个): {modules}"
+WBS_AUTO_ALL_CHOICE = "让 Agent 为全部 {count} 个模块自动分解 WBS"
+WBS_PROGRESS = "正在生成 WBS: {module}"
+
 WBS_CHOICE_TITLE = "WBS（techlead agent）— 选择任务分解方式"
 WBS_CHOICE_AUTO = "让 Agent 基于已有设计文档自主分解任务"
 WBS_CHOICE_MANUAL = "我自己描述任务分解"
