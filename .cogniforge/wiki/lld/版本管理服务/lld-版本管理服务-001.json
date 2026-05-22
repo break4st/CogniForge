@@ -1,0 +1,540 @@
+{
+  "meta": {
+    "doc_id": "lld-版本管理服务-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "版本管理服务",
+    "title": "版本管理服务 — 详细设计文档",
+    "author": "design_agent",
+    "created": "2026-05-22"
+  },
+  "overview": {
+    "description": "管理部署版本记录，支持版本回滚。该服务为部署编排服务的下游依赖，负责版本号自动生成、版本历史记录查询、版本状态管理（active/inactive/rolled_back）、版本间差异对比。部署编排服务在每次成功部署后调用本服务创建版本记录，在回滚操作完成后调用本服务更新版本状态。Web管理控制台通过查询接口获取版本历史列表和当前运行版本。",
+    "dependencies": [
+      "部署编排服务",
+      "项目管理服务",
+      "环境管理服务"
+    ],
+    "tech_stack": ["Go", "Gin", "PostgreSQL 15+", "Redis 7+"]
+  },
+  "data_models": [
+    {
+      "name": "deployment_versions",
+      "type": "reference",
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-PostgreSQL主数据库-001",
+        "model_name": "deployment_versions"
+      },
+      "description": "部署版本记录表。版本管理服务关注的本表字段视图：查询版本历史需要 id/project_id/environment_id/version/deploy_path/status/deployed_by/deployed_at/rolled_back_at/description；创建版本记录需要这些字段的写入权限；更新状态仅修改 status/rolled_back_at/rolled_back_to。",
+      "fields": [
+        {"name": "id", "type": "UUID", "required": true, "description": "版本记录标识，主键"},
+        {"name": "project_id", "type": "UUID", "required": true, "description": "所属项目ID，外键关联projects"},
+        {"name": "environment_id", "type": "UUID", "required": true, "description": "目标环境ID，外键关联environments"},
+        {"name": "task_id", "type": "UUID", "required": true, "description": "关联部署任务ID，外键关联deployment_tasks"},
+        {"name": "version", "type": "VARCHAR(64)", "required": true, "description": "版本号，格式 v{YYYYMMDD}.{HHMMSS}.{3位序列}"},
+        {"name": "deploy_path", "type": "VARCHAR(1024)", "required": true, "description": "远程服务器上的部署目录路径"},
+        {"name": "file_path", "type": "VARCHAR(1024)", "required": false, "description": "部署使用的文件路径，用于回滚时重新传输"},
+        {"name": "status", "type": "VARCHAR(16)", "required": true, "description": "版本状态：active/inactive/rolled_back"},
+        {"name": "deployed_by", "type": "UUID", "required": true, "description": "部署人用户ID，外键关联users"},
+        {"name": "description", "type": "TEXT", "required": false, "description": "部署说明"},
+        {"name": "deployed_at", "type": "TIMESTAMPTZ", "required": true, "description": "部署完成时间"},
+        {"name": "rolled_back_at", "type": "TIMESTAMPTZ", "required": false, "description": "回滚时间"},
+        {"name": "rolled_back_to", "type": "UUID", "required": false, "description": "回滚目标版本ID，自关联deployment_versions"},
+        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "记录创建时间"}
+      ]
+    },
+    {
+      "name": "deployment_tasks",
+      "type": "reference",
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-PostgreSQL主数据库-001",
+        "model_name": "deployment_tasks"
+      },
+      "description": "部署任务记录表。版本管理服务仅查询本表与版本关联的基本信息，用于版本详情页面展示关联的任务摘要。",
+      "fields": [
+        {"name": "id", "type": "UUID", "required": true, "description": "任务标识，主键"},
+        {"name": "type", "type": "VARCHAR(16)", "required": true, "description": "任务类型：deploy/rollback"},
+        {"name": "status", "type": "VARCHAR(16)", "required": true, "description": "任务状态：pending/running/success/failed/rolled_back"}
+      ]
+    },
+    {
+      "name": "version_cache",
+      "type": "store",
+      "ownership": "owned",
+      "description": "版本历史列表缓存与当前活跃版本缓存，Redis 7+ 存储，减少 PostgreSQL 查询频率。版本历史列表以 project_id:environment_id 为 key 缓存分页结果，当前活跃版本以 project_id:environment_id:active 为 key 缓存单条记录。版本创建或状态变更时主动失效对应缓存。",
+      "fields": [
+        {"name": "key", "type": "string", "required": true, "description": "缓存键：versions:history:{project_id}:{env_id}:{page}:{size} 或 versions:active:{project_id}:{env_id}"},
+        {"name": "value", "type": "string (JSON)", "required": true, "description": "JSON 序列化的版本记录数据"},
+        {"name": "ttl", "type": "integer", "required": true, "description": "缓存过期时间，单位秒。历史列表 TTL=60s，当前活跃版本 TTL=120s"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "QueryVersionHistory",
+      "method": "GET",
+      "endpoint": "/api/v1/versions",
+      "description": "查询指定项目和环境的版本历史列表，支持分页和排序。前端部署历史页面核心接口。",
+      "parameters": [
+        {"name": "project_id", "type": "string (UUID)", "description": "项目唯一标识（query param，必填）"},
+        {"name": "environment_id", "type": "string (UUID)", "description": "环境唯一标识（query param，必填）"},
+        {"name": "page", "type": "integer", "description": "页码，从1开始，默认1"},
+        {"name": "page_size", "type": "integer", "description": "每页条数，默认20，最大100"},
+        {"name": "status", "type": "string", "description": "按状态筛选：active/inactive/rolled_back（可选）"},
+        {"name": "sort_by", "type": "string", "description": "排序字段：deployed_at/version/created_at，默认deployed_at"},
+        {"name": "sort_order", "type": "string", "description": "排序方向：desc/asc，默认desc"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "total": "integer",
+          "page": "integer",
+          "page_size": "integer",
+          "items": "array<VersionSummary>"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数校验失败：project_id 或 environment_id 为空，或 page_size 超过上限"},
+        {"code": 404, "message": "项目或环境不存在，可能已被删除"}
+      ]
+    },
+    {
+      "name": "GetVersionDetail",
+      "method": "GET",
+      "endpoint": "/api/v1/versions/:id",
+      "description": "获取指定版本记录的完整详情，包括关联的部署任务摘要。",
+      "parameters": [
+        {"name": "id", "type": "string (UUID)", "description": "版本记录ID（path param）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string (UUID)",
+          "project_id": "string (UUID)",
+          "environment_id": "string (UUID)",
+          "task_id": "string (UUID)",
+          "version": "string",
+          "deploy_path": "string",
+          "file_path": "string",
+          "status": "string",
+          "deployed_by": "string (UUID)",
+          "deployed_by_name": "string",
+          "description": "string",
+          "deployed_at": "string (ISO8601)",
+          "rolled_back_at": "string (ISO8601)",
+          "rolled_back_to": "string (UUID)",
+          "task_status": "string",
+          "task_type": "string",
+          "created_at": "string (ISO8601)"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "指定ID的版本记录不存在"}
+      ]
+    },
+    {
+      "name": "GetCurrentActiveVersion",
+      "method": "GET",
+      "endpoint": "/api/v1/versions/current",
+      "description": "获取指定项目和环境的当前活跃版本。用于前端部署看板显示当前运行版本信息。",
+      "parameters": [
+        {"name": "project_id", "type": "string (UUID)", "description": "项目唯一标识（query param，必填）"},
+        {"name": "environment_id", "type": "string (UUID)", "description": "环境唯一标识（query param，必填）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string (UUID)",
+          "version": "string",
+          "status": "string",
+          "deploy_path": "string",
+          "deployed_by": "string (UUID)",
+          "deployed_by_name": "string",
+          "deployed_at": "string (ISO8601)",
+          "description": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数校验失败：project_id 或 environment_id 为空"},
+        {"code": 404, "message": "该项目和环境尚无已部署版本"}
+      ]
+    },
+    {
+      "name": "CreateVersionRecord",
+      "method": "POST",
+      "endpoint": "/api/v1/versions",
+      "description": "创建版本记录。由部署编排服务在成功部署后调用（内部接口，通过 API Gateway 内部路由鉴权）。自动生成版本号，将前一个活跃版本标记为 inactive。",
+      "parameters": [
+        {"name": "project_id", "type": "string (UUID)", "description": "所属项目ID（body，必填）"},
+        {"name": "environment_id", "type": "string (UUID)", "description": "目标环境ID（body，必填）"},
+        {"name": "task_id", "type": "string (UUID)", "description": "关联部署任务ID（body，必填，需唯一）"},
+        {"name": "deploy_path", "type": "string", "description": "远程服务器上的部署目录路径（body，必填）"},
+        {"name": "file_path", "type": "string", "description": "部署使用的文件路径（body，可选）"},
+        {"name": "deployed_by", "type": "string (UUID)", "description": "部署人用户ID（body，必填）"},
+        {"name": "description", "type": "string", "description": "部署说明（body，可选）"}
+      ],
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string (UUID)",
+          "version": "string",
+          "status": "string",
+          "created_at": "string (ISO8601)"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数校验失败：必填字段缺失"},
+        {"code": 409, "message": "task_id 已存在，该部署任务已关联版本记录"},
+        {"code": 404, "message": "引用的项目、环境或用户不存在"}
+      ]
+    },
+    {
+      "name": "RollbackVersion",
+      "method": "POST",
+      "endpoint": "/api/v1/versions/:id/rollback",
+      "description": "执行版本回滚。由部署编排服务在回滚操作完成后调用（内部接口）。将当前活跃版本标记为 rolled_back，并将目标版本（指定 id）恢复为 active。若当前无活跃版本则直接激活目标版本。涉及两条记录的状态变更，使用数据库事务保证原子性。",
+      "parameters": [
+        {"name": "id", "type": "string (UUID)", "description": "目标回滚版本ID（path param，必填）。此版本将被恢复为 active。"},
+        {"name": "rolled_back_from_version_id", "type": "string (UUID)", "description": "被回滚的版本ID（body，必填）。此版本将被标记为 rolled_back。"},
+        {"name": "rolled_back_by", "type": "string (UUID)", "description": "回滚操作人用户ID（body，必填）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string (UUID)",
+          "version": "string",
+          "status": "string",
+          "rolled_back_at": "string (ISO8601)"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数校验失败：id 与 rolled_back_from_version_id 相同，不能回滚到自身"},
+        {"code": 404, "message": "目标版本或被回滚版本记录不存在"},
+        {"code": 409, "message": "目标版本状态不是 inactive，无法恢复为 active（rolled_back 版本不可逆）"}
+      ]
+    },
+    {
+      "name": "CompareVersions",
+      "method": "GET",
+      "endpoint": "/api/v1/versions/diff",
+      "description": "比较两个版本的差异。返回版本号、部署时间、部署人、描述等元信息的差异对比。用于前端版本对比界面。",
+      "parameters": [
+        {"name": "source_version_id", "type": "string (UUID)", "description": "源版本ID（query param，必填）"},
+        {"name": "target_version_id", "type": "string (UUID)", "description": "目标版本ID（query param，必填）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "source": "VersionSummary",
+          "target": "VersionSummary",
+          "differences": "array<DiffField>"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数校验失败：两个版本ID相同或任一为空"},
+        {"code": 404, "message": "源版本或目标版本记录不存在"}
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "所有版本操作统一使用事务保证数据一致性。版本回滚涉及两个版本记录的状态变更，必须在一个数据库事务中完成（全成功或全回滚）。参数校验失败返回 400，记录不存在返回 404，业务约束冲突（唯一性、状态非法）返回 409。内部服务调用超时默认 10s，超时返回 504。数据库连接异常时最多重试 2 次（指数退避），重试仍失败则返回 503。",
+    "response_format": {
+      "body": {
+        "code": "integer（HTTP状态码）",
+        "error": "string（错误分类标识，如 VERSION_NOT_FOUND）",
+        "detail": "string（详细错误描述，包含冲突的字段和值）"
+      }
+    },
+    "categories": [
+      {
+        "code": 400,
+        "name": "参数校验错误",
+        "description": "请求参数格式错误或必填字段缺失。触发条件：project_id 为空、page_size 超过 100、版本号格式非法。处理方式：返回 400，detail 字段注明具体哪个参数校验失败。"
+      },
+      {
+        "code": 404,
+        "name": "资源不存在",
+        "description": "请求的版本记录、关联的项目或环境不存在。触发条件：查询不存在的版本 ID、项目已删除。处理方式：返回 404，detail 注明资源类型和标识。"
+      },
+      {
+        "code": 409,
+        "name": "业务约束冲突",
+        "description": "操作违反业务规则。触发条件：重复的 task_id、回滚目标版本已处于 rolled_back 终态、回滚到自身。处理方式：返回 409，detail 说明具体冲突规则。"
+      },
+      {
+        "code": 503,
+        "name": "数据库不可用",
+        "description": "PostgreSQL 连接失败或查询超时。触发条件：数据库重启、网络分区、连接池耗尽。处理方式：自动重试 2 次（100ms/500ms 指数退避），全部失败返回 503，引导用户稍后重试。"
+      },
+      {
+        "code": 504,
+        "name": "上游服务超时",
+        "description": "调用项目管理服务或环境管理服务的内部请求超时。触发条件：版本创建时验证项目/环境存在性超时（>10s）。处理方式：返回 504，提示用户检查关联服务状态。"
+      }
+    ]
+  },
+  "domain_objects": [
+    {
+      "name": "DeploymentVersion",
+      "object_type": "entity",
+      "description": "部署版本实体，映射 deployment_versions 表，表示一次成功部署生成的版本记录。每个版本归属于一个项目和环境的组合，具有独立的状态生命周期。",
+      "attributes": [
+        {"name": "id", "type": "UUID", "required": true, "source": "db", "description": "版本记录唯一标识，数据库自动生成"},
+        {"name": "project_id", "type": "UUID", "required": true, "source": "input", "description": "所属项目ID，来自接口入参"},
+        {"name": "environment_id", "type": "UUID", "required": true, "source": "input", "description": "目标环境ID，来自接口入参"},
+        {"name": "task_id", "type": "UUID", "required": true, "source": "input", "description": "关联部署任务ID，来自接口入参，全局唯一"},
+        {"name": "version", "type": "String", "required": true, "source": "computed", "description": "版本号，格式 v{YYYYMMDD}.{HHMMSS}.{3位序列}，由服务自动生成"},
+        {"name": "deploy_path", "type": "String", "required": true, "source": "input", "description": "远程部署目录绝对路径，如 /app/releases/v20260522.143055.001"},
+        {"name": "file_path", "type": "String", "required": false, "source": "input", "description": "部署使用的构建产物文件路径"},
+        {"name": "status", "type": "VersionStatus", "required": true, "source": "db", "description": "当前状态：active/inactive/rolled_back，初始为 active"},
+        {"name": "deployed_by", "type": "UUID", "required": true, "source": "input", "description": "部署发起人用户ID"},
+        {"name": "description", "type": "String", "required": false, "source": "input", "description": "用户填写的部署备注说明"},
+        {"name": "deployed_at", "type": "DateTime", "required": true, "source": "db", "description": "部署完成时间戳，记录写入时由数据库生成"},
+        {"name": "rolled_back_at", "type": "DateTime", "required": false, "source": "db", "description": "回滚时间戳，状态变更为 rolled_back 时写入"},
+        {"name": "rolled_back_to", "type": "UUID", "required": false, "source": "input", "description": "回滚目标版本ID，标记回滚去向"},
+        {"name": "created_at", "type": "DateTime", "required": true, "source": "db", "description": "记录创建时间"}
+      ]
+    },
+    {
+      "name": "VersionStatus",
+      "object_type": "enum",
+      "description": "部署版本的生命周期状态枚举。每个版本在任一时刻只能处于其中一种状态。",
+      "values": ["active", "inactive", "rolled_back"]
+    },
+    {
+      "name": "VersionSummary",
+      "object_type": "dto",
+      "description": "版本列表摘要 DTO，用于版本历史列表接口的响应。相比实体减少了冗余字段，增加了部署人姓名等展示字段。",
+      "maps_to_entity": "DeploymentVersion",
+      "attributes": [
+        {"name": "id", "type": "UUID", "required": true, "source": "db", "description": "版本记录标识"},
+        {"name": "version", "type": "String", "required": true, "source": "db", "description": "版本号"},
+        {"name": "status", "type": "VersionStatus", "required": true, "source": "db", "description": "版本状态"},
+        {"name": "deployed_by", "type": "UUID", "required": true, "source": "db", "description": "部署人用户ID"},
+        {"name": "deployed_by_name", "type": "String", "required": true, "source": "derived", "description": "部署人显示名称，查询时从用户服务关联获取"},
+        {"name": "deployed_at", "type": "DateTime", "required": true, "source": "db", "description": "部署完成时间"},
+        {"name": "description", "type": "String", "required": false, "source": "db", "description": "部署说明"}
+      ]
+    },
+    {
+      "name": "VersionDetail",
+      "object_type": "dto",
+      "description": "版本详情 DTO，用于版本详情接口的响应。包含 DeploymentVersion 的全部字段以及关联的部署任务摘要信息。",
+      "maps_to_entity": "DeploymentVersion",
+      "attributes": [
+        {"name": "id", "type": "UUID", "required": true, "source": "db", "description": "版本记录标识"},
+        {"name": "project_id", "type": "UUID", "required": true, "source": "db", "description": "所属项目ID"},
+        {"name": "environment_id", "type": "UUID", "required": true, "source": "db", "description": "目标环境ID"},
+        {"name": "task_id", "type": "UUID", "required": true, "source": "db", "description": "关联部署任务ID"},
+        {"name": "version", "type": "String", "required": true, "source": "db", "description": "版本号"},
+        {"name": "deploy_path", "type": "String", "required": true, "source": "db", "description": "远程部署目录路径"},
+        {"name": "file_path", "type": "String", "required": false, "source": "db", "description": "部署文件路径"},
+        {"name": "status", "type": "VersionStatus", "required": true, "source": "db", "description": "版本状态"},
+        {"name": "deployed_by", "type": "UUID", "required": true, "source": "db", "description": "部署人用户ID"},
+        {"name": "deployed_by_name", "type": "String", "required": true, "source": "derived", "description": "部署人显示名称"},
+        {"name": "description", "type": "String", "required": false, "source": "db", "description": "部署说明"},
+        {"name": "deployed_at", "type": "DateTime", "required": true, "source": "db", "description": "部署完成时间"},
+        {"name": "rolled_back_at", "type": "DateTime", "required": false, "source": "db", "description": "回滚时间"},
+        {"name": "rolled_back_to", "type": "UUID", "required": false, "source": "db", "description": "回滚目标版本ID"},
+        {"name": "task_status", "type": "String", "required": true, "source": "derived", "description": "关联部署任务的状态，从 deployment_tasks 表查询"},
+        {"name": "task_type", "type": "String", "required": true, "source": "derived", "description": "关联部署任务的类型：deploy/rollback"},
+        {"name": "created_at", "type": "DateTime", "required": true, "source": "db", "description": "记录创建时间"}
+      ]
+    },
+    {
+      "name": "CreateVersionRequest",
+      "object_type": "dto",
+      "description": "创建版本记录的请求 DTO。由内部调用方（部署编排服务）提供必填字段，服务自动补充版本号和创建时间。",
+      "maps_to_entity": "DeploymentVersion",
+      "attributes": [
+        {"name": "project_id", "type": "UUID", "required": true, "source": "input", "description": "所属项目ID"},
+        {"name": "environment_id", "type": "UUID", "required": true, "source": "input", "description": "目标环境ID"},
+        {"name": "task_id", "type": "UUID", "required": true, "source": "input", "description": "关联部署任务ID，必须唯一"},
+        {"name": "deploy_path", "type": "String", "required": true, "source": "input", "description": "远程部署目录路径"},
+        {"name": "file_path", "type": "String", "required": false, "source": "input", "description": "部署文件路径"},
+        {"name": "deployed_by", "type": "UUID", "required": true, "source": "input", "description": "部署人用户ID"},
+        {"name": "description", "type": "String", "required": false, "source": "input", "description": "部署说明"}
+      ]
+    },
+    {
+      "name": "RollbackRequest",
+      "object_type": "dto",
+      "description": "版本回滚请求 DTO。由部署编排服务在完成回滚操作后调用，指定被回滚的版本和回滚目标版本。",
+      "maps_to_entity": "DeploymentVersion",
+      "attributes": [
+        {"name": "rolled_back_from_version_id", "type": "UUID", "required": true, "source": "input", "description": "被回滚的当前活跃版本ID，将被标记为 rolled_back"},
+        {"name": "rolled_back_by", "type": "UUID", "required": true, "source": "input", "description": "回滚操作人用户ID"}
+      ]
+    },
+    {
+      "name": "VersionQueryParams",
+      "object_type": "dto",
+      "description": "版本历史列表查询参数 DTO。封装查询条件、分页和排序参数。",
+      "attributes": [
+        {"name": "project_id", "type": "UUID", "required": true, "source": "input", "description": "项目ID（必填）"},
+        {"name": "environment_id", "type": "UUID", "required": true, "source": "input", "description": "环境ID（必填）"},
+        {"name": "page", "type": "Integer", "required": false, "source": "input", "description": "页码，默认1"},
+        {"name": "page_size", "type": "Integer", "required": false, "source": "input", "description": "每页条数，默认20，最大100"},
+        {"name": "status", "type": "VersionStatus", "required": false, "source": "input", "description": "按状态筛选"},
+        {"name": "sort_by", "type": "String", "required": false, "source": "input", "description": "排序字段，默认 deployed_at"},
+        {"name": "sort_order", "type": "String", "required": false, "source": "input", "description": "排序方向，默认 desc"}
+      ]
+    },
+    {
+      "name": "DiffField",
+      "object_type": "dto",
+      "description": "版本差异字段 DTO，描述两个版本之间单个字段的变更。用于版本对比接口的响应。",
+      "attributes": [
+        {"name": "field_name", "type": "String", "required": true, "source": "input", "description": "字段名，如 version/deployed_at/deployed_by/description"},
+        {"name": "source_value", "type": "String", "required": true, "source": "computed", "description": "源版本的字段值（字符串化）"},
+        {"name": "target_value", "type": "String", "required": true, "source": "computed", "description": "目标版本的字段值（字符串化）"},
+        {"name": "changed", "type": "Boolean", "required": true, "source": "computed", "description": "该字段是否有差异"}
+      ]
+    },
+    {
+      "name": "VersionDiffResult",
+      "object_type": "dto",
+      "description": "版本对比结果 DTO，包含两个版本的摘要信息和字段级差异列表。",
+      "attributes": [
+        {"name": "source", "type": "VersionSummary", "required": true, "source": "db", "description": "源版本摘要"},
+        {"name": "target", "type": "VersionSummary", "required": true, "source": "db", "description": "目标版本摘要"},
+        {"name": "differences", "type": "Array<DiffField>", "required": true, "source": "computed", "description": "有差异的字段列表（仅包含 changed=true 的字段）"}
+      ]
+    },
+    {
+      "name": "PaginatedResult",
+      "object_type": "dto",
+      "description": "分页结果 DTO，包装列表查询的返回数据和分页元信息。",
+      "attributes": [
+        {"name": "total", "type": "Integer", "required": true, "source": "computed", "description": "符合条件的总记录数"},
+        {"name": "page", "type": "Integer", "required": true, "source": "input", "description": "当前页码"},
+        {"name": "page_size", "type": "Integer", "required": true, "source": "input", "description": "每页条数"},
+        {"name": "items", "type": "Array<VersionSummary>", "required": true, "source": "db", "description": "本页数据条目"}
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "name": "VersionService",
+      "description": "版本管理核心服务。负责版本记录的增删改查、状态管理、版本号自动生成和版本差异对比。所有写操作使用数据库事务保证数据一致性。部署编排服务是本服务的主要调用方。",
+      "methods": [
+        {
+          "name": "CreateVersion",
+          "signature": "(ctx context.Context, req *CreateVersionRequest) (*DeploymentVersion, error)",
+          "precondition": "req 中 project_id/environment_id/task_id/deployed_by 对应的记录必须存在于各自表中；task_id 不得已关联过其他版本记录；当前无活跃版本或活跃版本的 task 未处于 running 状态",
+          "postcondition": "数据库中插入一条新版本记录，status=active，version 按格式自动生成；之前 active 的版本（若有）status 变更为 inactive；版本变更写入审计日志",
+          "description": "创建版本记录。自动生成版本号，将前一个活跃版本标记为 inactive，新增记录初始状态为 active。使用数据库事务保证原子性。",
+          "exceptions": [
+            {"name": "ErrDuplicateTaskID", "trigger": "task_id 已存在于 deployment_versions 表", "http_status": 409},
+            {"name": "ErrResourceNotFound", "trigger": "project_id/environment_id/deployed_by 引用不存在", "http_status": 404},
+            {"name": "ErrDatabase", "trigger": "数据库写入失败或事务提交失败", "http_status": 503}
+          ]
+        },
+        {
+          "name": "QueryHistory",
+          "signature": "(ctx context.Context, params *VersionQueryParams) (*PaginatedResult, error)",
+          "precondition": "params.project_id 和 params.environment_id 为有效 UUID；page >= 1；page_size 在 [1, 100] 范围内",
+          "postcondition": "返回指定项目和环境的版本历史列表，按 sort_by+sort_order 排序；total 为符合筛选条件的总数（不限于当前页）；items 中每条记录的 deployed_by_name 已解析为用户显示名",
+          "description": "查询版本历史列表。支持按状态筛选、分页和排序。优先从 Redis 缓存读取（缓存命中直接返回），缓存未命中则查询 PostgreSQL 并回填缓存。",
+          "exceptions": [
+            {"name": "ErrInvalidParams", "trigger": "page < 1 或 page_size > 100 或 UUID 格式错误", "http_status": 400},
+            {"name": "ErrDatabase", "trigger": "数据库查询超时或连接失败", "http_status": 503}
+          ]
+        },
+        {
+          "name": "GetDetail",
+          "signature": "(ctx context.Context, versionID uuid.UUID) (*VersionDetail, error)",
+          "precondition": "versionID 为有效 UUID",
+          "postcondition": "返回指定版本记录的完整详情，包含关联的 deployment_tasks 的 status 和 type；若记录不存在返回 ErrVersionNotFound",
+          "description": "获取版本详情。查询 deployment_versions 表和关联的 deployment_tasks 表，组装 VersionDetail DTO。",
+          "exceptions": [
+            {"name": "ErrVersionNotFound", "trigger": "指定 versionID 在 deployment_versions 表中不存在", "http_status": 404}
+          ]
+        },
+        {
+          "name": "GetCurrentActive",
+          "signature": "(ctx context.Context, projectID, environmentID uuid.UUID) (*VersionSummary, error)",
+          "precondition": "projectID 和 environmentID 为有效 UUID",
+          "postcondition": "返回 (projectID, environmentID) 组合下 status=active 的最新版本记录摘要；若无活跃版本返回 ErrNoActiveVersion",
+          "description": "获取当前活跃版本。查询指定项目和环境下 status=active 的最新一条记录。结果缓存到 Redis（TTL=120s），版本状态变更时主动失效。",
+          "exceptions": [
+            {"name": "ErrNoActiveVersion", "trigger": "该项目和环境尚无已部署版本或所有版本均为非活跃状态", "http_status": 404}
+          ]
+        },
+        {
+          "name": "Rollback",
+          "signature": "(ctx context.Context, targetVersionID uuid.UUID, req *RollbackRequest) (*DeploymentVersion, error)",
+          "precondition": "targetVersionID 与 req.rolled_back_from_version_id 不同；targetVersionID 对应记录存在且 status=inactive；rolled_back_from_version_id 对应记录存在且 status=active",
+          "postcondition": "targetVersionID 对应记录 status 变更为 active，rolled_back_from_version_id 对应记录 status 变更为 rolled_back（并写入 rolled_back_at 和 rolled_back_to）；两个变更在同一数据库事务中完成；相关缓存（active 版本和列表缓存）全部失效",
+          "description": "版本回滚。将目标版本（回滚目标）恢复为 active，被回滚版本标记为 rolled_back。使用数据库事务保证两条记录状态变更的原子性。",
+          "exceptions": [
+            {"name": "ErrVersionNotFound", "trigger": "targetVersionID 或 rolled_back_from_version_id 不存在", "http_status": 404},
+            {"name": "ErrInvalidRollback", "trigger": "targetVersionID == rolled_back_from_version_id（不能回滚到自身）", "http_status": 400},
+            {"name": "ErrVersionNotRollbackable", "trigger": "目标版本 status!=inactive（rolled_back 终态不可回退）", "http_status": 409},
+            {"name": "ErrActiveVersionMismatch", "trigger": "rolled_back_from_version_id 的 status 不是 active（不存在冲突的活跃版本）", "http_status": 409},
+            {"name": "ErrDatabase", "trigger": "事务提交失败或并发冲突", "http_status": 503}
+          ]
+        },
+        {
+          "name": "CompareVersions",
+          "signature": "(ctx context.Context, sourceVersionID, targetVersionID uuid.UUID) (*VersionDiffResult, error)",
+          "precondition": "sourceVersionID 与 targetVersionID 不同且均存在",
+          "postcondition": "返回两个版本的 VersionSummary 及所有 DiffField 列表（仅包含有差异的字段）；字段级比较包括：version/deployed_at/deployed_by/description/deploy_path/file_path",
+          "description": "版本差异对比。加载两个版本的完整记录，逐个字段比较，标识出有差异的字段及其前后值。",
+          "exceptions": [
+            {"name": "ErrVersionNotFound", "trigger": "sourceVersionID 或 targetVersionID 不存在", "http_status": 404},
+            {"name": "ErrInvalidParams", "trigger": "sourceVersionID == targetVersionID", "http_status": 400}
+          ]
+        }
+      ],
+      "repository_dependencies": [
+        "findByProjectAndEnvironment(projectId, environmentId, params) -> ([]DeploymentVersion, int64, error)",
+        "findByID(id) -> *DeploymentVersion, error",
+        "findActiveByProjectAndEnvironment(projectId, environmentId) -> *DeploymentVersion, error",
+        "findPreviousActive(projectId, environmentId) -> *DeploymentVersion, error",
+        "create(version *DeploymentVersion) error",
+        "updateStatusInTx(tx Transaction, id uuid.UUID, status VersionStatus, rolledBackAt *time.Time, rolledBackTo *uuid.UUID) error",
+        "existsByTaskID(taskId uuid.UUID) (bool, error)",
+        "findTaskSummaryByID(taskId uuid.UUID) (*TaskSummary, error)"
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "任意 (project_id, environment_id) 组合下，最多只能有一条版本记录的 status = active",
+      "版本号格式必须为 v{YYYYMMDD}.{HHMMSS}.{3位序列}，同一项目和环境下的版本号全局递增不重复",
+      "task_id 在 deployment_versions 表中全局唯一，一个部署任务只能关联一个版本记录",
+      "rolled_back 状态的版本记录不可再变更为任何其他状态（终态不可逆）",
+      "回滚操作必须指定不同的两个版本：被回滚版本（当前 active）和目标版本（回滚目标，当前 inactive）",
+      "版本记录的 created_at 一经写入不可修改"
+    ],
+    "state_machines": [
+      {
+        "entity": "DeploymentVersion",
+        "states": ["active", "inactive", "rolled_back"],
+        "transitions": [
+          {"from": "（新建）", "to": "active", "trigger": "成功部署（CreateVersion 调用）", "actor": "部署编排服务"},
+          {"from": "active", "to": "inactive", "trigger": "新的部署版本创建，自动将前一个 active 降级为 inactive", "actor": "版本管理服务（内部自动触发）"},
+          {"from": "active", "to": "rolled_back", "trigger": "回滚操作（Rollback 调用）：该版本被从活跃状态回滚", "actor": "部署编排服务"},
+          {"from": "inactive", "to": "active", "trigger": "回滚操作（Rollback 调用）：该版本被恢复为活跃版本", "actor": "部署编排服务"}
+        ],
+        "irreversible_rules": [
+          "rolled_back 状态为终态：处于 rolled_back 的版本不可再变更为 active 或 inactive",
+          "回滚不可撤销：一旦执行回滚操作，被回滚版本（active → rolled_back）不可再恢复为 active",
+          "相同内容和配置的重新部署应以新版本号创建，而非恢复旧版本"
+        ],
+        "concurrency": "回滚操作使用数据库行级锁（SELECT ... FOR UPDATE）锁定涉及的两条版本记录；乐观锁通过 WHERE status=预期状态 保证条件不冲突；若两条记录被并发回滚操作锁定，第二个操作等待行锁释放后检测到状态已变更，返回 ErrActiveVersionMismatch"
+      }
+    ],
+    "cross_service_rules": [
+      "版本创建由部署编排服务在成功部署后调用：部署编排服务保证文件传输和健康检查完成后才调用 CreateVersion 接口",
+      "版本回滚由部署编排服务协调：编排服务负责远程服务器上的目录切换和启动脚本执行，版本管理服务仅负责状态记录",
+      "版本查询接口返回的 deployed_by_name 由版本管理服务查询用户服务或通过 JOIN users 表获取",
+      "项目删除操作（项目管理服务）必须先检查关联的版本记录并阻止删除：项目管理服务在删除 project 前应调用版本管理服务确认无关联版本",
+      "环境删除操作（环境管理服务）应先确认环境无活跃版本：环境管理服务可调用 GetCurrentActive 接口检查",
+      "审计日志记录由审计日志服务统一负责：版本管理服务在关键操作（版本创建、回滚）后通过 MQ 发送审计事件，由审计日志服务消费写入 audit_logs 表"
+    ]
+  }
+}
