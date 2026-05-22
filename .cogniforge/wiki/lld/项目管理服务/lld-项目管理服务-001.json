@@ -4,17 +4,14 @@
     "type": "lld",
     "module_type": "service",
     "module": "项目管理服务",
-    "title": "项目管理服务详细设计",
+    "title": "LLD - 项目管理服务",
     "author": "design_agent",
-    "created": "2026-05-22 09:03"
+    "created": "2026-05-22"
   },
   "overview": {
-    "description": "管理系统的核心业务实体——项目，包括项目创建、配置、状态管理和项目间切换。项目管理服务负责项目的全生命周期管理，提供标准CRUD操作，维护项目与部署环境之间的关联关系，并确保项目间的数据隔离。本服务通过API网关暴露REST接口供前端调用，内部通过SQLAlchemy ORM访问PostgreSQL数据库。",
-    "dependencies": [
-      "PostgreSQL数据库",
-      "环境管理服务"
-    ],
-    "tech_stack": ["Python", "FastAPI", "PostgreSQL", "Redis"]
+    "description": "管理项目的创建、编辑、删除和查询，维护项目间隔离。每个项目作为独立资源单元，拥有独立的部署环境配置和部署历史，项目之间数据完全隔离。服务通过 API 网关对外暴露 RESTful 接口，数据持久化于 PostgreSQL。",
+    "dependencies": ["PostgreSQL数据库"],
+    "tech_stack": ["Go", "Gin", "PostgreSQL 15", "JWT"]
   },
   "data_models": [
     {
@@ -25,349 +22,352 @@
         "doc_id": "lld-PostgreSQL数据库-001",
         "model_name": "projects"
       },
-      "description": "项目实体表，引用自主数据库设计。本服务关心的字段视图",
+      "description": "项目表，引用自 PostgreSQL 数据库 lld-PostgreSQL数据库-001 的 projects 表，存储项目核心信息",
       "fields": [
         {"name": "id", "type": "UUID", "required": true, "description": "项目唯一标识，主键"},
-        {"name": "name", "type": "VARCHAR(255)", "required": true, "description": "项目名称，唯一"},
+        {"name": "name", "type": "VARCHAR(255)", "required": true, "description": "项目名称，系统内唯一"},
         {"name": "description", "type": "TEXT", "required": false, "description": "项目描述"},
         {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "创建时间"},
-        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": true, "description": "更新时间"}
+        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": true, "description": "更新时间"},
+        {"name": "deleted_at", "type": "TIMESTAMPTZ", "required": false, "description": "软删除时间，非空表示已删除"}
       ]
     },
     {
-      "name": "environments",
-      "type": "reference",
-      "ownership": "derived",
-      "source": {
-        "doc_id": "lld-PostgreSQL数据库-001",
-        "model_name": "environments"
-      },
-      "description": "部署环境配置表，通过 project_id 外键关联到项目。本服务仅关心关联关系字段，用于组装项目-环境关联",
-      "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "环境唯一标识"},
-        {"name": "project_id", "type": "UUID", "required": true, "description": "所属项目ID，外键→projects.id"},
-        {"name": "name", "type": "VARCHAR(100)", "required": true, "description": "环境名称"}
-      ]
-    },
-    {
-      "name": "project_config",
-      "type": "config",
+      "name": "ProjectConfig",
+      "type": "struct",
       "ownership": "owned",
-      "description": "项目级配置（概念模型），存储项目级别的自定义设置。具体存储方式可为 projects 表的预留 JSON 扩展字段或本服务内部管理的独立配置记录，由服务层在运行时组装",
+      "description": "项目管理服务内部配置结构，记录分页默认值和校验约束",
       "fields": [
-        {"name": "project_id", "type": "UUID", "required": true, "description": "所属项目ID"},
-        {"name": "default_version_strategy", "type": "VARCHAR(50)", "required": false, "description": "默认版本号策略，如「semver」「timestamp」"},
-        {"name": "health_check_timeout", "type": "INTEGER", "required": false, "description": "健康检查超时秒数，默认 30"},
-        {"name": "notify_on_deploy", "type": "BOOLEAN", "required": false, "description": "部署完成后是否发送通知"}
+        {"name": "default_page_size", "type": "int", "required": true, "description": "默认每页条数，默认值 20"},
+        {"name": "max_page_size", "type": "int", "required": true, "description": "最大每页条数，默认值 100"},
+        {"name": "name_max_length", "type": "int", "required": true, "description": "项目名称最大字符数，默认值 255"},
+        {"name": "description_max_length", "type": "int", "required": true, "description": "项目描述最大字符数，默认值 2000"}
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "ListProjects",
-      "method": "GET",
-      "endpoint": "/api/v1/projects",
-      "description": "获取项目列表，支持分页查询。返回当前用户权限范围内的所有项目",
-      "parameters": [
-        {"name": "page", "type": "integer(查询参数)", "description": "分页页码，从 1 开始，默认 1"},
-        {"name": "page_size", "type": "integer(查询参数)", "description": "每页数量，默认 20，最大 100"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "items": "array(ProjectResponseDTO) 项目列表",
-          "total": "integer 符合条件的项目总数",
-          "page": "integer 当前页码",
-          "page_size": "integer 每页数量"
-        }
-      },
-      "error_codes": [
-        {"code": 400, "message": "分页参数不合法（page < 1 或 page_size > 100）"}
-      ]
-    },
-    {
-      "name": "GetProject",
-      "method": "GET",
-      "endpoint": "/api/v1/projects/{project_id}",
-      "description": "获取单个项目的详细信息，包含关联的环境列表",
-      "parameters": [
-        {"name": "project_id", "type": "string(UUID)(路径参数)", "description": "项目唯一标识"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "string (UUID)",
-          "name": "string",
-          "description": "string",
-          "environments": "array",
-          "created_at": "string (ISO datetime)",
-          "updated_at": "string (ISO datetime)"
-        }
-      },
-      "error_codes": [
-        {"code": 404, "message": "项目不存在"}
-      ]
-    },
-    {
-      "name": "CreateProject",
+      "name": "创建项目",
       "method": "POST",
       "endpoint": "/api/v1/projects",
-      "description": "创建新项目，可同时关联初始环境列表",
+      "description": "创建新项目，项目名称在系统内全局唯一。名称不能为空且不超过 255 字符",
       "parameters": [
-        {"name": "name", "type": "string(请求体)", "description": "项目名称，必填，在同名项目中唯一"},
-        {"name": "description", "type": "string(请求体)", "description": "项目描述，可选"},
-        {"name": "environments", "type": "string[](请求体)", "description": "关联的环境ID列表，可选"}
+        {"name": "name", "type": "string", "description": "项目名称，必填，系统内唯一，1-255 字符"},
+        {"name": "description", "type": "string", "description": "项目描述，选填，最长 2000 字符"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "id": "string (UUID)",
+          "id": "string",
           "name": "string",
           "description": "string",
-          "environments": "array",
-          "created_at": "string (ISO datetime)",
-          "updated_at": "string (ISO datetime)"
+          "created_at": "string",
+          "updated_at": "string"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "项目名称为空或格式不合法"},
+        {"code": 400, "message": "请求参数不合法，如名称为空或超长"},
         {"code": 409, "message": "项目名称已存在"}
       ]
     },
     {
-      "name": "UpdateProject",
-      "method": "PUT",
-      "endpoint": "/api/v1/projects/{project_id}",
-      "description": "更新项目信息，可修改名称、描述和关联的环境列表",
+      "name": "获取项目列表",
+      "method": "GET",
+      "endpoint": "/api/v1/projects",
+      "description": "分页获取项目列表，支持按名称关键词模糊搜索。结果按 updated_at 降序排列，软删除项目不返回",
       "parameters": [
-        {"name": "project_id", "type": "string(UUID)(路径参数)", "description": "项目唯一标识"},
-        {"name": "name", "type": "string(请求体)", "description": "项目名称，更新时必填"},
-        {"name": "description", "type": "string(请求体)", "description": "项目描述，可选"},
-        {"name": "environments", "type": "string[](请求体)", "description": "关联的环境ID列表，可选。传空数组则解除所有环境关联"}
+        {"name": "page", "type": "int", "description": "页码，从 1 开始，默认值 1"},
+        {"name": "page_size", "type": "int", "description": "每页条数，范围 1-100，默认值 20"},
+        {"name": "keyword", "type": "string", "description": "搜索关键词，按项目名称模糊匹配，可选"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "id": "string (UUID)",
-          "name": "string",
-          "description": "string",
-          "environments": "array",
-          "created_at": "string (ISO datetime)",
-          "updated_at": "string (ISO datetime)"
+          "items": "Array<Object>",
+          "total": "Integer",
+          "page": "Integer",
+          "page_size": "Integer",
+          "items[].id": "string",
+          "items[].name": "string",
+          "items[].description": "string",
+          "items[].created_at": "string",
+          "items[].updated_at": "string"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "项目名称为空或格式不合法"},
-        {"code": 404, "message": "项目不存在"},
-        {"code": 409, "message": "修改后的项目名称与其他项目冲突"}
+        {"code": 400, "message": "分页参数不合法，如 page < 1 或 page_size > 100"}
       ]
     },
     {
-      "name": "DeleteProject",
-      "method": "DELETE",
-      "endpoint": "/api/v1/projects/{project_id}",
-      "description": "删除指定项目。删除前需确认项目下无关联环境，否则返回冲突错误",
+      "name": "获取项目详情",
+      "method": "GET",
+      "endpoint": "/api/v1/projects/:id",
+      "description": "根据项目 ID 获取单个项目的详细信息",
       "parameters": [
-        {"name": "project_id", "type": "string(UUID)(路径参数)", "description": "项目唯一标识"}
+        {"name": "id", "type": "string", "description": "项目 UUID，路径参数"}
       ],
       "response": {
-        "status": 204,
-        "body": {}
+        "status": 200,
+        "body": {
+          "id": "string",
+          "name": "string",
+          "description": "string",
+          "created_at": "string",
+          "updated_at": "string"
+        }
       },
       "error_codes": [
-        {"code": 404, "message": "项目不存在"},
-        {"code": 409, "message": "项目下仍有关联环境，无法删除"}
+        {"code": 400, "message": "项目 ID 格式不合法"},
+        {"code": 404, "message": "项目不存在或已被删除"}
+      ]
+    },
+    {
+      "name": "更新项目",
+      "method": "PUT",
+      "endpoint": "/api/v1/projects/:id",
+      "description": "更新项目名称或描述。名称变更时需校验唯一性，未提供的字段保持原值",
+      "parameters": [
+        {"name": "id", "type": "string", "description": "项目 UUID，路径参数"},
+        {"name": "name", "type": "string", "description": "项目名称，选填，变更时校验唯一性"},
+        {"name": "description", "type": "string", "description": "项目描述，选填"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string",
+          "name": "string",
+          "description": "string",
+          "created_at": "string",
+          "updated_at": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数不合法"},
+        {"code": 404, "message": "项目不存在或已被删除"},
+        {"code": 409, "message": "新的项目名称已被其他项目占用"}
+      ]
+    },
+    {
+      "name": "删除项目",
+      "method": "DELETE",
+      "endpoint": "/api/v1/projects/:id",
+      "description": "软删除项目，设置 deleted_at 时间戳。存在进行中部署任务（pending/running）的项目不允许删除",
+      "parameters": [
+        {"name": "id", "type": "string", "description": "项目 UUID，路径参数"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string",
+          "name": "string",
+          "description": "string",
+          "created_at": "string",
+          "updated_at": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "项目 ID 格式不合法"},
+        {"code": 404, "message": "项目不存在或已被删除"},
+        {"code": 409, "message": "项目下存在进行中的部署任务，不允许删除"}
       ]
     }
   ],
   "error_handling": {
-    "strategy": "项目管理服务采用分层异常处理策略：API 层捕获所有业务异常并转换为标准 HTTP 错误响应；服务层抛出具有明确业务语义的自定义异常；数据访问层异常由 ORM 自动传播。所有错误响应统一包含 error_code、error 和 detail 字段，前端据此展示对应的错误提示信息。",
+    "strategy": "通过统一错误中间件捕获业务异常并转换为标准 JSON 错误响应。参数校验失败返回 400，资源不存在返回 404，业务冲突返回 409，服务内部错误返回 500。错误响应统一包含错误码、简短描述和详细说明。不在响应中暴露内部实现细节。",
     "response_format": {
-      "body": {"code": "integer", "error": "string", "detail": "string"}
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
     },
     "categories": [
-      {"code": 400, "name": "参数校验错误", "description": "请求参数格式不正确或缺少必填字段（如项目名称为空、分页参数超范围）。处理方式：立即返回校验失败详情，不创建或修改任何资源。"},
-      {"code": 404, "name": "资源不存在", "description": "按 project_id 查询项目时未找到对应记录。处理方式：返回 NOT_FOUND，提示指定 ID 的项目不存在。"},
-      {"code": 409, "name": "名称冲突", "description": "创建或更新项目时提供的名称已被占用。处理方式：返回 CONFLICT，提示名称已存在，建议使用其他名称。"},
-      {"code": 409, "name": "关联资源阻止删除", "description": "删除项目时该项目下仍存在关联的环境。处理方式：返回 CONFLICT，提示先删除所有关联环境再删除项目。"}
+      {"code": 400, "name": "参数校验错误", "description": "请求参数校验失败，如名称为空、超长、UUID 格式不合法、分页参数超范围等，detail 字段包含具体校验失败原因"},
+      {"code": 404, "name": "资源不存在", "description": "请求的项目 ID 在数据库中不存在或已被软删除，detail 字段说明具体资源类型和标识"},
+      {"code": 409, "name": "业务冲突", "description": "项目名称与现有项目冲突，或项目下存在进行中的部署任务无法删除，detail 字段包含冲突原因"},
+      {"code": 500, "name": "服务内部错误", "description": "数据库连接故障、未捕获的运行时异常等，记录详细错误栈到服务日志，返回通用错误信息不暴露内部细节"}
     ]
   },
   "domain_objects": [
     {
       "name": "Project",
       "object_type": "entity",
-      "description": "项目是系统的核心业务实体，代表一个被管理的部署项目。每个项目拥有名称、描述和关联的部署环境集合",
+      "description": "项目实体，核心业务对象。每个项目是系统中的顶级资源单元，关联部署环境、部署记录和密钥等子资源",
       "attributes": [
-        {"name": "id", "type": "UUID", "required": true, "source": "db", "description": "项目唯一标识"},
-        {"name": "name", "type": "String", "required": true, "source": "db", "description": "项目名称，系统内唯一"},
-        {"name": "description", "type": "String", "required": false, "source": "db", "description": "项目描述文本"},
-        {"name": "environments", "type": "List[EnvironmentRef]", "required": false, "source": "computed", "description": "项目关联的环境列表，通过 environments 表 project_id 关联计算得出"},
-        {"name": "created_at", "type": "DateTime", "required": true, "source": "db", "description": "项目创建时间"},
-        {"name": "updated_at", "type": "DateTime", "required": true, "source": "db", "description": "项目最后更新时间"}
+        {"name": "id", "type": "String", "required": true, "source": "db", "description": "项目唯一标识，UUID v4 格式"},
+        {"name": "name", "type": "String", "required": true, "source": "db", "description": "项目名称，系统内全局唯一，不区分大小写"},
+        {"name": "description", "type": "String", "required": false, "source": "db", "description": "项目描述，最长 2000 字符"},
+        {"name": "created_at", "type": "DateTime", "required": true, "source": "db", "description": "创建时间，数据库自动写入"},
+        {"name": "updated_at", "type": "DateTime", "required": true, "source": "db", "description": "更新时间，每次更新自动刷新"},
+        {"name": "deleted_at", "type": "DateTime", "required": false, "source": "db", "description": "软删除时间，非空表示已删除，查询时自动过滤"}
       ]
     },
     {
-      "name": "EnvironmentRef",
-      "object_type": "value_object",
-      "description": "项目关联环境的轻量引用，仅包含环境标识和名称，用于项目详情中展示关联关系",
-      "attributes": [
-        {"name": "id", "type": "UUID", "required": true, "source": "db", "description": "环境唯一标识"},
-        {"name": "name", "type": "String", "required": true, "source": "db", "description": "环境名称"}
-      ]
-    },
-    {
-      "name": "CreateProjectDTO",
+      "name": "CreateProjectRequest",
       "object_type": "dto",
-      "description": "创建项目请求的输入数据传输对象",
-      "maps_to_entity": "Project",
+      "description": "创建项目的请求 DTO，由前端提交到 POST /api/v1/projects",
       "attributes": [
-        {"name": "name", "type": "String", "required": true, "source": "input", "description": "项目名称，长度 1~255，不能为纯空白"},
-        {"name": "description", "type": "String", "required": false, "source": "input", "description": "项目描述，可选"},
-        {"name": "environments", "type": "List[UUID]", "required": false, "source": "input", "description": "初始关联的环境ID列表，环境ID需已存在"}
-      ]
+        {"name": "name", "type": "String", "required": true, "source": "input", "description": "项目名称，1-255 字符，去除首尾空白后校验非空"},
+        {"name": "description", "type": "String", "required": false, "source": "input", "description": "项目描述，最长 2000 字符，可选"}
+      ],
+      "maps_to_entity": "Project"
     },
     {
-      "name": "UpdateProjectDTO",
+      "name": "UpdateProjectRequest",
       "object_type": "dto",
-      "description": "更新项目请求的输入数据传输对象",
-      "maps_to_entity": "Project",
+      "description": "更新项目的请求 DTO，由前端提交到 PUT /api/v1/projects/:id",
       "attributes": [
-        {"name": "name", "type": "String", "required": true, "source": "input", "description": "项目名称，长度 1~255"},
-        {"name": "description", "type": "String", "required": false, "source": "input", "description": "项目描述，可选"},
-        {"name": "environments", "type": "List[UUID]", "required": false, "source": "input", "description": "替换关联的环境ID列表，传空数组表示清除所有关联"}
-      ]
+        {"name": "id", "type": "String", "required": true, "source": "input", "description": "项目 UUID，来自路径参数"},
+        {"name": "name", "type": "String", "required": false, "source": "input", "description": "项目名称，提供时校验唯一性和长度约束"},
+        {"name": "description", "type": "String", "required": false, "source": "input", "description": "项目描述，提供时校验长度约束"}
+      ],
+      "maps_to_entity": "Project"
     },
     {
-      "name": "ProjectResponseDTO",
+      "name": "ProjectResponse",
       "object_type": "dto",
-      "description": "项目详情响应数据传输对象，包含项目基本信息和关联环境列表",
-      "maps_to_entity": "Project",
+      "description": "项目信息的响应 DTO，字段名和类型与 SAD 契约严格一致",
       "attributes": [
-        {"name": "id", "type": "UUID", "required": true, "source": "db", "description": "项目唯一标识"},
-        {"name": "name", "type": "String", "required": true, "source": "db", "description": "项目名称"},
-        {"name": "description", "type": "String", "required": false, "source": "db", "description": "项目描述"},
-        {"name": "environments", "type": "Array", "required": true, "source": "computed", "description": "关联的环境ID列表（string[]）"},
-        {"name": "created_at", "type": "String (ISO datetime)", "required": true, "source": "db", "description": "创建时间"},
-        {"name": "updated_at", "type": "String (ISO datetime)", "required": true, "source": "db", "description": "更新时间"}
-      ]
+        {"name": "id", "type": "String", "required": true, "source": "derived", "description": "项目 ID，UUID 字符串格式"},
+        {"name": "name", "type": "String", "required": true, "source": "derived", "description": "项目名称"},
+        {"name": "description", "type": "String", "required": true, "source": "derived", "description": "项目描述，无描述时返回空字符串"},
+        {"name": "created_at", "type": "String", "required": true, "source": "derived", "description": "创建时间，ISO8601 格式"},
+        {"name": "updated_at", "type": "String", "required": true, "source": "derived", "description": "更新时间，ISO8601 格式"}
+      ],
+      "maps_to_entity": "Project"
     },
     {
-      "name": "ProjectListResponseDTO",
+      "name": "ProjectListResponse",
       "object_type": "dto",
-      "description": "项目列表分页响应数据传输对象",
+      "description": "项目列表分页响应 DTO，用于 GET /api/v1/projects 的响应体",
       "attributes": [
-        {"name": "items", "type": "List[ProjectResponseDTO]", "required": true, "source": "computed", "description": "当前页的项目列表"},
-        {"name": "total", "type": "Integer", "required": true, "source": "computed", "description": "符合条件的项目总数"},
-        {"name": "page", "type": "Integer", "required": true, "source": "input", "description": "当前页码"},
-        {"name": "page_size", "type": "Integer", "required": true, "source": "input", "description": "每页数量"}
+        {"name": "items", "type": "Array<ProjectResponse>", "required": true, "source": "derived", "description": "当前页的项目列表，每项结构与 ProjectResponse 一致"},
+        {"name": "total", "type": "Integer", "required": true, "source": "derived", "description": "符合搜索条件的项目总数（含当前页）"},
+        {"name": "page", "type": "Integer", "required": true, "source": "derived", "description": "当前页码，从 1 开始"},
+        {"name": "page_size", "type": "Integer", "required": true, "source": "derived", "description": "每页条数"}
       ]
     },
     {
-      "name": "ProjectName",
-      "object_type": "value_object",
-      "description": "项目名称值对象，封装名称的格式校验逻辑。必须为非空字符串，长度 1~255，不能为纯空白字符",
-      "attributes": [
-        {"name": "value", "type": "String", "required": true, "source": "input", "description": "项目名称字符串，创建时需校验唯一性"}
-      ]
+      "name": "ProjectStatus",
+      "object_type": "enum",
+      "description": "项目生命周期状态，active 表示正常可用，deleted 表示已软删除",
+      "values": ["active", "deleted"]
+    },
+    {
+      "name": "ProjectSortField",
+      "object_type": "enum",
+      "description": "项目列表查询的排序字段枚举",
+      "values": ["name", "created_at", "updated_at"]
+    },
+    {
+      "name": "SortOrder",
+      "object_type": "enum",
+      "description": "排序方向枚举",
+      "values": ["asc", "desc"]
     }
   ],
   "service_contracts": [
     {
       "name": "ProjectService",
-      "description": "项目管理核心服务，负责项目的全生命周期管理和项目-环境关联管理",
+      "description": "项目核心业务服务，封装项目 CRUD 生命周期管理和业务规则校验。所有方法接收 context.Context 作为第一个参数以支持超时和链路追踪",
       "methods": [
         {
-          "name": "createProject",
-          "signature": "(cmd: CreateProjectDTO) -> ProjectResponseDTO",
-          "precondition": "cmd.name 不为空且长度在 1~255 之间；系统中不存在 name 相同的已存项目",
-          "postcondition": "在 projects 表中插入一条新记录，id 由数据库自动生成 UUID，created_at 和 updated_at 设为当前时间。如果 cmd.environments 非空，通过环境管理服务验证各环境 ID 有效后写入关联关系",
-          "description": "创建一个新项目，校验参数和名称唯一性后写入数据库",
+          "name": "Create",
+          "signature": "(ctx context.Context, name string, description string) -> (*Project, error)",
+          "precondition": "name 去除首尾空白后不为空，长度在 1-255 字符之间；系统中不存在同名（不区分大小写）且未软删除的项目",
+          "postcondition": "新 Project 已插入数据库 projects 表，包含生成的 UUID v4 主键和当前 UTC 时间戳；name 唯一约束已生效",
+          "description": "创建新项目。校验名称格式和唯一性，生成 UUID 主键，设置时间戳后写入数据库。事务内完成写入",
           "exceptions": [
-            {"name": "ProjectNameEmptyError", "trigger": "项目名称为空或仅含空白字符", "http_status": 400},
-            {"name": "ProjectNameConflictError", "trigger": "项目名称与已有项目重复", "http_status": 409},
-            {"name": "InvalidEnvironmentIdError", "trigger": "指定的环境 ID 不存在于系统中", "http_status": 400}
+            {"name": "ErrProjectNameConflict", "trigger": "name 与数据库中已存在的未删除项目名称冲突（大小写不敏感比较）", "http_status": 409},
+            {"name": "ErrInvalidInput", "trigger": "name 为空字符串或超过 255 字符", "http_status": 400}
           ]
         },
         {
-          "name": "getProject",
-          "signature": "(projectId: UUID) -> ProjectResponseDTO",
-          "precondition": "projectId 不为 null",
-          "postcondition": "返回匹配的项目完整信息（含关联环境列表），如果不存在则抛出 ProjectNotFoundError",
-          "description": "按主键查询单个项目详情并组装环境关联信息",
+          "name": "GetByID",
+          "signature": "(ctx context.Context, id string) -> (*Project, error)",
+          "precondition": "id 为有效的 UUID v4 格式字符串",
+          "postcondition": "返回 id 匹配且 deleted_at IS NULL 的 Project 实体；不存在则返回 ErrProjectNotFound",
+          "description": "根据主键查询项目详情，自动过滤已软删除记录",
           "exceptions": [
-            {"name": "ProjectNotFoundError", "trigger": "指定 projectId 的记录在 projects 表中不存在", "http_status": 404}
+            {"name": "ErrProjectNotFound", "trigger": "id 在 projects 表中不存在或对应的 deleted_at 非空", "http_status": 404}
           ]
         },
         {
-          "name": "listProjects",
-          "signature": "(page: int, pageSize: int) -> ProjectListResponseDTO",
-          "precondition": "page >= 1，1 <= pageSize <= 100",
-          "postcondition": "返回按 created_at 降序排列的分页项目列表，total 为总记录数。返回空列表而非错误（当无项目时）",
-          "description": "分页查询项目列表，按创建时间倒序排列",
+          "name": "Update",
+          "signature": "(ctx context.Context, id string, name string, description string) -> (*Project, error)",
+          "precondition": "id 为有效 UUID；项目存在且未删除；若 name 非空则新的 name 不能与现有项目（排除自身）冲突",
+          "postcondition": "项目记录的 name、description 和 updated_at 已更新；未提供的字段保持原值；返回更新后的完整 Project 实体",
+          "description": "更新项目信息。仅更新请求中提供的字段（非空值覆盖），自动刷新 updated_at 时间戳",
           "exceptions": [
-            {"name": "InvalidPageParamError", "trigger": "page < 1 或 pageSize > 100 或 pageSize < 1", "http_status": 400}
+            {"name": "ErrProjectNotFound", "trigger": "id 不存在或已被软删除", "http_status": 404},
+            {"name": "ErrProjectNameConflict", "trigger": "新的 name 已被其他未删除项目占用", "http_status": 409}
           ]
         },
         {
-          "name": "updateProject",
-          "signature": "(projectId: UUID, cmd: UpdateProjectDTO) -> ProjectResponseDTO",
-          "precondition": "projectId 对应的项目存在；cmd.name 不为空且长度在 1~255 之间；修改后的 name 不与除自身外的其他项目重复",
-          "postcondition": "更新 projects 表中对应记录的 name 和 description 字段，updated_at 更新为当前时间。environments 关联关系被替换为 cmd.environments 指定的新列表",
-          "description": "更新项目的基本信息和环境关联关系",
+          "name": "Delete",
+          "signature": "(ctx context.Context, id string) -> error",
+          "precondition": "id 为有效 UUID；项目存在且未删除；项目下没有状态为 pending 或 running 的部署任务",
+          "postcondition": "项目的 deleted_at 字段设置为当前 UTC 时间（软删除）；关联数据物理保留但逻辑上不可见；后续查询自动过滤",
+          "description": "软删除项目。在事务中检查项目是否存在、是否已有删除标记、是否有进行中的部署任务，满足条件后设置 deleted_at",
           "exceptions": [
-            {"name": "ProjectNotFoundError", "trigger": "指定 projectId 不存在", "http_status": 404},
-            {"name": "ProjectNameConflictError", "trigger": "新名称与另一已有项目重复", "http_status": 409},
-            {"name": "InvalidEnvironmentIdError", "trigger": "指定的环境 ID 不存在", "http_status": 400}
+            {"name": "ErrProjectNotFound", "trigger": "id 不存在或已被软删除", "http_status": 404},
+            {"name": "ErrProjectHasActiveDeployments", "trigger": "项目下存在状态为 pending 或 running 的部署任务", "http_status": 409}
           ]
         },
         {
-          "name": "deleteProject",
-          "signature": "(projectId: UUID) -> None",
-          "precondition": "projectId 对应的项目存在；该项目下无关联的环境记录",
-          "postcondition": "从 projects 表中物理删除指定记录。如果该项目有关联的部署记录（由部署编排服务管理），则由外部约束阻止删除（应用层校验或数据库级外键约束）",
-          "description": "删除指定项目。执行前校验项目下是否有关联环境，有则拒绝删除",
+          "name": "List",
+          "signature": "(ctx context.Context, page int, pageSize int, keyword string) -> ([]*Project, int64, error)",
+          "precondition": "page >= 1；pageSize 在 [1, 100] 范围内",
+          "postcondition": "返回当前页的项目指针切片和符合条件的项目总数；结果按 updated_at DESC 排序；deleted_at IS NOT NULL 的记录不包含在结果中",
+          "description": "分页查询项目列表。keyword 非空时对 name 字段进行 ILIKE 模糊搜索（PostgreSQL 大小写不敏感匹配）。统计总数时不使用 COUNT(*) 而使用 COUNT(1) 优化性能",
           "exceptions": [
-            {"name": "ProjectNotFoundError", "trigger": "指定 projectId 不存在", "http_status": 404},
-            {"name": "ProjectHasEnvironmentsError", "trigger": "项目下仍有关联的环境记录未清理", "http_status": 409}
+            {"name": "ErrInvalidInput", "trigger": "page < 1 或 pageSize 不在 [1, 100] 范围内", "http_status": 400}
           ]
         }
       ],
       "repository_dependencies": [
-        "findById(id: UUID) -> Project? — 按主键查询项目",
-        "findByName(name: str) -> Project? — 按名称精确查询项目（唯一性校验）",
-        "findAll(page: int, pageSize: int) -> Tuple[List[Project], int] — 分页查询项目列表，返回（列表，总数）",
-        "save(project: Project) -> Project — 创建新项目并返回含 id 的完整对象",
-        "update(project: Project) -> Project — 更新项目并返回更新后的对象",
-        "deleteById(id: UUID) -> None — 按主键删除项目",
-        "findEnvironmentsByProjectId(projectId: UUID) -> List[EnvironmentRef] — 查询项目关联的环境列表",
-        "countEnvironmentsByProjectId(projectId: UUID) -> int — 统计项目下环境数量（用于删除前校验）"
+        "FindByID(id string) -> (*Project, error)",
+        "FindByName(name string) -> (*Project, error)",
+        "FindAll(page int, pageSize int, keyword string) -> ([]*Project, int64, error)",
+        "Save(project *Project) -> error",
+        "Update(project *Project) -> error",
+        "SoftDelete(id string) -> error",
+        "ExistsByNameExcludingID(name string, excludeID string) -> (bool, error)"
       ]
     }
   ],
   "business_rules": {
     "invariants": [
-      "项目名称在系统范围内必须唯一，比较时大小写敏感，不允许存在仅大小写不同的两个项目",
-      "项目名称不能为空字符串或纯空白字符，长度限制为 1~255 字符",
-      "一个项目可以关联零个或多个环境，环境通过 environments 表的 project_id 外键定位到项目",
-      "项目 ID 一旦创建不可更改，作为系统中所有关联记录的稳定标识",
-      "删除项目时必须确保该项目下无关联环境记录，否则删除操作将被拒绝"
+      "项目名称在系统内全局唯一，比较时忽略大小写和首尾空白",
+      "项目只能软删除（设置 deleted_at 时间戳），不可从数据库中物理移除",
+      "项目名称最长 255 个字符，去除首尾空白后不可为空",
+      "项目描述最长 2000 个字符",
+      "存在进行中部署任务（deployments.status 为 pending 或 running）的项目不允许删除",
+      "项目查询接口始终过滤已软删除记录（WHERE deleted_at IS NULL）"
     ],
     "state_machines": [
       {
         "entity": "Project",
-        "states": ["active"],
-        "transitions": [],
-        "irreversible_rules": [
-          "当前设计下项目不定义状态字段，删除即物理删除。如需软删除或归档功能，需在 projects 表增加 status 字段（ACTIVE/ARCHIVED/DELETED）并在迁移脚本中补充"
+        "states": ["active", "deleted"],
+        "transitions": [
+          {
+            "from": "active",
+            "to": "deleted",
+            "trigger": "用户调用 DELETE /api/v1/projects/:id，系统在事务中验证无进行中部署任务后执行软删除",
+            "actor": "项目管理员 / 运维人员"
+          }
         ],
-        "concurrency": "项目更新操作通过乐观锁（基于 updated_at）或行级锁（SELECT FOR UPDATE）防止并发修改导致的更新丢失。创建操作利用数据库唯一索引（idx_projects_name）保证名称唯一性"
+        "irreversible_rules": [
+          "active -> deleted 转换不可逆：一旦软删除，系统不提供恢复接口。如需恢复需通过数据库管理员直接操作 projects 表清除 deleted_at 字段，且恢复后不保证关联资源（环境、部署记录）的一致性"
+        ],
+        "concurrency": "删除操作在单个数据库事务中完成：先通过 SELECT ... FOR UPDATE 锁定 project 行，再检查部署任务状态，最后执行 UPDATE deleted_at。利用 PostgreSQL 行级锁防止并发删除和并发部署导致的竞态条件"
       }
     ],
     "cross_service_rules": [
-      "项目管理服务与环境管理服务共享项目-环境关联关系。environments 表的 project_id 外键由环境管理服务维护，项目管理服务只读查询。删除项目前需通过 countEnvironmentsByProjectId 确认无关联环境，此约束也可在数据库层通过外键 ON DELETE RESTRICT 保证",
-      "项目管理服务与部署编排服务通过 project_id 关联。部署记录引用项目 ID，项目删除前需确认无相关未完成的部署任务（此项由部署编排服务提供查询接口或由数据库外键约束保证）",
-      "项目管理服务与文件存储服务通过 project_id 关联。文件记录引用项目 ID，项目删除前需确认无关联文件记录或级联删除",
-      "项目级别的权限控制由 API 网关通过 RBAC 模块实现。当前设计下项目管理服务本身不实现权限校验，所有请求由网关鉴权后转发。项目间数据隔离依赖查询时按项目 ID 过滤"
+      "项目删除时：项目管理服务不级联删除关联资源。环境配置服务和部署编排服务各自在查询时通过 project_id 过滤已删除项目的记录，确保数据一致性",
+      "项目创建/更新/删除操作完成后，通过异步消息或直接调用审计日志服务记录操作事件，记录内容包含操作人、操作类型、资源 ID 和变更详情",
+      "API 网关负责 JWT 令牌认证和用户身份提取，将解析后的用户信息注入请求上下文（如 X-User-ID、X-User-Role 请求头），项目管理服务从中获取操作人信息用于鉴权和审计",
+      "项目列表接口当前仅返回项目自身信息，后续版本可扩展为返回关联的环境数量等聚合信息，通过调用环境配置服务的聚合接口或数据库 JOIN 查询实现"
     ]
   }
 }
