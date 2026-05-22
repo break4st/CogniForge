@@ -1,0 +1,132 @@
+{
+  "meta": {
+    "doc_id": "lld-目标远程服务器集群-001",
+    "type": "lld",
+    "module_type": "infrastructure",
+    "module": "目标远程服务器集群",
+    "title": "目标远程服务器集群详细设计",
+    "author": "design_agent",
+    "created": "2026-05-22 09:02"
+  },
+  "overview": {
+    "description": "由多台远程Linux服务器组成的集群，是部署任务最终的执行目标。每台服务器运行SSH守护进程（OpenSSH Server），支持密钥认证方式，提供Bash Shell执行环境用于运行部署脚本。集群按环境类型（测试线test、灰度线gray、正式线prod）逻辑分组，每组包含一台或多台服务器节点。\n\n文件系统约定：\n- 基目录：/app/ 作为所有部署文件的根目录\n- 项目目录：/app/{project_name}/{env}/ 按项目和环境隔离\n- 版本目录：/app/{project_name}/{env}/v{version}/ 每个版本独立存放\n- 部署脚本由部署编排服务在远程服务器上动态生成，部署完成后保留在版本目录中\n- 日志文件输出到版本目录下的 logs/ 子目录\n\n部署脚本合约：\n- start.sh：启动应用程序。必须支持幂等调用（已运行时先执行stop.sh再启动）。退出码 0 表示启动成功，非 0 表示启动失败且有 stderr 输出原因。\n- stop.sh：停止应用程序。先发送 SIGTERM 信号等待优雅退出（默认 30s），超时后发送 SIGKILL。退出码 0 表示停止成功（含进程不存在的情况），非 0 表示停止操作异常。\n- health.sh：检查应用程序运行状态。退出码 0 表示进程正常运行且响应健康检查，非 0 表示进程异常或未运行。",
+    "dependencies": [],
+    "tech_stack": ["SSH", "SCP", "SFTP", "Linux"]
+  },
+  "topology": {
+    "namespaces": [
+      {
+        "name": "test",
+        "description": "测试环境服务器组，用于功能验证和集成测试。服务器从测试资源池中分配，允许频繁部署和试验性操作",
+        "nodes": [
+          {
+            "id": "server-test-1",
+            "host": "<test-server-1-ip>",
+            "port": 22,
+            "user": "deploy",
+            "labels": { "env": "test", "role": "application" }
+          }
+        ]
+      },
+      {
+        "name": "gray",
+        "description": "灰度环境服务器组，用于灰度发布和金丝雀测试。从生产环境的子集服务器中划分",
+        "nodes": [
+          {
+            "id": "server-gray-1",
+            "host": "<gray-server-1-ip>",
+            "port": 22,
+            "user": "deploy",
+            "labels": { "env": "gray", "role": "application" }
+          }
+        ]
+      },
+      {
+        "name": "prod",
+        "description": "生产环境服务器组，承载正式线上流量。需要严格的变更控制和权限管理",
+        "nodes": [
+          {
+            "id": "server-prod-1",
+            "host": "<prod-server-1-ip>",
+            "port": 22,
+            "user": "deploy",
+            "labels": { "env": "prod", "role": "application" }
+          },
+          {
+            "id": "server-prod-2",
+            "host": "<prod-server-2-ip>",
+            "port": 22,
+            "user": "deploy",
+            "labels": { "env": "prod", "role": "application" }
+          }
+        ]
+      }
+    ],
+    "description": "集群采用环境命名空间隔离，每个命名空间内包含一组服务器节点。节点之间通过内部网络互通，部署编排服务通过SSH私钥认证连接到各节点执行部署任务。test/gray 环境与 prod 环境之间网络隔离，部署流量经跳板机转发。"
+  },
+  "data_models": [],
+  "interfaces": [],
+  "error_handling": {
+    "strategy": "远程服务器通过SSH通道的标准输出(stdout)、标准错误输出(stderr)和命令退出码(exit_code)三层信号传递执行结果。部署编排服务在客户端侧解析这三类信号，按错误类型分级处理：网络级错误（连接拒绝、超时）自动重试最多3次；认证级错误（密钥失败）立即终止并通知用户修复密钥绑定；执行级错误（脚本退出非零、磁盘满）记录详细stderr后返回失败，由人工介入排查。",
+    "response_format": {
+      "body": {
+        "exit_code": "integer (命令退出码，0成功，非0失败)",
+        "stdout": "string (标准输出)",
+        "stderr": "string (标准错误输出)"
+      }
+    },
+    "categories": [
+      {
+        "code": "SSH_CONNECTION_REFUSED",
+        "name": "连接拒绝",
+        "description": "目标服务器未运行SSH服务、端口未开放或防火墙拦截，SSH握手阶段即被拒绝。处理方式：标记服务器不可达，重试3次后上报失败。"
+      },
+      {
+        "code": "SSH_AUTH_FAILED",
+        "name": "认证失败",
+        "description": "SSH私钥与服务器authorized_keys不匹配、用户名不存在或密钥已被吊销。处理方式：立即终止，不重试，提示用户检查密钥绑定关系。"
+      },
+      {
+        "code": "SSH_TIMEOUT",
+        "name": "连接超时",
+        "description": "目标服务器网络不可达，TCP连接在超时阈值（默认30秒）内未建立。处理方式：标记服务器不可达，重试3次后上报失败。"
+      },
+      {
+        "code": "EXECUTION_TIMEOUT",
+        "name": "命令执行超时",
+        "description": "远程命令或脚本执行超过指定超时阈值（脚本执行默认300秒，简单命令默认30秒），SSH会话被强制关闭。处理方式：记录已收集的部分输出，终止后续步骤，上报超时错误。"
+      },
+      {
+        "code": "PERMISSION_DENIED",
+        "name": "权限不足",
+        "description": "SSH登录用户对目标目录（如 /app/）或文件缺少写/执行权限。处理方式：立即终止，提示用户检查服务器目录权限配置。"
+      },
+      {
+        "code": "DISK_FULL",
+        "name": "磁盘空间不足",
+        "description": "远程服务器磁盘分区使用率超过限制，无法创建目录或写入文件。处理方式：终止本次部署任务，提示用户清理服务器磁盘空间。"
+      },
+      {
+        "code": "SCRIPT_EXIT_NONZERO",
+        "name": "脚本异常退出",
+        "description": "start.sh/stop.sh/health.sh 返回非零退出码，stderr 中包含具体失败原因（如进程启动失败、依赖缺失、端口被占用等）。处理方式：记录完整stderr日志，返回部署失败，由人工根据日志排查。"
+      },
+      {
+        "code": "INVALID_PATH",
+        "name": "路径不合法",
+        "description": "部署路径中包含非法字符或超出Linux文件系统路径长度限制（4096字节）。处理方式：立即终止，提示用户检查项目名、环境名或版本号格式。"
+      }
+    ]
+  },
+  "business_rules": {
+    "invariants": [
+      "每台服务器必须属于且仅属于一个环境命名空间（test/gray/prod），不可跨环境共享",
+      "集群内所有服务器的主机名或IP地址必须唯一，不允许重复注册",
+      "每个环境命名空间至少包含一台可用的服务器节点，否则该环境不可用于部署",
+      "所有服务器的基础部署目录必须统一为 /app/，不允许自定义基目录路径",
+      "SSH密钥认证必须在所有服务器上预先配置完成，部署时不再交互式输入密码",
+      "所有服务器必须安装 OpenSSH Server 并确保 SSH 服务在标准端口 22 监听",
+      "服务器磁盘使用率超过 90% 时必须触发告警并阻止新的部署任务下发"
+    ]
+  }
+}
