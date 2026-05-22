@@ -1,0 +1,648 @@
+{
+  "meta": {
+    "doc_id": "sad-001",
+    "type": "sad",
+    "title": "自动化远程部署系统",
+    "author": "architect_agent",
+    "created": "2026-05-22 15:52"
+  },
+  "system_overview": {
+    "description": "实现将打包好的可执行文件自动化部署到指定远程服务器的功能。支持用户自定义多套部署环境（如测试线、灰度线、正式线等），每套环境可通过密钥配置安全连接，部署时自动在远程服务器上创建版本文件夹并生成执行脚本，实现一键式自动化部署。用户可创建和管理多个项目，每个项目拥有独立的部署环境配置，支持在项目间灵活切换，满足多项目并行管理的需求。",
+    "roles": [
+      {
+        "name": "开发工程师",
+        "permissions": [
+          "查看项目列表",
+          "选择部署环境",
+          "触发一键部署",
+          "查看部署日志"
+        ]
+      },
+      {
+        "name": "运维工程师",
+        "permissions": [
+          "管理部署环境",
+          "配置SSH密钥",
+          "执行灰度发布",
+          "管理版本回滚",
+          "查看部署日志"
+        ]
+      },
+      {
+        "name": "项目经理",
+        "permissions": [
+          "创建/编辑/删除项目",
+          "查看所有项目状态",
+          "在项目间切换",
+          "查看部署历史"
+        ]
+      }
+    ]
+  },
+  "architecture": {
+    "style": "分层架构 + 微服务",
+    "description": "系统采用前后端分离的分层架构，前端为SPA应用，后端按业务领域划分为多个微服务，通过API网关统一接入。服务层包含项目管理、环境管理、部署引擎等核心服务，数据层使用关系型数据库存储业务数据，缓存层提升查询性能。部署执行链路通过SSH连接池管理远程连接，使用异步任务队列处理部署任务。",
+    "layers": [
+      {
+        "name": "接入层",
+        "components": ["Web前端"]
+      },
+      {
+        "name": "网关层",
+        "components": ["API网关"]
+      },
+      {
+        "name": "服务层",
+        "components": ["项目管理服务", "环境管理服务", "部署引擎服务"]
+      },
+      {
+        "name": "基础设施层",
+        "components": ["SSH连接池", "文件传输模块", "脚本生成引擎"]
+      },
+      {
+        "name": "数据层",
+        "components": ["关系型数据库", "缓存"]
+      }
+    ],
+    "connections": [
+      {"protocol": "HTTPS / REST"},
+      {"protocol": "REST / gRPC"},
+      {"protocol": "内部方法调用 / 异步消息"},
+      {"protocol": "SQL / Redis协议"}
+    ],
+    "features": [
+      "前后端分离，RESTful API通信",
+      "异步任务处理部署流程",
+      "SSH连接池复用远程连接",
+      "加密存储密钥信息",
+      "版本化部署管理",
+      "实时部署状态推送",
+      "多项目数据隔离"
+    ]
+  },
+  "tech_stack": {
+    "backend": {
+      "language": "Python 3.11+",
+      "framework": "FastAPI",
+      "async_task": "Celery + RabbitMQ"
+    },
+    "frontend": {
+      "framework": "Vue 3",
+      "ui_library": "Element Plus",
+      "build_tool": "Vite"
+    },
+    "database": "PostgreSQL 15",
+    "cache": "Redis 7",
+    "mq": "RabbitMQ",
+    "ssh": "asyncssh (Python)",
+    "monitoring": "部署日志文件 + 数据库记录"
+  },
+  "components": [
+    {
+      "name": "Web前端",
+      "type": "frontend",
+      "description": "用户交互界面，提供项目管理和一键部署的操作入口",
+      "responsibilities": [
+        "项目列表展示与管理操作",
+        "环境配置表单与密钥上传",
+        "一键部署触发按钮",
+        "部署状态实时展示（WebSocket）",
+        "版本回滚操作入口",
+        "项目切换交互"
+      ]
+    },
+    {
+      "name": "API网关",
+      "type": "gateway",
+      "description": "统一API入口，负责请求路由、认证鉴权与流量控制",
+      "responsibilities": [
+        "路由转发至对应微服务",
+        "JWT Token认证鉴权",
+        "请求限流与防护",
+        "跨域处理"
+      ]
+    },
+    {
+      "name": "项目管理服务",
+      "type": "service",
+      "description": "项目CRUD与切换管理，维护项目间的数据隔离",
+      "responsibilities": [
+        "项目的创建、编辑、删除",
+        "项目列表查询",
+        "项目切换时数据隔离",
+        "项目级权限控制"
+      ]
+    },
+    {
+      "name": "环境管理服务",
+      "type": "service",
+      "description": "部署环境配置与SSH密钥管理，保障连接安全",
+      "responsibilities": [
+        "部署环境的创建、编辑、删除",
+        "SSH密钥的上传与管理",
+        "密钥信息的加密存储与解密",
+        "远程连接可用性测试"
+      ]
+    },
+    {
+      "name": "部署引擎服务",
+      "type": "service",
+      "description": "部署流程编排核心，管理部署生命周期",
+      "responsibilities": [
+        "部署任务创建与流程编排",
+        "部署状态追踪与持久化",
+        "部署日志实时记录与推送",
+        "版本回滚调度",
+        "异步任务下发至基础设施层"
+      ]
+    },
+    {
+      "name": "SSH连接池",
+      "type": "infrastructure",
+      "description": "SSH连接复用池，管理到远程服务器的连接生命周期",
+      "responsibilities": [
+        "SSH连接的建立与复用",
+        "连接池化管理（上限、过期、回收）",
+        "连接健康检查与自动重连",
+        "安全通道加密传输"
+      ]
+    },
+    {
+      "name": "文件传输模块",
+      "type": "infrastructure",
+      "description": "负责将部署包传输到远程服务器的指定目录",
+      "responsibilities": [
+        "文件分片上传与断点续传",
+        "传输进度实时报告",
+        "文件完整性校验（MD5/SHA256）",
+        "远程目录自动创建"
+      ]
+    },
+    {
+      "name": "脚本生成引擎",
+      "type": "infrastructure",
+      "description": "根据部署配置动态生成远程执行脚本",
+      "responsibilities": [
+        "部署脚本动态生成",
+        "脚本模板管理与渲染",
+        "多平台兼容（Linux/Windows）",
+        "回滚脚本生成"
+      ]
+    },
+    {
+      "name": "关系型数据库",
+      "type": "database",
+      "description": "持久化存储业务数据，保障数据一致性与完整性",
+      "responsibilities": [
+        "项目信息持久化存储",
+        "部署环境与配置存储",
+        "部署记录与日志持久化",
+        "密钥信息加密存储"
+      ]
+    },
+    {
+      "name": "缓存",
+      "type": "infrastructure",
+      "description": "高频读取数据缓存，提升系统响应性能",
+      "responsibilities": [
+        "部署状态实时缓存（供WebSocket推送）",
+        "项目列表缓存",
+        "会话状态管理",
+        "数据库查询结果缓存"
+      ]
+    }
+  ],
+  "contracts": [
+    {
+      "interface": "ProjectAPI",
+      "provider": "项目管理服务",
+      "consumers": ["API网关", "Web前端"],
+      "type": "REST",
+      "endpoint": "POST /api/v1/projects",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "name": "string",
+          "description": "string (optional)"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string (uuid)",
+          "name": "string",
+          "description": "string",
+          "created_at": "string (datetime)"
+        }
+      },
+      "description": "创建新项目"
+    },
+    {
+      "interface": "ProjectAPI",
+      "provider": "项目管理服务",
+      "consumers": ["API网关", "Web前端"],
+      "type": "REST",
+      "endpoint": "GET /api/v1/projects",
+      "request": {
+        "path_params": [],
+        "query_params": [
+          {"name": "page", "type": "integer", "default": 1},
+          {"name": "page_size", "type": "integer", "default": 20}
+        ],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "items": ["array<Project>"],
+          "total": "integer",
+          "page": "integer",
+          "page_size": "integer"
+        }
+      },
+      "description": "获取项目列表（分页）"
+    },
+    {
+      "interface": "ProjectAPI",
+      "provider": "项目管理服务",
+      "consumers": ["API网关", "Web前端"],
+      "type": "REST",
+      "endpoint": "GET /api/v1/projects/{project_id}",
+      "request": {
+        "path_params": [
+          {"name": "project_id", "type": "string (uuid)"}
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string (uuid)",
+          "name": "string",
+          "description": "string",
+          "environments": "array<Environment>",
+          "created_at": "string (datetime)",
+          "updated_at": "string (datetime)"
+        }
+      },
+      "description": "获取单个项目详情（含关联环境列表）"
+    },
+    {
+      "interface": "ProjectSwitchAPI",
+      "provider": "项目管理服务",
+      "consumers": ["API网关", "Web前端", "环境管理服务"],
+      "type": "REST",
+      "endpoint": "POST /api/v1/projects/{project_id}/switch",
+      "request": {
+        "path_params": [
+          {"name": "project_id", "type": "string (uuid)"}
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "project_id": "string (uuid)",
+          "environments": "array<Environment>",
+          "session_token": "string"
+        }
+      },
+      "description": "切换当前激活项目，返回目标项目环境配置"
+    },
+    {
+      "interface": "EnvironmentAPI",
+      "provider": "环境管理服务",
+      "consumers": ["API网关", "Web前端", "部署引擎服务"],
+      "type": "REST",
+      "endpoint": "POST /api/v1/environments",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "project_id": "string (uuid)",
+          "name": "string",
+          "type": "enum (test|staging|production)",
+          "host": "string",
+          "port": "integer (default: 22)",
+          "username": "string",
+          "auth_type": "enum (password|key)",
+          "key_id": "string (uuid, optional)"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string (uuid)",
+          "name": "string",
+          "type": "string",
+          "host": "string",
+          "port": "integer",
+          "status": "enum (connected|disconnected|unknown)"
+        }
+      },
+      "description": "创建部署环境配置（密钥ID引用已上传的SSH密钥）"
+    },
+    {
+      "interface": "KeyManagementAPI",
+      "provider": "环境管理服务",
+      "consumers": ["API网关", "Web前端"],
+      "type": "REST",
+      "endpoint": "POST /api/v1/keys",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "name": "string",
+          "public_key": "string",
+          "private_key": "string (encrypted on receipt)"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string (uuid)",
+          "name": "string",
+          "fingerprint": "string",
+          "created_at": "string (datetime)"
+        }
+      },
+      "description": "上传SSH密钥（私钥传输加密，服务端加密存储）"
+    },
+    {
+      "interface": "ConnectionTestAPI",
+      "provider": "环境管理服务",
+      "consumers": ["API网关", "Web前端"],
+      "type": "REST",
+      "endpoint": "POST /api/v1/environments/{env_id}/test",
+      "request": {
+        "path_params": [
+          {"name": "env_id", "type": "string (uuid)"}
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "reachable": "boolean",
+          "latency_ms": "integer",
+          "error": "string (optional)"
+        }
+      },
+      "description": "测试指定环境的SSH连接是否可用"
+    },
+    {
+      "interface": "DeployAPI",
+      "provider": "部署引擎服务",
+      "consumers": ["API网关", "Web前端"],
+      "type": "REST",
+      "endpoint": "POST /api/v1/deployments",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "project_id": "string (uuid)",
+          "environment_id": "string (uuid)",
+          "version": "string",
+          "artifact_path": "string",
+          "rollback_on_failure": "boolean (default: false)"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "deployment_id": "string (uuid)",
+          "status": "enum (pending|running|success|failed)",
+          "created_at": "string (datetime)"
+        }
+      },
+      "description": "触发一键部署任务，返回部署ID用于后续状态查询"
+    },
+    {
+      "interface": "DeployStatusAPI",
+      "provider": "部署引擎服务",
+      "consumers": ["API网关", "Web前端", "缓存"],
+      "type": "REST",
+      "endpoint": "GET /api/v1/deployments/{deployment_id}/status",
+      "request": {
+        "path_params": [
+          {"name": "deployment_id", "type": "string (uuid)"}
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "deployment_id": "string (uuid)",
+          "status": "string",
+          "progress": "integer (0-100)",
+          "current_step": "string",
+          "logs": "array<LogEntry>",
+          "started_at": "string (datetime)",
+          "finished_at": "string (datetime, optional)"
+        }
+      },
+      "description": "查询部署状态与日志（WebSocket推送相同结构）"
+    },
+    {
+      "interface": "RollbackAPI",
+      "provider": "部署引擎服务",
+      "consumers": ["API网关", "Web前端"],
+      "type": "REST",
+      "endpoint": "POST /api/v1/deployments/{deployment_id}/rollback",
+      "request": {
+        "path_params": [
+          {"name": "deployment_id", "type": "string (uuid)"}
+        ],
+        "query_params": [],
+        "body": {
+          "target_version": "string"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "rollback_deployment_id": "string (uuid)",
+          "status": "string",
+          "target_version": "string"
+        }
+      },
+      "description": "发起版本回滚，创建新的回滚部署任务"
+    },
+    {
+      "interface": "DeployLogStreamAPI",
+      "provider": "部署引擎服务",
+      "consumers": ["Web前端"],
+      "type": "WebSocket",
+      "endpoint": "WS /api/v1/deployments/{deployment_id}/logs/ws",
+      "request": {
+        "path_params": [
+          {"name": "deployment_id", "type": "string (uuid)"}
+        ],
+        "query_params": [
+          {"name": "token", "type": "string (JWT)"}
+        ],
+        "body": {}
+      },
+      "response": {
+        "status": 101,
+        "body": {
+          "stream": "array<LogEntry> (持续推送)"
+        }
+      },
+      "description": "WebSocket实时推送部署日志（双向关闭后结束）"
+    },
+    {
+      "interface": "SSHPoolAPI",
+      "provider": "SSH连接池",
+      "consumers": ["部署引擎服务", "文件传输模块", "脚本生成引擎"],
+      "type": "内部方法调用",
+      "endpoint": "内部: get_connection(env_id) -> SSHConnection",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "env_id": "string (uuid)",
+          "timeout_seconds": "integer (default: 30)"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "connection": "SSHConnection (opaque handle)",
+          "server_info": "object"
+        }
+      },
+      "description": "从连接池获取或创建指定环境的SSH连接"
+    },
+    {
+      "interface": "FileTransferAPI",
+      "provider": "文件传输模块",
+      "consumers": ["部署引擎服务"],
+      "type": "内部方法调用",
+      "endpoint": "内部: transfer_file(conn, local_path, remote_dir)",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "connection": "SSHConnection",
+          "local_path": "string",
+          "remote_dir": "string",
+          "version": "string",
+          "on_progress": "callable(progress: int)"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "remote_path": "string",
+          "checksum": "string",
+          "size_bytes": "integer",
+          "duration_ms": "integer"
+        }
+      },
+      "description": "通过已建立的SSH连接将文件传输到远程服务器"
+    },
+    {
+      "interface": "ScriptGenerationAPI",
+      "provider": "脚本生成引擎",
+      "consumers": ["部署引擎服务"],
+      "type": "内部方法调用",
+      "endpoint": "内部: generate_script(action, params)",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "action": "enum (deploy|rollback|status_check)",
+          "params": {
+            "version": "string",
+            "remote_path": "string",
+            "artifact_name": "string",
+            "platform": "enum (linux|windows)"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "script_content": "string",
+          "script_type": "enum (bash|powershell)",
+          "estimated_runtime_seconds": "integer"
+        }
+      },
+      "description": "根据部署参数生成远程执行脚本内容"
+    }
+  ],
+  "data_flow": [
+    {
+      "name": "项目创建与配置流程",
+      "steps": [
+        "用户在前端创建项目，填写项目名称与描述",
+        "Web前端发送 POST /api/v1/projects 到API网关",
+        "API网关鉴权通过后路由至项目管理服务",
+        "项目管理服务校验参数，将项目信息写入关系型数据库",
+        "项目管理服务返回项目详情至前端",
+        "用户在前端为目标项目配置部署环境，上传SSH密钥",
+        "环境管理服务加密存储密钥至数据库，记录环境配置",
+        "环境管理服务返回环境配置结果至前端",
+        "前端展示新创建的项目及已配置的环境列表"
+      ]
+    },
+    {
+      "name": "一键部署流程",
+      "steps": [
+        "用户在前端选择目标环境、版本号和部署包，点击部署",
+        "Web前端发送 POST /api/v1/deployments 到API网关",
+        "API网关鉴权后路由至部署引擎服务",
+        "部署引擎服务校验参数，创建部署记录写入数据库",
+        "部署引擎服务下发异步任务到Celery队列",
+        "部署引擎服务通过SSH连接池获取目标环境的SSH连接",
+        "文件传输模块通过SSH连接将部署包上传至远程服务器的版本目录",
+        "脚本生成引擎根据部署参数生成远程执行脚本",
+        "远程通过SSH执行部署脚本，创建版本文件夹并运行",
+        "部署引擎服务持续采集执行日志，通过WebSocket实时推送至前端",
+        "部署完成后更新数据库状态，前端展示最终部署结果"
+      ]
+    },
+    {
+      "name": "版本回滚流程",
+      "steps": [
+        "用户在前端选择历史版本并发起回滚操作",
+        "Web前端发送 POST /api/v1/deployments/{id}/rollback 到API网关",
+        "API网关鉴权后路由至部署引擎服务",
+        "部署引擎服务查找目标版本的部署记录与远程路径",
+        "脚本生成引擎生成回滚脚本（停止当前版本、还原上一版本）",
+        "通过SSH连接池获取连接，将回滚脚本传输到远程服务器并执行",
+        "更新部署记录状态（回滚完成），推送结果至前端"
+      ]
+    },
+    {
+      "name": "项目切换流程",
+      "steps": [
+        "用户在前端点击切换至目标项目",
+        "Web前端发送 POST /api/v1/projects/{project_id}/switch 到API网关",
+        "API网关鉴权后路由至项目管理服务",
+        "项目管理服务校验项目存在性，更新当前会话的项目上下文",
+        "环境管理服务同步目标项目的环境配置列表",
+        "返回目标项目详情与环境列表至前端",
+        "前端刷新UI，展示目标项目的面板和环境信息"
+      ]
+    },
+    {
+      "name": "SSH连接测试流程",
+      "steps": [
+        "用户在前端点击测试连接按钮",
+        "Web前端发送 POST /api/v1/environments/{env_id}/test 到API网关",
+        "API网关鉴权后路由至环境管理服务",
+        "环境管理服务从数据库读取环境连接参数并解密密钥",
+        "环境管理服务通过SSH尝试建立连接到目标服务器",
+        "若连接成功，记录延迟并释放连接；若失败，记录错误信息",
+        "返回测试结果（通断状态、延迟）至前端展示"
+      ]
+    }
+  ]
+}
