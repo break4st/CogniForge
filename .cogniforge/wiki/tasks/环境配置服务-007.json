@@ -15,9 +15,98 @@
   "updated_at": "2026-05-22T15:03:20.830188",
   "result": null,
   "error": null,
-  "lld_refs": [],
+  "lld_refs": [
+    {
+      "module": "",
+      "doc_id": "",
+      "section": "business_rules",
+      "item_name": "Environment",
+      "artifact_type": "state_machine",
+      "sub_item": null
+    }
+  ],
   "acceptance_criteria": [],
-  "context": null,
-  "expected_output_files": [],
-  "layer": 0
+  "context": {
+    "module_type": "service",
+    "lld_path": ".cogniforge/wiki/lld/环境配置服务/lld-环境配置服务-001.json",
+    "module_overview": "部署环境配置管理服务，维护远程服务器连接参数和环境状态，提供环境的CRUD操作、连接测试、状态管理以及与项目的关联查询能力。所有环境配置数据持久化在 PostgreSQL 主数据库中，SSH 连接测试依赖 SSH 连接池服务和密钥管理服务",
+    "scope": {
+      "data_models": [],
+      "domain_objects": [],
+      "interfaces": [],
+      "service_contracts": [],
+      "business_rules": {
+        "state_machines": [
+          {
+            "entity": "Environment",
+            "states": [
+              "unknown",
+              "online",
+              "offline"
+            ],
+            "transitions": [
+              {
+                "from": "unknown",
+                "to": "online",
+                "trigger": "连接测试成功",
+                "actor": "系统（EnvironmentService.test_connection）"
+              },
+              {
+                "from": "unknown",
+                "to": "offline",
+                "trigger": "连接测试失败",
+                "actor": "系统（EnvironmentService.test_connection）"
+              },
+              {
+                "from": "online",
+                "to": "offline",
+                "trigger": "连接测试失败或连续心跳检测超时",
+                "actor": "系统（EnvironmentService.test_connection / 定时心跳）"
+              },
+              {
+                "from": "offline",
+                "to": "online",
+                "trigger": "连接测试成功",
+                "actor": "系统（EnvironmentService.test_connection）"
+              },
+              {
+                "from": "online",
+                "to": "unknown",
+                "trigger": "关联密钥被更换（key_id 更新）",
+                "actor": "系统（EnvironmentService.update_environment）"
+              },
+              {
+                "from": "offline",
+                "to": "unknown",
+                "trigger": "关联密钥被更换（key_id 更新）",
+                "actor": "系统（EnvironmentService.update_environment）"
+              }
+            ],
+            "irreversible_rules": [
+              "状态转换仅由系统自动驱动（连接测试或密钥变更），不支持人工直接设置 status 字段",
+              "unknown → online 和 unknown → offline 是初始状态的唯二合法出口，创建后不可停留在 unknown 而不做测试"
+            ],
+            "concurrency": "连接测试使用分布式锁防止同一环境的并发测试请求，锁 Key 格式 env:test-lock:{environment_id}，TTL 30 秒。并发请求中后到者直接返回 HTTP 429（Too Many Requests），由调用方决定重试策略"
+          }
+        ]
+      },
+      "error_handling": {},
+      "extra_sections": {}
+    },
+    "external_contracts": [],
+    "cross_module_deps": [],
+    "tech_stack": [
+      "Python",
+      "FastAPI",
+      "PostgreSQL 15",
+      "REST",
+      "JWT",
+      "Paramiko"
+    ],
+    "upstream_artifacts": []
+  },
+  "expected_output_files": [
+    "src/环境配置服务/service/state_machine.go"
+  ],
+  "layer": 1
 }
