@@ -1,9 +1,11 @@
 {
   "task_id": "审计日志服务-008",
-  "name": "实现 记录审计日志 接口",
-  "description": "实现 POST /api/v1/audit-logs HTTP 接口。从请求体 JSON 解析为 RecordAuditLogRequest，调用 AuditLogService.Record。参数缺失或格式错误返回 400 并指明字段，内部错误返回 500。采用 Gin 框架请求体绑定和校验。产出物: 记录审计日志.go（Handler 函数、路由注册）",
+  "name": "实现业务不变量校验",
+  "description": "实现以下业务规则:\n  - 审计日志不可修改：一旦写入成功，任何操作不可更新或删除已存在的审计日志记录\n  - 审计日志不可重写：相同 id 的记录不存在，由数据库 UUID 主键唯一性天然保证\n  - 操作结果 result 字段取值仅限于 success 和 failure，不允许其他任意值\n  - 审计日志的 created_at 由数据库自动生成，不允许客户端在请求中指定",
   "module": "审计日志服务",
-  "deps": [],
+  "deps": [
+    "审计日志服务-007"
+  ],
   "status": "pending",
   "priority": 2,
   "assignee": "dev",
@@ -11,120 +13,13 @@
   "actual_hours": null,
   "category": "service",
   "changed_files": [],
-  "created_at": "2026-05-22T12:56:39.329151",
-  "updated_at": "2026-05-22T12:56:39.329176",
+  "created_at": "2026-05-22T15:03:29.152320",
+  "updated_at": "2026-05-22T15:03:29.152333",
   "result": null,
   "error": null,
-  "lld_refs": [
-    {
-      "module": "",
-      "doc_id": "",
-      "section": "service_contracts",
-      "item_name": "AuditLogService",
-      "artifact_type": "service_contract",
-      "sub_item": null
-    }
-  ],
+  "lld_refs": [],
   "acceptance_criteria": [],
-  "context": {
-    "module_type": "service",
-    "lld_path": ".cogniforge/wiki/lld/审计日志服务/lld-审计日志服务-001.json",
-    "module_overview": "记录系统中所有关键操作的审计日志，确保操作可追溯。接收各业务服务（项目管理服务、环境管理服务、部署引擎服务、密钥管理服务）的操作记录请求，将审计信息持久化存储并支持条件查询",
-    "scope": {
-      "data_models": [],
-      "domain_objects": [],
-      "interfaces": [],
-      "service_contracts": [
-        {
-          "name": "AuditLogService",
-          "description": "提供审计日志的写入和查询服务，支持 append-only 存储和多条件组合查询",
-          "methods": [
-            {
-              "name": "Record",
-              "signature": "(ctx context.Context, req RecordAuditLogRequest) -> (RecordAuditLogResponse, error)",
-              "precondition": "req.action 非空且长度不超过 128；req.actor 非空且长度不超过 64；req.resource_type 非空且长度不超过 64；req.detail 如提供须为合法 JSON",
-              "postcondition": "审计日志写入 audit_logs 表，id 由数据库自增生成，created_at 设为 req.timestamp（系统自动补当前时间），返回的 log_id 对应新记录主键且 recorded=true",
-              "description": "将一条审计日志记录持久化到数据库，接收业务服务传递的操作信息",
-              "exceptions": [
-                {
-                  "name": "ErrInvalidArgument",
-                  "trigger": "action、actor 或 resource_type 为空或超长",
-                  "http_status": 400
-                },
-                {
-                  "name": "ErrInternal",
-                  "trigger": "数据库 INSERT 失败、连接异常或 JSON 序列化失败",
-                  "http_status": 500
-                }
-              ]
-            },
-            {
-              "name": "Query",
-              "signature": "(ctx context.Context, req QueryAuditLogRequest) -> (AuditLogPage, error)",
-              "precondition": "req.page 穿透设默认值 1 后必须 >= 1；req.page_size 默认 20；req.start_time 和 req.end_time 如同时提供须 start_time <= end_time",
-              "postcondition": "返回符合所有筛选条件的审计日志分页列表，按 created_at 降序排序；filter 条件之间为 AND 关系；无匹配记录时返回 items=[]、total=0、page=req.page、page_size=req.page_size",
-              "description": "按多条件组合筛选查询审计日志，支持精确匹配和时间范围查询",
-              "exceptions": [
-                {
-                  "name": "ErrInvalidArgument",
-                  "trigger": "page < 1 或 page_size < 1 或 page_size > 100 或 start_time > end_time",
-                  "http_status": 400
-                },
-                {
-                  "name": "ErrInternal",
-                  "trigger": "数据库 SELECT 查询失败或连接异常",
-                  "http_status": 500
-                }
-              ]
-            },
-            {
-              "name": "GetByID",
-              "signature": "(ctx context.Context, id int64) -> (AuditLog, error)",
-              "precondition": "id 必须为正整数",
-              "postcondition": "返回与 id 匹配的完整 AuditLog 实体；不存在时返回 ErrAuditLogNotFound",
-              "description": "按主键 ID 获取单条审计日志的完整信息",
-              "exceptions": [
-                {
-                  "name": "ErrAuditLogNotFound",
-                  "trigger": "指定 id 的审计日志在数据库中不存在",
-                  "http_status": 404
-                },
-                {
-                  "name": "ErrInvalidArgument",
-                  "trigger": "id 为 0 或负数",
-                  "http_status": 400
-                },
-                {
-                  "name": "ErrInternal",
-                  "trigger": "数据库查询失败",
-                  "http_status": 500
-                }
-              ]
-            }
-          ],
-          "repository_dependencies": [
-            "Insert(auditLog *AuditLog) -> error",
-            "FindByFilters(req QueryAuditLogRequest) -> ([]AuditLog, int, error)",
-            "FindByID(id int64) -> (*AuditLog, error)"
-          ]
-        }
-      ],
-      "business_rules": {},
-      "error_handling": {},
-      "extra_sections": {}
-    },
-    "external_contracts": [],
-    "cross_module_deps": [],
-    "tech_stack": [
-      "Go",
-      "Gin",
-      "Go 1.22+",
-      "PostgreSQL 15"
-    ],
-    "upstream_artifacts": []
-  },
-  "expected_output_files": [
-    "src/审计日志服务/service/auditlogservice.go"
-  ],
-  "layer": 1
+  "context": null,
+  "expected_output_files": [],
+  "layer": 0
 }
