@@ -6,184 +6,248 @@
     "module": "文件存储",
     "title": "文件存储模块详细设计",
     "author": "design_agent",
-    "created": "2026-05-22T00:00:00+08:00"
+    "created": "2026-05-22"
   },
   "overview": {
-    "description": "暂存待部署的可执行文件，供部署服务上传到远程服务器。基于 MinIO 对象存储实现，提供可执行文件的版本管理和临时文件生命周期管理能力。",
-    "dependencies": ["部署编排服务", "环境配置服务"],
-    "tech_stack": ["Go", "MinIO"]
+    "description": "文件存储模块基于对象存储技术（S3 兼容 API），负责存储用户上传的可执行部署包和历史构建产物。按「项目-版本」两级命名空间组织文件目录结构，提供文件的上传、下载、列表查询和删除等内部 REST 接口。支持桶级版本控制和生命周期管理策略，自动清理过期文件，为部署编排和版本回滚等业务流程提供底层文件存取能力。",
+    "dependencies": [],
+    "tech_stack": ["Go", "Gin"]
   },
   "data_models": [
     {
-      "name": "StoredObject",
+      "name": "FileObject",
       "type": "store",
       "ownership": "owned",
-      "description": "文件存储中的对象元数据定义，描述可执行文件的存储路径、大小、内容类型和过期时间等信息",
+      "description": "文件存储对象，表示底层对象存储中存储的一个文件及其元数据",
       "fields": [
-        {"name": "bucket", "type": "string", "required": true, "description": "所属存储桶名称"},
-        {"name": "object_key", "type": "string", "required": true, "description": "对象在存储桶中的完整键"},
-        {"name": "size", "type": "int64", "required": true, "description": "文件大小（字节）"},
+        {"name": "object_id", "type": "string (UUID)", "required": true, "description": "文件对象的全局唯一标识"},
+        {"name": "bucket", "type": "string", "required": true, "description": "所属桶名称"},
+        {"name": "object_path", "type": "string", "required": true, "description": "对象在桶内的完整路径"},
+        {"name": "filename", "type": "string", "required": true, "description": "原始文件名（用于人工识别）"},
+        {"name": "size_bytes", "type": "integer (int64)", "required": true, "description": "文件大小（字节）"},
         {"name": "content_type", "type": "string", "required": false, "description": "文件 MIME 类型"},
-        {"name": "etag", "type": "string", "required": false, "description": "对象的 ETag（MD5 哈希）"},
-        {"name": "uploaded_at", "type": "datetime", "required": true, "description": "上传时间"},
-        {"name": "expire_at", "type": "datetime", "required": false, "description": "过期自动清理时间"}
+        {"name": "md5_hash", "type": "string", "required": true, "description": "文件 MD5 校验值，用于完整性验证"},
+        {"name": "project_id", "type": "string (UUID)", "required": true, "description": "关联的项目 ID"},
+        {"name": "version", "type": "string", "required": true, "description": "关联的版本号（语义化版本，如 v1.2.3）"},
+        {"name": "tags", "type": "map<string,string>", "required": false, "description": "自定义标签键值对，用于扩展分类"},
+        {"name": "created_at", "type": "string (ISO8601)", "required": true, "description": "文件创建时间"},
+        {"name": "updated_at", "type": "string (ISO8601)", "required": false, "description": "文件元数据最后更新时间"},
+        {"name": "expires_at", "type": "string (ISO8601)", "required": false, "description": "文件过期时间，过期后由生命周期策略自动清理"}
       ]
     },
     {
-      "name": "FileMetadata",
-      "type": "store",
+      "name": "BucketConfig",
+      "type": "config",
       "ownership": "owned",
-      "description": "文件的业务元数据，记录文件所属项目、环境、版本等关联信息",
+      "description": "桶配置，定义每个 Bucket 的生命周期策略、文件大小上限和访问控制参数",
       "fields": [
-        {"name": "project_id", "type": "string", "required": true, "description": "所属项目 ID"},
-        {"name": "environment_id", "type": "string", "required": true, "description": "所属环境 ID"},
-        {"name": "environment_type", "type": "string", "required": true, "description": "环境类型（test/gray/production）"},
-        {"name": "version", "type": "string", "required": true, "description": "部署版本号"},
-        {"name": "filename", "type": "string", "required": true, "description": "原始文件名"},
-        {"name": "md5", "type": "string", "required": false, "description": "文件 MD5 校验值"}
+        {"name": "bucket_name", "type": "string", "required": true, "description": "桶名称"},
+        {"name": "versioning", "type": "boolean", "required": true, "description": "是否启用对象版本控制"},
+        {"name": "lifecycle_days", "type": "integer", "required": true, "description": "对象默认保留天数，到期自动清理"},
+        {"name": "max_upload_size_mb", "type": "integer", "required": true, "description": "单文件上传大小上限（MB）"},
+        {"name": "allowed_content_types", "type": "[]string", "required": false, "description": "允许的文件 MIME 类型白名单，为空则不限制"}
       ]
     }
   ],
   "interfaces": [
     {
       "name": "UploadFile",
-      "method": "INTERNAL",
-      "endpoint": "/internal/files/upload",
-      "description": "上传可执行文件到文件存储系统",
+      "method": "POST",
+      "endpoint": "/internal/v1/files/upload",
+      "description": "上传文件到对象存储。接收 multipart/form-data，按 project_id 和 version 归类存入对应桶。返回文件对象 ID 和完整元数据。",
       "parameters": [
-        {"name": "bucket", "type": "string", "description": "目标存储桶名称"},
-        {"name": "object_key", "type": "string", "description": "对象存储键（路径）"},
-        {"name": "file_content", "type": "io.Reader", "description": "文件二进制内容流"},
-        {"name": "content_type", "type": "string", "description": "文件的 MIME 类型"}
+        {"name": "project_id", "type": "string (UUID)", "description": "项目 ID，用于确定存储目录前缀"},
+        {"name": "version", "type": "string", "description": "版本号，用于确定存储目录前缀"},
+        {"name": "bucket", "type": "string", "description": "目标桶名称，默认 deployment-packages"},
+        {"name": "file", "type": "binary", "description": "文件二进制内容（multipart/form-data 的 file 字段）"},
+        {"name": "filename", "type": "string", "description": "原始文件名"},
+        {"name": "content_type", "type": "string", "description": "文件 MIME 类型（可选，自动检测）"}
       ],
       "response": {
         "status": 200,
-        "body": {"etag": "string", "version_id": "string"}
+        "body": {
+          "object_id": "string (UUID)",
+          "bucket": "string",
+          "object_path": "string",
+          "filename": "string",
+          "size_bytes": "integer",
+          "md5_hash": "string",
+          "created_at": "string (ISO8601)"
+        }
       },
       "error_codes": [
-        {"code": 400, "message": "请求参数无效（bucket 名非法或 object_key 格式错误）"},
-        {"code": 500, "message": "文件上传失败（网络异常或存储服务端错误）"}
+        {"code": 400, "message": "请求参数缺失或无效，如 project_id 或 version 为空"},
+        {"code": 413, "message": "文件大小超过桶配置的单文件上限"},
+        {"code": 415, "message": "文件类型不在允许的白名单内"},
+        {"code": 507, "message": "存储后端空间不足"},
+        {"code": 500, "message": "存储后端内部异常，上传失败"}
       ]
     },
     {
       "name": "DownloadFile",
-      "method": "INTERNAL",
-      "endpoint": "/internal/files/download",
-      "description": "从文件存储下载指定版本的可执行文件",
+      "method": "GET",
+      "endpoint": "/internal/v1/files/download/:objectId",
+      "description": "根据文件对象 ID 下载文件内容。返回文件二进制流，元数据通过 Response Header 返回。",
       "parameters": [
-        {"name": "bucket", "type": "string", "description": "存储桶名称"},
-        {"name": "object_key", "type": "string", "description": "对象存储键（路径）"}
+        {"name": "objectId", "type": "string (UUID)", "description": "文件对象 ID（路径参数）"}
       ],
       "response": {
         "status": 200,
-        "body": {"file_content": "io.ReadCloser", "content_type": "string", "size": "int64"}
+        "body": {
+          "object_id": "string (UUID)",
+          "bucket": "string",
+          "object_path": "string",
+          "filename": "string",
+          "size_bytes": "integer",
+          "content_type": "string",
+          "md5_hash": "string",
+          "created_at": "string (ISO8601)",
+          "file_content": "binary"
+        }
       },
       "error_codes": [
-        {"code": 404, "message": "文件不存在或已被清理"},
-        {"code": 500, "message": "文件下载失败"}
-      ]
-    },
-    {
-      "name": "DeleteFile",
-      "method": "INTERNAL",
-      "endpoint": "/internal/files/delete",
-      "description": "删除指定文件",
-      "parameters": [
-        {"name": "bucket", "type": "string", "description": "存储桶名称"},
-        {"name": "object_key", "type": "string", "description": "对象存储键（路径）"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {"deleted": "bool"}
-      },
-      "error_codes": [
-        {"code": 404, "message": "文件不存在"},
-        {"code": 500, "message": "文件删除失败"}
+        {"code": 404, "message": "文件对象不存在或已被清理"},
+        {"code": 500, "message": "存储后端异常，读取失败"}
       ]
     },
     {
       "name": "ListFiles",
-      "method": "INTERNAL",
-      "endpoint": "/internal/files/list",
-      "description": "列出存储桶中指定前缀下的所有文件",
+      "method": "GET",
+      "endpoint": "/internal/v1/files",
+      "description": "按项目 ID、版本号、桶名称等维度查询文件列表。支持分页和路径前缀过滤。",
       "parameters": [
-        {"name": "bucket", "type": "string", "description": "存储桶名称"},
-        {"name": "prefix", "type": "string", "description": "路径前缀过滤器"},
-        {"name": "max_keys", "type": "int", "description": "最大返回条目数"}
+        {"name": "project_id", "type": "string (UUID)", "description": "项目 ID（查询参数，必填）"},
+        {"name": "version", "type": "string", "description": "版本号（可选，查询参数）"},
+        {"name": "bucket", "type": "string", "description": "桶名称（可选，默认 deployment-packages）"},
+        {"name": "prefix", "type": "string", "description": "路径前缀（可选，查询参数）"},
+        {"name": "page", "type": "integer", "description": "页码（默认 1）"},
+        {"name": "page_size", "type": "integer", "description": "每页条数（默认 20，最大 100）"}
       ],
       "response": {
         "status": 200,
-        "body": {"files": "[]StoredObject", "total": "int"}
+        "body": {
+          "total": "integer",
+          "page": "integer",
+          "page_size": "integer",
+          "items": [
+            {
+              "object_id": "string (UUID)",
+              "filename": "string",
+              "size_bytes": "integer",
+              "content_type": "string",
+              "md5_hash": "string",
+              "bucket": "string",
+              "object_path": "string",
+              "project_id": "string (UUID)",
+              "version": "string",
+              "created_at": "string (ISO8601)"
+            }
+          ]
+        }
       },
       "error_codes": [
-        {"code": 400, "message": "参数无效"},
-        {"code": 500, "message": "查询失败"}
+        {"code": 400, "message": "project_id 参数缺失"},
+        {"code": 500, "message": "存储后端异常，查询失败"}
       ]
     },
     {
-      "name": "CleanupExpired",
-      "method": "INTERNAL",
-      "endpoint": "/internal/files/cleanup",
-      "description": "清理所有已过期的临时文件",
+      "name": "DeleteFile",
+      "method": "DELETE",
+      "endpoint": "/internal/v1/files/:objectId",
+      "description": "根据文件对象 ID 删除文件。执行硬删除，不可恢复。",
       "parameters": [
-        {"name": "bucket", "type": "string", "description": "目标存储桶名称"}
+        {"name": "objectId", "type": "string (UUID)", "description": "文件对象 ID（路径参数）"}
       ],
       "response": {
         "status": 200,
-        "body": {"cleaned_count": "int", "freed_bytes": "int64"}
+        "body": {
+          "object_id": "string (UUID)",
+          "deleted": "boolean",
+          "deleted_at": "string (ISO8601)"
+        }
       },
       "error_codes": [
-        {"code": 500, "message": "清理失败"}
+        {"code": 404, "message": "文件对象不存在"},
+        {"code": 500, "message": "存储后端异常，删除失败"}
+      ]
+    },
+    {
+      "name": "GetFileInfo",
+      "method": "GET",
+      "endpoint": "/internal/v1/files/:objectId/info",
+      "description": "获取文件对象的元数据信息，不含文件内容。",
+      "parameters": [
+        {"name": "objectId", "type": "string (UUID)", "description": "文件对象 ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "object_id": "string (UUID)",
+          "bucket": "string",
+          "object_path": "string",
+          "filename": "string",
+          "size_bytes": "integer",
+          "content_type": "string",
+          "md5_hash": "string",
+          "project_id": "string (UUID)",
+          "version": "string",
+          "tags": "map<string,string>",
+          "created_at": "string (ISO8601)",
+          "expires_at": "string (ISO8601, 可选)"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "文件对象不存在"},
+        {"code": 500, "message": "存储后端异常，查询失败"}
       ]
     }
   ],
   "error_handling": {
-    "strategy": "文件存储模块采用统一的错误处理策略，所有操作返回标准化错误响应。对于网络超时等可重试错误自动进行指数退避重试，对于 bucket 不存在或认证失败等不可恢复错误直接向上层返回错误。",
+    "strategy": "采用统一的 HTTP 状态码 + JSON 错误体响应格式。参数校验失败返回 4xx 错误码及具体描述，存储后端异常返回 5xx 并附带操作建议。所有错误响应包含机器可读的错误码和人工可读的错误描述。",
     "response_format": {
-      "body": {"code": "integer", "error": "string", "detail": "string"}
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
     },
     "categories": [
-      {"code": 400, "name": "参数错误", "description": "请求参数验证失败，如 bucket 名非法、object_key 格式错误"},
-      {"code": 401, "name": "认证失败", "description": "MinIO 访问密钥无效或已过期"},
-      {"code": 403, "name": "权限不足", "description": "访问密钥无对应存储桶的操作权限"},
-      {"code": 404, "name": "资源不存在", "description": "指定的存储桶或对象不存在"},
-      {"code": 409, "name": "资源冲突", "description": "对象已存在且版本控制未开启时的上传冲突"},
-      {"code": 500, "name": "内部错误", "description": "MinIO 服务端内部错误或网络异常"},
-      {"code": 507, "name": "存储空间不足", "description": "存储桶已达到容量上限或磁盘空间不足"}
+      {"code": 400, "name": "参数校验错误", "description": "请求参数缺失、格式错误或类型不匹配，调用方需修正请求后重试"},
+      {"code": 404, "name": "资源不存在", "description": "请求的文件对象 ID 在存储中不存在或已被生命周期策略清理"},
+      {"code": 413, "name": "文件大小超限", "description": "上传文件大小超过桶配置的单文件上传上限"},
+      {"code": 415, "name": "文件类型不允许", "description": "上传文件 MIME 类型不在桶配置的白名单内"},
+      {"code": 500, "name": "存储后端异常", "description": "对象存储后端内部错误或网络不可达，可等待后重试"},
+      {"code": 507, "name": "存储空间不足", "description": "后端存储容量已满或超过配额，需扩容或清理过期文件"},
+      {"code": 503, "name": "服务暂不可用", "description": "存储后端正在进行维护或临时故障，建议稍后重试"}
     ]
   },
   "topology": {
     "buckets": [
       {
-        "name": "deploy-artifacts",
-        "type": "private",
+        "name": "deployment-packages",
+        "description": "存储用户上传的可执行部署包，用于一键部署和版本回滚。启用版本控制以追溯历史版本。",
         "versioning": true,
-        "lifecycle_rules": [
-          {"expire_days": 30, "description": "超过 30 天的文件自动清理"}
-        ],
-        "description": "所有待部署可执行文件的主存储桶，按项目/环境/版本组织路径"
+        "lifecycle_policy": "对象最后访问后 90 天自动标记为过期并清理",
+        "max_upload_size_mb": 512,
+        "allowed_content_types": ["application/zip", "application/x-tar", "application/gzip", "application/octet-stream"]
+      },
+      {
+        "name": "build-artifacts",
+        "description": "存储历史构建产物，由 CI/CD 流程自动上传，生命周期较短。",
+        "versioning": false,
+        "lifecycle_policy": "对象上传后 30 天自动清理",
+        "max_upload_size_mb": 1024,
+        "allowed_content_types": ["application/zip", "application/x-tar", "application/gzip", "application/octet-stream"]
       }
     ],
-    "path_conventions": "deploy-artifacts/{project_id}/{environment_type}/{version}/{filename}_{timestamp}.tar.gz"
+    "path_conventions": "/{bucket}/{project_id}/{version}/{filename}。其中 bucket 为桶名称，project_id 为 UUID 格式，version 为语义化版本号（如 v1.2.3），filename 保留原始文件名用于人工识别。路径各层级均使用小写字母。"
   },
   "connection_contracts": {
-    "endpoint": "minio:9000",
-    "auth": {
-      "type": "AccessKey/SecretKey",
-      "credential_source": "密钥存储服务"
-    },
-    "tls": {
-      "enabled": true,
-      "ca_cert_path": "/etc/certs/ca.pem"
-    },
-    "connection_pool": {
-      "max_idle_connections": 10,
-      "idle_timeout_seconds": 60
-    },
-    "timeout": {
-      "connect_seconds": 10,
-      "read_seconds": 30,
-      "write_seconds": 30
-    }
+    "endpoint": "http://file-storage:9000（Kubernetes 集群内 Service 域名）",
+    "auth_method": "AccessKey + SecretKey（HMAC-SHA256 签名），密钥通过 Kubernetes Secret 挂载为环境变量注入",
+    "tls": "集群内调用建议启用 mTLS，外部访问强制 HTTPS",
+    "timeout_seconds": 30,
+    "max_connections": 100,
+    "health_check_interval_seconds": 15
   }
 }
