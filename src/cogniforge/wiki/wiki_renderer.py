@@ -857,6 +857,54 @@ _SHARED_CSS = """
     max-width: 860px; padding: 48px 40px 80px;
   }
   html { scroll-behavior: smooth; }
+  /* ── WBS / Task new fields ── */
+  .layer-badge {
+    display: inline-block; padding: 2px 10px; border-radius: 12px;
+    font-size: 0.8em; font-weight: 600; margin-right: 8px;
+  }
+  .layer-0 { background: rgba(124,111,247,0.15); color: var(--c-accent2); }
+  .layer-1 { background: rgba(91,141,239,0.15); color: var(--c-accent); }
+  .layer-2 { background: rgba(52,211,153,0.15); color: var(--c-green); }
+  .layer-3 { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+  .layer-other { background: rgba(107,115,148,0.12); color: var(--c-muted); }
+  .file-list { list-style: none; padding: 0; margin: 0; }
+  .file-list li {
+    font-family: "JetBrains Mono", "Cascadia Code", monospace;
+    font-size: 0.88em; color: var(--c-accent);
+    padding: 3px 0; border-bottom: 1px solid var(--c-border);
+  }
+  .file-list li:last-child { border-bottom: none; }
+  .ref-table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+  .ref-table th, .ref-table td {
+    text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--c-border);
+  }
+  .ref-table th { color: var(--c-muted); font-weight: 500; font-size: 0.85em; }
+  .ac-item {
+    padding: 6px 10px; border-radius: 6px; margin-bottom: 4px;
+    border: 1px solid var(--c-border); font-size: 0.92em;
+  }
+  .ac-item .ac-vtype {
+    display: inline-block; padding: 1px 8px; border-radius: 4px;
+    font-size: 0.78em; font-weight: 600; margin-right: 6px;
+  }
+  .ac-vtype-precondition  { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+  .ac-vtype-postcondition { background: rgba(52,211,153,0.15); color: var(--c-green); }
+  .ac-vtype-http_status   { background: rgba(91,141,239,0.15); color: var(--c-accent); }
+  .ac-vtype-invariant     { background: rgba(239,68,68,0.12); color: var(--c-red); }
+  .ac-vtype-state_transition { background: rgba(124,111,247,0.13); color: var(--c-accent2); }
+  .ac-vtype-field_definition { background: rgba(34,211,238,0.12); color: var(--c-cyan); }
+  .upstream-item {
+    padding: 8px 12px; border-radius: 6px; margin-bottom: 6px;
+    background: rgba(52,211,153,0.06); border: 1px solid rgba(52,211,153,0.15);
+  }
+  .upstream-item .up-name { font-weight: 600; color: var(--c-heading); }
+  .scope-summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
+  .scope-card {
+    padding: 8px 12px; border-radius: 6px; border: 1px solid var(--c-border);
+    font-size: 0.9em;
+  }
+  .scope-card .sc-count { font-size: 1.4em; font-weight: 700; color: var(--c-accent); }
+  .scope-card .sc-label { color: var(--c-muted); font-size: 0.82em; }
   @media print {
     body { background: #fff; color: #222; }
     .section-body, .req-item, .story-item { background: #fff; border: 1px solid #ddd; }
@@ -2746,16 +2794,43 @@ def _render_wbs_aggregate(d: dict) -> str:
         deps = t.get("deps", [])
         deps_str = ", ".join(deps) if deps else "无"
         assignee = _esc(t.get("assignee", "未分配"))
+        layer = t.get("layer", 0)
+        exp_files = t.get("expected_output_files", [])
+        refs_count = len(t.get("lld_refs", []))
+        ac_count = len(t.get("acceptance_criteria", []))
+
+        LAYER_SHORT = {0: "M", 1: "S", 2: "E", 3: "T"}
+        layer_label = LAYER_SHORT.get(layer, str(layer))
+
+        meta_parts = [
+            f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;'
+            f'background:{prio_color};margin-right:4px"></span>'
+            f'{prio_label}',
+            f'<span class="layer-badge layer-{layer if layer in (0,1,2,3) else "other"}">L{layer}</span>',
+            f'{cat}',
+            f'{hours}h',
+            f'{assignee}',
+        ]
+        if refs_count:
+            meta_parts.append(f'{refs_count} LLD引用')
+        if ac_count:
+            meta_parts.append(f'{ac_count} 验收标准')
 
         parts.append(
             f'<div class="req-item">\n'
             f'  <h3>{i}. {name}</h3>\n'
-            f'  <div class="comp-type">'
-            f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;'
-            f'background:{prio_color};margin-right:4px"></span>'
-            f'{prio_label} · {cat} · {hours}h · {assignee}'
-            f'</div>\n'
+            f'  <div class="comp-type">{" · ".join(meta_parts)}</div>\n'
             f'  <p>{desc}</p>\n'
+        )
+
+        if exp_files:
+            file_items = "".join(f"<li>{_esc(f)}</li>" for f in exp_files[:5])
+            more = f" ... (+{len(exp_files) - 5})" if len(exp_files) > 5 else ""
+            parts.append(
+                f'  <ul class="file-list" style="margin:8px 0">{file_items}{more}</ul>\n'
+            )
+
+        parts.append(
             f'  <p><strong>依赖:</strong> {_esc(deps_str)}</p>\n'
             f'</div>'
         )
@@ -2824,10 +2899,26 @@ def _render_single_task(d: dict) -> str:
         f'</div>'
     )
 
+    # New fields
+    layer = d.get("layer", 0)
+    exp_files = d.get("expected_output_files", [])
+    lld_refs = d.get("lld_refs", [])
+    ac_list = d.get("acceptance_criteria", [])
+    ctx = d.get("context")
+
+    LAYER_LABELS = {0: "Model", 1: "Service", 2: "Endpoint", 3: "Test"}
+    LAYER_CSS = {0: "layer-0", 1: "layer-1", 2: "layer-2", 3: "layer-3"}
+
     # Key info
     parts.append(_section_header("📋", "基本信息", "rgba(91,141,239,0.12)"))
     parts.append(f"<p><strong>Task ID:</strong> {task_id}</p>")
     parts.append(f"<p><strong>模块:</strong> {module}</p>")
+    layer_label = LAYER_LABELS.get(layer, f"L{layer}")
+    layer_css = LAYER_CSS.get(layer, "layer-other")
+    parts.append(
+        f'<p><strong>层级:</strong> '
+        f'<span class="layer-badge {layer_css}">L{layer} — {layer_label}</span></p>'
+    )
     if est_h is not None:
         parts.append(f"<p><strong>预估工时:</strong> {est_h}h</p>")
     if act_h is not None:
@@ -2837,6 +2928,108 @@ def _render_single_task(d: dict) -> str:
     else:
         parts.append("<p><strong>依赖:</strong> 无</p>")
     parts.append(_SECTION_FOOT)
+
+    # Expected output files
+    if exp_files:
+        parts.append(_section_header("📁", "预期产出文件", "rgba(52,211,153,0.12)"))
+        parts.append('<ul class="file-list">')
+        for f in exp_files:
+            parts.append(f"<li>{_esc(f)}</li>")
+        parts.append("</ul>")
+        parts.append(_SECTION_FOOT)
+
+    # LLD references
+    if lld_refs:
+        parts.append(_section_header("🔗", f"LLD 设计追溯 ({len(lld_refs)} 项)", "rgba(124,111,247,0.12)"))
+        parts.append('<table class="ref-table"><thead><tr>'
+                     '<th>章节</th><th>条目</th><th>类型</th><th>子条目</th>'
+                     '</tr></thead><tbody>')
+        for ref in lld_refs:
+            section = _esc(ref.get("section", ""))
+            item = _esc(ref.get("item_name", ""))
+            atype = _esc(ref.get("artifact_type", ""))
+            sub = _esc(ref.get("sub_item") or "—")
+            parts.append(f"<tr><td>{section}</td><td>{item}</td>"
+                         f"<td><span class='badge'>{atype}</span></td>"
+                         f"<td>{sub}</td></tr>")
+        parts.append("</tbody></table>")
+        parts.append(_SECTION_FOOT)
+
+    # Acceptance criteria
+    if ac_list:
+        parts.append(_section_header("✓", f"验收标准 ({len(ac_list)} 项)", "rgba(34,197,94,0.12)"))
+        for ac in ac_list:
+            vtype = ac.get("verification_type", "")
+            desc = _esc(ac.get("description", ""))
+            expected = _esc(str(ac.get("expected", "")))
+            css_vtype = f"ac-vtype-{vtype}" if vtype else ""
+            parts.append(
+                f'<div class="ac-item">'
+                f'<span class="ac-vtype {css_vtype}">{_esc(vtype)}</span>'
+                f'{desc}'
+                f'</div>'
+            )
+        parts.append(_SECTION_FOOT)
+
+    # Context — scope summary
+    if ctx:
+        parts.append(_section_header("🎯", "设计上下文", "rgba(91,141,239,0.12)"))
+        scope = ctx.get("scope", {})
+        if scope:
+            parts.append('<div class="scope-summary">')
+            scope_sections = [
+                ("接口", len(scope.get("interfaces", []))),
+                ("数据模型", len(scope.get("data_models", []))),
+                ("领域对象", len(scope.get("domain_objects", []))),
+                ("服务契约", len(scope.get("service_contracts", []))),
+                ("业务规则", len(scope.get("business_rules", {}).get("invariants", []))
+                              + len(scope.get("business_rules", {}).get("state_machines", []))),
+                ("外部契约", len(ctx.get("external_contracts", []))),
+                ("技术栈", len(ctx.get("tech_stack", []))),
+            ]
+            for label, count in scope_sections:
+                if count:
+                    parts.append(
+                        f'<div class="scope-card">'
+                        f'<div class="sc-count">{count}</div>'
+                        f'<div class="sc-label">{label}</div>'
+                        f'</div>'
+                    )
+            parts.append("</div>")
+
+        # Cross-module deps
+        cross = ctx.get("cross_module_deps", [])
+        if cross:
+            parts.append("<p style='margin-top:10px'><strong>跨模块依赖:</strong> "
+                         f"{_esc(', '.join(cross))}</p>")
+
+        # Tech stack
+        tech = ctx.get("tech_stack", [])
+        if tech:
+            badges = " ".join(f'<span class="badge">{_esc(t)}</span>' for t in tech)
+            parts.append(f"<p style='margin-top:6px'>{badges}</p>")
+
+        # upstream_artifacts
+        upstream = ctx.get("upstream_artifacts", [])
+        if upstream:
+            parts.append("<p style='margin-top:10px'><strong>上游已完成产物:</strong></p>")
+            for up in upstream:
+                name = _esc(up.get("name", up.get("task_id", "?")))
+                cat = _esc(up.get("category", ""))
+                files = up.get("files", [])
+                file_str = "<br>".join(
+                    f'<code style="font-size:0.85em;color:var(--c-accent)">{_esc(f)}</code>'
+                    for f in files
+                )
+                parts.append(
+                    f'<div class="upstream-item">'
+                    f'<span class="up-name">{name}</span>'
+                    f'<span class="badge" style="margin-left:6px">{cat}</span>'
+                    f'<div style="margin-top:4px">{file_str}</div>'
+                    f'</div>'
+                )
+
+        parts.append(_SECTION_FOOT)
 
     # Description
     parts.append(_section_header("📝", "描述", "rgba(124,111,247,0.12)"))
