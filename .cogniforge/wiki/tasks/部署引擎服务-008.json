@@ -15,9 +15,96 @@
   "updated_at": "2026-05-22T12:37:30.366106",
   "result": null,
   "error": null,
-  "lld_refs": [],
+  "lld_refs": [
+    {
+      "module": "",
+      "doc_id": "",
+      "section": "service_contracts",
+      "item_name": "DeployExecutor",
+      "artifact_type": "service_contract",
+      "sub_item": null
+    }
+  ],
   "acceptance_criteria": [],
-  "context": null,
-  "expected_output_files": [],
-  "layer": 0
+  "context": {
+    "module_type": "service",
+    "lld_path": ".cogniforge/wiki/lld/部署引擎服务/lld-部署引擎服务-001.json",
+    "module_overview": "核心部署执行单元，负责在远程服务器上创建目录、传输文件、生成脚本和执行部署",
+    "scope": {
+      "data_models": [],
+      "domain_objects": [],
+      "interfaces": [],
+      "service_contracts": [
+        {
+          "name": "DeployExecutor",
+          "description": "部署任务执行器，负责编排远程部署的完整流程和回滚逻辑",
+          "methods": [
+            {
+              "name": "ExecuteAsync",
+              "signature": "(task: DeployTask) -> void",
+              "precondition": "task 已持久化且 status=pending；任务在异步协程中独立执行",
+              "postcondition": "按顺序执行：创建目录→传输文件→生成脚本→执行启动；所有步骤成功后 task.status=success；步骤失败时根据配置决定是否触发 Rollback；所有关键步骤结果写入 deploy_logs",
+              "description": "异步执行远程部署流程，依次完成五个阶段并实时更新状态和进度",
+              "exceptions": [
+                {
+                  "name": "SSHConnectionException",
+                  "trigger": "SSH 连接池连接远程服务器失败（超时/认证失败/主机不可达）",
+                  "http_status": 502
+                },
+                {
+                  "name": "FileTransferException",
+                  "trigger": "SFTP 文件传输过程中发生错误（磁盘不足/写入权限/网络中断）",
+                  "http_status": 502
+                },
+                {
+                  "name": "ScriptExecutionException",
+                  "trigger": "远程脚本执行返回非零退出码或超时未响应",
+                  "http_status": 502
+                },
+                {
+                  "name": "DirectoryCreationException",
+                  "trigger": "远程 mkdir 命令执行失败（权限不足/路径冲突）",
+                  "http_status": 502
+                }
+              ]
+            },
+            {
+              "name": "Rollback",
+              "signature": "(task: DeployTask) -> void",
+              "precondition": "task.status=failed 且远程服务器上存在上一版本的目录结构",
+              "postcondition": "更新 task.status=rollbacking；在远程服务器上切换 symlink 到上一版本目录；执行上一版本的 start.sh；成功则 task.status=rolled_back，失败则 task.status=rollback_failed",
+              "description": "部署失败后执行回滚，将远程服务器恢复到上一部署版本",
+              "exceptions": [
+                {
+                  "name": "RollbackFailedException",
+                  "trigger": "回滚过程中远程操作失败：上一版本目录不存在、symlink 切换失败、启动脚本执行失败",
+                  "http_status": 502
+                }
+              ]
+            }
+          ],
+          "repository_dependencies": []
+        }
+      ],
+      "business_rules": {},
+      "error_handling": {},
+      "extra_sections": {}
+    },
+    "external_contracts": [],
+    "cross_module_deps": [],
+    "tech_stack": [
+      "Go",
+      "Gin",
+      "Go 1.22+",
+      "PostgreSQL 15",
+      "golang.org/x/crypto/ssh",
+      "SSH (SFTP + 远程命令执行)",
+      "RESTful JSON API"
+    ],
+    "upstream_artifacts": []
+  },
+  "expected_output_files": [
+    "src/部署引擎服务/service/deployexecutor.go"
+  ],
+  "layer": 1
 }
