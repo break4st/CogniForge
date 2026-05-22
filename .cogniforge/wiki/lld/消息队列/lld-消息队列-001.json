@@ -4,73 +4,180 @@
     "type": "lld",
     "module_type": "infrastructure",
     "module": "消息队列",
-    "title": "消息队列详细设计 - 基于RabbitMQ的异步消息中间件",
+    "title": "LLD - 消息队列",
     "author": "design_agent",
-    "created": "2026-05-21T00:00:00Z"
+    "created": "2026-05-22 09:39"
   },
   "overview": {
-    "description": "基于RabbitMQ的异步消息中间件，用于部署任务的异步分发和服务间解耦，确保部署任务的可靠传递和处理。支持削峰填谷，平滑处理突发部署请求，提供消息重试和死信处理机制。",
-    "dependencies": ["部署编排服务", "SSH连接管理服务", "审计日志服务"],
-    "tech_stack": ["RabbitMQ", "Python"]
+    "description": "异步处理部署任务，解耦部署请求和实际执行，支持任务状态追踪",
+    "dependencies": [],
+    "tech_stack": ["RabbitMQ", "AMQP"]
   },
-  "data_models": [],
-  "interfaces": [
+  "data_models": [
     {
-      "name": "部署任务异步分发",
-      "method": "MQ",
-      "endpoint": "exchange: deploy.tasks / routing_key: deploy.file_transfer",
-      "description": "部署编排服务通过消息队列将文件传输和脚本执行任务异步分发给SSH连接管理服务，实现解耦和削峰。",
-      "parameters": [
-        {"name": "task_id", "type": "string", "description": "部署任务ID"},
-        {"name": "action", "type": "string", "description": "操作类型：file_transfer/script_exec/rollback"},
-        {"name": "environment_id", "type": "integer", "description": "环境ID"},
-        {"name": "file_path", "type": "string", "description": "部署包路径"},
-        {"name": "target_path", "type": "string", "description": "远程目标路径"},
-        {"name": "version", "type": "string", "description": "版本号"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "task_id": "string",
-          "status": "string",
-          "output": "string",
-          "error": "string"
-        }
-      },
-      "error_codes": [
-        {"code": 500, "message": "消息发送失败，RabbitMQ连接异常或channel不可用"}
+      "name": "QueueConfig",
+      "type": "config",
+      "ownership": "owned",
+      "description": "RabbitMQ 队列定义配置，包含队列名称、持久化策略、TTL 和最大长度",
+      "fields": [
+        {"name": "name", "type": "string", "required": true, "description": "队列名称"},
+        {"name": "durable", "type": "bool", "required": true, "description": "是否持久化到磁盘"},
+        {"name": "auto_delete", "type": "bool", "required": true, "description": "无消费者时是否自动删除"},
+        {"name": "ttl_seconds", "type": "int", "required": false, "description": "消息在队列中的 TTL（秒）"},
+        {"name": "max_length", "type": "int", "required": false, "description": "队列最大消息数"},
+        {"name": "dead_letter_exchange", "type": "string", "required": false, "description": "死信转发目标 Exchange"}
       ]
     },
     {
-      "name": "审计事件推送",
-      "method": "MQ",
-      "endpoint": "exchange: audit.events / routing_key: audit.*",
-      "description": "各微服务在处理操作前后通过消息队列异步发送审计事件到审计日志服务，确保审计记录不阻塞主业务流程。",
-      "parameters": [
-        {"name": "event_type", "type": "string", "description": "事件类型（deploy/rollback/create/delete等）"},
-        {"name": "actor", "type": "string", "description": "操作人用户名"},
-        {"name": "actor_id", "type": "integer", "description": "操作人ID"},
-        {"name": "action", "type": "string", "description": "操作描述"},
-        {"name": "target_type", "type": "string", "description": "目标对象类型（project/environment/deployment）"},
-        {"name": "target_id", "type": "integer", "description": "目标对象ID"},
-        {"name": "result", "type": "string", "description": "操作结果（success/failure）"},
-        {"name": "ip_address", "type": "string", "description": "请求IP地址"},
-        {"name": "timestamp", "type": "string", "description": "事件时间戳，datetime格式"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "received": "boolean",
-          "log_id": "string"
-        }
-      },
-      "error_codes": [
-        {"code": 500, "message": "消息发送失败，RabbitMQ连接异常或channel不可用"}
+      "name": "ExchangeConfig",
+      "type": "config",
+      "ownership": "owned",
+      "description": "RabbitMQ Exchange 定义配置",
+      "fields": [
+        {"name": "name", "type": "string", "required": true, "description": "Exchange 名称"},
+        {"name": "type", "type": "string", "required": true, "description": "Exchange 类型（direct/topic/fanout）"},
+        {"name": "durable", "type": "bool", "required": true, "description": "是否持久化"},
+        {"name": "auto_delete", "type": "bool", "required": true, "description": "无绑定关系时是否自动删除"}
+      ]
+    },
+    {
+      "name": "ConnectionConfig",
+      "type": "config",
+      "ownership": "owned",
+      "description": "RabbitMQ 连接配置，记录连接参数和超时设置",
+      "fields": [
+        {"name": "host", "type": "string", "required": true, "description": "RabbitMQ 服务器地址"},
+        {"name": "port", "type": "int", "required": true, "description": "AMQP 端口号"},
+        {"name": "username", "type": "string", "required": true, "description": "认证用户名"},
+        {"name": "vhost", "type": "string", "required": false, "description": "虚拟主机"},
+        {"name": "heartbeat_seconds", "type": "int", "required": false, "description": "心跳检测间隔（秒）"},
+        {"name": "connection_timeout_ms", "type": "int", "required": false, "description": "连接超时时间（毫秒）"}
       ]
     }
   ],
+  "interfaces": [
+    {
+      "name": "MQ健康检查",
+      "method": "INTERNAL",
+      "endpoint": "/health/mq",
+      "description": "检查 RabbitMQ 连接状态和队列健康状况",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "status": "string",
+          "connected": "bool",
+          "uptime": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 503, "message": "消息队列服务不可用"}
+      ]
+    },
+    {
+      "name": "发布部署任务",
+      "method": "MQ",
+      "endpoint": "exchange.deployment.task",
+      "description": "将部署任务消息发布到任务分发 Exchange，路由键 task.deploy",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "published": "bool",
+          "message_id": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 500, "message": "消息发布失败，连接或通道异常"}
+      ]
+    },
+    {
+      "name": "消费部署任务",
+      "method": "MQ",
+      "endpoint": "queue.deployment.task",
+      "description": "从部署任务队列消费待处理的任务，执行 SSH 部署操作",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "message": "object",
+          "ack_required": "bool"
+        }
+      },
+      "error_codes": []
+    },
+    {
+      "name": "发布状态变更事件",
+      "method": "MQ",
+      "endpoint": "exchange.deployment.status",
+      "description": "部署任务状态变更时发布通知事件，如 running/success/failed",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "published": "bool",
+          "message_id": "string"
+        }
+      },
+      "error_codes": []
+    },
+    {
+      "name": "消费状态变更事件",
+      "method": "MQ",
+      "endpoint": "queue.deployment.status",
+      "description": "消费部署任务状态变更事件，由 WebSocket 处理器转发至前端",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {}
+      },
+      "error_codes": []
+    },
+    {
+      "name": "发布日志事件",
+      "method": "MQ",
+      "endpoint": "exchange.deployment.log",
+      "description": "发布部署过程中的实时日志事件",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "published": "bool",
+          "message_id": "string"
+        }
+      },
+      "error_codes": []
+    },
+    {
+      "name": "消费日志事件",
+      "method": "MQ",
+      "endpoint": "queue.deployment.log",
+      "description": "消费部署日志事件，由 WebSocket 处理器推送到前端控制台",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {}
+      },
+      "error_codes": []
+    },
+    {
+      "name": "发布重试消息",
+      "method": "MQ",
+      "endpoint": "exchange.deployment.retry",
+      "description": "失败任务重试时发布重试消息",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "published": "bool",
+          "message_id": "string"
+        }
+      },
+      "error_codes": []
+    }
+  ],
   "error_handling": {
-    "strategy": "消息发布失败时自动重试，达到最大重试次数后丢弃并记录告警；消费失败时根据异常类型决定重试或转入死信队列；连接异常时自动重连并恢复channel。",
+    "strategy": "消息队列作为基础设施层组件，不直接暴露外部 API。连接异常时使用指数退避自动重连，消息处理失败时通过重试队列和死信队列兜底，人工通过 DLQ 管理界面干预处理。",
     "response_format": {
       "body": {
         "code": "integer",
@@ -80,124 +187,181 @@
     },
     "categories": [
       {
-        "code": "500",
-        "name": "消息发布失败",
-        "description": "MQ连接异常或channel异常导致消息无法发布，自动重试3次后记录告警日志"
-      },
-      {
-        "code": "500",
-        "name": "消息消费失败",
-        "description": "消费者nack或抛出异常，根据重试策略决定requeue或转入死信队列"
-      },
-      {
-        "code": "500",
+        "code": 503,
         "name": "连接异常",
-        "description": "RabbitMQ连接断开或超时，自动重连并恢复channel，期间消息缓存在生产者本地缓冲"
+        "description": "RabbitMQ 连接断开或不可达，触发自动重连机制，重连间隔按 1s/5s/30s 指数退避，重连上限 10 次后报不可恢复错误"
+      },
+      {
+        "code": 500,
+        "name": "消息发布失败",
+        "description": "消息发布到 Exchange 时通道异常或 Broker 拒绝，写入本地失败日志缓存队列，连接恢复后自动重发"
+      },
+      {
+        "code": 502,
+        "name": "消费处理异常",
+        "description": "消费者处理消息时抛出异常，nack 消息并重新入队，重试 3 次后投递到死信队列（queue.deployment.dlq）供人工排查"
       }
     ]
   },
   "topology": {
     "exchanges": [
       {
-        "name": "deploy.tasks",
+        "name": "exchange.deployment.task",
         "type": "direct",
         "durable": true,
         "bindings": [
-          {"queue": "deploy.tasks.ssh", "routing_key": "deploy.file_transfer"}
+          {"queue": "queue.deployment.task", "routing_key": "task.deploy"}
         ]
       },
       {
-        "name": "audit.events",
+        "name": "exchange.deployment.status",
         "type": "topic",
         "durable": true,
         "bindings": [
-          {"queue": "audit.events.logger", "routing_key": "audit.*"}
+          {"queue": "queue.deployment.status", "routing_key": "status.#"}
         ]
       },
       {
-        "name": "dlx.global",
+        "name": "exchange.deployment.log",
+        "type": "topic",
+        "durable": true,
+        "bindings": [
+          {"queue": "queue.deployment.log", "routing_key": "log.#"}
+        ]
+      },
+      {
+        "name": "exchange.deployment.retry",
+        "type": "direct",
+        "durable": true,
+        "bindings": [
+          {"queue": "queue.deployment.retry", "routing_key": "retry.deploy"}
+        ]
+      },
+      {
+        "name": "exchange.dlx",
         "type": "fanout",
         "durable": true,
         "bindings": [
-          {"queue": "dead.letter.queue", "routing_key": ""}
+          {"queue": "queue.deployment.dlq"}
         ]
       }
     ],
     "queues": [
       {
-        "name": "deploy.tasks.ssh",
+        "name": "queue.deployment.task",
         "durable": true,
         "ttl_seconds": 86400,
         "max_length": 10000
       },
       {
-        "name": "audit.events.logger",
+        "name": "queue.deployment.status",
         "durable": true,
-        "ttl_seconds": 604800,
+        "ttl_seconds": 43200,
         "max_length": 50000
       },
       {
-        "name": "dead.letter.queue",
+        "name": "queue.deployment.log",
         "durable": true,
-        "ttl_seconds": 2592000,
+        "ttl_seconds": 43200,
         "max_length": 100000
+      },
+      {
+        "name": "queue.deployment.retry",
+        "durable": true,
+        "ttl_seconds": 259200,
+        "max_length": 5000
+      },
+      {
+        "name": "queue.deployment.dlq",
+        "durable": true,
+        "ttl_seconds": 604800,
+        "max_length": 10000
       }
     ],
     "producer_consumer_map": [
       {
         "producer": "部署编排服务",
-        "consumer": "SSH连接管理服务",
-        "exchange": "deploy.tasks"
+        "consumer": "部署编排服务",
+        "exchange": "exchange.deployment.task"
       },
       {
-        "producer": "所有微服务",
-        "consumer": "审计日志服务",
-        "exchange": "audit.events"
+        "producer": "部署编排服务",
+        "consumer": "Web控制台",
+        "exchange": "exchange.deployment.status"
+      },
+      {
+        "producer": "部署编排服务",
+        "consumer": "Web控制台",
+        "exchange": "exchange.deployment.log"
       }
     ]
   },
   "message_contracts": [
     {
-      "name": "DeployTaskMessage",
-      "exchange": "deploy.tasks",
-      "routing_key": "deploy.file_transfer",
+      "name": "DeploymentTaskMessage",
+      "exchange": "exchange.deployment.task",
+      "routing_key": "task.deploy",
       "schema": {
         "task_id": "string",
-        "action": "string",
-        "environment_id": "integer",
+        "project_id": "string",
+        "environment_id": "string",
+        "version": "string",
         "file_path": "string",
-        "target_path": "string",
-        "version": "string"
+        "created_at": "string"
       },
-      "required_fields": ["task_id", "action", "environment_id", "target_path", "version"],
+      "required_fields": ["task_id", "project_id", "environment_id", "version"],
       "max_size_bytes": 1048576
     },
     {
-      "name": "AuditEventMessage",
-      "exchange": "audit.events",
-      "routing_key": "audit.*",
+      "name": "TaskStatusEvent",
+      "exchange": "exchange.deployment.status",
+      "routing_key": "status.#",
       "schema": {
-        "event_type": "string",
-        "actor": "string",
-        "actor_id": "integer",
-        "action": "string",
-        "target_type": "string",
-        "target_id": "integer",
-        "result": "string",
-        "ip_address": "string",
+        "task_id": "string",
+        "project_id": "string",
+        "status": "string",
+        "step": "string",
+        "message": "string",
         "timestamp": "string"
       },
-      "required_fields": ["event_type", "actor", "actor_id", "action", "target_type", "target_id", "result", "timestamp"],
+      "required_fields": ["task_id", "status", "timestamp"],
+      "max_size_bytes": 524288
+    },
+    {
+      "name": "LogEvent",
+      "exchange": "exchange.deployment.log",
+      "routing_key": "log.#",
+      "schema": {
+        "task_id": "string",
+        "type": "string",
+        "message": "string",
+        "step": "string",
+        "timestamp": "string"
+      },
+      "required_fields": ["task_id", "type", "timestamp"],
       "max_size_bytes": 1048576
+    },
+    {
+      "name": "RetryDeployMessage",
+      "exchange": "exchange.deployment.retry",
+      "routing_key": "retry.deploy",
+      "schema": {
+        "original_task_id": "string",
+        "retry_count": "int",
+        "last_error": "string",
+        "next_retry_at": "string"
+      },
+      "required_fields": ["original_task_id", "retry_count"],
+      "max_size_bytes": 524288
     }
   ],
   "reliability_strategy": {
-    "ack_mode": "manual（消费者处理完成后手动ack，处理失败时nack并决定requeue或死信）",
+    "ack_mode": "manual",
     "retry": {
       "max_retries": 3,
-      "backoff": "exponential（1s → 3s → 9s，通过死信队列的x-message-ttl实现延迟重投）"
+      "backoff": "exponential"
     },
-    "dead_letter": "dlx.global死信交换机，所有重试耗尽的消息路由到dead.letter.queue，支持人工重投和监控告警",
-    "idempotency": "生产者通过消息唯一ID（message_id UUID）去重；消费者通过task_id（部署任务）或(event_type, actor_id, timestamp)组合（审计事件）作为幂等键，确保重复消费不产生副作用"
+    "dead_letter": "queue.deployment.dlq",
+    "idempotency": "基于 task_id 去重，消费者在处理前查询 deployment_tasks 表中该 task_id 的当前状态，已完成状态直接 ack 跳过，避免重复执行"
   }
 }
