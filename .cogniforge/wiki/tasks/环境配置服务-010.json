@@ -15,9 +15,191 @@
   "updated_at": "2026-05-22T15:03:21.086145",
   "result": null,
   "error": null,
-  "lld_refs": [],
+  "lld_refs": [
+    {
+      "module": "",
+      "doc_id": "",
+      "section": "service_contracts",
+      "item_name": "EnvironmentService",
+      "artifact_type": "service_contract",
+      "sub_item": null
+    }
+  ],
   "acceptance_criteria": [],
-  "context": null,
-  "expected_output_files": [],
-  "layer": 0
+  "context": {
+    "module_type": "service",
+    "lld_path": ".cogniforge/wiki/lld/环境配置服务/lld-环境配置服务-001.json",
+    "module_overview": "部署环境配置管理服务，维护远程服务器连接参数和环境状态，提供环境的CRUD操作、连接测试、状态管理以及与项目的关联查询能力。所有环境配置数据持久化在 PostgreSQL 主数据库中，SSH 连接测试依赖 SSH 连接池服务和密钥管理服务",
+    "scope": {
+      "data_models": [],
+      "domain_objects": [],
+      "interfaces": [],
+      "service_contracts": [
+        {
+          "name": "EnvironmentService",
+          "description": "部署环境配置的核心领域服务，提供环境的完整 CRUD、SSH 连接测试以及项目关联查询能力",
+          "methods": [
+            {
+              "name": "create_environment",
+              "signature": "(request: EnvironmentCreateRequest, actor: String) -> Environment",
+              "precondition": "EnvironmentCreateRequest 所有必填字段已通过格式校验；key_id 必须对应 ssh_keys 表中一条有效（未删除）的记录",
+              "postcondition": "新环境记录已持久化到 environments 表，status 为 unknown；审计日志已通过 POST /api/audit/logs 写入",
+              "description": "创建新的部署环境，校验名称唯一性和密钥有效性后持久化到数据库",
+              "exceptions": [
+                {
+                  "name": "DuplicateNameError",
+                  "trigger": "同名的环境记录已存在（含已软删除），名称冲突",
+                  "http_status": 409
+                },
+                {
+                  "name": "InvalidKeyError",
+                  "trigger": "key_id 引用的 SSH 密钥不存在或已被删除",
+                  "http_status": 422
+                }
+              ]
+            },
+            {
+              "name": "get_environment",
+              "signature": "(environment_id: UUID) -> Environment",
+              "precondition": "environment_id 不能为空",
+              "postcondition": "返回匹配的环境实体；若不存在则抛出异常",
+              "description": "按 ID 查询部署环境详情，仅返回未软删除的记录",
+              "exceptions": [
+                {
+                  "name": "EnvironmentNotFoundError",
+                  "trigger": "指定 ID 的环境记录不存在或已被软删除",
+                  "http_status": 404
+                }
+              ]
+            },
+            {
+              "name": "list_environments",
+              "signature": "() -> List[Environment]",
+              "precondition": "无",
+              "postcondition": "返回所有未被软删除的环境列表，按 created_at 倒序排列",
+              "description": "获取所有可用部署环境列表",
+              "exceptions": []
+            },
+            {
+              "name": "update_environment",
+              "signature": "(environment_id: UUID, updates: EnvironmentUpdateRequest, actor: String) -> Environment",
+              "precondition": "environment_id 对应的环境必须存在且未删除；updates 中提供的字段均已通过格式校验",
+              "postcondition": "环境记录已更新，updated_at 刷新为当前时间；如果 key_id 被修改则 status 重置为 unknown；审计日志已写入",
+              "description": "更新指定环境的配置参数，支持部分字段更新",
+              "exceptions": [
+                {
+                  "name": "EnvironmentNotFoundError",
+                  "trigger": "指定 ID 的环境不存在或已被删除",
+                  "http_status": 404
+                },
+                {
+                  "name": "DuplicateNameError",
+                  "trigger": "修改后的名称与其他已存在的环境重复",
+                  "http_status": 409
+                },
+                {
+                  "name": "InvalidKeyError",
+                  "trigger": "修改后的 key_id 引用的密钥不存在",
+                  "http_status": 422
+                }
+              ]
+            },
+            {
+              "name": "delete_environment",
+              "signature": "(environment_id: UUID, actor: String) -> void",
+              "precondition": "environment_id 对应的环境必须存在且未删除；该环境不能关联任何状态为 pending/running 的部署记录",
+              "postcondition": "环境记录已软删除（deleted_at 设为当前时间），不可再用于部署；审计日志已写入",
+              "description": "软删除指定的部署环境，如环境存在活跃部署则拒绝删除",
+              "exceptions": [
+                {
+                  "name": "EnvironmentNotFoundError",
+                  "trigger": "指定 ID 的环境不存在或已被删除",
+                  "http_status": 404
+                },
+                {
+                  "name": "EnvironmentInUseError",
+                  "trigger": "该环境仍关联了活跃（pending/running）的部署任务",
+                  "http_status": 409
+                }
+              ]
+            },
+            {
+              "name": "test_connection",
+              "signature": "(environment_id: UUID) -> ConnectionTestResponse",
+              "precondition": "environment_id 对应的环境必须存在且未删除；该环境关联的密钥必须有效",
+              "postcondition": "环境 status 已根据 SSH 连接测试结果更新为 online 或 offline；测试结果（延时、消息）已返回；审计日志已写入",
+              "description": "测试指定环境的 SSH 连接可达性，通过 SSH 连接池服务建立连接，更新环境状态并返回测试结果",
+              "exceptions": [
+                {
+                  "name": "EnvironmentNotFoundError",
+                  "trigger": "指定 ID 的环境不存在或已被删除",
+                  "http_status": 404
+                },
+                {
+                  "name": "SshConnectionPoolError",
+                  "trigger": "SSH 连接池服务调用失败、超时或返回异常",
+                  "http_status": 503
+                },
+                {
+                  "name": "KeyRetrievalError",
+                  "trigger": "从密钥管理服务获取解密后的密钥失败",
+                  "http_status": 503
+                }
+              ]
+            },
+            {
+              "name": "get_environments_by_project",
+              "signature": "(project_id: UUID) -> List[Environment]",
+              "precondition": "project_id 不能为空",
+              "postcondition": "返回与指定项目关联的所有未删除环境列表，按绑定时间正序排列",
+              "description": "通过 project_environments 关联表查询与指定项目绑定的所有部署环境",
+              "exceptions": []
+            },
+            {
+              "name": "update_environment_status",
+              "signature": "(environment_id: UUID, new_status: EnvironmentStatus) -> void",
+              "precondition": "environment_id 对应的环境存在且未删除；new_status 必须是合法的 EnvironmentStatus 值",
+              "postcondition": "环境的 status 字段已更新为指定值，updated_at 已刷新",
+              "description": "内部方法，由连接测试逻辑调用以更新环境的连接状态",
+              "exceptions": [
+                {
+                  "name": "EnvironmentNotFoundError",
+                  "trigger": "指定 ID 的环境不存在或已被删除",
+                  "http_status": 404
+                }
+              ]
+            }
+          ],
+          "repository_dependencies": [
+            "findById(id: UUID) -> Environment?",
+            "findByName(name: String) -> Environment?",
+            "findAllActive() -> List[Environment]",
+            "findByProjectId(projectId: UUID) -> List[Environment]",
+            "save(environment: Environment) -> Environment",
+            "update(environment: Environment) -> Environment",
+            "softDeleteById(id: UUID) -> void",
+            "countActiveDeploymentsByEnvironmentId(envId: UUID) -> Long"
+          ]
+        }
+      ],
+      "business_rules": {},
+      "error_handling": {},
+      "extra_sections": {}
+    },
+    "external_contracts": [],
+    "cross_module_deps": [],
+    "tech_stack": [
+      "Python",
+      "FastAPI",
+      "PostgreSQL 15",
+      "REST",
+      "JWT",
+      "Paramiko"
+    ],
+    "upstream_artifacts": []
+  },
+  "expected_output_files": [
+    "src/环境配置服务/service/environmentservice.go"
+  ],
+  "layer": 1
 }
