@@ -2,696 +2,611 @@
   "meta": {
     "doc_id": "sad-001",
     "type": "sad",
-    "title": "自动化部署系统",
+    "title": "自动化部署系统架构设计",
     "author": "architect_agent",
-    "created": "2026-05-22 10:47"
+    "created": "2026-05-22 11:15",
+    "version": 1
   },
   "system_overview": {
-    "description": "自动化部署系统实现将打包好的可执行文件一键部署到远程服务器的功能。支持用户自定义多套部署环境（测试线、灰度线、正式线），通过SSH密钥配置安全连接，自动在远程服务器上创建版本文件夹并生成执行脚本，实现一键式自动化部署。同时支持多项目管理，每个项目拥有独立的部署环境配置，满足多项目并行管理的需求。",
+    "description": "本系统为一站式自动化部署平台，实现对打包好的可执行文件向远程服务器的自动化部署。系统采用 B/S 架构，提供 Web 控制台操作界面，后端通过 SSH 协议与目标服务器交互。支持多项目、多环境（测试线/灰度线/正式线）的灵活管理，每个环境独立配置 SSH 密钥认证，部署时自动创建版本目录并生成执行脚本，实现一键式部署。",
     "roles": [
       {
         "name": "运维人员",
         "permissions": [
-          "创建、编辑、删除部署环境",
-          "为每套环境配置SSH密钥安全连接",
-          "测试环境连接有效性",
-          "标记环境类型（测试/灰度/正式）"
+          "创建/编辑/删除部署环境",
+          "配置 SSH 密钥和连接参数",
+          "测试环境连接",
+          "查看部署日志"
         ]
       },
       {
         "name": "开发人员",
         "permissions": [
-          "选择目标项目和部署环境",
-          "选择版本进行一键部署",
-          "查看部署状态和执行日志"
+          "查看项目和环境列表",
+          "选择项目和环境进行部署",
+          "上传可执行文件包",
+          "查看部署进度和日志"
         ]
       },
       {
         "name": "项目经理",
         "permissions": [
-          "创建、编辑、删除项目",
-          "跨项目查看所有部署状态",
-          "管理项目成员权限"
+          "创建/编辑/删除项目",
+          "查看项目部署历史",
+          "跨项目切换管理",
+          "查看项目总体状态"
         ]
       }
     ]
   },
   "architecture": {
-    "style": "分层微服务架构",
-    "description": "系统采用前后端分离的分层微服务架构。前端提供Web控制台交互界面；API网关统一接入请求路由和认证；后端按业务域拆分为项目管理、环境管理、部署执行、密钥管理、审计日志等微服务；数据层采用PostgreSQL持久化存储。部署执行服务通过SSH连接池与远程服务器通信，实现自动化部署。",
+    "style": "分层单体架构 + 前后端分离",
+    "description": "系统采用前后端分离的分层架构。前端为 SPA 单页应用，通过 REST API 与后端通信。后端采用分层结构：接入层（API 控制器）→ 业务服务层 → 基础设施层。业务服务层内部按领域划分为项目管理、环境管理、部署引擎、密钥管理四大核心模块。基础设施层封装 SSH 连接池、文件存储和审计日志等通用能力。这种分层方式在保持较小部署单元的同时，确保各领域逻辑的清晰边界和可测试性。",
     "layers": [
       {
-        "name": "接入层",
+        "name": "表现层",
         "components": [
           "Web控制台"
         ]
       },
       {
-        "name": "网关层",
+        "name": "接入层",
         "components": [
-          "API网关"
+          "API网关",
+          "认证中间件"
         ]
       },
       {
-        "name": "服务层",
+        "name": "业务服务层",
         "components": [
           "项目管理服务",
           "环境管理服务",
-          "部署执行服务",
-          "密钥管理服务",
-          "审计日志服务"
-        ]
-      },
-      {
-        "name": "数据层",
-        "components": [
-          "PostgreSQL数据库"
+          "部署引擎服务",
+          "密钥管理服务"
         ]
       },
       {
         "name": "基础设施层",
         "components": [
-          "SSH连接池"
+          "SSH连接池",
+          "文件存储服务",
+          "审计日志服务",
+          "数据库"
         ]
       }
     ],
     "connections": [
       {
-        "protocol": "HTTPS/REST"
+        "protocol": "REST over HTTPS"
       },
       {
-        "protocol": "REST/gRPC"
+        "protocol": "REST over HTTPS（内部 RPC）"
       },
       {
-        "protocol": "SQL"
-      },
-      {
-        "protocol": "SSH"
+        "protocol": "SQL / SSH / 文件 I/O"
       }
     ],
     "features": [
-      "前后端分离，独立部署和扩展",
-      "微服务架构，各服务独立演进",
-      "API网关统一入口，安全管控",
-      "SSH密钥安全存储，加密传输",
-      "异步部署任务，支持状态追踪",
-      "完整审计日志，操作可追溯"
+      "前后端分离，Web 控制台通过 REST API 驱动",
+      "业务按领域划分，四类核心服务职责单一",
+      "SSH 连接池化管理，复用连接降低开销",
+      "所有操作写入审计日志，满足可审核性要求",
+      "密钥存储与使用分离，密钥管理服务专责加密存储",
+      "部署引擎可独立扩展，支持异步部署任务队列"
     ]
   },
   "tech_stack": {
     "backend": {
-      "language": "Python",
-      "framework": "FastAPI"
+      "language": "Go",
+      "framework": "Gin",
+      "runtime": "Go 1.22+"
     },
     "frontend": {
       "framework": "Vue 3",
-      "ui_library": "Element Plus"
+      "ui_library": "Element Plus",
+      "build_tool": "Vite"
     },
     "database": "PostgreSQL 15",
     "cache": "Redis 7",
-    "mq": "RabbitMQ",
-    "ssh": "paramiko"
+    "ssh_library": "golang.org/x/crypto/ssh",
+    "deploy_protocol": "SSH (SFTP + 远程命令执行)",
+    "api_style": "RESTful JSON API"
   },
   "components": [
     {
       "name": "Web控制台",
       "type": "frontend",
-      "description": "用户交互界面，提供项目管理、环境管理、部署操作等功能页面",
+      "description": "浏览器端 SPA 应用，提供项目、环境、部署管理的可视化操作界面",
       "responsibilities": [
-        "项目创建、编辑、删除、切换",
-        "部署环境配置管理",
-        "SSH密钥上传和管理",
-        "部署触发和状态可视化",
-        "部署历史日志查看"
+        "项目列表展示与切换",
+        "部署环境配置表单",
+        "SSH 密钥上传/粘贴配置",
+        "部署操作触发与进度展示",
+        "部署日志实时查看"
       ]
     },
     {
       "name": "API网关",
       "type": "gateway",
-      "description": "统一API入口，负责请求路由、认证鉴权、流量控制",
+      "description": "REST API 统一入口，负责请求路由、认证鉴权、请求校验和响应封装",
       "responsibilities": [
-        "请求路由转发到对应微服务",
-        "用户身份认证和权限校验",
-        "请求日志记录",
-        "限流和熔断保护"
+        "请求路由分发到对应业务服务",
+        "统一身份认证与会话管理",
+        "请求参数校验与错误格式化",
+        "跨域处理和限流"
+      ]
+    },
+    {
+      "name": "认证中间件",
+      "type": "gateway",
+      "description": "嵌入在 API 网关中的认证拦截模块，验证用户的登录会话和操作权限",
+      "responsibilities": [
+        "用户会话 Token 校验",
+        "请求身份解析和注入上下文",
+        "基于角色的操作鉴权",
+        "未授权请求拦截"
       ]
     },
     {
       "name": "项目管理服务",
       "type": "service",
-      "description": "负责项目维度的CRUD操作和项目管理逻辑",
+      "description": "管理项目生命周期，维护项目及其关联的环境和部署记录",
       "responsibilities": [
-        "创建、编辑、删除项目",
-        "项目列表查询和详情展示",
-        "项目下环境关联管理",
-        "项目基础信息维护"
+        "项目的创建、编辑、删除",
+        "项目列表查询和当前项目切换",
+        "项目-环境关联关系维护",
+        "项目部署历史记录查询"
       ]
     },
     {
       "name": "环境管理服务",
       "type": "service",
-      "description": "管理多套部署环境的配置信息，包括环境类型和服务器连接参数",
+      "description": "管理部署环境的配置，包括服务器地址、端口、认证方式等",
       "responsibilities": [
         "环境的创建、编辑、删除",
-        "环境类型标签管理（测试/灰度/正式）",
-        "服务器连接参数配置",
-        "环境与项目关联关系管理",
-        "连接可用性测试"
-      ]
-    },
-    {
-      "name": "部署执行服务",
-      "type": "service",
-      "description": "核心部署引擎，负责上传文件到远程服务器并生成部署脚本",
-      "responsibilities": [
-        "接收部署请求并创建部署任务",
-        "通过SSH连接池建立远程连接",
-        "在远程服务器创建版本目录",
-        "上传可执行文件到远程服务器",
-        "自动生成启动/停止/重启脚本",
-        "更新部署状态和进度反馈"
+        "环境连接参数配置（地址、端口）",
+        "环境与密钥的绑定关系管理",
+        "环境连通性测试"
       ]
     },
     {
       "name": "密钥管理服务",
       "type": "service",
-      "description": "安全管理SSH密钥和敏感凭证，提供加密存储和访问控制",
+      "description": "安全存储和管理 SSH 密钥，提供密钥的上传、绑定和验证功能",
       "responsibilities": [
-        "SSH密钥的安全加密存储",
-        "密钥与部署环境关联绑定",
-        "密钥生命周期管理（创建、轮换、吊销）",
-        "密钥访问权限控制",
-        "密钥解密传递给部署服务"
+        "SSH 密钥的安全存储（加密后落库）",
+        "密钥与环境的绑定管理",
+        "密钥有效性验证",
+        "部署时提供解密后的密钥会话"
+      ]
+    },
+    {
+      "name": "部署引擎服务",
+      "type": "service",
+      "description": "核心部署执行单元，负责在远程服务器上创建目录、传输文件、生成脚本和执行部署",
+      "responsibilities": [
+        "接收部署请求并解析部署参数",
+        "在远程服务器创建版本化目录结构",
+        "上传可执行文件包到远程服务器",
+        "生成启动/停止/重启执行脚本",
+        "实时回传部署进度和日志",
+        "处理部署失败的回滚逻辑"
+      ]
+    },
+    {
+      "name": "SSH连接池",
+      "type": "service",
+      "description": "管理到远程服务器的 SSH 连接，提供连接复用和生命周期管理",
+      "responsibilities": [
+        "SSH 连接的创建、复用和销毁",
+        "连接健康检测和自动重连",
+        "连接超时管理",
+        "并发连接数控制"
+      ]
+    },
+    {
+      "name": "文件存储服务",
+      "type": "service",
+      "description": "存储用户上传的可执行文件包，支持版本化管理和按需下载",
+      "responsibilities": [
+        "可执行文件包的上传和存储",
+        "文件版本化管理",
+        "部署时按需提供文件下载",
+        "存储空间配额管理"
       ]
     },
     {
       "name": "审计日志服务",
       "type": "service",
-      "description": "记录系统所有关键操作的审计日志，确保操作可追溯",
+      "description": "记录系统中所有关键操作的审计日志，确保操作可追溯",
       "responsibilities": [
-        "记录用户登录和操作日志",
-        "记录部署操作的完整生命周期",
-        "记录密钥管理操作",
-        "审计日志的查询和导出"
+        "记录项目的创建/修改/删除操作",
+        "记录环境配置变更和密钥操作",
+        "记录每次部署的全流程日志",
+        "日志的持久化存储和查询"
       ]
     },
     {
-      "name": "PostgreSQL数据库",
+      "name": "数据库",
       "type": "database",
-      "description": "关系型数据库，集中存储所有业务数据",
+      "description": "关系型数据库，存储项目、环境、密钥、部署记录和审计日志等持久化数据",
       "responsibilities": [
-        "项目信息持久化存储",
-        "环境配置信息存储",
-        "SSH密钥密文存储",
-        "部署记录和历史日志存储",
-        "审计日志持久化"
-      ]
-    },
-    {
-      "name": "SSH连接池",
-      "type": "infrastructure",
-      "description": "管理到远程服务器的SSH连接池，复用连接提高效率",
-      "responsibilities": [
-        "SSH连接建立和维护",
-        "连接池复用管理",
-        "连接健康检查和自动重连",
-        "文件传输（SCP/SFTP）",
-        "远程命令执行"
+        "项目数据的持久化存储",
+        "环境配置数据存储",
+        "加密后的密钥信息存储",
+        "部署记录和审计日志存储",
+        "数据完整性约束和事务支持"
       ]
     }
   ],
   "contracts": [
     {
-      "interface": "创建部署任务",
-      "provider": "API网关",
+      "interface": "创建项目",
+      "provider": "项目管理服务",
       "consumers": [
         "Web控制台"
       ],
       "type": "REST",
-      "endpoint": "POST /api/deployments",
+      "endpoint": "POST /api/v1/projects",
       "request": {
         "path_params": [],
         "query_params": [],
         "body": {
-          "project_id": {
-            "type": "string",
-            "description": "目标项目ID"
-          },
-          "environment_id": {
-            "type": "string",
-            "description": "目标环境ID"
-          },
-          "version": {
-            "type": "string",
-            "description": "部署版本号"
-          },
-          "artifact_path": {
-            "type": "string",
-            "description": "可执行文件路径或上传文件"
-          }
+          "name": "string",
+          "identifier": "string"
         }
       },
       "response": {
         "status": 201,
         "body": {
-          "deployment_id": {
-            "type": "string",
-            "description": "部署任务ID"
-          },
-          "status": {
-            "type": "string",
-            "description": "初始状态 pending"
-          },
-          "created_at": {
-            "type": "datetime",
-            "description": "创建时间"
-          }
+          "id": "integer",
+          "name": "string",
+          "identifier": "string",
+          "created_at": "datetime"
         }
       },
-      "description": "开发人员通过Web控制台触发一键部署，API网关认证后转发到部署执行服务"
+      "description": "创建新项目，返回项目基本信息"
+    },
+    {
+      "interface": "获取项目列表",
+      "provider": "项目管理服务",
+      "consumers": [
+        "Web控制台"
+      ],
+      "type": "REST",
+      "endpoint": "GET /api/v1/projects",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "projects": "array<object>",
+          "total": "integer"
+        }
+      },
+      "description": "获取当前用户可访问的所有项目列表"
+    },
+    {
+      "interface": "创建环境",
+      "provider": "环境管理服务",
+      "consumers": [
+        "Web控制台"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/v1/projects/:pid/environments",
+      "request": {
+        "path_params": [
+          "pid: integer"
+        ],
+        "query_params": [],
+        "body": {
+          "name": "string",
+          "server_host": "string",
+          "server_port": "integer",
+          "description": "string"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "integer",
+          "project_id": "integer",
+          "name": "string",
+          "server_host": "string",
+          "server_port": "integer",
+          "status": "string",
+          "created_at": "datetime"
+        }
+      },
+      "description": "为指定项目创建新的部署环境"
+    },
+    {
+      "interface": "绑定密钥",
+      "provider": "密钥管理服务",
+      "consumers": [
+        "Web控制台"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/v1/environments/:eid/keys",
+      "request": {
+        "path_params": [
+          "eid: integer"
+        ],
+        "query_params": [],
+        "body": {
+          "key_name": "string",
+          "private_key": "string",
+          "passphrase": "string"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "key_id": "integer",
+          "environment_id": "integer",
+          "fingerprint": "string",
+          "bound_at": "datetime"
+        }
+      },
+      "description": "上传 SSH 密钥并与指定环境绑定"
+    },
+    {
+      "interface": "测试连接",
+      "provider": "环境管理服务",
+      "consumers": [
+        "Web控制台"
+      ],
+      "type": "REST",
+      "endpoint": "GET /api/v1/environments/:eid/test",
+      "request": {
+        "path_params": [
+          "eid: integer"
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "reachable": "boolean",
+          "latency_ms": "integer",
+          "server_info": "string",
+          "error": "string"
+        }
+      },
+      "description": "测试指定环境的 SSH 连通性"
+    },
+    {
+      "interface": "发起部署",
+      "provider": "部署引擎服务",
+      "consumers": [
+        "Web控制台"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/v1/deploy",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "project_id": "integer",
+          "environment_id": "integer",
+          "file_package_id": "integer",
+          "version": "string",
+          "description": "string"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "task_id": "integer",
+          "status": "string",
+          "created_at": "datetime"
+        }
+      },
+      "description": "创建部署任务，异步执行部署操作"
     },
     {
       "interface": "查询部署状态",
-      "provider": "API网关",
+      "provider": "部署引擎服务",
       "consumers": [
         "Web控制台"
       ],
       "type": "REST",
-      "endpoint": "GET /api/deployments/{deployment_id}",
+      "endpoint": "GET /api/v1/deploy/:taskId/status",
       "request": {
         "path_params": [
-          {
-            "name": "deployment_id",
-            "type": "string",
-            "description": "部署任务ID"
-          }
+          "taskId: integer"
         ],
         "query_params": [],
-        "body": null
+        "body": {}
       },
       "response": {
         "status": 200,
         "body": {
-          "id": {
-            "type": "string",
-            "description": "部署任务ID"
-          },
-          "status": {
-            "type": "string",
-            "description": "部署状态 pending/running/success/failed"
-          },
-          "project_id": {
-            "type": "string",
-            "description": "项目ID"
-          },
-          "environment_id": {
-            "type": "string",
-            "description": "环境ID"
-          },
-          "version": {
-            "type": "string",
-            "description": "部署版本"
-          },
-          "steps": {
-            "type": "array",
-            "description": "部署步骤列表及状态"
-          },
-          "logs": {
-            "type": "string",
-            "description": "执行日志"
-          },
-          "created_at": {
-            "type": "datetime",
-            "description": "创建时间"
-          },
-          "updated_at": {
-            "type": "datetime",
-            "description": "最后更新时间"
-          }
+          "task_id": "integer",
+          "status": "string",
+          "progress": "integer",
+          "current_step": "string",
+          "logs": "array<string>",
+          "started_at": "datetime",
+          "completed_at": "datetime",
+          "error": "string"
         }
       },
-      "description": "Web控制台轮询或用户手动刷新部署状态和日志"
+      "description": "轮询查询部署任务的当前状态和实时日志"
     },
     {
-      "interface": "创建项目",
-      "provider": "API网关",
+      "interface": "远程连接测试",
+      "provider": "SSH连接池",
       "consumers": [
-        "Web控制台"
-      ],
-      "type": "REST",
-      "endpoint": "POST /api/projects",
-      "request": {
-        "path_params": [],
-        "query_params": [],
-        "body": {
-          "name": {
-            "type": "string",
-            "description": "项目名称"
-          },
-          "description": {
-            "type": "string",
-            "description": "项目描述"
-          }
-        }
-      },
-      "response": {
-        "status": 201,
-        "body": {
-          "id": {
-            "type": "string",
-            "description": "项目ID"
-          },
-          "name": {
-            "type": "string",
-            "description": "项目名称"
-          },
-          "description": {
-            "type": "string",
-            "description": "项目描述"
-          },
-          "created_at": {
-            "type": "datetime",
-            "description": "创建时间"
-          }
-        }
-      },
-      "description": "项目经理创建新项目，API网关转发到项目管理服务"
-    },
-    {
-      "interface": "创建部署环境",
-      "provider": "API网关",
-      "consumers": [
-        "Web控制台"
-      ],
-      "type": "REST",
-      "endpoint": "POST /api/environments",
-      "request": {
-        "path_params": [],
-        "query_params": [],
-        "body": {
-          "project_id": {
-            "type": "string",
-            "description": "所属项目ID"
-          },
-          "name": {
-            "type": "string",
-            "description": "环境名称"
-          },
-          "type": {
-            "type": "string",
-            "description": "环境类型 test/staging/production"
-          },
-          "host": {
-            "type": "string",
-            "description": "远程服务器主机地址"
-          },
-          "port": {
-            "type": "integer",
-            "description": "SSH端口 默认22"
-          },
-          "username": {
-            "type": "string",
-            "description": "SSH登录用户名"
-          },
-          "key_id": {
-            "type": "string",
-            "description": "关联的SSH密钥ID"
-          }
-        }
-      },
-      "response": {
-        "status": 201,
-        "body": {
-          "id": {
-            "type": "string",
-            "description": "环境ID"
-          },
-          "name": {
-            "type": "string",
-            "description": "环境名称"
-          },
-          "type": {
-            "type": "string",
-            "description": "环境类型"
-          },
-          "status": {
-            "type": "string",
-            "description": "连接状态 untested/available/unavailable"
-          },
-          "created_at": {
-            "type": "datetime",
-            "description": "创建时间"
-          }
-        }
-      },
-      "description": "运维人员配置部署环境，API网关转发到环境管理服务"
-    },
-    {
-      "interface": "上传SSH密钥",
-      "provider": "API网关",
-      "consumers": [
-        "Web控制台"
-      ],
-      "type": "REST",
-      "endpoint": "POST /api/keys",
-      "request": {
-        "path_params": [],
-        "query_params": [],
-        "body": {
-          "name": {
-            "type": "string",
-            "description": "密钥名称"
-          },
-          "public_key": {
-            "type": "string",
-            "description": "公钥内容"
-          },
-          "private_key": {
-            "type": "string",
-            "description": "私钥内容（加密传输）"
-          },
-          "passphrase": {
-            "type": "string",
-            "description": "私钥密码（可选）"
-          }
-        }
-      },
-      "response": {
-        "status": 201,
-        "body": {
-          "id": {
-            "type": "string",
-            "description": "密钥ID"
-          },
-          "name": {
-            "type": "string",
-            "description": "密钥名称"
-          },
-          "fingerprint": {
-            "type": "string",
-            "description": "密钥指纹"
-          },
-          "created_at": {
-            "type": "datetime",
-            "description": "创建时间"
-          }
-        }
-      },
-      "description": "运维人员上传SSH密钥，API网关转发到密钥管理服务加密存储"
-    },
-    {
-      "interface": "测试环境连接",
-      "provider": "API网关",
-      "consumers": [
-        "Web控制台"
-      ],
-      "type": "REST",
-      "endpoint": "POST /api/environments/{environment_id}/test",
-      "request": {
-        "path_params": [
-          {
-            "name": "environment_id",
-            "type": "string",
-            "description": "环境ID"
-          }
-        ],
-        "query_params": [],
-        "body": null
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "status": {
-            "type": "string",
-            "description": "连接结果 available/unavailable"
-          },
-          "message": {
-            "type": "string",
-            "description": "结果描述"
-          },
-          "latency_ms": {
-            "type": "integer",
-            "description": "连接延迟毫秒"
-          }
-        }
-      },
-      "description": "运维人员验证环境配置的SSH连接是否可用"
-    },
-    {
-      "interface": "密钥解密（内部）",
-      "provider": "密钥管理服务",
-      "consumers": [
-        "部署执行服务"
-      ],
-      "type": "REST",
-      "endpoint": "POST /api/internal/keys/decrypt",
-      "request": {
-        "path_params": [],
-        "query_params": [],
-        "body": {
-          "key_id": {
-            "type": "string",
-            "description": "密钥ID"
-          },
-          "session_token": {
-            "type": "string",
-            "description": "内部会话认证令牌"
-          }
-        }
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "private_key": {
-            "type": "string",
-            "description": "解密后的私钥内容（内存级，用完即弃）"
-          },
-          "fingerprint": {
-            "type": "string",
-            "description": "密钥指纹"
-          }
-        }
-      },
-      "description": "部署执行服务在执行部署前向密钥管理服务请求解密SSH私钥"
-    },
-    {
-      "interface": "记录审计日志（内部）",
-      "provider": "审计日志服务",
-      "consumers": [
-        "部署执行服务",
-        "密钥管理服务",
-        "项目管理服务",
         "环境管理服务"
       ],
-      "type": "REST",
-      "endpoint": "POST /api/internal/audit-logs",
+      "type": "RPC",
+      "endpoint": "internal",
       "request": {
         "path_params": [],
         "query_params": [],
         "body": {
-          "action": {
-            "type": "string",
-            "description": "操作类型"
-          },
-          "operator_id": {
-            "type": "string",
-            "description": "操作人ID"
-          },
-          "operator_name": {
-            "type": "string",
-            "description": "操作人名称"
-          },
-          "resource_type": {
-            "type": "string",
-            "description": "资源类型 project/environment/deployment/key"
-          },
-          "resource_id": {
-            "type": "string",
-            "description": "资源ID"
-          },
-          "detail": {
-            "type": "object",
-            "description": "操作详情"
-          },
-          "ip_address": {
-            "type": "string",
-            "description": "请求来源IP"
-          },
-          "timestamp": {
-            "type": "datetime",
-            "description": "操作时间"
-          }
+          "host": "string",
+          "port": "integer",
+          "key_id": "integer"
         }
       },
       "response": {
-        "status": 201,
+        "status": 200,
         "body": {
-          "id": {
-            "type": "string",
-            "description": "审计日志ID"
-          },
-          "status": {
-            "type": "string",
-            "description": "记录状态"
-          },
-          "created_at": {
-            "type": "datetime",
-            "description": "记录时间"
-          }
+          "connected": "boolean",
+          "latency_ms": "integer"
         }
       },
-      "description": "各微服务在执行关键操作后记录审计日志，确保全程可追溯"
+      "description": "内部调用：环境管理服务通过 SSH 连接池测试目标服务器连通性"
+    },
+    {
+      "interface": "远程文件传输",
+      "provider": "SSH连接池",
+      "consumers": [
+        "部署引擎服务"
+      ],
+      "type": "RPC",
+      "endpoint": "internal",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "host": "string",
+          "port": "integer",
+          "env_key_id": "integer",
+          "remote_path": "string",
+          "file_content": "binary"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "transferred": "boolean",
+          "bytes": "integer",
+          "checksum": "string"
+        }
+      },
+      "description": "内部调用：部署引擎通过 SSH 连接池将文件传输到远程服务器"
+    },
+    {
+      "interface": "获取文件包",
+      "provider": "文件存储服务",
+      "consumers": [
+        "部署引擎服务"
+      ],
+      "type": "RPC",
+      "endpoint": "internal",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "file_package_id": "integer"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "file_data": "binary",
+          "file_name": "string",
+          "checksum": "string",
+          "size": "integer"
+        }
+      },
+      "description": "内部调用：部署引擎从文件存储服务获取待部署的文件包"
+    },
+    {
+      "interface": "记录审计日志",
+      "provider": "审计日志服务",
+      "consumers": [
+        "项目管理服务",
+        "环境管理服务",
+        "部署引擎服务",
+        "密钥管理服务"
+      ],
+      "type": "RPC",
+      "endpoint": "internal",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "action": "string",
+          "actor": "string",
+          "resource_type": "string",
+          "resource_id": "integer",
+          "detail": "object",
+          "timestamp": "datetime"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "log_id": "integer",
+          "recorded": "boolean"
+        }
+      },
+      "description": "内部调用：各业务服务将关键操作记录到审计日志"
     }
   ],
   "data_flow": [
     {
-      "name": "一键部署流程",
+      "name": "创建项目",
       "steps": [
-        "开发人员通过Web控制台选择目标项目和部署环境",
-        "开发人员选择部署版本并上传或指定可执行文件路径",
-        "Web控制台发送部署请求到API网关",
-        "API网关认证身份并转发请求到部署执行服务",
-        "部署执行服务创建部署任务，初始化状态为pending",
-        "部署执行服务从密钥管理服务获取目标环境的SSH密钥（解密后）",
-        "部署执行服务从SSH连接池获取远程服务器连接",
-        "通过SSH在远程服务器创建版本标识的部署目录",
-        "通过SCP/SFTP上传可执行文件到远程服务器的部署目录",
-        "SSH连接池自动生成启动/停止/重启脚本并保存到远程服务器",
-        "部署执行服务更新部署状态为success，记录完整操作日志到审计日志服务",
-        "Web控制台轮询部署状态，展示部署结果和日志信息"
+        "用户在 Web 控制台填写项目名称和标识",
+        "Web 控制台调用 POST /api/v1/projects 发送请求",
+        "API 网关校验身份后路由到项目管理服务",
+        "项目管理服务校验项目参数，写入数据库",
+        "返回创建成功的项目信息给 Web 控制台",
+        "审计日志服务记录项目创建操作"
       ]
     },
     {
-      "name": "环境配置流程",
+      "name": "配置环境与密钥",
       "steps": [
-        "运维人员在Web控制台进入环境管理页面",
-        "创建新的部署环境，填写服务器连接参数",
-        "选择关联的SSH密钥或上传新密钥",
-        "密钥通过密钥管理服务加密存储到数据库",
-        "调用环境管理服务保存环境配置到PostgreSQL",
-        "执行连接测试验证配置有效性",
-        "环境状态标记为可用"
+        "用户在 Web 控制台选择项目，进入环境管理页面",
+        "用户填写环境名称（如测试线）、服务器地址和端口",
+        "Web 控制台调用 POST /api/v1/projects/:pid/environments",
+        "环境管理服务校验并存储环境配置",
+        "用户选择 SSH 密钥认证方式，上传或粘贴私钥内容",
+        "Web 控制台调用 POST /api/v1/environments/:eid/keys",
+        "密钥管理服务加密存储密钥，并与环境绑定",
+        "用户点击'测试连接'按钮验证配置",
+        "环境管理服务调用 SSH 连接池发送测试请求",
+        "SSH 连接池使用密钥建立连接并返回连接成功/失败结果",
+        "审计日志服务记录环境和密钥配置操作"
       ]
     },
     {
-      "name": "项目管理流程",
+      "name": "一键部署",
       "steps": [
-        "项目经理在Web控制台创建新项目",
-        "填写项目名称、描述等基本信息",
-        "项目管理服务持久化项目信息到PostgreSQL",
-        "在项目下添加多个部署环境（引用已配置的环境）",
-        "项目创建完成后可进行部署操作"
+        "用户在 Web 控制台选择项目、目标环境和待部署的可执行文件包",
+        "用户填写版本号，点击'部署'按钮",
+        "Web 控制台调用 POST /api/v1/deploy 创建部署任务",
+        "部署引擎服务接收部署请求，返回任务 ID",
+        "部署引擎向文件存储服务请求获取文件包",
+        "部署引擎通过 SSH 连接池连接到目标服务器",
+        "在远程服务器上创建版本化目录（如 /opt/app/releases/v1.0.0/）",
+        "上传可执行文件包到版本目录",
+        "自动生成 start.sh、stop.sh、restart.sh 执行脚本",
+        "执行启动脚本完成部署",
+        "实时回传部署进度和日志到 Web 控制台",
+        "Web 控制台轮询 GET /api/v1/deploy/:taskId/status 展示进度",
+        "部署成功或失败后更新任务状态",
+        "审计日志服务记录完整部署过程"
       ]
     },
     {
-      "name": "SSH密钥管理流程",
+      "name": "项目切换",
       "steps": [
-        "运维人员在密钥管理页面上传SSH公钥和私钥",
-        "密钥管理服务对私钥进行AES加密后存储到数据库",
-        "密钥与特定部署环境关联绑定",
-        "部署时部署执行服务通过内部API请求解密密钥",
-        "密钥解密后仅存于内存，使用后立即清除",
-        "密钥可被吊销或轮换，历史部署记录保留旧密钥引用"
+        "用户在 Web 控制台的项目列表中选择目标项目",
+        "前端切换当前上下文，展示选中项目的仪表盘",
+        "自动加载该项目的环境列表和部署历史",
+        "用户可在新项目下执行环境配置和部署操作",
+        "所有后续 API 请求携带当前项目 ID 上下文"
       ]
     }
   ]
