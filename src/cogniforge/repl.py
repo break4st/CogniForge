@@ -8,6 +8,7 @@ import os
 import re
 import readline
 import select
+import subprocess
 import sys
 import termios
 import threading
@@ -39,6 +40,8 @@ from cogniforge.repl_text import (
     CHOICE_APPROVE,
     CHOICE_REJECT,
     CHOICE_RETRY,
+    CHOICE_MODIFY,
+    PM_INTERACTIVE_SYSTEM_PROMPT,
     REJECT_PROMPT,
     REJECT_DEFAULT,
     APPROVE_OK,
@@ -437,7 +440,6 @@ class Repl:
         self.agent = agent
         self.wiki_system = wiki_system
         self._last_printed_step: Optional[str] = None
-        self._last_prd_input: dict = {}  # stored for retry modification
 
     # ---- module discovery ------------------------------------------------
 
@@ -1250,10 +1252,6 @@ class Repl:
 
         input_data = action.get("input", {})
 
-        # Store PRD input for retry modification
-        if agent_role == "pm":
-            self._last_prd_input = dict(input_data)
-
         if agent_role == "dev" and "task" not in input_data:
             input_data["task"] = self._pick_or_create_task(input_data)
 
@@ -1281,61 +1279,178 @@ class Repl:
         click.echo("\n".join(lines))
 
         step = self.workflow.current_step
-        if step:
+        if not step:
+            return ""
+
+        # Loop menu: user can modify repeatedly until satisfied, then approve
+        while True:
             action_choice = self._post_agent_menu(step)
             if action_choice == "approve":
                 return self._exec_approve({"comment": ""})
             elif action_choice == "reject":
                 reason = click.prompt(REJECT_PROMPT, default=REJECT_DEFAULT)
                 return self._exec_reject({"comment": reason})
+            elif action_choice == "modify":
+                self._exec_interactive_session(agent_role)
+                # Re-render if PRD changed, then loop back to menu
+                self._rerender_after_interactive()
             elif action_choice == "retry":
-                return self._exec_retry_modify(agent_role)
+                click.echo(f"\n  {C_DIM}请直接输入新的描述来重新执行此步骤{C_RESET}")
+                return ""
 
-        return ""
+    def _exec_interactive_session(self, agent_role: str) -> None:
+        """Launch interactive Claude Code session for iterative refinement.
 
-    def _exec_retry_modify(self, agent_role: str) -> str:
-        """Retry with modifications: prompt user, let LLM merge changes, re-run agent."""
-        if agent_role != "pm" or not self._last_prd_input:
-            return f"  {CHOICE_RETRY}"
+        The user gets a full Claude Code TUI with agent context so they can
+        chat naturally, read/edit files, and refine the output until satisfied.
+        """
+
+        # Find the latest artifact for this agent role
+        artifact_path = self._find_latest_artifact(agent_role)
+        if artifact_path is None:
+            click.echo(f"\n  {C_AMBER}⚠ 未找到 {agent_role} 的产物文件，但仍可进入交互模式{C_RESET}")
+
+        # Record mtime to detect changes
+        mtime_before = artifact_path.stat().st_mtime if artifact_path else 0
+
+        model = getattr(self.agent, 'model', 'claude-sonnet-4-20250514')
+        cli_path = getattr(self.agent, 'claude_cli_path', 'claude')
+        repo_path = str(getattr(self.agent, 'repo_path', Path.cwd()))
+
+        system_prompt = PM_INTERACTIVE_SYSTEM_PROMPT
+        if artifact_path:
+            system_prompt += (
+                f"\n\n当前产物文件路径: {artifact_path}\n"
+                f"工作目录: {repo_path}"
+            )
 
         click.echo()
-        self._card_header("✏️", "修改内容", "amber")
-        self._card_hint("请描述需要修改的地方，LLM 会基于上一版进行修改。")
-        modifications = input("  > ").strip()
-        if not modifications:
-            return "  ⚠ 未输入修改内容，已取消"
+        click.echo(_draw_box(
+            top_line="交互式修改模式",
+            lines=[
+                "正在启动 Claude Code 交互会话……",
+                "你可以像平时使用 Claude Code 一样与 Agent 对话修改文档。",
+                "输入 /exit 退出并返回审批菜单。",
+            ],
+        ))
 
-        # LLM merges original input + modification request
-        spinner = Spinner("正在根据你的反馈修改")
-        spinner.start()
+        # Build command with tool restrictions scoped to the artifact
+        cmd = [
+            cli_path, "--model", model,
+            "--tools", "Read,Edit,Write",
+            "--append-system-prompt", system_prompt,
+        ]
+        if artifact_path:
+            rel = str(artifact_path.relative_to(repo_path))
+            prd_dir = str(Path(rel).parent)  # e.g. .cogniforge/wiki/prd
+            cmd.extend([
+                "--allowedTools",
+                f"Read({prd_dir}/**),Edit({prd_dir}/**),Write({prd_dir}/**)",
+            ])
+
         try:
-            schema = AGENT_SCHEMAS.get("prd", {})
-            prompt = (
-                f"当前工作流步骤: prd\n"
-                f"要运行的 agent: pm\n"
-                f"需要的 JSON 字段: {schema.get('fields', '')}\n\n"
-                f"当前 PRD 数据:\n{json.dumps(self._last_prd_input, ensure_ascii=False, indent=2)}\n\n"
-                f"用户要求做以下修改:\n{modifications}\n\n"
-                f"基于用户的修改要求，返回修改后的完整 PRD 数据。\n"
-                f'返回 JSON: {{"action": "run_agent", "agent": "pm", '
-                f'"input": {{...修改后的完整字段...}} }}\n'
-                f"只返回合法 JSON。不要 markdown。不要多余文字。"
-            )
-            response = self.agent.generate(prompt)
-            raw = response.content if hasattr(response, "content") else str(response)
-            action = json.loads(_extract_json(raw))
-        except Exception:
-            # Fallback: keep original data unchanged
-            action = {"action": "run_agent", "agent": "pm",
-                       "input": self._last_prd_input}
-        finally:
-            spinner.stop()
+            subprocess.run(cmd, cwd=repo_path, check=False)
+        except FileNotFoundError:
+            click.echo(f"  {C_RED}✗{C_RESET} 未找到 Claude Code CLI，请确认已安装")
+            return
 
-        # Re-execute: run agent + show links + show menu (recursive call)
-        return self._exec_run_agent(action)
+        # Track mtime for re-render check
+        if artifact_path and artifact_path.exists():
+            self._interactive_mtime_after = artifact_path.stat().st_mtime
+        else:
+            self._interactive_mtime_after = 0
+        self._interactive_mtime_before = mtime_before
+        self._interactive_artifact_path = artifact_path
+
+    def _find_latest_artifact(self, agent_role: str) -> Optional[Path]:
+        """Find the latest artifact file for a given agent role."""
+        import glob as _glob
+
+        role_dir_map = {
+            "pm": ".cogniforge/wiki/prd",
+            "architect": ".cogniforge/wiki/sad",
+            "design": ".cogniforge/wiki/lld",
+            "techlead": ".cogniforge/wiki/tasks",
+            "reviewer": ".cogniforge/wiki/reports",
+            "qa": ".cogniforge/wiki/qa",
+            "devops": ".cogniforge/wiki/ops",
+        }
+        dir_path = role_dir_map.get(agent_role)
+        if not dir_path:
+            return None
+
+        pattern = str(Path.cwd() / dir_path / "*.json")
+        files = sorted(_glob.glob(pattern))
+        return Path(files[-1]) if files else None
+
+    def _rerender_after_interactive(self) -> None:
+        """Re-render HTML and commit if the artifact was modified during interactive session."""
+        artifact_path = getattr(self, '_interactive_artifact_path', None)
+        mtime_before = getattr(self, '_interactive_mtime_before', 0)
+        mtime_after = getattr(self, '_interactive_mtime_after', 0)
+
+        if not artifact_path or not artifact_path.exists():
+            return
+        if mtime_after == mtime_before:
+            click.echo(f"\n  {C_DIM}(文档未变更){C_RESET}")
+            return
+
+        # Re-render HTML
+        try:
+            from cogniforge.wiki.wiki_renderer import render_file
+            html_path = render_file(artifact_path)
+            click.echo(f"\n  {C_GREEN}✓{C_RESET} 文档已更新")
+            if html_path:
+                abs_path = html_path.resolve()
+                link = f"\033]8;;file://{abs_path}\033\\{html_path}\033]8;;\033\\"
+                click.echo(f"       {link}")
+
+            # Commit changes
+            if self.wiki_system:
+                try:
+                    repo_path = getattr(self.agent, 'repo_path', Path.cwd())
+                    self.wiki_system.git_storage.repo.index.add([
+                        str(artifact_path.relative_to(repo_path)),
+                    ])
+                    if html_path:
+                        self.wiki_system.git_storage.repo.index.add([
+                            str(html_path.relative_to(repo_path)),
+                        ])
+                    self.wiki_system.git_storage.commit(
+                        "docs: update after interactive refinement", "pm_agent"
+                    )
+                except Exception:
+                    pass
+        except Exception as exc:
+            click.echo(f"  {C_AMBER}⚠ HTML 渲染失败: {exc}{C_RESET}")
+
+        # Clean up temp attributes
+        for attr in ('_interactive_artifact_path', '_interactive_mtime_before',
+                      '_interactive_mtime_after'):
+            try:
+                delattr(self, attr)
+            except AttributeError:
+                pass
 
     def _post_agent_menu(self, step) -> str:
-        """Interactive menu shown after each agent execution."""
+        """Interactive menu shown after each agent execution.
+
+        PRD step: approve / modify (interactive Claude Code session).
+        Other agent steps: approve / reject / retry.
+        """
+        # PRD step: interactive modification replaces both reject and retry
+        if step.value == "prd":
+            click.echo(_draw_box(
+                top_line=step.get_approval_prompt(),
+                lines=["使用 ↑↓ 选择，回车确认"],
+                bottom_close=False,
+            ))
+            return _select([
+                ("approve", CHOICE_APPROVE),
+                ("modify", CHOICE_MODIFY),
+            ], default=0, colors=[C_GREEN, C_AMBER])
+
+        # Other agent steps: approve / reject / retry
         click.echo(_draw_box(
             top_line=step.get_approval_prompt(),
             lines=["使用 ↑↓ 选择，回车确认"],

@@ -130,10 +130,22 @@ SPINNER_RUNNING = "正在运行 {agent} agent (Claude Code 执行中)"
 CHOICE_APPROVE = "审批通过，进入下一步"
 CHOICE_REJECT = "拒绝，返回修改"
 CHOICE_RETRY = "提出修改意见，在上一版基础上修改"
+CHOICE_MODIFY = "进入交互模式，与 Agent 对话修改"
 APPROVE_CONFIRM = "  确认审批通过？"
 
 REJECT_PROMPT = "  拒绝原因"
 REJECT_DEFAULT = "需要改进"
+
+# Interactive modification — system prompt appended when launching Claude Code
+PM_INTERACTIVE_SYSTEM_PROMPT = (
+    "你是 CogniForge 系统的 PM (Product Manager) Agent。\n"
+    "当前正在对已生成的 PRD 文档进行交互式修改完善。\n"
+    "请读取用户当前工作目录下的 PRD 文件（位于 .cogniforge/wiki/prd/ 目录），\n"
+    "根据用户的反馈意见，直接修改 PRD JSON 文件。\n"
+    "所有文字使用中文。\n"
+    "不要写入 .html 文件（HTML 由系统自动渲染）。\n"
+    "修改完成后向用户确认变更内容。"
+)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SAD / 架构设计 — 选择自己描述还是 Agent 自主设计
