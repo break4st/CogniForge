@@ -4,428 +4,298 @@
     "type": "lld",
     "module_type": "service",
     "module": "项目管理服务",
-    "title": "项目管理服务 — 详细设计文档",
+    "title": "LLD - 项目管理服务",
     "author": "design_agent",
     "created": "2026-05-22"
   },
   "overview": {
-    "description": "负责项目的CRUD操作和项目间切换。为项目提供全生命周期管理，包括项目创建、编辑、归档、项目列表查询和详情获取、项目切换与会话管理，以及项目成员的角色权限管理。本服务是系统的核心业务入口，所有操作均需通过API网关认证后访问。",
-    "dependencies": [
-      "API网关",
-      "认证中间件",
-      "PostgreSQL主数据库",
-      "Redis缓存",
-      "审计日志服务"
-    ],
-    "tech_stack": [
-      "Go",
-      "Gin",
-      "PostgreSQL 15+",
-      "Redis 7+",
-      "JWT (JSON Web Token)"
-    ]
+    "description": "项目核心管理服务，处理项目的创建、编辑、删除以及项目与环境绑定关系。提供项目CRUD操作、项目与环境绑定关系管理、项目列表与概要信息查询、项目上下文切换与状态维护、项目删除时级联清理关联数据等能力。",
+    "dependencies": ["PostgreSQL主数据库", "审计日志服务", "Redis缓存"],
+    "tech_stack": ["Python 3.11", "FastAPI", "PostgreSQL 15", "Redis 7", "REST", "JWT"]
   },
   "data_models": [
     {
-      "name": "projects（项目）",
+      "name": "projects",
       "type": "reference",
       "ownership": "derived",
       "source": {
         "doc_id": "lld-PostgreSQL主数据库-001",
         "model_name": "projects"
       },
-      "description": "项目定义信息，此服务关注的核心数据表。包含项目标识、名称、描述、创建者、状态和生命周期时间戳。本服务对此表有 SELECT/INSERT/UPDATE/DELETE 权限。",
+      "description": "项目信息表，项目管理服务的核心数据源，存储所有项目的名称、描述等基本信息，支持软删除",
       "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "项目唯一标识，主键"},
-        {"name": "name", "type": "VARCHAR(256)", "required": true, "description": "项目名称"},
-        {"name": "description", "type": "TEXT", "required": false, "description": "项目描述"},
-        {"name": "created_by", "type": "UUID", "required": true, "description": "创建者用户ID，外键关联users"},
-        {"name": "status", "type": "VARCHAR(16)", "required": true, "description": "项目状态：active/archived"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "创建时间"},
-        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": true, "description": "更新时间"}
+        {"name": "id", "type": "uuid", "required": true, "description": "项目唯一标识"},
+        {"name": "name", "type": "varchar(128)", "required": true, "description": "项目名称"},
+        {"name": "description", "type": "varchar(500)", "required": false, "description": "项目描述信息"},
+        {"name": "created_at", "type": "timestamptz", "required": true, "description": "创建时间"},
+        {"name": "updated_at", "type": "timestamptz", "required": true, "description": "最后更新时间"},
+        {"name": "deleted_at", "type": "timestamptz", "required": false, "description": "软删除时间，非空表示已删除"}
       ]
     },
     {
-      "name": "project_members（项目成员）",
+      "name": "project_environments",
       "type": "reference",
       "ownership": "derived",
       "source": {
         "doc_id": "lld-PostgreSQL主数据库-001",
-        "model_name": "project_members"
+        "model_name": "project_environments"
       },
-      "description": "项目成员关联表，记录用户与项目的多对多关系及角色权限。本服务对此表有 SELECT/INSERT/UPDATE/DELETE 权限。",
+      "description": "项目与环境的关联关系表，支持多对多关系，一个项目可绑定多个环境",
       "fields": [
-        {"name": "project_id", "type": "UUID", "required": true, "description": "项目标识，复合主键"},
-        {"name": "user_id", "type": "UUID", "required": true, "description": "用户标识，复合主键"},
-        {"name": "role", "type": "VARCHAR(32)", "required": true, "description": "成员角色：admin/maintainer/developer/viewer"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "记录创建时间"}
+        {"name": "id", "type": "uuid", "required": true, "description": "关联记录唯一标识"},
+        {"name": "project_id", "type": "uuid", "required": true, "description": "项目ID"},
+        {"name": "environment_id", "type": "uuid", "required": true, "description": "环境ID"},
+        {"name": "created_at", "type": "timestamptz", "required": true, "description": "绑定时间"}
       ]
     },
     {
-      "name": "users（用户）",
+      "name": "environments",
       "type": "reference",
       "ownership": "derived",
       "source": {
         "doc_id": "lld-PostgreSQL主数据库-001",
-        "model_name": "users"
+        "model_name": "environments"
       },
-      "description": "系统用户账号信息。本服务对此表仅有 SELECT 权限，用于校验创建者是否存在以及获取用户显示名。",
+      "description": "部署环境配置表，项目管理服务在项目详情和切换上下文中查询环境名称与状态",
       "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "用户标识"},
-        {"name": "username", "type": "VARCHAR(64)", "required": true, "description": "用户名"},
-        {"name": "display_name", "type": "VARCHAR(128)", "required": false, "description": "用户显示名称"},
-        {"name": "status", "type": "VARCHAR(16)", "required": true, "description": "状态：active/disabled"}
+        {"name": "id", "type": "uuid", "required": true, "description": "环境唯一标识"},
+        {"name": "name", "type": "varchar(64)", "required": true, "description": "环境名称"},
+        {"name": "host", "type": "varchar(255)", "required": true, "description": "远程服务器地址"},
+        {"name": "status", "type": "varchar(20)", "required": true, "description": "环境连接状态：unknown/online/offline"}
       ]
     },
     {
-      "name": "ProjectSessionEntry（项目会话缓存）",
-      "type": "store",
+      "name": "deployments",
+      "type": "reference",
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-PostgreSQL主数据库-001",
+        "model_name": "deployments"
+      },
+      "description": "部署记录表，项目管理服务用于查询项目最新部署状态以填充项目列表概要信息",
+      "fields": [
+        {"name": "id", "type": "uuid", "required": true, "description": "部署记录唯一标识"},
+        {"name": "project_id", "type": "uuid", "required": true, "description": "所属项目ID"},
+        {"name": "status", "type": "varchar(20)", "required": true, "description": "部署状态：pending/running/success/failed"},
+        {"name": "started_at", "type": "timestamptz", "required": false, "description": "部署开始时间"},
+        {"name": "finished_at", "type": "timestamptz", "required": false, "description": "部署完成时间"}
+      ]
+    },
+    {
+      "name": "ProjectServiceConfig",
+      "type": "config",
       "ownership": "owned",
-      "description": "用户当前项目上下文的Redis缓存条目，由本服务的SwitchProject操作维护。切换项目时更新此缓存并在新JWT中包含项目上下文。",
+      "description": "项目管理服务的内部配置项",
       "fields": [
-        {"name": "user_id", "type": "UUID", "required": true, "description": "用户标识，用作key前缀"},
-        {"name": "current_project_id", "type": "UUID", "required": true, "description": "当前选中的项目ID"},
-        {"name": "current_project_name", "type": "string", "required": true, "description": "当前项目名称"},
-        {"name": "expires_at", "type": "string (ISO8601)", "required": true, "description": "会话过期时间，与JWT Token过期时间一致"}
+        {"name": "default_page_size", "type": "int", "required": true, "description": "项目列表默认分页大小，默认20"},
+        {"name": "max_page_size", "type": "int", "required": true, "description": "项目列表最大分页大小，默认100"},
+        {"name": "project_name_max_length", "type": "int", "required": true, "description": "项目名称最大长度，默认128"},
+        {"name": "project_description_max_length", "type": "int", "required": true, "description": "项目描述最大长度，默认500"}
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "ListProjects",
-      "method": "GET",
-      "endpoint": "/api/v1/projects",
-      "description": "获取当前用户有权限访问的项目列表，支持分页。用户身份从JWT Token解析。",
-      "parameters": [
-        {"name": "page", "type": "integer", "description": "页码，从1开始，默认1"},
-        {"name": "page_size", "type": "integer", "description": "每页条数，默认20，最大100"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "total": "integer（总项目数）",
-          "items": "array[object]（项目列表，每个元素包含 id/name/description/status/member_count/created_at/updated_at）"
-        }
-      },
-      "error_codes": [
-        {"code": 400, "message": "参数校验失败，page或page_size无效"},
-        {"code": 401, "message": "未认证或Token已过期"},
-        {"code": 500, "message": "服务器内部错误"}
-      ]
-    },
-    {
-      "name": "CreateProject",
+      "name": "创建项目 API",
       "method": "POST",
-      "endpoint": "/api/v1/projects",
-      "description": "创建新项目。创建者自动成为项目的admin角色成员。创建后同步写入Redis缓存。",
+      "endpoint": "/api/projects",
+      "description": "创建新项目，校验收参合法性，检查名称唯一性，持久化到PostgreSQL后返回项目信息并写入审计日志",
       "parameters": [
-        {"name": "name", "type": "string", "description": "项目名称，1~256字符，不能与当前用户的已有项目重名"},
-        {"name": "description", "type": "string", "description": "项目描述，可选，最长4096字符"}
+        {"name": "name", "type": "string", "description": "项目名称，最长128字符，必填"},
+        {"name": "description", "type": "string", "description": "项目描述信息，最长500字符，可选"}
       ],
       "response": {
         "status": 201,
         "body": {
-          "id": "string (UUID)",
+          "id": "uuid",
           "name": "string",
           "description": "string",
-          "environments": "array[object]（项目关联的环境列表，新创建的项目为空数组）",
-          "created_at": "string (ISO8601)",
-          "updated_at": "string (ISO8601)"
+          "created_at": "datetime"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "参数校验失败，项目名称为空或超长"},
-        {"code": 401, "message": "未认证或Token已过期"},
-        {"code": 409, "message": "项目名称已存在，同一用户下不允许重复的项目名称"},
-        {"code": 500, "message": "服务器内部错误"}
+        {"code": 400, "message": "请求参数校验失败：name为空或超长，或description超长"},
+        {"code": 409, "message": "项目名称已存在，同一名称只能有一个活跃项目"},
+        {"code": 500, "message": "内部服务器错误，数据库写入异常"}
       ]
     },
     {
-      "name": "GetProject",
+      "name": "查询项目列表 API",
       "method": "GET",
-      "endpoint": "/api/v1/projects/:projectId",
-      "description": "获取指定项目的详细信息，包含关联的环境列表。调用者必须是项目成员。",
+      "endpoint": "/api/projects",
+      "description": "分页查询项目列表，返回每个项目的概要信息（环境数、最近部署状态和最近部署时间），排除已软删除项目",
       "parameters": [
-        {"name": "projectId", "type": "string (UUID)", "description": "项目ID，路径参数"}
+        {"name": "page", "type": "int", "description": "页码，从1开始，默认1"},
+        {"name": "page_size", "type": "int", "description": "每页条目数，默认20，最大100"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "id": "string (UUID)",
-          "name": "string",
-          "description": "string",
-          "environments": "array[object]（项目关联的环境列表）",
-          "created_at": "string (ISO8601)",
-          "updated_at": "string (ISO8601)"
+          "total": "int",
+          "items": [
+            {
+              "id": "uuid",
+              "name": "string",
+              "env_count": "int",
+              "last_deploy_status": "string|null",
+              "last_deployed_at": "datetime|null"
+            }
+          ]
         }
       },
       "error_codes": [
-        {"code": 401, "message": "未认证或Token已过期"},
-        {"code": 403, "message": "权限不足，非项目成员"},
-        {"code": 404, "message": "项目不存在"},
-        {"code": 500, "message": "服务器内部错误"}
+        {"code": 400, "message": "分页参数非法：page小于1或page_size超出1~100范围"},
+        {"code": 500, "message": "内部服务器错误，数据库查询异常"}
       ]
     },
     {
-      "name": "UpdateProject",
+      "name": "获取项目详情 API",
+      "method": "GET",
+      "endpoint": "/api/projects/{id}",
+      "description": "获取单个项目完整信息，包含已绑定的环境列表（环境ID、名称、主机地址），排除已软删除项目",
+      "parameters": [
+        {"name": "id", "type": "uuid", "description": "项目ID，路径参数"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "uuid",
+          "name": "string",
+          "description": "string",
+          "environments": [
+            {"env_id": "uuid", "env_name": "string", "host": "string"}
+          ],
+          "created_at": "datetime",
+          "updated_at": "datetime"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "项目不存在或已被删除"},
+        {"code": 500, "message": "内部服务器错误"}
+      ]
+    },
+    {
+      "name": "更新项目 API",
       "method": "PUT",
-      "endpoint": "/api/v1/projects/:projectId",
-      "description": "更新项目名称和描述。调用者必须是项目admin或maintainer角色。",
+      "endpoint": "/api/projects/{id}",
+      "description": "更新项目名称或描述信息，校验收参并检查名称唯一性（如更新名称），返回更新后的项目信息并写入审计日志",
       "parameters": [
-        {"name": "projectId", "type": "string (UUID)", "description": "项目ID，路径参数"},
-        {"name": "name", "type": "string", "description": "新项目名称，可选，不传则不修改"},
-        {"name": "description", "type": "string", "description": "新项目描述，可选，不传则不修改"}
+        {"name": "id", "type": "uuid", "description": "项目ID，路径参数"},
+        {"name": "name", "type": "string", "description": "新项目名称，最长128字符，可选（不传则不更新）"},
+        {"name": "description", "type": "string", "description": "新项目描述，最长500字符，可选（不传则不更新）"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "id": "string (UUID)",
+          "id": "uuid",
           "name": "string",
           "description": "string",
-          "environments": "array[object]（项目关联的环境列表）",
-          "created_at": "string (ISO8601)",
-          "updated_at": "string (ISO8601)"
+          "updated_at": "datetime"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "参数校验失败"},
-        {"code": 401, "message": "未认证或Token已过期"},
-        {"code": 403, "message": "权限不足，需要admin或maintainer角色"},
-        {"code": 404, "message": "项目不存在"},
-        {"code": 409, "message": "项目名称与已有项目冲突"},
-        {"code": 500, "message": "服务器内部错误"}
+        {"code": 400, "message": "请求参数校验失败：name或description超长"},
+        {"code": 404, "message": "项目不存在或已被删除"},
+        {"code": 409, "message": "新项目名称与其他活跃项目冲突"},
+        {"code": 500, "message": "内部服务器错误"}
       ]
     },
     {
-      "name": "DeleteProject",
+      "name": "删除项目 API",
       "method": "DELETE",
-      "endpoint": "/api/v1/projects/:projectId",
-      "description": "归档项目（软删除），将项目状态置为archived。调用者必须是项目admin角色。归档前需确认无活跃部署任务。",
+      "endpoint": "/api/projects/{id}",
+      "description": "软删除项目（设置deleted_at时间戳），级联清理项目与环境绑定关系，检查并阻止有进行中部署任务的项目被删除，写入审计日志",
       "parameters": [
-        {"name": "projectId", "type": "string (UUID)", "description": "项目ID，路径参数"}
+        {"name": "id", "type": "uuid", "description": "项目ID，路径参数"}
       ],
       "response": {
         "status": 204,
         "body": {}
       },
       "error_codes": [
-        {"code": 401, "message": "未认证或Token已过期"},
-        {"code": 403, "message": "权限不足，需要admin角色"},
-        {"code": 404, "message": "项目不存在"},
-        {"code": 409, "message": "项目存在活跃的部署任务，无法归档"},
-        {"code": 500, "message": "服务器内部错误"}
+        {"code": 404, "message": "项目不存在或已被删除"},
+        {"code": 409, "message": "项目存在进行中的部署任务（pending或running状态），无法删除"},
+        {"code": 500, "message": "内部服务器错误"}
       ]
     },
     {
-      "name": "ListProjectMembers",
-      "method": "GET",
-      "endpoint": "/api/v1/projects/:projectId/members",
-      "description": "获取指定项目的成员列表。调用者必须是项目成员。",
+      "name": "项目切换 API",
+      "method": "POST",
+      "endpoint": "/api/projects/{id}/switch",
+      "description": "切换当前操作的项目上下文，返回目标项目的环境列表和各环境连接状态，用于前端刷新上下文面板",
       "parameters": [
-        {"name": "projectId", "type": "string (UUID)", "description": "项目ID，路径参数"}
+        {"name": "id", "type": "uuid", "description": "目标项目ID，路径参数"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "total": "integer（成员总数）",
-          "items": "array[object]（成员列表，每个元素包含 user_id/username/display_name/role/created_at）"
+          "current_project_id": "uuid",
+          "current_project_name": "string",
+          "environments": [
+            {"env_id": "uuid", "env_name": "string", "status": "string"}
+          ]
         }
       },
       "error_codes": [
-        {"code": 401, "message": "未认证或Token已过期"},
-        {"code": 403, "message": "权限不足，非项目成员"},
-        {"code": 404, "message": "项目不存在"},
-        {"code": 500, "message": "服务器内部错误"}
+        {"code": 404, "message": "项目不存在或已被删除"},
+        {"code": 500, "message": "内部服务器错误"}
       ]
     },
     {
-      "name": "AddProjectMember",
+      "name": "写入审计日志（依赖）",
       "method": "POST",
-      "endpoint": "/api/v1/projects/:projectId/members",
-      "description": "向项目添加新成员并指定角色。调用者必须是项目admin角色。",
+      "endpoint": "/api/audit/logs",
+      "description": "消费审计日志服务的写入接口，在项目创建/更新/删除操作完成后调用，记录操作的action、actor、资源信息和结果。接口定义来自审计日志服务provider契约",
       "parameters": [
-        {"name": "projectId", "type": "string (UUID)", "description": "项目ID，路径参数"},
-        {"name": "user_id", "type": "string (UUID)", "description": "目标用户ID"},
-        {"name": "role", "type": "string", "description": "角色：admin/maintainer/developer/viewer"}
+        {"name": "action", "type": "string", "description": "操作动作，如 create_project / update_project / delete_project"},
+        {"name": "actor", "type": "string", "description": "操作者标识，用户ID或system"},
+        {"name": "resource_type", "type": "string", "description": "资源类型，固定为 project"},
+        {"name": "resource_id", "type": "uuid", "description": "操作的项目资源ID"},
+        {"name": "detail", "type": "string", "description": "操作详情描述，最长1000字符"},
+        {"name": "result", "type": "string", "description": "操作结果：success/failure"}
       ],
       "response": {
         "status": 201,
         "body": {
-          "user_id": "string (UUID)",
-          "username": "string",
-          "display_name": "string",
-          "role": "string",
-          "created_at": "string (ISO8601)"
+          "id": "uuid",
+          "created_at": "datetime"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "参数校验失败，角色值无效"},
-        {"code": 401, "message": "未认证或Token已过期"},
-        {"code": 403, "message": "权限不足，需要admin角色"},
-        {"code": 404, "message": "项目不存在或目标用户不存在"},
-        {"code": 409, "message": "用户已是项目成员"},
-        {"code": 500, "message": "服务器内部错误"}
-      ]
-    },
-    {
-      "name": "UpdateProjectMemberRole",
-      "method": "PUT",
-      "endpoint": "/api/v1/projects/:projectId/members/:userId",
-      "description": "修改项目成员的角色。调用者必须是项目admin角色。如将最后一名admin降级，则拒绝操作。",
-      "parameters": [
-        {"name": "projectId", "type": "string (UUID)", "description": "项目ID，路径参数"},
-        {"name": "userId", "type": "string (UUID)", "description": "目标用户ID，路径参数"},
-        {"name": "role", "type": "string", "description": "新角色：admin/maintainer/developer/viewer"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "user_id": "string (UUID)",
-          "role": "string",
-          "updated_at": "string (ISO8601)"
-        }
-      },
-      "error_codes": [
-        {"code": 400, "message": "参数校验失败，角色值无效"},
-        {"code": 401, "message": "未认证或Token已过期"},
-        {"code": 403, "message": "权限不足，需要admin角色"},
-        {"code": 404, "message": "项目不存在或成员不存在"},
-        {"code": 409, "message": "项目至少需要一名admin，无法降级最后一名admin"},
-        {"code": 500, "message": "服务器内部错误"}
-      ]
-    },
-    {
-      "name": "RemoveProjectMember",
-      "method": "DELETE",
-      "endpoint": "/api/v1/projects/:projectId/members/:userId",
-      "description": "将成员从项目中移除。调用者必须是项目admin角色。admin不可移除自身；移除最后一名admin时拒绝操作。",
-      "parameters": [
-        {"name": "projectId", "type": "string (UUID)", "description": "项目ID，路径参数"},
-        {"name": "userId", "type": "string (UUID)", "description": "目标用户ID，路径参数"}
-      ],
-      "response": {
-        "status": 204,
-        "body": {}
-      },
-      "error_codes": [
-        {"code": 401, "message": "未认证或Token已过期"},
-        {"code": 403, "message": "权限不足，需要admin角色；或admin不能移除自身"},
-        {"code": 404, "message": "项目不存在或成员不存在"},
-        {"code": 409, "message": "项目至少需要一名admin，无法移除最后一名admin"},
-        {"code": 500, "message": "服务器内部错误"}
-      ]
-    },
-    {
-      "name": "SwitchProject",
-      "method": "POST",
-      "endpoint": "/api/v1/session/current-project",
-      "description": "切换用户当前上下文项目。更新Redis中用户会话的项目上下文，签发携带新项目上下文的JWT Token，返回Token和项目详情。审计日志记录切换操作。",
-      "parameters": [
-        {"name": "project_id", "type": "string (UUID)", "description": "目标项目ID"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "token": "string (JWT, 更新后的会话Token)",
-          "current_project": {
-            "id": "string (UUID)",
-            "name": "string",
-            "environments": "array[object]（环境列表）"
-          }
-        }
-      },
-      "error_codes": [
-        {"code": 400, "message": "参数校验失败，project_id为空或格式无效"},
-        {"code": 401, "message": "未认证或Token已过期"},
-        {"code": 403, "message": "权限不足，非项目成员无法切换到此项目"},
-        {"code": 404, "message": "项目不存在"},
-        {"code": 500, "message": "服务器内部错误"}
-      ]
-    },
-    {
-      "name": "InternalGetProject",
-      "method": "INTERNAL",
-      "endpoint": "ProjectService.InternalGetProject",
-      "description": "内部接口，供部署编排服务、版本管理服务等邻模块调用，按项目ID查询项目基本信息。不校验成员权限（调用方自行负责）。",
-      "parameters": [
-        {"name": "projectId", "type": "string (UUID)", "description": "项目ID"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "string (UUID)",
-          "name": "string",
-          "description": "string",
-          "status": "string",
-          "created_at": "string (ISO8601)"
-        }
-      },
-      "error_codes": [
-        {"code": 404, "message": "项目不存在"},
-        {"code": 500, "message": "服务器内部错误"}
-      ]
-    },
-    {
-      "name": "InternalCheckProjectMember",
-      "method": "INTERNAL",
-      "endpoint": "ProjectService.InternalCheckProjectMember",
-      "description": "内部接口，供认证中间件或部署编排服务调用，检查指定用户是否为项目成员及其角色。返回角色信息用于权限校验。",
-      "parameters": [
-        {"name": "projectId", "type": "string (UUID)", "description": "项目ID"},
-        {"name": "userId", "type": "string (UUID)", "description": "用户ID"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "is_member": "boolean（是否为项目成员）",
-          "role": "string（成员角色，非成员时为空字符串）"
-        }
-      },
-      "error_codes": [
-        {"code": 404, "message": "项目不存在"},
-        {"code": 500, "message": "服务器内部错误"}
+        {"code": 400, "message": "请求参数校验失败"},
+        {"code": 500, "message": "审计日志服务内部错误"}
       ]
     }
   ],
   "error_handling": {
-    "strategy": "所有错误统一返回标准化JSON响应体，包含业务错误码、错误分类和详细描述。参数校验错误返回400，认证失败返回401，权限不足返回403，资源不存在返回404，业务冲突返回409。内部错误返回500并记录完整错误日志用于排查。",
+    "strategy": "项目管理服务采用统一的REST错误响应格式，所有校验错误返回400，资源不存在返回404，业务冲突返回409，内部错误返回500。审计日志写入失败仅记录服务日志，不影响主业务流程的返回结果（容错处理）。",
     "response_format": {
       "body": {
-        "code": "integer（HTTP状态码或自定义业务码）",
-        "error": "string（错误分类标识，如 invalid_param/unauthorized/forbidden/not_found/conflict/internal_error）",
-        "detail": "string（详细错误描述，包含冲突字段名、已存在值等上下文信息）"
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
       }
     },
     "categories": [
       {
         "code": 400,
         "name": "参数校验错误",
-        "description": "请求参数格式或值无效。触发条件：项目名称为空或超长、page或page_size为负数、role值不在枚举范围内、project_id格式非法。处理方式：返回detail字段指明具体哪个参数无效及原因。"
-      },
-      {
-        "code": 401,
-        "name": "认证失败",
-        "description": "JWT Token缺失、过期或无效。触发条件：未携带Authorization头、Token过期、Token签名不匹配。处理方式：返回统一认证错误提示，引导用户重新登录。"
-      },
-      {
-        "code": 403,
-        "name": "权限不足",
-        "description": "用户无权限执行请求的操作。触发条件：非项目成员尝试访问项目详情、非admin成员尝试管理项目成员、admin尝试移除自己。处理方式：detail字段返回具体缺失的权限和所需角色。"
+        "description": "请求参数格式错误、字段超长或必填字段缺失，由Pydantic校验器拦截并返回详细错误信息"
       },
       {
         "code": 404,
         "name": "资源不存在",
-        "description": "请求的目标资源未找到。触发条件：projectId对应的项目不存在、userId对应用户不存在、projectId+userId对应的成员记录不存在。处理方式：区分项目不存在、用户不存在、成员不存在三种场景，返回具体描述。"
+        "description": "按ID查询项目时未找到对应记录（含已软删除），返回明确的项目不存在提示"
       },
       {
         "code": 409,
         "name": "业务冲突",
-        "description": "请求与当前业务状态冲突。触发条件：创建同名项目、降级/移除最后一名admin、归档有活跃部署任务的项目。处理方式：detail字段说明冲突原因和当前状态。"
+        "description": "项目名称重复（唯一键冲突）或项目存在进行中的部署任务时触发，需提示用户修正操作"
       },
       {
         "code": 500,
         "name": "服务器内部错误",
-        "description": "未预期的系统错误，包括数据库连接失败、缓存操作失败、数据序列化错误。处理方式：记录完整错误栈和请求追踪ID到日志，返回通用错误提示，detail包含追踪ID供排查。"
+        "description": "数据库连接异常、未知运行时错误，统一返回500，内部记录详细错误栈到服务日志"
       }
     ]
   },
@@ -433,366 +303,213 @@
     {
       "name": "Project",
       "object_type": "entity",
-      "description": "项目业务实体，代表一个独立的部署项目。每个项目拥有独立的环境配置和部署历史。",
+      "description": "项目业务实体，是项目管理服务的核心领域对象，代表一个独立部署项目",
       "attributes": [
-        {"name": "id", "type": "UUID", "required": true, "source": "db", "description": "项目唯一标识，由数据库自动生成"},
-        {"name": "name", "type": "String", "required": true, "source": "db", "description": "项目名称，同一用户下唯一"},
-        {"name": "description", "type": "String", "required": false, "source": "db", "description": "项目描述"},
-        {"name": "created_by", "type": "UUID", "required": true, "source": "db", "description": "创建者用户ID"},
-        {"name": "status", "type": "ProjectStatus", "required": true, "source": "db", "description": "项目状态：active/archived"},
-        {"name": "created_at", "type": "DateTime", "required": true, "source": "db", "description": "创建时间"},
-        {"name": "updated_at", "type": "DateTime", "required": true, "source": "db", "description": "最后更新时间"}
+        {"name": "id", "type": "uuid", "required": true, "source": "db", "description": "项目唯一标识"},
+        {"name": "name", "type": "string", "required": true, "source": "db", "description": "项目名称，全局唯一（排除已删除）"},
+        {"name": "description", "type": "string", "required": false, "source": "db", "description": "项目描述"},
+        {"name": "created_at", "type": "datetime", "required": true, "source": "db", "description": "创建时间"},
+        {"name": "updated_at", "type": "datetime", "required": true, "source": "db", "description": "最后更新时间"},
+        {"name": "deleted_at", "type": "datetime", "required": false, "source": "db", "description": "软删除时间，非空表示已删除"}
       ]
     },
     {
-      "name": "ProjectMember",
-      "object_type": "entity",
-      "description": "项目成员实体，表示用户与项目之间的多对多关联关系及角色权限。",
-      "attributes": [
-        {"name": "project_id", "type": "UUID", "required": true, "source": "db", "description": "关联项目ID"},
-        {"name": "user_id", "type": "UUID", "required": true, "source": "db", "description": "关联用户ID"},
-        {"name": "role", "type": "ProjectMemberRole", "required": true, "source": "db", "description": "成员角色"},
-        {"name": "created_at", "type": "DateTime", "required": true, "source": "db", "description": "记录创建时间"},
-        {"name": "username", "type": "String", "required": true, "source": "derived", "description": "用户名，通过user_id关联users表获取"},
-        {"name": "display_name", "type": "String", "required": false, "source": "derived", "description": "用户显示名，通过user_id关联users表获取"}
-      ]
-    },
-    {
-      "name": "ProjectStatus",
-      "object_type": "enum",
-      "description": "项目生命周期状态枚举",
-      "values": [
-        "active（活跃状态，可正常进行部署操作）",
-        "archived（已归档，项目只读不可执行部署）"
-      ]
-    },
-    {
-      "name": "ProjectMemberRole",
-      "object_type": "enum",
-      "description": "项目成员角色枚举，从高到低排序：admin > maintainer > developer > viewer",
-      "values": [
-        "admin（管理员：项目完全控制权，可管理成员和环境）",
-        "maintainer（维护者：可编辑项目配置和环境）",
-        "developer（开发者：可触发部署和查看详情）",
-        "viewer（观察者：只读权限，仅可查看项目信息和部署状态）"
-      ]
-    },
-    {
-      "name": "CreateProjectRequest",
+      "name": "ProjectCreateRequest",
       "object_type": "dto",
-      "description": "创建项目请求的DTO",
-      "maps_to_entity": "Project",
+      "description": "创建项目的请求体DTO，包含前端传入的项目基本信息",
       "attributes": [
-        {"name": "name", "type": "String", "required": true, "source": "input", "description": "项目名称，长度1~256字符，不能与已有项目重名"},
-        {"name": "description", "type": "String", "required": false, "source": "input", "description": "项目描述，最长4096字符"}
-      ]
+        {"name": "name", "type": "string", "required": true, "source": "input", "description": "项目名称，1~128字符"},
+        {"name": "description", "type": "string", "required": false, "source": "input", "description": "项目描述，最长500字符"}
+      ],
+      "maps_to_entity": "Project"
     },
     {
-      "name": "UpdateProjectRequest",
+      "name": "ProjectUpdateRequest",
       "object_type": "dto",
-      "description": "更新项目请求的DTO。所有字段可选，仅传入的字段被更新。",
-      "maps_to_entity": "Project",
+      "description": "更新项目的请求体DTO，所有字段可选，仅传入需要更新的字段",
       "attributes": [
-        {"name": "name", "type": "String", "required": false, "source": "input", "description": "新项目名称，传入时不能与已有项目重名"},
-        {"name": "description", "type": "String", "required": false, "source": "input", "description": "新项目描述"}
-      ]
+        {"name": "name", "type": "string", "required": false, "source": "input", "description": "新项目名称，更新时如传入则校验唯一性"},
+        {"name": "description", "type": "string", "required": false, "source": "input", "description": "新项目描述"}
+      ],
+      "maps_to_entity": "Project"
     },
     {
-      "name": "ProjectResponse",
+      "name": "ProjectSummary",
       "object_type": "dto",
-      "description": "项目详情响应DTO，包含关联的环境列表",
-      "maps_to_entity": "Project",
+      "description": "项目列表中的概要信息DTO，包含环境数量和最新部署状态",
       "attributes": [
-        {"name": "id", "type": "UUID", "required": true, "source": "computed", "description": "项目标识"},
-        {"name": "name", "type": "String", "required": true, "source": "computed", "description": "项目名称"},
-        {"name": "description", "type": "String", "required": false, "source": "computed", "description": "项目描述"},
-        {"name": "environments", "type": "Array[EnvironmentBrief]", "required": true, "source": "derived", "description": "关联环境列表，由环境管理服务提供"},
-        {"name": "created_at", "type": "DateTime (ISO8601)", "required": true, "source": "computed", "description": "创建时间"},
-        {"name": "updated_at", "type": "DateTime (ISO8601)", "required": true, "source": "computed", "description": "最后更新时间"}
-      ]
+        {"name": "id", "type": "uuid", "required": true, "source": "db", "description": "项目ID"},
+        {"name": "name", "type": "string", "required": true, "source": "db", "description": "项目名称"},
+        {"name": "env_count", "type": "int", "required": true, "source": "computed", "description": "已绑定的环境数量，通过COUNT project_environments计算"},
+        {"name": "last_deploy_status", "type": "string", "required": false, "source": "derived", "description": "最近一次部署状态：pending/running/success/failed，无部署记录时为null"},
+        {"name": "last_deployed_at", "type": "datetime", "required": false, "source": "derived", "description": "最近一次部署的创建时间，无部署记录时为null"}
+      ],
+      "maps_to_entity": "Project"
     },
     {
-      "name": "ProjectListItem",
+      "name": "ProjectDetail",
       "object_type": "dto",
-      "description": "项目列表项DTO，用于项目列表页的概览展示",
-      "maps_to_entity": "Project",
+      "description": "项目详情的完整DTO，包含项目元信息及绑定环境的关联信息",
       "attributes": [
-        {"name": "id", "type": "UUID", "required": true, "source": "computed", "description": "项目标识"},
-        {"name": "name", "type": "String", "required": true, "source": "computed", "description": "项目名称"},
-        {"name": "description", "type": "String", "required": false, "source": "computed", "description": "项目描述"},
-        {"name": "status", "type": "ProjectStatus", "required": true, "source": "computed", "description": "项目状态"},
-        {"name": "member_count", "type": "Integer", "required": true, "source": "derived", "description": "项目成员数"},
-        {"name": "created_at", "type": "DateTime (ISO8601)", "required": true, "source": "computed", "description": "创建时间"},
-        {"name": "updated_at", "type": "DateTime (ISO8601)", "required": true, "source": "computed", "description": "最后更新时间"}
-      ]
-    },
-    {
-      "name": "ProjectSwitchRequest",
-      "object_type": "dto",
-      "description": "切换项目请求的DTO",
-      "attributes": [
-        {"name": "project_id", "type": "UUID", "required": true, "source": "input", "description": "目标项目ID"}
-      ]
+        {"name": "id", "type": "uuid", "required": true, "source": "db", "description": "项目ID"},
+        {"name": "name", "type": "string", "required": true, "source": "db", "description": "项目名称"},
+        {"name": "description", "type": "string", "required": false, "source": "db", "description": "项目描述"},
+        {"name": "environments", "type": "list[EnvironmentBinding]", "required": true, "source": "derived", "description": "绑定的环境列表，通过project_environments关联查询"},
+        {"name": "created_at", "type": "datetime", "required": true, "source": "db", "description": "创建时间"},
+        {"name": "updated_at", "type": "datetime", "required": true, "source": "db", "description": "最后更新时间"}
+      ],
+      "maps_to_entity": "Project"
     },
     {
       "name": "ProjectSwitchResponse",
       "object_type": "dto",
-      "description": "切换项目响应的DTO，包含新Token和当前项目上下文",
+      "description": "项目切换操作的响应DTO，返回目标项目的上下文信息",
       "attributes": [
-        {"name": "token", "type": "String (JWT)", "required": true, "source": "computed", "description": "更新后的会话Token，携带项目上下文"},
-        {"name": "current_project", "type": "ProjectContext", "required": true, "source": "computed", "description": "当前项目上下文信息"}
-      ]
+        {"name": "current_project_id", "type": "uuid", "required": true, "source": "db", "description": "当前切换到的项目ID"},
+        {"name": "current_project_name", "type": "string", "required": true, "source": "db", "description": "当前项目名称"},
+        {"name": "environments", "type": "list[EnvironmentStatus]", "required": true, "source": "derived", "description": "项目绑定的环境及各环境的连接状态"}
+      ],
+      "maps_to_entity": "Project"
     },
     {
-      "name": "ProjectContext",
+      "name": "EnvironmentBinding",
       "object_type": "value_object",
-      "description": "当前项目上下文值对象，嵌入JWT中用于标识用户当前操作的项目",
+      "description": "环境绑定信息值对象，不可变，表示项目详情中的环境引用",
       "attributes": [
-        {"name": "id", "type": "UUID", "required": true, "source": "computed", "description": "项目标识"},
-        {"name": "name", "type": "String", "required": true, "source": "computed", "description": "项目名称"},
-        {"name": "environments", "type": "Array[object]", "required": true, "source": "derived", "description": "环境列表"}
+        {"name": "env_id", "type": "uuid", "required": true, "source": "db", "description": "环境ID"},
+        {"name": "env_name", "type": "string", "required": true, "source": "db", "description": "环境名称"},
+        {"name": "host", "type": "string", "required": true, "source": "db", "description": "远程服务器地址"}
       ]
     },
     {
-      "name": "AddProjectMemberRequest",
-      "object_type": "dto",
-      "description": "添加项目成员请求的DTO",
+      "name": "EnvironmentStatus",
+      "object_type": "value_object",
+      "description": "环境状态值对象，不可变，表示项目切换时各环境的连接状态",
       "attributes": [
-        {"name": "user_id", "type": "UUID", "required": true, "source": "input", "description": "目标用户ID"},
-        {"name": "role", "type": "ProjectMemberRole", "required": true, "source": "input", "description": "分配给用户的角色"}
+        {"name": "env_id", "type": "uuid", "required": true, "source": "db", "description": "环境ID"},
+        {"name": "env_name", "type": "string", "required": true, "source": "db", "description": "环境名称"},
+        {"name": "status", "type": "string", "required": true, "source": "db", "description": "环境连接状态：unknown/online/offline"}
       ]
     },
     {
-      "name": "UpdateProjectMemberRoleRequest",
-      "object_type": "dto",
-      "description": "修改成员角色请求的DTO",
-      "attributes": [
-        {"name": "role", "type": "ProjectMemberRole", "required": true, "source": "input", "description": "新角色"}
-      ]
-    },
-    {
-      "name": "ProjectMemberResponse",
-      "object_type": "dto",
-      "description": "项目成员信息响应DTO",
-      "attributes": [
-        {"name": "user_id", "type": "UUID", "required": true, "source": "computed", "description": "用户标识"},
-        {"name": "username", "type": "String", "required": true, "source": "derived", "description": "用户名"},
-        {"name": "display_name", "type": "String", "required": false, "source": "derived", "description": "用户显示名称"},
-        {"name": "role", "type": "ProjectMemberRole", "required": true, "source": "computed", "description": "当前角色"},
-        {"name": "created_at", "type": "DateTime (ISO8601)", "required": true, "source": "computed", "description": "加入项目时间"}
-      ]
+      "name": "DeployStatus",
+      "object_type": "enum",
+      "description": "部署状态枚举，与PostgreSQL中deployments.status的取值范围一致",
+      "values": ["pending", "running", "success", "failed"]
     }
   ],
   "service_contracts": [
     {
       "name": "ProjectService",
-      "description": "项目管理核心服务，提供项目CRUD、成员权限管理和项目切换的全部业务逻辑",
+      "description": "项目核心业务服务，处理项目的CRUD操作、项目与环境绑定关系管理及项目上下文切换",
       "methods": [
         {
-          "name": "CreateProject",
-          "signature": "(name string, description string, createdBy uuid.UUID) -> (*Project, error)",
-          "precondition": "name != '' 且名称长度<=256；createdBy 对应的用户存在于 users 表且 status=active；当前用户下不存在同名项目",
-          "postcondition": "projects 表新增一条 status=active 的记录；project_members 表新增一条 createdBy+admin 的成员记录；Redis 项目缓存写入；审计日志记录创建操作",
-          "description": "创建新项目并自动将创建者添加为admin角色成员",
+          "name": "create_project",
+          "signature": "(req: ProjectCreateRequest, actor: str) -> Project",
+          "precondition": "req.name 非空且 len ≤ 128；req.description 若提供则 len ≤ 500；不存在同名且 deleted_at IS NULL 的活跃项目",
+          "postcondition": "新项目记录已持久化到 projects 表（id 自动生成）；已通过审计日志服务记录 create_project 操作",
+          "description": "创建新项目，校验参数和名称唯一性后写入数据库，返回包含生成ID的完整项目信息",
           "exceptions": [
-            {"name": "DuplicateProjectNameError", "trigger": "同一用户下已存在同名的 active 项目", "http_status": 409},
-            {"name": "UserNotFoundError", "trigger": "createdBy 对应的用户不存在或已禁用", "http_status": 404},
-            {"name": "InvalidArgumentError", "trigger": "名称为空或超长", "http_status": 400}
+            {"name": "InvalidParameterError", "trigger": "name为空或超长、description超长", "http_status": 400},
+            {"name": "ProjectNameConflictError", "trigger": "同名活跃项目已存在", "http_status": 409}
           ]
         },
         {
-          "name": "UpdateProject",
-          "signature": "(projectId uuid.UUID, name string, description string, operatorId uuid.UUID) -> (*Project, error)",
-          "precondition": "projectId 对应的项目存在且 status=active；operatorId 在该项目中角色为 admin 或 maintainer；若修改名称，新名称在同一用户下不能与已有项目冲突",
-          "postcondition": "projects 表中对应记录的 name/description 更新；updated_at 更新时间戳；相同名称的 Redis 缓存失效；审计日志记录更新操作",
-          "description": "更新项目名称和描述",
+          "name": "list_projects",
+          "signature": "(page: int, page_size: int) -> dict[total: int, items: list[ProjectSummary]]",
+          "precondition": "page ≥ 1；page_size 在 [1, 100] 范围内",
+          "postcondition": "返回的 items 不包含 deleted_at IS NOT NULL 的项目；env_count 为各项目绑定的环境数量；last_deploy_status 和 last_deployed_at 来自各项目最新的部署记录",
+          "description": "分页查询活跃项目列表，排除已软删除项目，聚合环境数量和最新部署状态",
           "exceptions": [
-            {"name": "ProjectNotFoundError", "trigger": "projectId 对应的项目不存在", "http_status": 404},
-            {"name": "PermissionDeniedError", "trigger": "operatorId 不是项目成员或角色低于 maintainer", "http_status": 403},
-            {"name": "DuplicateProjectNameError", "trigger": "修改后的名称与同用户下的其他项目冲突", "http_status": 409},
-            {"name": "ProjectArchivedError", "trigger": "项目状态为 archived，不可修改", "http_status": 409}
+            {"name": "InvalidParameterError", "trigger": "page < 1 或 page_size 超出 [1, 100] 范围", "http_status": 400}
           ]
         },
         {
-          "name": "ArchiveProject",
-          "signature": "(projectId uuid.UUID, operatorId uuid.UUID) -> error",
-          "precondition": "projectId 对应的项目存在且 status=active；operatorId 在该项目中角色为 admin；不存在关联 deployment_tasks 且 status 为 pending 或 running 的记录",
-          "postcondition": "projects 表中对应记录的 status 设为 archived；updated_at 更新时间戳；Redis 缓存失效；审计日志记录归档操作",
-          "description": "归档项目（软删除），将项目标记为只读状态",
+          "name": "get_project",
+          "signature": "(project_id: uuid) -> ProjectDetail",
+          "precondition": "project_id 对应的项目存在且 deleted_at IS NULL",
+          "postcondition": "返回项目全部字段及已绑定的环境列表（含 env_id、env_name、host）；环境列表为空数组而非 null",
+          "description": "查询单个项目的完整信息，通过 project_environments + environments 关联查询绑定环境列表",
           "exceptions": [
-            {"name": "ProjectNotFoundError", "trigger": "项目不存在", "http_status": 404},
-            {"name": "PermissionDeniedError", "trigger": "operatorId 不是 admin 角色", "http_status": 403},
-            {"name": "ActiveDeploymentExistsError", "trigger": "存在 pending 或 running 状态的部署任务", "http_status": 409},
-            {"name": "ProjectArchivedError", "trigger": "项目已归档", "http_status": 409}
+            {"name": "ProjectNotFoundError", "trigger": "指定ID的项目不存在或已软删除", "http_status": 404}
           ]
         },
         {
-          "name": "RestoreProject",
-          "signature": "(projectId uuid.UUID, operatorId uuid.UUID) -> (*Project, error)",
-          "precondition": "projectId 对应的项目存在且 status=archived；operatorId 在该项目中角色为 admin",
-          "postcondition": "projects 表中对应记录的 status 设为 active；updated_at 更新时间戳；Redis 缓存失效；审计日志记录恢复操作",
-          "description": "恢复已归档的项目，将其重新置为活跃状态",
+          "name": "update_project",
+          "signature": "(project_id: uuid, req: ProjectUpdateRequest, actor: str) -> Project",
+          "precondition": "project_id 对应项目存在且 deleted_at IS NULL；若更新 name，新名称不得与已有活跃项目冲突",
+          "postcondition": "项目记录已更新（updated_at 刷新）；已通过审计日志服务记录 update_project 操作；未传入的字段保持不变",
+          "description": "更新项目名称和/或描述，校验参数合法性，检查名称唯一性后更新数据库，返回更新后的项目信息",
           "exceptions": [
-            {"name": "ProjectNotFoundError", "trigger": "项目不存在", "http_status": 404},
-            {"name": "PermissionDeniedError", "trigger": "operatorId 不是 admin 角色", "http_status": 403},
-            {"name": "ProjectAlreadyActiveError", "trigger": "项目已是 active 状态", "http_status": 409}
+            {"name": "ProjectNotFoundError", "trigger": "项目不存在或已软删除", "http_status": 404},
+            {"name": "InvalidParameterError", "trigger": "name或description超长", "http_status": 400},
+            {"name": "ProjectNameConflictError", "trigger": "新名称与其他活跃项目冲突", "http_status": 409}
           ]
         },
         {
-          "name": "GetProject",
-          "signature": "(projectId uuid.UUID, userId uuid.UUID) -> (*Project, error)",
-          "precondition": "projectId 对应的项目存在；userId 是该项目的成员（status 为 active 或 archived 均可访问）",
-          "postcondition": "返回完整的 Project 实体（含关联的环境列表摘要）；查缓存，未命中则查 DB 后回写缓存",
-          "description": "获取项目详情，优先走缓存",
+          "name": "delete_project",
+          "signature": "(project_id: uuid, actor: str) -> None",
+          "precondition": "project_id 对应项目存在且 deleted_at IS NULL；该项目的所有部署记录状态均为 success 或 failed（无 pending/running）",
+          "postcondition": "项目已软删除（deleted_at 设为当前时间）；该项目的所有 project_environments 关联记录已物理删除；已通过审计日志服务记录 delete_project 操作",
+          "description": "软删除项目，级联清理环境绑定关系，阻止存在进行中部署任务的项目被删除",
           "exceptions": [
-            {"name": "ProjectNotFoundError", "trigger": "项目不存在", "http_status": 404},
-            {"name": "PermissionDeniedError", "trigger": "userId 不是项目成员", "http_status": 403}
+            {"name": "ProjectNotFoundError", "trigger": "项目不存在或已软删除", "http_status": 404},
+            {"name": "ProjectHasActiveDeploymentError", "trigger": "项目存在 pending 或 running 状态的部署记录", "http_status": 409}
           ]
         },
         {
-          "name": "ListProjects",
-          "signature": "(userId uuid.UUID, page int, pageSize int) -> ([]*ProjectListItem, int, error)",
-          "precondition": "userId 对应的用户存在；page>=1；pageSize 在 1~100 范围内",
-          "postcondition": "返回用户参与的所有项目（通过 project_members 关联）的分页列表，不区分项目状态",
-          "description": "获取当前用户有权限访问的项目分页列表",
+          "name": "switch_project",
+          "signature": "(project_id: uuid) -> ProjectSwitchResponse",
+          "precondition": "project_id 对应项目存在且 deleted_at IS NULL",
+          "postcondition": "返回当前项目ID、名称及所有绑定环境的ID、名称和连接状态；环境列表为空数组而非null（无绑定环境时）",
+          "description": "项目上下文切换，返回目标项目的基本信息和各环境连接状态，供前端刷新上下文面板",
           "exceptions": [
-            {"name": "InvalidArgumentError", "trigger": "page<1 或 pageSize 不在 1~100 范围内", "http_status": 400}
-          ]
-        },
-        {
-          "name": "ListProjectMembers",
-          "signature": "(projectId uuid.UUID, userId uuid.UUID) -> ([]*ProjectMemberResponse, error)",
-          "precondition": "projectId 对应的项目存在；userId 是该项目成员",
-          "postcondition": "返回项目所有成员列表，含用户名和显示名（从 users 表关联获取）",
-          "description": "获取项目成员列表",
-          "exceptions": [
-            {"name": "ProjectNotFoundError", "trigger": "项目不存在", "http_status": 404},
-            {"name": "PermissionDeniedError", "trigger": "userId 不是项目成员", "http_status": 403}
-          ]
-        },
-        {
-          "name": "AddProjectMember",
-          "signature": "(projectId uuid.UUID, memberUserId uuid.UUID, role ProjectMemberRole, operatorId uuid.UUID) -> (*ProjectMemberResponse, error)",
-          "precondition": "projectId 对应的项目存在且 status=active；operatorId 在该项目中角色为 admin；memberUserId 对应的用户存在且 status=active；memberUserId 尚未是项目成员",
-          "postcondition": "project_members 表新增一条关联记录；审计日志记录添加成员操作",
-          "description": "向项目添加新成员并指定角色",
-          "exceptions": [
-            {"name": "ProjectNotFoundError", "trigger": "项目不存在", "http_status": 404},
-            {"name": "PermissionDeniedError", "trigger": "operatorId 不是 admin 角色", "http_status": 403},
-            {"name": "UserNotFoundError", "trigger": "memberUserId 对应用户不存在或已禁用", "http_status": 404},
-            {"name": "DuplicateMemberError", "trigger": "memberUserId 已是项目成员", "http_status": 409}
-          ]
-        },
-        {
-          "name": "UpdateProjectMemberRole",
-          "signature": "(projectId uuid.UUID, memberUserId uuid.UUID, role ProjectMemberRole, operatorId uuid.UUID) -> (*ProjectMemberResponse, error)",
-          "precondition": "projectId 对应的项目存在；operatorId 在该项目中角色为 admin；memberUserId 是项目成员；若 role 从 admin 改为其他角色，该项目必须还有其他 admin 成员",
-          "postcondition": "project_members 表中对应用户的 role 更新；审计日志记录角色变更操作",
-          "description": "修改项目成员的角色",
-          "exceptions": [
-            {"name": "ProjectNotFoundError", "trigger": "项目不存在", "http_status": 404},
-            {"name": "PermissionDeniedError", "trigger": "operatorId 不是 admin 角色", "http_status": 403},
-            {"name": "MemberNotFoundError", "trigger": "memberUserId 不是项目成员", "http_status": 404},
-            {"name": "LastAdminDemoteError", "trigger": "降级最后一名 admin 成员", "http_status": 409}
-          ]
-        },
-        {
-          "name": "RemoveProjectMember",
-          "signature": "(projectId uuid.UUID, memberUserId uuid.UUID, operatorId uuid.UUID) -> error",
-          "precondition": "projectId 对应的项目存在；operatorId 在该项目中角色为 admin；memberUserId 是项目成员；operatorId != memberUserId（admin 不能移除自身）；若 memberUserId 角色为 admin，该项目必须还有其他 admin 成员",
-          "postcondition": "project_members 表中对应用户的关联记录删除；审计日志记录移除成员操作",
-          "description": "从项目中移除成员",
-          "exceptions": [
-            {"name": "ProjectNotFoundError", "trigger": "项目不存在", "http_status": 404},
-            {"name": "PermissionDeniedError", "trigger": "operatorId 不是 admin 角色，或试图移除自身", "http_status": 403},
-            {"name": "MemberNotFoundError", "trigger": "memberUserId 不是项目成员", "http_status": 404},
-            {"name": "LastAdminRemoveError", "trigger": "移除最后一名 admin 成员", "http_status": 409}
-          ]
-        },
-        {
-          "name": "SwitchProject",
-          "signature": "(userId uuid.UUID, projectId uuid.UUID) -> (string, *ProjectContext, error)",
-          "precondition": "projectId 对应的项目存在；userId 是该项目的成员",
-          "postcondition": "Redis 中用户会话的 current_project_id 和 current_project_name 更新；签发新的 JWT Token 携带项目上下文；旧 Token 加入黑名单；审计日志记录项目切换操作",
-          "description": "切换用户当前上下文项目，返回新JWT Token和项目上下文",
-          "exceptions": [
-            {"name": "ProjectNotFoundError", "trigger": "项目不存在", "http_status": 404},
-            {"name": "PermissionDeniedError", "trigger": "userId 不是项目成员", "http_status": 403}
-          ]
-        },
-        {
-          "name": "InternalGetProject",
-          "signature": "(projectId uuid.UUID) -> (*Project, error)",
-          "precondition": "无权限校验要求，调用方负责授权",
-          "postcondition": "返回项目基本信息，不包含环境列表。优先走缓存。",
-          "description": "内部方法，供其他服务通过 gRPC 或内部 HTTP 调用查询项目基本信息",
-          "exceptions": [
-            {"name": "ProjectNotFoundError", "trigger": "项目不存在", "http_status": 404}
-          ]
-        },
-        {
-          "name": "InternalCheckProjectMember",
-          "signature": "(projectId uuid.UUID, userId uuid.UUID) -> (bool, string, error)",
-          "precondition": "无权限校验要求，调用方负责授权",
-          "postcondition": "返回布尔值标识是否为项目成员，是则同时返回角色字符串",
-          "description": "内部方法，供认证中间件或部署编排服务校验用户是否为指定项目的成员及其角色",
-          "exceptions": [
-            {"name": "ProjectNotFoundError", "trigger": "项目不存在", "http_status": 404}
+            {"name": "ProjectNotFoundError", "trigger": "项目不存在或已软删除", "http_status": 404}
           ]
         }
       ],
       "repository_dependencies": [
-        "findProjectById(id uuid.UUID) -> *Project",
-        "findProjectByNameAndCreator(name string, createdBy uuid.UUID) -> *Project",
-        "listProjectsByUserId(userId uuid.UUID, page int, pageSize int) -> ([]*Project, int)",
-        "insertProject(project *Project) -> error",
-        "updateProject(project *Project) -> error",
-        "findProjectMember(projectId uuid.UUID, userId uuid.UUID) -> *ProjectMember",
-        "listProjectMembers(projectId uuid.UUID) -> ([]*ProjectMember, error)",
-        "insertProjectMember(member *ProjectMember) -> error",
-        "updateProjectMemberRole(projectId uuid.UUID, userId uuid.UUID, role string) -> error",
-        "deleteProjectMember(projectId uuid.UUID, userId uuid.UUID) -> error",
-        "countProjectMembersByRole(projectId uuid.UUID, role string) -> int",
-        "findUserById(id uuid.UUID) -> *User",
-        "findUserByUsername(username string) -> *User",
-        "existsActiveDeploymentByProjectId(projectId uuid.UUID) -> bool"
+        "findById(projectId: uuid) -> Project? — 按ID查询项目（含deleted_at过滤）",
+        "findByName(name: str) -> Project? — 按名称查询活跃项目（deleted_at IS NULL 过滤），用于名称唯一性校验",
+        "findPaginated(page: int, pageSize: int) -> tuple[list[Project], int] — 分页查询活跃项目列表，返回项目列表和总数（deleted_at IS NULL 过滤）",
+        "findEnvironmentsByProjectId(projectId: uuid) -> list[EnvironmentBinding] — 通过 project_environments 关联查询绑定的环境基本信息",
+        "findEnvironmentStatusesByProjectId(projectId: uuid) -> list[EnvironmentStatus] — 查询绑定环境及其连接状态，用于项目切换",
+        "findLatestDeploymentByProjectId(projectId: uuid) -> Deployment? — 查询项目最新部署记录（按 started_at 降序取第一条），用于列表 last_deploy_status",
+        "countActiveDeploymentsByProjectId(projectId: uuid) -> int — 统计项目中 pending/running 状态的部署记录数，用于删除前检查",
+        "hardDeleteProjectEnvironments(projectId: uuid) -> None — 物理删除指定项目的所有 project_environments 关联记录",
+        "save(project: Project) -> Project — 持久化新项目或更新已有项目",
+        "softDeleteById(projectId: uuid) -> None — 设置指定项目的 deleted_at 为当前时间"
       ]
     }
   ],
   "business_rules": {
     "invariants": [
-      "项目名称在同一个创建者下必须唯一（不区分 active/archived，包括已归档项目）",
-      "每个项目至少有一名 admin 角色的成员",
-      "项目管理员（admin 角色）不能将自己从项目中移除",
-      "已归档（archived）项目不可执行任何修改操作，包括更新信息和修改成员",
-      "从项目中移除最后一名 admin 成员的操作必须被拒绝",
-      "将最后一名 admin 成员降级为非 admin 角色的操作必须被拒绝"
+      "项目名称在未删除的项目中必须唯一，软删除的项目不参与名称唯一性校验，允许后续新项目复用已删除项目的名称",
+      "项目与环境的多对多绑定关系通过 project_environments 关联表维护，同一 project_id + environment_id 组合不可重复绑定",
+      "删除项目（软删除）时，必须同步物理删除该项目的所有 project_environments 关联记录，保持数据一致性",
+      "项目列表查询（GET /api/projects）默认排除 deleted_at IS NOT NULL 的已删除项目，不对外暴露软删除数据",
+      "项目概要中的 env_count 必须实时通过 COUNT project_environments WHERE project_id=? 计算，不缓存静态计数",
+      "审计日志写入失败不影响主业务流程的结果返回，失败信息记录到服务日志用于排查"
     ],
     "state_machines": [
       {
-        "entity": "Project（项目）",
-        "states": [
-          "active（活跃）：项目可正常操作，支持部署、成员管理、配置修改",
-          "archived（归档）：项目只读，仅可查看基本信息，不可执行部署和修改操作"
-        ],
+        "entity": "Project",
+        "states": ["active", "deleted"],
         "transitions": [
-          {"from": "（初始）", "to": "active", "trigger": "创建项目", "actor": "创建者（自动成为admin）"},
-          {"from": "active", "to": "archived", "trigger": "归档项目", "actor": "admin角色成员"},
-          {"from": "archived", "to": "active", "trigger": "恢复项目", "actor": "admin角色成员"}
+          {"from": "active", "to": "deleted", "trigger": "delete_project() 被调用，且项目无进行中部署任务", "actor": "项目经理（通过API）"}
         ],
         "irreversible_rules": [
-          "本服务采用软删除策略（归档），不支持物理删除。一旦归档，关联的环境配置和部署历史保留但不可操作。恢复后所有数据完整可用。",
-          "从 archived 恢复到 active 不会恢复在归档期间其他服务可能已清理的关联数据（如 Redis 缓存），需由前端触发数据刷新。"
+          "active → deleted 转换不可逆，API不提供恢复已删除项目的接口。如需恢复，需由数据库管理员直接操作修改 deleted_at 字段"
         ],
-        "concurrency": "更新操作采用乐观锁，在 UPDATE 时比较 updated_at 字段。若并发修改导致 updated_at 不匹配（即另一请求已先完成修改），则返回 409 Conflict，由调用方决定重试策略。"
+        "concurrency": "项目删除操作与同项目的部署操作可能并发，删除前必须检查并确保无 pending/running 状态的部署记录，通过事务包裹检查+删除操作保证原子性"
       }
     ],
     "cross_service_rules": [
-      "项目归档/删除前必须通过部署编排服务检查是否存在 pending 或 running 状态的部署任务",
-      "项目创建/更新/归档/成员变更必须调用审计日志服务记录完整操作信息",
-      "项目切换后需同步更新 Redis 中用户会话的 current_project_id，并签发新的 JWT Token（通知认证中间件）",
-      "获取项目详情时通过环境管理服务获取关联的环境列表（GET /api/v1/environments?project_id=:projectId）",
-      "项目名称唯一性校验仅在本服务内通过查询 projects 表完成，不依赖外部服务"
+      "所有项目创建操作完成后，必须通过 POST /api/audit/logs 调用审计日志服务，action 为 create_project，resource_type 为 project，result 为 success/failure",
+      "所有项目更新操作完成后，必须通过 POST /api/audit/logs 调用审计日志服务，action 为 update_project，resource_type 为 project",
+      "所有项目删除操作完成后，必须通过 POST /api/audit/logs 调用审计日志服务，action 为 delete_project，resource_type 为 project",
+      "项目列表中的 last_deploy_status 和 last_deployed_at 字段来源于 deployments 表（与部署引擎服务共享数据源），通过直接SQL查询获取最新部署记录，不跨服务调用",
+      "项目详情中的环境列表（environments）通过 project_environments 和 environments 表关联查询获取，环境连接状态由环境配置服务维护，项目管理服务读取现状态值"
     ]
   }
 }
