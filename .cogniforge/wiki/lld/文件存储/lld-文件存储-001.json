@@ -6,164 +6,184 @@
     "module": "文件存储",
     "title": "文件存储模块详细设计",
     "author": "design_agent",
-    "created": "2026-05-22T00:00:00Z"
+    "created": "2026-05-22T00:00:00+08:00"
   },
   "overview": {
-    "description": "管理部署所需的可执行文件的存储和版本化，提供文件上传、下载、版本管理和完整性校验功能",
-    "dependencies": [],
-    "tech_stack": ["Python", "FastAPI", "SHA256"]
+    "description": "暂存待部署的可执行文件，供部署服务上传到远程服务器。基于 MinIO 对象存储实现，提供可执行文件的版本管理和临时文件生命周期管理能力。",
+    "dependencies": ["部署编排服务", "环境配置服务"],
+    "tech_stack": ["Go", "MinIO"]
   },
   "data_models": [
     {
-      "name": "FileMetadata",
-      "type": "reference",
+      "name": "StoredObject",
+      "type": "store",
       "ownership": "owned",
-      "description": "已存储文件的元数据记录，用于跟踪文件版本和关联信息",
+      "description": "文件存储中的对象元数据定义，描述可执行文件的存储路径、大小、内容类型和过期时间等信息",
       "fields": [
-        {"name": "file_id", "type": "UUID", "required": true, "description": "文件唯一标识"},
-        {"name": "project_id", "type": "UUID", "required": true, "description": "所属项目ID"},
-        {"name": "file_name", "type": "string", "required": true, "description": "原始文件名"},
-        {"name": "version", "type": "string", "required": true, "description": "语义化版本号"},
-        {"name": "checksum_sha256", "type": "string", "required": true, "description": "SHA256 校验值"},
-        {"name": "size_bytes", "type": "integer", "required": true, "description": "文件大小（字节）"},
-        {"name": "storage_path", "type": "string", "required": true, "description": "对象存储中的完整路径"},
-        {"name": "created_at", "type": "string (ISO datetime)", "required": true, "description": "上传时间"},
-        {"name": "updated_at", "type": "string (ISO datetime)", "required": false, "description": "最后更新时间"}
+        {"name": "bucket", "type": "string", "required": true, "description": "所属存储桶名称"},
+        {"name": "object_key", "type": "string", "required": true, "description": "对象在存储桶中的完整键"},
+        {"name": "size", "type": "int64", "required": true, "description": "文件大小（字节）"},
+        {"name": "content_type", "type": "string", "required": false, "description": "文件 MIME 类型"},
+        {"name": "etag", "type": "string", "required": false, "description": "对象的 ETag（MD5 哈希）"},
+        {"name": "uploaded_at", "type": "datetime", "required": true, "description": "上传时间"},
+        {"name": "expire_at", "type": "datetime", "required": false, "description": "过期自动清理时间"}
       ]
     },
     {
-      "name": "StorageConfig",
-      "type": "config",
+      "name": "FileMetadata",
+      "type": "store",
       "ownership": "owned",
-      "description": "文件存储服务的全局配置",
+      "description": "文件的业务元数据，记录文件所属项目、环境、版本等关联信息",
       "fields": [
-        {"name": "max_file_size_mb", "type": "integer", "required": true, "description": "单个文件最大大小（MB）"},
-        {"name": "allowed_extensions", "type": "array<string>", "required": true, "description": "允许的文件扩展名列表"},
-        {"name": "checksum_algorithm", "type": "string", "required": true, "description": "校验算法，默认 SHA256"},
-        {"name": "storage_provider", "type": "string", "required": true, "description": "存储后端类型（local/minio/s3）"}
+        {"name": "project_id", "type": "string", "required": true, "description": "所属项目 ID"},
+        {"name": "environment_id", "type": "string", "required": true, "description": "所属环境 ID"},
+        {"name": "environment_type", "type": "string", "required": true, "description": "环境类型（test/gray/production）"},
+        {"name": "version", "type": "string", "required": true, "description": "部署版本号"},
+        {"name": "filename", "type": "string", "required": true, "description": "原始文件名"},
+        {"name": "md5", "type": "string", "required": false, "description": "文件 MD5 校验值"}
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "FileService.Upload",
-      "method": "POST",
-      "endpoint": "/api/v1/files/upload",
-      "description": "上传可执行文件并关联到指定项目，支持版本化管理和完整性校验",
+      "name": "UploadFile",
+      "method": "INTERNAL",
+      "endpoint": "/internal/files/upload",
+      "description": "上传可执行文件到文件存储系统",
       "parameters": [
-        {"name": "project_id", "type": "string (UUID)", "description": "所属项目ID（multipart/form-data 字段）"},
-        {"name": "file", "type": "binary", "description": "可执行文件内容（multipart/form-data 文件字段）"},
-        {"name": "version", "type": "string", "description": "版本号，可选，不指定则自动生成"}
-      ],
-      "response": {
-        "status": 201,
-        "body": {
-          "file_id": "string (UUID)",
-          "file_name": "string",
-          "version": "string",
-          "checksum": "string (SHA256)",
-          "size_bytes": "integer",
-          "created_at": "string (ISO datetime)"
-        }
-      },
-      "error_codes": [
-        {"code": 400, "message": "请求参数无效，如 project_id 格式错误或缺少文件"},
-        {"code": 409, "message": "版本号冲突，指定版本已存在"},
-        {"code": 413, "message": "文件大小超过上限"},
-        {"code": 422, "message": "文件完整性校验失败"}
-      ]
-    },
-    {
-      "name": "FileService.Download",
-      "method": "GET",
-      "endpoint": "/api/v1/files/download/{file_id}",
-      "description": "根据文件ID下载已存储的可执行文件（二进制流）",
-      "parameters": [
-        {"name": "file_id", "type": "string (UUID)", "description": "文件唯一标识（路径参数）"}
+        {"name": "bucket", "type": "string", "description": "目标存储桶名称"},
+        {"name": "object_key", "type": "string", "description": "对象存储键（路径）"},
+        {"name": "file_content", "type": "io.Reader", "description": "文件二进制内容流"},
+        {"name": "content_type", "type": "string", "description": "文件的 MIME 类型"}
       ],
       "response": {
         "status": 200,
-        "body": {
-          "Content-Type": "application/octet-stream",
-          "Content-Disposition": "string",
-          "Content-Length": "integer",
-          "body": "binary"
-        }
+        "body": {"etag": "string", "version_id": "string"}
       },
       "error_codes": [
-        {"code": 404, "message": "文件不存在或已被删除"}
+        {"code": 400, "message": "请求参数无效（bucket 名非法或 object_key 格式错误）"},
+        {"code": 500, "message": "文件上传失败（网络异常或存储服务端错误）"}
       ]
     },
     {
-      "name": "FileService.ListVersions",
-      "method": "GET",
-      "endpoint": "/api/v1/files/versions",
-      "description": "查询指定项目的所有已上传文件版本列表（分页）",
+      "name": "DownloadFile",
+      "method": "INTERNAL",
+      "endpoint": "/internal/files/download",
+      "description": "从文件存储下载指定版本的可执行文件",
       "parameters": [
-        {"name": "project_id", "type": "string (UUID)", "description": "项目ID（查询参数）"},
-        {"name": "page", "type": "integer", "description": "页码，默认 1"},
-        {"name": "page_size", "type": "integer", "description": "每页条数，默认 20"}
+        {"name": "bucket", "type": "string", "description": "存储桶名称"},
+        {"name": "object_key", "type": "string", "description": "对象存储键（路径）"}
       ],
       "response": {
         "status": 200,
-        "body": {
-          "total": "integer",
-          "page": "integer",
-          "page_size": "integer",
-          "items": "array<object>"
-        }
+        "body": {"file_content": "io.ReadCloser", "content_type": "string", "size": "int64"}
       },
       "error_codes": [
-        {"code": 400, "message": "参数无效"}
+        {"code": 404, "message": "文件不存在或已被清理"},
+        {"code": 500, "message": "文件下载失败"}
+      ]
+    },
+    {
+      "name": "DeleteFile",
+      "method": "INTERNAL",
+      "endpoint": "/internal/files/delete",
+      "description": "删除指定文件",
+      "parameters": [
+        {"name": "bucket", "type": "string", "description": "存储桶名称"},
+        {"name": "object_key", "type": "string", "description": "对象存储键（路径）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {"deleted": "bool"}
+      },
+      "error_codes": [
+        {"code": 404, "message": "文件不存在"},
+        {"code": 500, "message": "文件删除失败"}
+      ]
+    },
+    {
+      "name": "ListFiles",
+      "method": "INTERNAL",
+      "endpoint": "/internal/files/list",
+      "description": "列出存储桶中指定前缀下的所有文件",
+      "parameters": [
+        {"name": "bucket", "type": "string", "description": "存储桶名称"},
+        {"name": "prefix", "type": "string", "description": "路径前缀过滤器"},
+        {"name": "max_keys", "type": "int", "description": "最大返回条目数"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {"files": "[]StoredObject", "total": "int"}
+      },
+      "error_codes": [
+        {"code": 400, "message": "参数无效"},
+        {"code": 500, "message": "查询失败"}
+      ]
+    },
+    {
+      "name": "CleanupExpired",
+      "method": "INTERNAL",
+      "endpoint": "/internal/files/cleanup",
+      "description": "清理所有已过期的临时文件",
+      "parameters": [
+        {"name": "bucket", "type": "string", "description": "目标存储桶名称"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {"cleaned_count": "int", "freed_bytes": "int64"}
+      },
+      "error_codes": [
+        {"code": 500, "message": "清理失败"}
       ]
     }
   ],
   "error_handling": {
-    "strategy": "校验优先：上传时立即进行 SHA256 完整性校验，校验通过后持久化存储；所有操作错误以统一 JSON 格式返回，HTTP 状态码区分错误类型",
+    "strategy": "文件存储模块采用统一的错误处理策略，所有操作返回标准化错误响应。对于网络超时等可重试错误自动进行指数退避重试，对于 bucket 不存在或认证失败等不可恢复错误直接向上层返回错误。",
     "response_format": {
-      "body": {
-        "code": "integer",
-        "error": "string",
-        "detail": "string"
-      }
+      "body": {"code": "integer", "error": "string", "detail": "string"}
     },
     "categories": [
-      {"code": 400, "name": "参数校验错误", "description": "请求参数格式或内容不符合要求"},
-      {"code": 404, "name": "文件不存在", "description": "指定的 file_id 对应的文件在存储中不存在"},
-      {"code": 409, "name": "版本冲突", "description": "指定版本号已存在且不允许覆盖"},
-      {"code": 413, "name": "文件过大", "description": "上传文件超过系统设定的最大大小限制"},
-      {"code": 422, "name": "校验失败", "description": "文件完整性校验（SHA256）不通过"},
-      {"code": 500, "name": "存储后端错误", "description": "后端对象存储写入或读取异常"}
+      {"code": 400, "name": "参数错误", "description": "请求参数验证失败，如 bucket 名非法、object_key 格式错误"},
+      {"code": 401, "name": "认证失败", "description": "MinIO 访问密钥无效或已过期"},
+      {"code": 403, "name": "权限不足", "description": "访问密钥无对应存储桶的操作权限"},
+      {"code": 404, "name": "资源不存在", "description": "指定的存储桶或对象不存在"},
+      {"code": 409, "name": "资源冲突", "description": "对象已存在且版本控制未开启时的上传冲突"},
+      {"code": 500, "name": "内部错误", "description": "MinIO 服务端内部错误或网络异常"},
+      {"code": 507, "name": "存储空间不足", "description": "存储桶已达到容量上限或磁盘空间不足"}
     ]
   },
   "topology": {
     "buckets": [
       {
         "name": "deploy-artifacts",
-        "description": "主存储桶，存放所有项目的可执行部署文件",
-        "versioning_enabled": true,
-        "encryption": "AES-256",
-        "public_access": false
+        "type": "private",
+        "versioning": true,
+        "lifecycle_rules": [
+          {"expire_days": 30, "description": "超过 30 天的文件自动清理"}
+        ],
+        "description": "所有待部署可执行文件的主存储桶，按项目/环境/版本组织路径"
       }
     ],
-    "path_conventions": "{project_id}/{version}/{file_name}  示例: a1b2c3d4-e5f6-7890-abcd-ef1234567890/1.0.0/app-server.bin"
+    "path_conventions": "deploy-artifacts/{project_id}/{environment_type}/{version}/{filename}_{timestamp}.tar.gz"
   },
   "connection_contracts": {
-    "endpoint": "文件存储服务内部地址（如 http://minio:9000 或本地文件系统 /data/deploy-artifacts）",
-    "auth_method": "预共享密钥（Access Key / Secret Key）",
-    "secure": true,
-    "tls_enabled": true,
+    "endpoint": "minio:9000",
+    "auth": {
+      "type": "AccessKey/SecretKey",
+      "credential_source": "密钥存储服务"
+    },
+    "tls": {
+      "enabled": true,
+      "ca_cert_path": "/etc/certs/ca.pem"
+    },
+    "connection_pool": {
+      "max_idle_connections": 10,
+      "idle_timeout_seconds": 60
+    },
     "timeout": {
       "connect_seconds": 10,
-      "read_seconds": 60,
-      "write_seconds": 60
-    },
-    "max_file_size_mb": 500,
-    "allowed_content_types": [
-      "application/octet-stream",
-      "application/x-executable",
-      "application/gzip",
-      "application/x-tar"
-    ]
+      "read_seconds": 30,
+      "write_seconds": 30
+    }
   }
 }
