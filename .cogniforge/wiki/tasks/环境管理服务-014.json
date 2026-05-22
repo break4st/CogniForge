@@ -15,9 +15,208 @@
   "updated_at": "2026-05-22T12:20:48.132966",
   "result": null,
   "error": null,
-  "lld_refs": [],
+  "lld_refs": [
+    {
+      "module": "",
+      "doc_id": "",
+      "section": "service_contracts",
+      "item_name": "EnvironmentService",
+      "artifact_type": "service_contract",
+      "sub_item": null
+    }
+  ],
   "acceptance_criteria": [],
-  "context": null,
-  "expected_output_files": [],
-  "layer": 0
+  "context": {
+    "module_type": "service",
+    "lld_path": ".cogniforge/wiki/lld/环境管理服务/lld-环境管理服务-001.json",
+    "module_overview": "管理部署环境的配置，包括服务器地址、端口、认证方式等。提供环境的创建、编辑、删除、连通性测试等核心功能。",
+    "scope": {
+      "data_models": [],
+      "domain_objects": [],
+      "interfaces": [],
+      "service_contracts": [
+        {
+          "name": "EnvironmentService",
+          "description": "环境管理核心服务，提供环境CRUD和连通性测试功能",
+          "methods": [
+            {
+              "name": "CreateEnvironment",
+              "signature": "(projectId: Long, req: CreateEnvironmentRequest, actor: String) -> EnvironmentResponse",
+              "precondition": "projectId对应的项目必须存在；req.name在项目内不可重复；req.server_port必须在1~65535范围内",
+              "postcondition": "新环境记录写入environments表，status初始化为active；审计日志记录environment.create操作",
+              "description": "为指定项目创建新的部署环境",
+              "exceptions": [
+                {
+                  "name": "ProjectNotFoundError",
+                  "trigger": "projectId对应的项目记录不存在",
+                  "http_status": 404
+                },
+                {
+                  "name": "EnvironmentNameConflictError",
+                  "trigger": "同一项目下已存在同名环境（唯一约束冲突）",
+                  "http_status": 409
+                },
+                {
+                  "name": "InvalidArgumentError",
+                  "trigger": "请求参数格式或范围校验不通过",
+                  "http_status": 400
+                }
+              ]
+            },
+            {
+              "name": "GetEnvironment",
+              "signature": "(eid: Long) -> EnvironmentResponse",
+              "precondition": "eid >= 1",
+              "postcondition": "返回环境完整信息及绑定的密钥ID和名称（如有）",
+              "description": "按ID获取单个环境的详细信息",
+              "exceptions": [
+                {
+                  "name": "EnvironmentNotFoundError",
+                  "trigger": "eid对应的环境记录不存在",
+                  "http_status": 404
+                }
+              ]
+            },
+            {
+              "name": "ListEnvironments",
+              "signature": "(projectId: Long) -> List<EnvironmentResponse>",
+              "precondition": "projectId对应的项目必须存在",
+              "postcondition": "返回项目下的所有环境列表，按created_at降序排列",
+              "description": "获取指定项目下的所有环境",
+              "exceptions": [
+                {
+                  "name": "ProjectNotFoundError",
+                  "trigger": "projectId对应的项目记录不存在",
+                  "http_status": 404
+                }
+              ]
+            },
+            {
+              "name": "UpdateEnvironment",
+              "signature": "(eid: Long, req: UpdateEnvironmentRequest, actor: String) -> EnvironmentResponse",
+              "precondition": "eid对应的环境必须存在；如果重命名，新名称在项目内不可重复",
+              "postcondition": "环境配置更新到数据库，updated_at刷新；审计日志记录environment.update操作",
+              "description": "更新指定环境的配置信息",
+              "exceptions": [
+                {
+                  "name": "EnvironmentNotFoundError",
+                  "trigger": "eid对应的环境记录不存在",
+                  "http_status": 404
+                },
+                {
+                  "name": "EnvironmentNameConflictError",
+                  "trigger": "重命名时新名称与项目内已有环境冲突",
+                  "http_status": 409
+                },
+                {
+                  "name": "InvalidArgumentError",
+                  "trigger": "请求参数格式校验不通过",
+                  "http_status": 400
+                }
+              ]
+            },
+            {
+              "name": "DeleteEnvironment",
+              "signature": "(eid: Long, actor: String) -> void",
+              "precondition": "eid对应的环境必须存在；环境不能有未完成的部署任务；环境必须先解绑SSH密钥",
+              "postcondition": "环境记录从数据库软删除或物理删除；关联的部署任务不受影响；审计日志记录environment.delete操作",
+              "description": "删除指定环境",
+              "exceptions": [
+                {
+                  "name": "EnvironmentNotFoundError",
+                  "trigger": "eid对应的环境记录不存在",
+                  "http_status": 404
+                },
+                {
+                  "name": "EnvironmentInUseError",
+                  "trigger": "环境存在关联的部署任务",
+                  "http_status": 409
+                },
+                {
+                  "name": "EnvironmentHasBoundKeyError",
+                  "trigger": "环境仍绑定SSH密钥，需先解绑",
+                  "http_status": 409
+                }
+              ]
+            },
+            {
+              "name": "SwitchStatus",
+              "signature": "(eid: Long, targetStatus: EnvironmentStatus, actor: String) -> EnvironmentResponse",
+              "precondition": "eid对应的环境必须存在；targetStatus必须为active或inactive；当前状态到目标状态的转换必须合法",
+              "postcondition": "环境状态更新到数据库；审计日志记录environment.status_change操作",
+              "description": "切换环境的启用/停用状态",
+              "exceptions": [
+                {
+                  "name": "EnvironmentNotFoundError",
+                  "trigger": "eid对应的环境记录不存在",
+                  "http_status": 404
+                },
+                {
+                  "name": "InvalidStatusTransitionError",
+                  "trigger": "状态转换不被允许（如error→inactive直接转换）",
+                  "http_status": 409
+                },
+                {
+                  "name": "InvalidArgumentError",
+                  "trigger": "targetStatus不是active或inactive",
+                  "http_status": 400
+                }
+              ]
+            },
+            {
+              "name": "TestConnection",
+              "signature": "(eid: Long) -> TestConnectionResponse",
+              "precondition": "eid对应的环境必须存在；环境必须已绑定SSH密钥（key_id不为空）",
+              "postcondition": "调用SSH连接池RPC接口测试连通性；根据测试结果更新环境状态（成功→active，失败→error）；返回连接测试结果",
+              "description": "测试指定环境的远程服务器连通性",
+              "exceptions": [
+                {
+                  "name": "EnvironmentNotFoundError",
+                  "trigger": "eid对应的环境记录不存在",
+                  "http_status": 404
+                },
+                {
+                  "name": "KeyNotBoundError",
+                  "trigger": "环境未绑定任何SSH密钥",
+                  "http_status": 412
+                },
+                {
+                  "name": "SshConnectionError",
+                  "trigger": "SSH连接池调用失败或连接超时",
+                  "http_status": 502
+                }
+              ]
+            }
+          ],
+          "repository_dependencies": [
+            "FindById(id: Long) -> Environment?",
+            "FindByProjectId(projectId: Long) -> List<Environment>",
+            "FindByNameAndProjectId(name: String, projectId: Long) -> Environment?",
+            "Create(env: Environment) -> Environment",
+            "Update(env: Environment) -> Environment",
+            "Delete(id: Long) -> void",
+            "ExistsActiveDeployTasksByEnvironmentId(environmentId: Long) -> Boolean",
+            "GetBoundKeyByEnvironmentId(environmentId: Long) -> (keyId: Long, keyName: String)?"
+          ]
+        }
+      ],
+      "business_rules": {},
+      "error_handling": {},
+      "extra_sections": {}
+    },
+    "external_contracts": [],
+    "cross_module_deps": [],
+    "tech_stack": [
+      "Go",
+      "Gin",
+      "Go 1.22+",
+      "PostgreSQL 15",
+      "golang.org/x/crypto/ssh"
+    ],
+    "upstream_artifacts": []
+  },
+  "expected_output_files": [
+    "src/环境管理服务/service/environmentservice.go"
+  ],
+  "layer": 1
 }
