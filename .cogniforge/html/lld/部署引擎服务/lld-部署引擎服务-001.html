@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>部署引擎服务详细设计 — lld-部署引擎服务-001</title>
+<style>
+  :root {
+    --c-bg: #0b0f19; --c-surface: #131926; --c-card: #191e2e;
+    --c-border: #252b3d; --c-text: #c8d2e0; --c-heading: #e2e8f4;
+    --c-muted: #6b7394; --c-accent: #5b8def; --c-accent2: #7c6ff7;
+    --c-green: #34d399; --c-amber: #fbbf24; --c-red: #f87171;
+    --c-cyan: #22d3ee; --radius: 10px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+    background: var(--c-bg); color: var(--c-text);
+    line-height: 1.75; font-size: 15px;
+    max-width: 860px; margin: 0 auto; padding: 48px 40px 80px;
+  }
+  body:has(.page-layout) { max-width: none; margin: 0; padding: 0; }
+  .top-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 40px; padding-bottom: 24px;
+    border-bottom: 1px solid var(--c-border);
+  }
+  .doc-id { font-size: 0.8em; color: var(--c-muted); font-family: monospace; }
+  .badge {
+    display: inline-flex; padding: 5px 14px; border-radius: 20px;
+    font-size: 0.78em; font-weight: 500;
+    background: rgba(255,255,255,0.04); border: 1px solid var(--c-border);
+    color: var(--c-muted);
+  }
+  .badge.accent { border-color: rgba(91,141,239,0.3); color: var(--c-accent); }
+  .badge.green  { border-color: rgba(52,211,153,0.3); color: var(--c-green); }
+  h1 {
+    font-size: 2.4em; font-weight: 800; color: #fff;
+    letter-spacing: -1px; line-height: 1.2; margin-bottom: 6px;
+  }
+  h1 span {
+    background: linear-gradient(135deg, var(--c-accent), var(--c-cyan));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .meta { font-size: 0.85em; color: var(--c-muted); margin-bottom: 4px; }
+  .section { margin-bottom: 36px; }
+  .section-header {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 18px;
+  }
+  .section-header .icon {
+    width: 40px; height: 40px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.2em; flex-shrink: 0;
+  }
+  .section-header h2 {
+    font-size: 1.25em; font-weight: 700; color: var(--c-heading);
+  }
+  .section-body {
+    background: var(--c-card); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 28px 32px;
+  }
+  .section-body p { margin-bottom: 12px; }
+  .section-body p:last-child { margin-bottom: 0; }
+  .req-item {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .req-item:last-child { margin-bottom: 0; }
+  .req-item h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); margin-bottom: 6px; }
+  .req-desc { font-size: 0.9em; color: var(--c-muted); margin-bottom: 10px; }
+  .ac-list { list-style: none; padding: 0; margin: 0; }
+  .ac-list li {
+    padding: 4px 0 4px 18px; position: relative;
+    font-size: 0.88em; color: var(--c-text);
+  }
+  .ac-list li::before {
+    content: ""; position: absolute; left: 0; top: 12px;
+    width: 6px; height: 6px; border-radius: 50%; background: var(--c-green);
+  }
+  .ac-label {
+    font-size: 0.75em; font-weight: 600; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .story-item {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 14px 18px; border-radius: 8px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    margin-bottom: 8px;
+  }
+  .story-item:last-child { margin-bottom: 0; }
+  .story-role {
+    font-size: 0.8em; font-weight: 600; color: var(--c-accent);
+    background: rgba(91,141,239,0.1); padding: 2px 10px;
+    border-radius: 12px; white-space: nowrap; flex-shrink: 0;
+  }
+  .story-text { font-size: 0.92em; }
+  .story-text .goal { color: var(--c-muted); font-size: 0.88em; }
+  .priority-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .priority-tag {
+    display: inline-flex; padding: 6px 14px; border-radius: 6px;
+    font-size: 0.85em; font-weight: 500;
+  }
+  .priority-tag.high   { background: rgba(248,113,113,0.1);  color: #fca5a5; }
+  .priority-tag.medium { background: rgba(251,191,36,0.1);  color: #fcd34d; }
+  .priority-tag.low    { background: rgba(107,115,148,0.15); color: #9ca3af; }
+  .comp-item {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .comp-item h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); }
+  .comp-type {
+    font-size: 0.78em; color: var(--c-accent); margin-bottom: 8px;
+  }
+  .comp-resp { margin-top: 8px; font-size: 0.88em; }
+  .comp-resp li { margin: 2px 0; }
+
+  /* ── Contract Groups ── */
+  .contract-group {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); margin-bottom: 12px; overflow: hidden;
+  }
+  .contract-group[open] { border-color: rgba(91,141,239,0.25); }
+  .contract-group summary {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 20px; cursor: pointer; user-select: none;
+    font-weight: 600; font-size: 0.95em; color: var(--c-heading);
+    background: rgba(255,255,255,0.015);
+  }
+  .contract-group summary:hover { background: rgba(255,255,255,0.03); }
+  .contract-group summary::-webkit-details-marker { display: none; }
+  .contract-group summary::before {
+    content: "›"; display: inline-block; font-size: 1.3em; font-weight: 400;
+    width: 16px; color: var(--c-muted); transition: transform 0.2s;
+  }
+  .contract-group[open] summary::before { transform: rotate(90deg); }
+  .cg-count {
+    font-size: 0.78em; font-weight: 500; color: var(--c-muted);
+    background: rgba(255,255,255,0.04); padding: 2px 10px; border-radius: 10px;
+  }
+  .contract-card {
+    padding: 16px 20px; border-top: 1px solid var(--c-border);
+  }
+  .contract-card:first-of-type { border-top: 1px solid var(--c-border); }
+  .cc-head {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .cc-head .cc-name { font-weight: 600; font-size: 0.93em; color: var(--c-heading); }
+  .method-badge {
+    font-family: monospace; font-size: 0.75em; font-weight: 700;
+    padding: 3px 8px; border-radius: 5px; white-space: nowrap;
+  }
+  .method-badge.get      { background: rgba(52,211,153,0.15);  color: var(--c-green); }
+  .method-badge.post     { background: rgba(91,141,239,0.15);  color: var(--c-accent); }
+  .method-badge.put      { background: rgba(251,191,36,0.12);  color: var(--c-amber); }
+  .method-badge.delete   { background: rgba(248,113,113,0.12); color: var(--c-red); }
+  .method-badge.patch    { background: rgba(34,211,238,0.12);  color: var(--c-cyan); }
+  .method-badge.mq       { background: rgba(124,111,247,0.13); color: var(--c-accent2); }
+  .method-badge.ws       { background: rgba(124,111,247,0.13); color: var(--c-accent2); }
+  .method-badge.frontend { background: rgba(34,211,238,0.12);  color: var(--c-cyan); }
+  .method-badge.internal { background: rgba(107,115,148,0.15); color: var(--c-muted); }
+  .cc-endpoint {
+    font-family: monospace; font-size: 0.82em; color: var(--c-text);
+    background: rgba(255,255,255,0.03); padding: 2px 8px; border-radius: 4px;
+  }
+  .cc-type-tag {
+    font-size: 0.72em; font-weight: 600; padding: 3px 8px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    background: rgba(91,141,239,0.1); color: var(--c-accent);
+  }
+  .cc-meta {
+    font-size: 0.82em; color: var(--c-muted); margin-bottom: 6px;
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .cc-meta .cc-consumer {
+    font-size: 0.85em; color: var(--c-accent2);
+    background: rgba(124,111,247,0.08); padding: 1px 8px; border-radius: 4px;
+  }
+  .cc-desc { font-size: 0.85em; color: var(--c-muted); margin-bottom: 10px; }
+  .body-table {
+    width: 100%; border-collapse: collapse; font-size: 0.8em; margin: 6px 0 4px;
+  }
+  .body-table th {
+    text-align: left; padding: 5px 10px; font-weight: 600;
+    color: var(--c-muted); font-size: 0.85em; text-transform: uppercase;
+    letter-spacing: 0.4px; border-bottom: 2px solid var(--c-border);
+    background: rgba(255,255,255,0.015);
+  }
+  .body-table td {
+    padding: 4px 10px; border-bottom: 1px solid rgba(255,255,255,0.04);
+    color: var(--c-text);
+  }
+  .body-table .field-type { color: var(--c-accent); font-family: monospace; font-size: 0.9em; }
+  .body-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 2px;
+  }
+  .model-item {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .model-item h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); }
+  table {
+    width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9em;
+  }
+  th {
+    text-align: left; padding: 10px 14px; font-weight: 600;
+    color: var(--c-muted); font-size: 0.8em; text-transform: uppercase;
+    letter-spacing: 0.5px; border-bottom: 2px solid var(--c-border);
+  }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--c-border); }
+  tr:hover td { background: rgba(255,255,255,0.015); }
+  .footer {
+    margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--c-border);
+    text-align: center; color: var(--c-muted); font-size: 0.8em;
+  }
+  /* ── System Overview ── */
+  .overview-hero {
+    background: linear-gradient(135deg, rgba(124,111,247,0.08), rgba(91,141,239,0.05));
+    border: 1px solid rgba(124,111,247,0.18); border-radius: var(--radius);
+    padding: 24px 28px; margin-bottom: 24px;
+  }
+  .overview-hero .hero-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-accent2);
+    text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 10px;
+  }
+  .overview-hero p { font-size: 1.02em; line-height: 1.85; color: var(--c-text); }
+  .role-cards {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
+  }
+  .role-card {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 22px 20px; text-align: center;
+  }
+  .role-card .role-icon {
+    width: 48px; height: 48px; border-radius: 50%; margin: 0 auto 12px;
+    display: flex; align-items: center; justify-content: center; font-size: 1.3em;
+  }
+  .role-card .role-name {
+    font-size: 1em; font-weight: 700; color: var(--c-heading); margin-bottom: 10px;
+  }
+  .role-card .role-perms {
+    font-size: 0.84em; color: var(--c-muted); line-height: 1.7;
+    list-style: none; padding: 0;
+  }
+  .role-card .role-perms li { padding: 1px 0; }
+
+  /* ── Architecture Diagram ── */
+  .arch-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 24px 20px 20px; margin-bottom: 22px;
+  }
+  .arch-tier {
+    display: flex; align-items: center; margin-bottom: 4px;
+  }
+  .arch-tier-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0;
+    width: 52px; text-align: right; padding-right: 16px;
+  }
+  .arch-tier-boxes { display: flex; gap: 8px; flex: 1; flex-wrap: wrap; }
+  .arch-box {
+    border-radius: 8px; padding: 12px 16px; text-align: center;
+    font-weight: 600; font-size: 0.85em; flex: 1; min-width: 80px;
+  }
+  .arch-box.frontend {
+    background: rgba(34,211,238,0.12); border: 1px solid rgba(34,211,238,0.28);
+    color: var(--c-cyan);
+  }
+  .arch-box.gateway {
+    background: rgba(124,111,247,0.13); border: 1px solid rgba(124,111,247,0.3);
+    color: var(--c-accent2);
+  }
+  .arch-box.service {
+    background: rgba(91,141,239,0.1); border: 1px solid rgba(91,141,239,0.22);
+    color: var(--c-accent);
+  }
+  .arch-box.db {
+    background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.22);
+    color: var(--c-green);
+  }
+  .arch-box.cache {
+    background: rgba(251,191,36,0.09); border: 1px solid rgba(251,191,36,0.22);
+    color: var(--c-amber);
+  }
+  .arch-box.mq {
+    background: rgba(248,113,113,0.07); border: 1px solid rgba(248,113,113,0.18);
+    color: var(--c-red);
+  }
+  .arch-overview {
+    display: flex; align-items: center; gap: 0; margin-bottom: 20px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 8px; overflow: hidden;
+  }
+  .arch-ov-item {
+    flex: 1; text-align: center; padding: 16px 12px; position: relative;
+  }
+  .arch-ov-item .ov-count {
+    font-size: 1.8em; font-weight: 800; line-height: 1.1;
+  }
+  .arch-ov-item .ov-label {
+    font-size: 0.75em; color: var(--c-muted); margin-top: 4px;
+  }
+  .arch-ov-arrow {
+    font-size: 1.1em; color: var(--c-muted); flex-shrink: 0;
+    padding: 0 2px;
+  }
+  .arch-style-badge {
+    display: inline-flex; padding: 6px 16px; border-radius: 20px;
+    font-size: 0.85em; font-weight: 700; margin-bottom: 16px;
+    background: linear-gradient(135deg, rgba(124,111,247,0.15), rgba(91,141,239,0.1));
+    border: 1px solid rgba(124,111,247,0.25); color: var(--c-accent2);
+  }
+  .arch-features {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px;
+    padding-top: 16px; border-top: 1px solid var(--c-border);
+  }
+  .arch-feature-tag {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 14px; border-radius: 18px; font-size: 0.82em; font-weight: 500;
+    background: rgba(255,255,255,0.03); border: 1px solid var(--c-border);
+    color: var(--c-text);
+  }
+  .arch-feature-tag .dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  }
+  .arch-desc { margin-bottom: 18px; color: var(--c-text); line-height: 1.8; }
+
+  /* ── Topology ── */
+  .topo-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 24px 20px 20px; margin-bottom: 22px;
+  }
+  .topo-tier {
+    display: flex; align-items: stretch; margin-bottom: 2px;
+  }
+  .topo-tier-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0;
+    width: 52px; text-align: right; padding-right: 16px; padding-top: 12px;
+  }
+  .topo-tier-content { flex: 1; display: flex; flex-wrap: wrap; gap: 8px; }
+  .topo-node {
+    border-radius: 8px; padding: 10px 15px; text-align: center;
+    font-weight: 600; font-size: 0.83em; flex: 1; min-width: 80px;
+  }
+  .topo-node.frontend {
+    background: rgba(34,211,238,0.12); border: 1px solid rgba(34,211,238,0.28);
+    color: var(--c-cyan);
+  }
+  .topo-node.gateway {
+    background: rgba(124,111,247,0.13); border: 1px solid rgba(124,111,247,0.3);
+    color: var(--c-accent2);
+  }
+  .topo-node.service {
+    background: rgba(91,141,239,0.1); border: 1px solid rgba(91,141,239,0.22);
+    color: var(--c-accent);
+  }
+  .topo-node.db {
+    background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.22);
+    color: var(--c-green);
+  }
+  .topo-node.cache {
+    background: rgba(251,191,36,0.09); border: 1px solid rgba(251,191,36,0.22);
+    color: var(--c-amber);
+  }
+  .topo-node.mq {
+    background: rgba(248,113,113,0.07); border: 1px solid rgba(248,113,113,0.18);
+    color: var(--c-red);
+  }
+  .topo-connector {
+    display: flex; align-items: center; padding: 2px 0 2px 52px;
+    gap: 10px; flex-wrap: wrap;
+  }
+  .topo-connector-line {
+    flex: 1; min-width: 60px; display: flex; align-items: center; gap: 6px;
+    color: var(--c-muted); font-size: 0.75em; font-weight: 500;
+  }
+  .topo-connector-line::before {
+    content: ""; display: inline-block; width: 12px; height: 1px;
+    background: var(--c-border); flex-shrink: 0;
+  }
+  .topo-connector-line .proto {
+    color: var(--c-accent2); font-family: monospace; font-size: 0.9em;
+    background: rgba(124,111,247,0.08); padding: 1px 6px; border-radius: 4px;
+  }
+
+  /* ── Data Flow ── */
+  .flow-cards { display: flex; flex-direction: column; gap: 16px; }
+  .flow-card {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 20px 22px;
+  }
+  .flow-card-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+  }
+  .flow-card-header .flow-num {
+    width: 28px; height: 28px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.8em; font-weight: 700; flex-shrink: 0;
+  }
+  .flow-card-header .flow-name {
+    font-weight: 700; font-size: 0.95em; color: var(--c-heading);
+  }
+  .flow-steps {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+  }
+  .flow-step {
+    font-size: 0.82em; padding: 5px 10px; border-radius: 6px;
+    background: rgba(255,255,255,0.03); border: 1px solid var(--c-border);
+    color: var(--c-text); white-space: nowrap;
+  }
+  .flow-step.start  { border-color: rgba(52,211,153,0.3);  color: var(--c-green); }
+  .flow-step.mid    { border-color: rgba(91,141,239,0.25);  color: var(--c-accent); }
+  .flow-step.end    { border-color: rgba(124,111,247,0.3);  color: var(--c-accent2); }
+  .flow-arrow { color: var(--c-muted); font-size: 0.85em; flex-shrink: 0; }
+
+  /* ── Error Handling ── */
+  .err-strategy {
+    background: linear-gradient(135deg, rgba(251,191,36,0.06), rgba(248,113,113,0.04));
+    border: 1px solid rgba(251,191,36,0.2);
+    border-radius: var(--radius); padding: 20px 24px; margin-bottom: 20px;
+  }
+  .err-strategy .err-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-amber);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;
+  }
+  .err-strategy p { font-size: 0.92em; line-height: 1.8; color: var(--c-text); }
+
+  .err-format-box {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 20px;
+  }
+  .err-format-box .err-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;
+  }
+  .err-format-box pre {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.84em; color: var(--c-text);
+    background: rgba(0,0,0,0.2); padding: 14px 18px; border-radius: 6px;
+    overflow-x: auto; line-height: 1.7;
+  }
+
+  .err-categories { display: flex; flex-direction: column; gap: 10px; }
+  .err-category {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px;
+    display: flex; gap: 16px; align-items: flex-start;
+  }
+  .err-category:hover { border-color: rgba(255,255,255,0.1); }
+  .err-code-badge {
+    font-family: monospace; font-size: 0.85em; font-weight: 700;
+    padding: 6px 12px; border-radius: 6px; white-space: nowrap;
+    flex-shrink: 0; min-width: 48px; text-align: center;
+  }
+  .err-code-badge._4xx { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+  .err-code-badge._5xx { background: rgba(248,113,113,0.12); color: var(--c-red); }
+  .err-code-badge._other { background: rgba(124,111,247,0.1); color: var(--c-accent2); }
+  .err-category-body { flex: 1; min-width: 0; }
+  .err-category-body .err-cat-name {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 6px;
+  }
+  .err-category-body .err-cat-desc {
+    font-size: 0.85em; color: var(--c-muted); line-height: 1.7;
+  }
+
+  /* ── Domain Objects ── */
+  .domain-obj {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .domain-obj h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); margin-bottom: 6px; }
+  .obj-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 0.72em; font-weight: 600; margin-left: 6px;
+  }
+  .obj-tag.entity   { background: rgba(91,141,239,0.12);  color: var(--c-accent); }
+  .obj-tag.dto      { background: rgba(52,211,153,0.12);  color: var(--c-green); }
+  .obj-tag.value_object { background: rgba(124,111,247,0.1); color: var(--c-accent2); }
+  .obj-tag.enum     { background: rgba(251,191,36,0.1);   color: var(--c-amber); }
+  .attr-source-tag {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 0.7em; font-weight: 600; font-family: monospace;
+    color: var(--c-muted); background: rgba(107,115,148,0.1);
+  }
+
+  /* ── Service Contracts ── */
+  .svc-contract {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); margin-bottom: 12px; overflow: hidden;
+  }
+  .svc-contract summary {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 20px; cursor: pointer; user-select: none;
+    font-weight: 600; font-size: 0.95em; color: var(--c-heading);
+    background: rgba(255,255,255,0.015);
+  }
+  .svc-contract summary:hover { background: rgba(255,255,255,0.03); }
+  .svc-contract summary::-webkit-details-marker { display: none; }
+  .svc-contract summary::before {
+    content: "›"; display: inline-block; font-size: 1.3em; font-weight: 400;
+    width: 16px; color: var(--c-muted); transition: transform 0.2s;
+  }
+  .svc-contract[open] summary::before { transform: rotate(90deg); }
+  .svc-method {
+    padding: 16px 20px; border-top: 1px solid var(--c-border);
+  }
+  .svc-method-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .svc-method-header .method-name {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading);
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+  }
+  .svc-method-header .return-type {
+    font-size: 0.82em; color: var(--c-accent); font-family: monospace;
+    background: rgba(91,141,239,0.08); padding: 2px 8px; border-radius: 4px;
+  }
+  .sig-block {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.84em; color: var(--c-text);
+    background: rgba(255,255,255,0.02); padding: 10px 14px;
+    border-radius: 6px; margin: 8px 0; overflow-x: auto;
+    border: 1px solid var(--c-border);
+  }
+  .pre-post {
+    display: flex; gap: 12px; margin: 8px 0; flex-wrap: wrap;
+  }
+  .pre-post-item {
+    flex: 1; min-width: 180px;
+    background: rgba(255,255,255,0.015); border: 1px solid var(--c-border);
+    border-radius: 6px; padding: 10px 14px;
+  }
+  .pre-post-item .pp-label {
+    font-size: 0.68em; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .pre-post-item.pre .pp-label { color: var(--c-green); }
+  .pre-post-item.post .pp-label { color: var(--c-accent); }
+  .pre-post-item .pp-text { font-size: 0.84em; color: var(--c-text); }
+  .exc-item {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 14px; margin: 2px 4px 2px 0;
+    font-size: 0.8em; background: rgba(248,113,113,0.06);
+    border: 1px solid rgba(248,113,113,0.15);
+  }
+  .exc-item .exc-name { font-weight: 600; color: var(--c-red); font-family: monospace; font-size: 0.85em; }
+  .exc-item .exc-http { font-size: 0.82em; color: var(--c-muted); }
+  .repo-dep {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.82em; color: var(--c-muted);
+    padding: 2px 0 2px 12px; border-left: 2px solid var(--c-border);
+    margin: 2px 0 2px 8px;
+  }
+
+  /* ── Business Rules ── */
+  .invariant-list {
+    list-style: none; padding: 0; margin: 0;
+  }
+  .invariant-list li {
+    padding: 8px 14px; margin-bottom: 6px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 6px; font-size: 0.9em;
+    display: flex; align-items: flex-start; gap: 10px;
+  }
+  .invariant-list li .inv-icon {
+    color: var(--c-amber); font-weight: 700; flex-shrink: 0;
+  }
+  .state-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 20px; margin-bottom: 12px;
+  }
+  .state-diagram .sd-title {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 12px;
+  }
+  .state-row {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px;
+  }
+  .state-node {
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 8px 18px; border-radius: 20px; font-size: 0.85em; font-weight: 600;
+    border: 1px solid var(--c-border); background: var(--c-card);
+    color: var(--c-text);
+  }
+  .state-node.active { border-color: rgba(91,141,239,0.4); color: var(--c-accent); background: rgba(91,141,239,0.06); }
+  .state-node.terminal { border-color: rgba(52,211,153,0.3); color: var(--c-green); background: rgba(52,211,153,0.06); }
+  .state-node.error   { border-color: rgba(248,113,113,0.3); color: var(--c-red); background: rgba(248,113,113,0.06); }
+  .state-arrow {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 0.78em; color: var(--c-muted); padding: 0 4px;
+  }
+  .state-arrow .trigger-text {
+    font-size: 0.85em; background: rgba(107,115,148,0.1);
+    padding: 2px 8px; border-radius: 4px;
+  }
+  .irrev-rule {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 12px; border-radius: 14px; margin: 4px;
+    font-size: 0.8em; background: rgba(248,113,113,0.06);
+    border: 1px solid rgba(248,113,113,0.15); color: var(--c-red);
+  }
+  .cross-svc-rule {
+    padding: 6px 12px; margin: 4px 0;
+    font-size: 0.85em; color: var(--c-accent2);
+    background: rgba(124,111,247,0.05); border-left: 3px solid rgba(124,111,247,0.3);
+    border-radius: 4px;
+  }
+
+  /* ── Component Tree ── */
+  .comp-node {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 16px 20px; margin-bottom: 8px;
+    margin-left: 0;
+  }
+  .comp-node.child { margin-left: 20px; border-left: 2px solid rgba(91,141,239,0.2); }
+  .comp-node .cn-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;
+  }
+  .comp-node .cn-name { font-weight: 600; font-size: 0.95em; color: var(--c-heading); }
+  .comp-node .cn-path {
+    font-family: monospace; font-size: 0.78em; color: var(--c-accent);
+    background: rgba(91,141,239,0.08); padding: 2px 8px; border-radius: 4px;
+  }
+  .cn-section { margin: 8px 0; }
+  .cn-section .cn-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .cn-tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 4px; margin: 2px;
+    font-size: 0.78em; background: rgba(255,255,255,0.03);
+    border: 1px solid var(--c-border); color: var(--c-text);
+  }
+  .cn-tag.prop { border-color: rgba(91,141,239,0.2); color: var(--c-accent); }
+  .cn-tag.event { border-color: rgba(52,211,153,0.2); color: var(--c-green); }
+  .cn-tag.state { border-color: rgba(251,191,36,0.2); color: var(--c-amber); }
+  .cn-behavior { font-size: 0.84em; color: var(--c-text); }
+  .cn-edge { font-size: 0.82em; color: var(--c-muted); }
+  .cn-edge .edge-icon { color: var(--c-amber); }
+
+  /* ── State Design ── */
+  .state-global-item {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 10px 14px; margin-bottom: 6px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 6px;
+  }
+  .state-global-item .sg-name {
+    font-weight: 600; font-size: 0.9em; color: var(--c-heading); font-family: monospace;
+  }
+  .state-global-item .sg-type {
+    font-size: 0.82em; color: var(--c-accent); font-family: monospace;
+    background: rgba(91,141,239,0.06); padding: 1px 6px; border-radius: 3px;
+  }
+
+  /* ── Route Design ── */
+  .route-row {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 14px; border-bottom: 1px solid var(--c-border);
+  }
+  .route-row:last-child { border-bottom: none; }
+
+  /* ── Interaction Flows ── */
+  .flow-timeline {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 16px 20px; margin-bottom: 12px;
+  }
+  .flow-timeline .ft-title {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 10px;
+  }
+  .ft-step {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 6px 0; font-size: 0.86em;
+  }
+  .ft-step .ft-num {
+    width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+    background: rgba(91,141,239,0.1); color: var(--c-accent);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 0.8em;
+  }
+  .ft-step .ft-text { color: var(--c-text); padding-top: 2px; }
+
+  /* ── Gateway ── */
+  .mw-flow {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+    padding: 14px 18px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; margin-bottom: 12px;
+  }
+  .mw-node {
+    padding: 6px 14px; border-radius: 6px; font-size: 0.84em; font-weight: 500;
+    background: var(--c-card); border: 1px solid var(--c-border);
+    color: var(--c-text); white-space: nowrap;
+  }
+  .mw-node.special {
+    border-color: rgba(91,141,239,0.25); color: var(--c-accent);
+    background: rgba(91,141,239,0.06);
+  }
+  .mw-arrow { color: var(--c-muted); font-size: 0.85em; }
+
+  .auth-matrix {
+    width: 100%; border-collapse: collapse; font-size: 0.85em;
+  }
+  .auth-matrix th {
+    text-align: left; padding: 8px 12px; font-weight: 600;
+    color: var(--c-muted); border-bottom: 2px solid var(--c-border);
+  }
+  .auth-matrix td { padding: 8px 12px; border-bottom: 1px solid var(--c-border); }
+  .role-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px; margin: 1px 3px 1px 0;
+    font-size: 0.82em; background: rgba(91,141,239,0.08); color: var(--c-accent);
+  }
+
+  @media (max-width: 700px) {
+    body { padding: 24px 16px 48px; }
+    h1 { font-size: 1.6em; }
+    .section-body { padding: 20px 16px; }
+    .role-cards { grid-template-columns: 1fr; }
+    .arch-overview { flex-wrap: wrap; }
+    .arch-ov-arrow { display: none; }
+    .arch-tier { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .arch-tier-label { width: auto; text-align: left; padding-right: 0; }
+    .arch-arrows { padding-left: 0; justify-content: flex-start; }
+    .arch-tier-boxes { width: 100%; }
+    .topo-tier { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .topo-tier-label { width: auto; text-align: left; padding-right: 0; padding-top: 0; }
+    .topo-connector { padding-left: 0; }
+    .flow-steps { flex-direction: column; align-items: flex-start; }
+    .flow-arrow { display: none; }
+    .cc-head { flex-direction: column; align-items: flex-start; gap: 6px; }
+    .cc-meta { flex-direction: column; align-items: flex-start; }
+    .page-layout { flex-direction: column; }
+    .sidebar { display: none; }
+    .sidebar.mobile-open { display: flex; }
+    .sidebar-toggle { display: flex; }
+  }
+
+  /* ── Sidebar Layout ── */
+  .page-layout {
+    display: flex; min-height: 100vh;
+  }
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0;
+    width: 230px; overflow-y: auto;
+    background: var(--c-surface); border-right: 1px solid var(--c-border);
+    display: flex; flex-direction: column; padding: 24px 0;
+    z-index: 100;
+  }
+  .sidebar-header {
+    padding: 0 20px 20px; border-bottom: 1px solid var(--c-border); margin-bottom: 12px;
+  }
+  .sidebar-header .sid {
+    font-size: 0.72em; font-weight: 600; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .sidebar-header .stitle {
+    font-size: 0.95em; font-weight: 700; color: var(--c-heading);
+    margin-top: 4px; line-height: 1.3;
+  }
+  .sidebar-nav { flex: 1; padding: 0 12px; }
+  .sidebar-link {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; border-radius: 7px;
+    font-size: 0.86em; color: var(--c-muted); text-decoration: none;
+    margin-bottom: 2px; transition: all 0.15s;
+  }
+  .sidebar-link:hover { color: var(--c-text); background: rgba(255,255,255,0.03); }
+  .sidebar-link.active {
+    color: var(--c-accent); background: rgba(91,141,239,0.1);
+    font-weight: 600;
+  }
+  .sidebar-link .sl-icon { font-size: 1.05em; width: 20px; text-align: center; flex-shrink: 0; }
+  .sidebar-toggle {
+    display: none; position: fixed; top: 12px; left: 12px; z-index: 200;
+    width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--c-border);
+    background: var(--c-surface); color: var(--c-text); font-size: 1.2em;
+    cursor: pointer; align-items: center; justify-content: center;
+  }
+  .main-content {
+    margin-left: 230px; flex: 1; min-width: 0;
+    max-width: 860px; padding: 48px 40px 80px;
+  }
+  html { scroll-behavior: smooth; }
+  @media print {
+    body { background: #fff; color: #222; }
+    .section-body, .req-item, .story-item { background: #fff; border: 1px solid #ddd; }
+    h1 { color: #111; }
+  }
+</style>
+</head>
+<body>
+<div class="page-layout">
+<nav class="sidebar" id="sidebar"><div class="sidebar-header"><div class="sid">lld-部署引擎服务-001</div><div class="stitle">部署引擎服务详细设计</div></div><div class="sidebar-nav"><a href="#overview" class="sidebar-link"><span class="sl-icon">📄</span>概述</a><a href="#models" class="sidebar-link"><span class="sl-icon">🗄️</span>数据模型 (2)</a><a href="#domain-objects" class="sidebar-link"><span class="sl-icon">📦</span>领域对象 (8)</a><a href="#service-contracts" class="sidebar-link"><span class="sl-icon">🔧</span>服务接口 (2)</a><a href="#business-rules" class="sidebar-link"><span class="sl-icon">📐</span>业务规则</a><a href="#interfaces" class="sidebar-link"><span class="sl-icon">🔌</span>接口定义 (2)</a><a href="#errors" class="sidebar-link"><span class="sl-icon">⚠️</span>错误处理</a></div></nav><button id="sidebar-toggle" class="sidebar-toggle" aria-label="菜单">☰</button>
+<div class="main-content">
+<div class="top-bar">
+  <div class="doc-id">lld-部署引擎服务-001</div>
+  <div><span class="badge accent">详细设计文档</span></div>
+</div>
+<h1><span>详细设计文档</span> 部署引擎服务详细设计</h1>
+<div class="meta">2026-05-22 &middot; 作者: design_agent</div>
+
+<div class="section" id="overview">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(124,111,247,0.12)">📄</div>
+    <h2>概述</h2>
+  </div>
+  <div class="section-body">
+
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap"><div class="arch-style-badge">部署引擎服务</div><span class="badge accent">⚙️ 业务服务</span></div>
+<div class="arch-desc">核心部署执行单元，负责在远程服务器上创建目录、传输文件、生成脚本和执行部署</div>
+<div style="margin-bottom:12px"><span style="font-size:0.82em;color:var(--c-muted)">依赖: </span><span class="cc-consumer" style="margin:2px">SSH连接池</span><span class="cc-consumer" style="margin:2px">文件存储服务</span><span class="cc-consumer" style="margin:2px">审计日志服务</span><span class="cc-consumer" style="margin:2px">PostgreSQL数据库</span></div>
+<div style="margin-bottom:8px"><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Go</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Gin</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Go 1.22+</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>PostgreSQL 15</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>golang.org/x/crypto/ssh</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>SSH (SFTP + 远程命令执行)</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>RESTful JSON API</span></div>
+  </div>
+</div>
+
+<div class="section" id="models">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(91,141,239,0.12)">🗄️</div>
+    <h2>数据模型 (2)</h2>
+  </div>
+  <div class="section-body">
+
+<details class="contract-group" open><summary>引用模型 <span class="cg-count">2</span></summary><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🔗 deploy_tasks<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(91,141,239,0.12);color:var(--c-accent);margin-left:6px">引用</span></h3><div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↳ 引用自: lld-数据库-001 / deploy_tasks</div><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署任务表，记录每次部署请求的完整信息和执行状态。本服务关心字段视图</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGSERIAL</td><td>部署任务唯一标识</td></tr><tr><td>project_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGINT</td><td>所属项目 ID</td></tr><tr><td>environment_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGINT</td><td>目标环境 ID</td></tr><tr><td>file_package_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGINT</td><td>部署文件包 ID</td></tr><tr><td>version <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(64)</td><td>部署版本号</td></tr><tr><td>description</td><td class="field-type">TEXT</td><td>部署描述信息</td></tr><tr><td>status <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(32)</td><td>任务状态：pending / running / success / failed / rollbacking / rolled_back / cancelled</td></tr><tr><td>progress</td><td class="field-type">INTEGER</td><td>进度百分比（0-100）</td></tr><tr><td>current_step</td><td class="field-type">VARCHAR(128)</td><td>当前执行步骤描述</td></tr><tr><td>started_at</td><td class="field-type">TIMESTAMPTZ</td><td>开始执行时间</td></tr><tr><td>completed_at</td><td class="field-type">TIMESTAMPTZ</td><td>完成时间</td></tr><tr><td>error_message</td><td class="field-type">TEXT</td><td>错误信息（失败时填写）</td></tr><tr><td>created_by <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGINT</td><td>发起人用户 ID</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMPTZ</td><td>记录创建时间</td></tr><tr><td>updated_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMPTZ</td><td>最后更新时间</td></tr></tbody></table></div><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🔗 deploy_logs<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(91,141,239,0.12);color:var(--c-accent);margin-left:6px">引用</span></h3><div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↳ 引用自: lld-数据库-001 / deploy_logs</div><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署日志表，记录部署过程中的步骤级日志信息。本服务关心字段视图</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGSERIAL</td><td>日志唯一标识</td></tr><tr><td>task_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">BIGINT</td><td>所属部署任务 ID</td></tr><tr><td>step <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(128)</td><td>步骤名称</td></tr><tr><td>level <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">VARCHAR(16)</td><td>日志级别：info / warn / error</td></tr><tr><td>message <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TEXT</td><td>日志内容</td></tr><tr><td>created_at <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TIMESTAMPTZ</td><td>记录创建时间</td></tr></tbody></table></div></details>
+  </div>
+</div>
+
+<div class="section" id="domain-objects">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(91,141,239,0.12)">📦</div>
+    <h2>领域对象 (8)</h2>
+  </div>
+  <div class="section-body">
+
+<div class="domain-obj"><h3>🏷️ DeployTask<span class="obj-tag entity">实体</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署任务实体，记录一次完整的部署请求及其执行状态</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">Long</td><td>部署任务唯一标识</td></tr><tr><td>projectId <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">Long</td><td>所属项目 ID</td></tr><tr><td>environmentId <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">Long</td><td>目标环境 ID</td></tr><tr><td>filePackageId <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">Long</td><td>部署文件包 ID</td></tr><tr><td>version <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">String</td><td>部署版本号</td></tr><tr><td>description <span class="attr-source-tag">DB 透传</span></td><td class="field-type">String</td><td>部署描述信息</td></tr><tr><td>status <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">DeployStatus</td><td>当前任务状态</td></tr><tr><td>progress <span class="attr-source-tag">DB 透传</span></td><td class="field-type">Integer</td><td>进度百分比（0-100）</td></tr><tr><td>currentStep <span class="attr-source-tag">DB 透传</span></td><td class="field-type">String</td><td>当前执行步骤名称</td></tr><tr><td>startedAt <span class="attr-source-tag">DB 透传</span></td><td class="field-type">DateTime</td><td>开始执行时间</td></tr><tr><td>completedAt <span class="attr-source-tag">DB 透传</span></td><td class="field-type">DateTime</td><td>完成时间</td></tr><tr><td>errorMessage <span class="attr-source-tag">DB 透传</span></td><td class="field-type">String</td><td>错误信息</td></tr><tr><td>createdBy <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">Long</td><td>发起人用户 ID</td></tr><tr><td>createdAt <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">DateTime</td><td>创建时间</td></tr><tr><td>updatedAt <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">DateTime</td><td>最后更新时间</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>🏷️ DeployLog<span class="obj-tag entity">实体</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署日志实体，记录部署过程中每一步的详细日志</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">Long</td><td>日志唯一标识</td></tr><tr><td>taskId <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">Long</td><td>所属部署任务 ID</td></tr><tr><td>step <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">String</td><td>步骤名称</td></tr><tr><td>level <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">String</td><td>日志级别：info / warn / error</td></tr><tr><td>message <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">String</td><td>日志内容</td></tr><tr><td>createdAt <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">DateTime</td><td>记录创建时间</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 CreateDeployRequest<span class="obj-tag dto">DTO</span></h3><div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↦ DeployTask</div><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">发起部署请求的 DTO，由 HTTP 请求体反序列化而来</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>project_id <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">Long</td><td>项目 ID，必须对应存在的项目记录</td></tr><tr><td>environment_id <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">Long</td><td>目标环境 ID，必须对应存在的环境记录</td></tr><tr><td>file_package_id <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">Long</td><td>待部署文件包 ID，必须对应存在的文件包记录</td></tr><tr><td>version <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">String</td><td>部署版本号，格式：^[a-zA-Z0-9._-]+$</td></tr><tr><td>description <span class="attr-source-tag">输入</span></td><td class="field-type">String</td><td>部署描述信息，最大长度 500 字符</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 DeployStatusResponse<span class="obj-tag dto">DTO</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署状态查询响应 DTO，由 DeployTask 和 DeployLog 组装生成</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>task_id <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">派生</span></td><td class="field-type">Long</td><td>部署任务 ID，取自 DeployTask.id</td></tr><tr><td>status <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">派生</span></td><td class="field-type">String</td><td>当前任务状态，取自 DeployTask.status</td></tr><tr><td>progress <span class="attr-source-tag">派生</span></td><td class="field-type">Integer</td><td>进度百分比（0-100），取自 DeployTask.progress</td></tr><tr><td>current_step <span class="attr-source-tag">派生</span></td><td class="field-type">String</td><td>当前步骤描述，取自 DeployTask.currentStep</td></tr><tr><td>logs <span class="attr-source-tag">派生</span></td><td class="field-type">Array&lt;String&gt;</td><td>最近部署日志行，取 DeployLog.message 按时间排序</td></tr><tr><td>started_at <span class="attr-source-tag">派生</span></td><td class="field-type">DateTime</td><td>开始执行时间，取自 DeployTask.startedAt</td></tr><tr><td>completed_at <span class="attr-source-tag">派生</span></td><td class="field-type">DateTime</td><td>完成时间，取自 DeployTask.completedAt</td></tr><tr><td>error <span class="attr-source-tag">派生</span></td><td class="field-type">String</td><td>错误信息，取自 DeployTask.errorMessage</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>🔢 DeployStatus<span class="obj-tag enum">枚举</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署任务状态枚举，定义任务在生命周期中所有可能的状态</p><div class="body-label">值</div><div><span class="cn-tag prop">pending</span> <span class="cn-tag prop">running</span> <span class="cn-tag prop">success</span> <span class="cn-tag prop">failed</span> <span class="cn-tag prop">rollbacking</span> <span class="cn-tag prop">rolled_back</span> <span class="cn-tag prop">cancelled</span></div></div>
+<div class="domain-obj"><h3>🔢 DeployStep<span class="obj-tag enum">枚举</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署执行步骤枚举，标识部署流程中的各个阶段</p><div class="body-label">值</div><div><span class="cn-tag prop">creating_directory</span> <span class="cn-tag prop">transferring_files</span> <span class="cn-tag prop">generating_scripts</span> <span class="cn-tag prop">executing_deploy</span> <span class="cn-tag prop">completing</span></div></div>
+<div class="domain-obj"><h3>📌 RemoteServerInfo<span class="obj-tag value_object">值对象</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">远程服务器连接信息值对象，不可变，用于 SSH 连接参数传递</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>host <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">String</td><td>服务器地址（IP 或域名）</td></tr><tr><td>port <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">Integer</td><td>SSH 端口号（默认 22）</td></tr><tr><td>envKeyId <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">Long</td><td>环境绑定的密钥 ID，用于 SSH 认证</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📌 ScriptSet<span class="obj-tag value_object">值对象</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">部署脚本集合值对象，包含启动/停止/重启三份脚本内容，由 ScriptGenerator 生成</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>startScript <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">计算</span></td><td class="field-type">String</td><td>启动脚本（start.sh），含应用启动命令和环境变量</td></tr><tr><td>stopScript <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">计算</span></td><td class="field-type">String</td><td>停止脚本（stop.sh），优雅终止应用进程</td></tr><tr><td>restartScript <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">计算</span></td><td class="field-type">String</td><td>重启脚本（restart.sh），顺序执行停止和启动</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<div class="section" id="service-contracts">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(124,111,247,0.12)">🔧</div>
+    <h2>服务接口 (2)</h2>
+  </div>
+  <div class="section-body">
+
+<details class="svc-contract" open><summary>🔧 DeployService <span class="cg-count">4 方法</span></summary><div class="svc-method"><div class="svc-method-header"><span class="method-name">CreateDeploy</span></div><div class="sig-block">(req: CreateDeployRequest, actor: String) -&gt; DeployTask</div><div class="cc-desc">接收部署请求，执行校验和并发检查，创建部署任务并启动异步执行</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">请求参数通过基础校验；project_id/environment_id/file_package_id 在数据库中存在；同一 project_id + environment_id 组合当前无 pending/running/rollbacking 状态的活跃部署任务</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">创建 status=pending 的 DeployTask 记录并持久化；异步向 DeployExecutor 提交执行任务；返回含 id 和 status 的 DeployTask</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">ProjectNotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">project_id 对应的项目记录在数据库中不存在</span></span><span class="exc-item"><span class="exc-name">EnvironmentNotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">environment_id 对应的环境记录不存在或不属于该项目</span></span><span class="exc-item"><span class="exc-name">FilePackageNotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">file_package_id 对应的文件包记录不存在或不属于该项目</span></span><span class="exc-item"><span class="exc-name">ActiveDeploymentExistsException</span><span class="exc-http">→ 409</span><span style="font-size:0.82em;color:var(--c-muted)">同一 project_id + environment_id 下存在 pending/running/rollbacking 状态的部署任务</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">GetDeployStatus</span></div><div class="sig-block">(taskId: Long) -&gt; DeployStatusResponse</div><div class="cc-desc">查询指定部署任务的当前状态和实时日志，供 Web 控制台轮询</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">taskId 对应的部署任务记录在数据库中存在</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">返回完整的 DeployStatusResponse DTO，包含任务状态、进度、当前步骤、最近日志和时间信息</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">DeployTaskNotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">taskId 对应的部署任务在数据库中不存在</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">CancelDeploy</span></div><div class="sig-block">(taskId: Long) -&gt; void</div><div class="cc-desc">取消一个正在执行的部署任务，释放远程服务器资源</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">taskId 对应的部署任务存在且状态为 running</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">任务状态更新为 cancelled；如正在远程执行，DeployExecutor 收到终止信号后中断远程操作；记录取消日志到 deploy_logs</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">DeployTaskNotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">taskId 对应的部署任务不存在</span></span><span class="exc-item"><span class="exc-name">InvalidDeployStateException</span><span class="exc-http">→ 409</span><span style="font-size:0.82em;color:var(--c-muted)">任务状态不是 running，不可取消</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">RetryDeploy</span></div><div class="sig-block">(taskId: Long) -&gt; DeployTask</div><div class="cc-desc">对失败的部署任务发起重试，基于原请求参数创建新部署任务</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">taskId 对应的部署任务存在且状态为 failed 或 rolled_back</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">以原部署参数创建新的 DeployTask 记录（status=pending），原任务保留为历史记录供追溯</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">DeployTaskNotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">taskId 对应的部署任务不存在</span></span><span class="exc-item"><span class="exc-name">InvalidDeployStateException</span><span class="exc-http">→ 409</span><span style="font-size:0.82em;color:var(--c-muted)">任务状态不是 failed 或 rolled_back，不可重试</span></span></div></div><div style="padding:16px 20px;border-top:1px solid var(--c-border)"><div class="body-label">数据访问依赖</div><div class="repo-dep">findById(id: Long) -&gt; Optional&lt;DeployTask&gt;</div><div class="repo-dep">findActiveByProjectIdAndEnvironmentId(projectId: Long, environmentId: Long) -&gt; Optional&lt;DeployTask&gt;</div><div class="repo-dep">findByProjectIdAndEnvironmentIdOrderByCreatedAtDesc(projectId: Long, environmentId: Long, limit: Integer) -&gt; List&lt;DeployTask&gt;</div><div class="repo-dep">save(task: DeployTask) -&gt; DeployTask</div><div class="repo-dep">findLogsByTaskIdOrderByCreatedAt(taskId: Long, limit: Integer) -&gt; List&lt;DeployLog&gt;</div><div class="repo-dep">saveLog(log: DeployLog) -&gt; DeployLog</div><div class="repo-dep">deleteLogsByTaskId(taskId: Long) -&gt; Integer</div></div></details>
+<details class="svc-contract" open><summary>🔧 DeployExecutor <span class="cg-count">2 方法</span></summary><div class="svc-method"><div class="svc-method-header"><span class="method-name">ExecuteAsync</span></div><div class="sig-block">(task: DeployTask) -&gt; void</div><div class="cc-desc">异步执行远程部署流程，依次完成五个阶段并实时更新状态和进度</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">task 已持久化且 status=pending；任务在异步协程中独立执行</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">按顺序执行：创建目录→传输文件→生成脚本→执行启动；所有步骤成功后 task.status=success；步骤失败时根据配置决定是否触发 Rollback；所有关键步骤结果写入 deploy_logs</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">SSHConnectionException</span><span class="exc-http">→ 502</span><span style="font-size:0.82em;color:var(--c-muted)">SSH 连接池连接远程服务器失败（超时/认证失败/主机不可达）</span></span><span class="exc-item"><span class="exc-name">FileTransferException</span><span class="exc-http">→ 502</span><span style="font-size:0.82em;color:var(--c-muted)">SFTP 文件传输过程中发生错误（磁盘不足/写入权限/网络中断）</span></span><span class="exc-item"><span class="exc-name">ScriptExecutionException</span><span class="exc-http">→ 502</span><span style="font-size:0.82em;color:var(--c-muted)">远程脚本执行返回非零退出码或超时未响应</span></span><span class="exc-item"><span class="exc-name">DirectoryCreationException</span><span class="exc-http">→ 502</span><span style="font-size:0.82em;color:var(--c-muted)">远程 mkdir 命令执行失败（权限不足/路径冲突）</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">Rollback</span></div><div class="sig-block">(task: DeployTask) -&gt; void</div><div class="cc-desc">部署失败后执行回滚，将远程服务器恢复到上一部署版本</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">task.status=failed 且远程服务器上存在上一版本的目录结构</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">更新 task.status=rollbacking；在远程服务器上切换 symlink 到上一版本目录；执行上一版本的 start.sh；成功则 task.status=rolled_back，失败则 task.status=rollback_failed</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">RollbackFailedException</span><span class="exc-http">→ 502</span><span style="font-size:0.82em;color:var(--c-muted)">回滚过程中远程操作失败：上一版本目录不存在、symlink 切换失败、启动脚本执行失败</span></span></div></div></details>
+  </div>
+</div>
+
+<div class="section" id="business-rules">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(251,191,36,0.12)">📐</div>
+    <h2>业务规则</h2>
+  </div>
+  <div class="section-body">
+
+<div class="body-label">不变量</div><ul class="invariant-list"><li><span class="inv-icon">!</span><span>同一 project_id + environment_id 组合同时最多只能有一个活跃部署任务（pending/running/rollbacking 状态）</span></li><li><span class="inv-icon">!</span><span>部署任务的版本号在同一 project_id + environment_id 内唯一</span></li><li><span class="inv-icon">!</span><span>部署任务的状态转换必须严格遵循 DeployTask 状态机定义，不可跳跃或逆向</span></li><li><span class="inv-icon">!</span><span>远程服务器的版本目录路径格式固定为 /opt/app/releases/{version}/</span></li><li><span class="inv-icon">!</span><span>每个部署任务的 deploy_logs 按 created_at 升序排列，日志行写入后不可修改或删除</span></li></ul>
+<div class="body-label" style="margin-top:16px">状态机</div>
+<div class="state-diagram"><div class="sd-title">🎯 DeployTask</div><div class="state-row"><span class="state-node ">pending</span><span class="state-node active">running</span><span class="state-node ">success</span><span class="state-node error">failed</span><span class="state-node ">rollbacking</span><span class="state-node ">rolled_back</span><span class="state-node ">cancelled</span></div><div style="margin:8px 0"><div class="state-arrow"><span>→</span><span class="trigger-text">DeployExecutor 获取待处理任务并开始执行</span><span style="font-size:0.78em;color:var(--c-muted)">by DeployExecutor</span></div><div class="state-arrow"><span>→</span><span class="trigger-text">用户在调度执行前手动取消</span><span style="font-size:0.78em;color:var(--c-muted)">by 用户</span></div><div class="state-arrow"><span>→</span><span class="trigger-text">所有部署步骤执行成功，服务启动正常</span><span style="font-size:0.78em;color:var(--c-muted)">by DeployExecutor</span></div><div class="state-arrow"><span>→</span><span class="trigger-text">部署步骤执行失败且无需回滚，或回滚条件不满足（如首次部署无上一版本）</span><span style="font-size:0.78em;color:var(--c-muted)">by DeployExecutor</span></div><div class="state-arrow"><span>→</span><span class="trigger-text">部署步骤执行失败，系统决定触发自动回滚流程</span><span style="font-size:0.78em;color:var(--c-muted)">by DeployExecutor</span></div><div class="state-arrow"><span>→</span><span class="trigger-text">用户手动取消正在执行的部署任务</span><span style="font-size:0.78em;color:var(--c-muted)">by 用户</span></div><div class="state-arrow"><span>→</span><span class="trigger-text">回滚操作成功完成，远程服务恢复到上一版本</span><span style="font-size:0.78em;color:var(--c-muted)">by DeployExecutor</span></div><div class="state-arrow"><span>→</span><span class="trigger-text">回滚操作在执行过程中也失败</span><span style="font-size:0.78em;color:var(--c-muted)">by DeployExecutor</span></div></div><div style="margin-top:8px"><span class="irrev-rule">🚫 success 状态不可转换到其他任何状态——已成功的部署视为最终态</span><span class="irrev-rule">🚫 rolled_back 状态不可逆——回滚完成后不可再次恢复已失败的新版本</span><span class="irrev-rule">🚫 rollback_failed 状态不可逆——回滚失败需要人工介入处理</span><span class="irrev-rule">🚫 cancelled 状态不可恢复——取消后的任务不可重新激活</span></div><div style="margin-top:8px;font-size:0.84em;color:var(--c-muted)">⚡ 创建部署任务时使用 SELECT ... FOR UPDATE 锁定目标 project_id + environment_id 的活跃任务行；状态更新使用乐观锁（version 字段或 updated_at 比较）防止并发覆盖；DeployExecutor 通过分布式锁（Redis）确保同一时刻每个活跃任务只有一个执行协程</div></div>
+<div class="body-label" style="margin-top:16px">跨服务规则</div><div class="cross-svc-rule">部署启动前 DeployExecutor 必须通过 SSH 连接池的 RPC 接口验证目标服务器可达（SSH 握手），不可达则任务标记为 failed</div><div class="cross-svc-rule">DeployExecutor 启动文件传输前必须从文件存储服务获取文件包及其 checksum，传输完成后比对两端 checksum 确保完整性</div><div class="cross-svc-rule">部署流程中每个关键阶段（创建目录/传输文件/生成脚本/启动服务/回滚）完成后必须调用审计日志服务记录操作详情</div><div class="cross-svc-rule">调用审计日志服务超时或失败时，部署流程不应中断，但需记录 warn 级别日志提示审计缺失</div><div class="cross-svc-rule">DeployExecutor 在远程服务器上生成脚本时，脚本内容必须包含错误处理和日志重定向，确保执行结果可追溯</div>
+  </div>
+</div>
+
+<div class="section" id="interfaces">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(34,211,238,0.12)">🔌</div>
+    <h2>接口定义 (2)</h2>
+  </div>
+  <div class="section-body">
+
+<div class="contract-card"><div class="cc-head"><span class="method-badge post">POST</span><span class="cc-endpoint">/api/v1/deploy</span><span class="cc-name">发起部署</span></div><div class="cc-desc">创建部署任务，异步执行部署操作</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>project_id</td><td class="field-type">integer</td><td>项目 ID</td></tr><tr><td>environment_id</td><td class="field-type">integer</td><td>目标环境 ID</td></tr><tr><td>file_package_id</td><td class="field-type">integer</td><td>待部署文件包 ID</td></tr><tr><td>version</td><td class="field-type">string</td><td>部署版本号</td></tr><tr><td>description</td><td class="field-type">string</td><td>部署描述信息</td></tr></tbody></table><div class="body-label">Response 202</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>task_id</td><td class="field-type">integer</td></tr><tr><td>status</td><td class="field-type">string</td></tr><tr><td>created_at</td><td class="field-type">datetime</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>400</td><td>请求参数校验失败，如缺少必填字段或版本号格式错误</td></tr><tr><td>404</td><td>项目、环境或文件包资源不存在</td></tr><tr><td>409</td><td>同一项目+环境已有活跃部署任务（pending/running/rollbacking 状态）</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/v1/deploy/:taskId/status</span><span class="cc-name">查询部署状态</span></div><div class="cc-desc">轮询查询部署任务的当前状态和实时日志</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>taskId</td><td class="field-type">integer</td><td>部署任务 ID（路径参数）</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>task_id</td><td class="field-type">integer</td></tr><tr><td>status</td><td class="field-type">string</td></tr><tr><td>progress</td><td class="field-type">integer</td></tr><tr><td>current_step</td><td class="field-type">string</td></tr><tr><td>logs</td><td class="field-type">array&lt;string&gt;</td></tr><tr><td>started_at</td><td class="field-type">datetime</td></tr><tr><td>completed_at</td><td class="field-type">datetime</td></tr><tr><td>error</td><td class="field-type">string</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>404</td><td>部署任务不存在</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<div class="section" id="errors">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(251,191,36,0.12)">⚠️</div>
+    <h2>错误处理</h2>
+  </div>
+  <div class="section-body">
+
+<div class="err-strategy"><div class="err-label">处理策略</div><p>错误分为三类：请求参数校验错误返回 4xx；部署执行过程中的远程服务器错误由 DeployExecutor 捕获后更新任务状态为 failed 并记录错误日志；内部系统依赖错误（SSH 连接失败、文件包获取失败）由调用方重试或触发自动回滚。部署执行失败时视情况触发回滚流程，回滚失败时标记任务为 rollback_failed 并记录详细错误</p></div>
+<div class="err-format-box"><div class="err-label">统一错误响应体</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td class="field-type">code</td><td class="field-type">integer</td></tr><tr><td class="field-type">error</td><td class="field-type">string</td></tr><tr><td class="field-type">detail</td><td class="field-type">string</td></tr></tbody></table></div>
+<div class="err-categories"><div class="err-category"><span class="err-code-badge _4xx">400</span><div class="err-category-body"><div class="err-cat-name">请求参数错误</div><div class="err-cat-desc">请求体缺少必填字段或字段格式不正确，由 Gin binding 校验拦截并返回第一个校验失败详情</div></div></div><div class="err-category"><span class="err-code-badge _4xx">404</span><div class="err-category-body"><div class="err-cat-name">资源不存在</div><div class="err-cat-desc">引用的项目、环境、文件包或部署任务在数据库中不存在</div></div></div><div class="err-category"><span class="err-code-badge _4xx">409</span><div class="err-category-body"><div class="err-cat-name">并发冲突</div><div class="err-cat-desc">同一项目+环境已有活跃部署任务（pending/running/rollbacking 状态）时再次发起部署</div></div></div><div class="err-category"><span class="err-code-badge _5xx">502</span><div class="err-category-body"><div class="err-cat-name">远程服务器错误</div><div class="err-cat-desc">SSH 连接失败、命令执行超时、SFTP 文件传输失败。任务标记为 failed 并记录错误，满足条件时自动触发回滚</div></div></div><div class="err-category"><span class="err-code-badge _5xx">503</span><div class="err-category-body"><div class="err-cat-name">内部依赖不可用</div><div class="err-cat-desc">文件存储服务或审计日志服务调用失败。文件包获取失败直接导致部署失败；审计日志记录失败仅记录 warn 日志不影响部署流程</div></div></div></div>
+  </div>
+</div>
+
+<div class="footer">CogniForge 文档驱动系统</div>
+</div>
+</div>
+
+<script>
+(function() {
+  var links = document.querySelectorAll('.sidebar-link');
+  var sections = [];
+  links.forEach(function(l) { var s = document.getElementById(l.getAttribute('href').slice(1)); if (s) sections.push([s, l]); });
+  function update() {
+    var top = window.scrollY + 80;
+    var active = null;
+    sections.forEach(function(p) { if (p[0].offsetTop <= top) active = p[1]; });
+    links.forEach(function(l) { l.classList.remove('active'); });
+    if (active) active.classList.add('active');
+  }
+  window.addEventListener('scroll', update, {passive: true});
+  update();
+
+  var toggle = document.getElementById('sidebar-toggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function() { sidebar.classList.toggle('mobile-open'); });
+  }
+})();
+</script>
+</body>
+</html>
