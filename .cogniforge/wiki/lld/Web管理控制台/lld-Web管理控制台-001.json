@@ -1,0 +1,1045 @@
+{
+  "meta": {
+    "doc_id": "lld-Web管理控制台-001",
+    "type": "lld",
+    "module_type": "frontend",
+    "module": "Web管理控制台",
+    "title": "Web管理控制台详细设计文档",
+    "author": "design_agent",
+    "created": "2026-05-22T00:00:00Z"
+  },
+  "overview": {
+    "description": "基于React+Ant Design的单页应用，提供部署系统的完整操作界面，整合项目管理、环境配置、一键部署、部署监控、版本回滚和审计日志等核心功能模块，作为用户与后端服务的唯一交互入口",
+    "dependencies": [
+      "API网关",
+      "认证中间件"
+    ],
+    "tech_stack": [
+      "React",
+      "Ant Design",
+      "JWT",
+      "WebSocket"
+    ]
+  },
+  "data_models": [
+    {
+      "name": "UserAuthStore",
+      "type": "store",
+      "ownership": "owned",
+      "description": "用户认证与权限状态管理",
+      "fields": [
+        { "name": "token", "type": "string", "required": false, "description": "JWT token，空表示未登录" },
+        { "name": "userInfo", "type": "object", "required": false, "description": "当前用户基本信息" },
+        { "name": "roles", "type": "string[]", "required": false, "description": "用户角色列表" },
+        { "name": "isAuthenticated", "type": "boolean", "required": true, "description": "是否已认证" }
+      ]
+    },
+    {
+      "name": "ProjectStore",
+      "type": "store",
+      "ownership": "owned",
+      "description": "项目列表与当前项目上下文管理",
+      "fields": [
+        { "name": "projects", "type": "Project[]", "required": true, "description": "用户有权限的项目列表" },
+        { "name": "currentProjectId", "type": "string", "required": false, "description": "当前选中项目ID" },
+        { "name": "currentProject", "type": "object", "required": false, "description": "当前项目详情" },
+        { "name": "loading", "type": "boolean", "required": true, "description": "项目列表加载状态" }
+      ]
+    },
+    {
+      "name": "DeployStore",
+      "type": "store",
+      "ownership": "owned",
+      "description": "部署任务状态与进度管理",
+      "fields": [
+        { "name": "tasks", "type": "Map<string, DeployTask>", "required": true, "description": "部署任务映射（taskId → 任务详情）" },
+        { "name": "activeTaskId", "type": "string", "required": false, "description": "当前活跃的部署任务ID" },
+        { "name": "wsConnected", "type": "boolean", "required": true, "description": "WebSocket连接状态" }
+      ]
+    },
+    {
+      "name": "EnvironmentStore",
+      "type": "store",
+      "ownership": "owned",
+      "description": "环境配置与SSH密钥管理",
+      "fields": [
+        { "name": "environments", "type": "Environment[]", "required": true, "description": "当前项目的环境列表" },
+        { "name": "currentEnvId", "type": "string", "required": false, "description": "当前选中环境ID" },
+        { "name": "loading", "type": "boolean", "required": true, "description": "环境列表加载状态" }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "PageDashboard",
+      "method": "frontend",
+      "endpoint": "/",
+      "description": "仪表盘首页，展示部署概览统计和最近部署动态",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "project_count": "integer",
+          "recent_deployments": "DeploymentSummary[]",
+          "environment_stats": "object"
+        }
+      },
+      "error_codes": [
+        { "code": 401, "message": "未认证，跳转登录页" },
+        { "code": 403, "message": "无仪表盘访问权限" }
+      ]
+    },
+    {
+      "name": "PageProjectList",
+      "method": "frontend",
+      "endpoint": "/projects",
+      "description": "项目管理页面，展示项目列表并支持项目的创建和编辑",
+      "parameters": [
+        { "name": "page", "type": "integer", "description": "当前页码" },
+        { "name": "page_size", "type": "integer", "description": "每页条数" }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "projects": "Project[]",
+          "total": "integer",
+          "page": "integer",
+          "page_size": "integer"
+        }
+      },
+      "error_codes": [
+        { "code": 401, "message": "未认证，跳转登录页" },
+        { "code": 403, "message": "无项目管理权限" }
+      ]
+    },
+    {
+      "name": "PageEnvironmentConfig",
+      "method": "frontend",
+      "endpoint": "/projects/:projectId/environments",
+      "description": "环境配置页面，管理指定项目的部署环境及SSH密钥",
+      "parameters": [
+        { "name": "projectId", "type": "string (UUID)", "description": "项目标识" }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "environments": "Environment[]",
+          "project_name": "string"
+        }
+      },
+      "error_codes": [
+        { "code": 401, "message": "未认证" },
+        { "code": 403, "message": "无环境配置权限，仅admin可管理SSH密钥" },
+        { "code": 404, "message": "项目不存在" }
+      ]
+    },
+    {
+      "name": "PageDeploy",
+      "method": "frontend",
+      "endpoint": "/projects/:projectId/deploy",
+      "description": "一键部署页面，选择环境和文件触发部署任务",
+      "parameters": [
+        { "name": "projectId", "type": "string (UUID)", "description": "项目标识" }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "environments": "Environment[]",
+          "project_name": "string"
+        }
+      },
+      "error_codes": [
+        { "code": 401, "message": "未认证" },
+        { "code": 403, "message": "无部署权限" },
+        { "code": 404, "message": "项目不存在" },
+        { "code": 400, "message": "项目下无可用环境" }
+      ]
+    },
+    {
+      "name": "PageDeployProgress",
+      "method": "frontend",
+      "endpoint": "/projects/:projectId/deploy/:taskId",
+      "description": "部署进度展示页面，显示实时进度、日志和结果",
+      "parameters": [
+        { "name": "projectId", "type": "string (UUID)", "description": "项目标识" },
+        { "name": "taskId", "type": "string (UUID)", "description": "部署任务ID" }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "task_id": "string (UUID)",
+          "status": "string",
+          "progress": "integer",
+          "current_step": "string",
+          "logs": "string[]",
+          "version": "string"
+        }
+      },
+      "error_codes": [
+        { "code": 401, "message": "未认证" },
+        { "code": 404, "message": "部署任务不存在" }
+      ]
+    },
+    {
+      "name": "PageVersionHistory",
+      "method": "frontend",
+      "endpoint": "/projects/:projectId/history",
+      "description": "部署历史页面，查询版本记录并支持回滚操作",
+      "parameters": [
+        { "name": "projectId", "type": "string (UUID)", "description": "项目标识" },
+        { "name": "page", "type": "integer", "description": "页码" },
+        { "name": "page_size", "type": "integer", "description": "每页条数" },
+        { "name": "environment_id", "type": "string (UUID)", "description": "按环境筛选（可选）" }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "versions": "VersionRecord[]",
+          "total": "integer"
+        }
+      },
+      "error_codes": [
+        { "code": 401, "message": "未认证" },
+        { "code": 404, "message": "项目不存在" }
+      ]
+    },
+    {
+      "name": "PageAuditLog",
+      "method": "frontend",
+      "endpoint": "/audit-logs",
+      "description": "审计日志查询页面，支持多维度筛选和查看操作记录",
+      "parameters": [
+        { "name": "page", "type": "integer", "description": "页码" },
+        { "name": "page_size", "type": "integer", "description": "每页条数" },
+        { "name": "start_time", "type": "string (ISO8601)", "description": "筛选起始时间" },
+        { "name": "end_time", "type": "string (ISO8601)", "description": "筛选结束时间" },
+        { "name": "operator", "type": "string", "description": "筛选操作人" },
+        { "name": "action_type", "type": "string", "description": "筛选操作类型" }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "logs": "AuditLogEntry[]",
+          "total": "integer"
+        }
+      },
+      "error_codes": [
+        { "code": 401, "message": "未认证" },
+        { "code": 403, "message": "无审计日志查看权限，仅admin可访问" }
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "全局采用Ant Design notification + 内联错误提示的分层处理策略。API调用异常由统一拦截层捕获，401自动跳转登录页，403展示权限不足提示，4xx展示业务错误详情，5xx展示服务器错误并支持重试。表单验证错误以内联形式展示在对应字段下方。网络断开时展示断网提示条，恢复后自动隐藏。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      { "code": "401", "name": "认证失败", "description": "JWT token过期或无效，自动跳转到登录页，原路径存入localStorage以便登录后回跳" },
+      { "code": "403", "name": "权限不足", "description": "用户角色无当前操作权限，展示权限不足提示，部分UI元素根据角色控制显隐" },
+      { "code": "404", "name": "资源不存在", "description": "请求的项目/环境/部署任务不存在，展示空状态提示并返回列表页链接" },
+      { "code": "422", "name": "参数校验失败", "description": "请求参数格式错误，表单字段内联展示具体错误信息" },
+      { "code": "500", "name": "服务器错误", "description": "后端服务异常，展示通用错误页并提供「重试」按钮，自动上报错误信息" },
+      { "code": "NETWORK", "name": "网络异常", "description": "前端检测到网络断开，展示全局断网提示条；恢复后自动隐藏并重新加载数据" },
+      { "code": "TIMEOUT", "name": "请求超时", "description": "API请求超过30秒未响应，提示用户检查网络并支持重试" }
+    ]
+  },
+  "component_tree": [
+    {
+      "name": "App",
+      "path": "/",
+      "description": "根组件，包含路由配置、全局状态Provider和错误边界",
+      "props": [],
+      "events": [],
+      "state": [
+        { "name": "isAuthenticated", "type": "boolean", "description": "用户认证状态，决定渲染登录页还是主应用" }
+      ],
+      "behavior": [
+        "mount 时从localStorage读取JWT token并验证有效性",
+        "token有效则初始化UserAuthStore并渲染主布局",
+        "token无效或过期则渲染登录页",
+        "全局未捕获异常由ErrorBoundary捕获并展示错误页"
+      ],
+      "edge_cases": [
+        "token在应用使用中过期：下次API请求收到401，清除token并跳转登录页",
+        "路由匹配失败：展示404页面并提供返回首页的链接",
+        "空项目列表：展示引导创建项目的提示"
+      ],
+      "children": [
+        {
+          "name": "Layout",
+          "path": "/",
+          "description": "主布局容器，由顶部栏（含项目切换器）、侧边栏导航和路由内容区组成",
+          "props": [],
+          "events": [],
+          "state": [
+            { "name": "sidebarCollapsed", "type": "boolean", "description": "侧边栏折叠状态，持久化到localStorage" },
+            { "name": "currentMenuKey", "type": "string", "description": "当前高亮菜单项key，根据路由自动匹配" }
+          ],
+          "behavior": [
+            "mount 时从localStorage恢复sidebarCollapsed状态",
+            "路由变化时自动更新currentMenuKey",
+            "项目切换时重新加载侧边栏项目级菜单"
+          ],
+          "edge_cases": [
+            "浏览器窗口宽度<768px时自动折叠侧边栏",
+            "无当前选中项目时隐藏项目级菜单项（环境配置、部署、历史）"
+          ],
+          "children": [
+            {
+              "name": "ProjectSwitcher",
+              "path": "/",
+              "description": "顶部栏项目切换器下拉组件，展示用户有权限的所有项目并支持快速切换",
+              "props": [
+                { "name": "projects", "type": "Project[]", "required": true, "description": "用户有权限的项目列表" },
+                { "name": "currentProjectId", "type": "string", "required": false, "description": "当前选中项目ID" }
+              ],
+              "events": [
+                { "name": "onSwitch", "payload_type": "string (项目ID)" }
+              ],
+              "state": [
+                { "name": "dropdownOpen", "type": "boolean", "description": "下拉菜单展开/收起状态" },
+                { "name": "searchKeyword", "type": "string", "description": "项目搜索关键词" }
+              ],
+              "behavior": [
+                "点击切换按钮展开项目下拉列表",
+                "支持输入关键词过滤项目列表",
+                "选择项目后触发onSwitch事件并收起下拉菜单",
+                "切换项目后更新全局ProjectStore.currentProjectId"
+              ],
+              "edge_cases": [
+                "仅有一个项目时自动选中不展示切换器",
+                "项目名称过长时截断显示并tooltip展示全称",
+                "搜索无结果时展示空状态提示",
+                "项目列表加载失败时展示重试按钮"
+              ]
+            },
+            {
+              "name": "Sidebar",
+              "path": "/",
+              "description": "侧边栏导航组件，按权限动态展示菜单项",
+              "props": [
+                { "name": "collapsed", "type": "boolean", "required": true, "description": "折叠状态" },
+                { "name": "projectId", "type": "string", "required": false, "description": "当前项目ID，决定是否展示项目级菜单" },
+                { "name": "userRoles", "type": "string[]", "required": true, "description": "当前用户角色列表，控制菜单项显隐" }
+              ],
+              "events": [
+                { "name": "onToggleCollapse", "payload_type": "void" }
+              ],
+              "state": [
+                { "name": "menuItems", "type": "MenuItem[]", "description": "经过权限过滤后的菜单项列表" }
+              ],
+              "behavior": [
+                "mount 时根据userRoles和projectId动态构建菜单项",
+                "点击菜单项导航到对应路由并高亮当前项",
+                "点击折叠按钮触发onToggleCollapse事件"
+              ],
+              "edge_cases": [
+                "无项目时不展示项目级菜单组（环境配置、部署、历史）",
+                "admin角色展示所有菜单项，operator不展示审计日志",
+                "侧边栏折叠时只显示图标，hover展开子菜单"
+              ]
+            },
+            {
+              "name": "Dashboard",
+              "path": "/",
+              "description": "仪表盘首页，展示跨项目的部署概览统计信息和最近部署动态",
+              "props": [],
+              "events": [],
+              "state": [
+                { "name": "stats", "type": "object", "description": "部署统计数据（总项目数、总部署次数、成功率等）" },
+                { "name": "recentDeployments", "type": "DeploymentSummary[]", "description": "最近5条部署记录" },
+                { "name": "loading", "type": "boolean", "description": "数据加载状态" }
+              ],
+              "behavior": [
+                "mount 时请求仪表盘统计数据和最近部署记录",
+                "每30秒自动轮询刷新最近部署状态",
+                "点击部署记录跳转到对应部署进度页"
+              ],
+              "edge_cases": [
+                "首次加载无数据时展示空状态引导提示",
+                "统计接口失败时展示部分加载状态，不影响其他模块",
+                "自动轮询间隔内组件卸载时清除定时器"
+              ]
+            },
+            {
+              "name": "ProjectList",
+              "path": "/projects",
+              "description": "项目列表页面，以表格形式展示所有项目并支持搜索、创建和编辑",
+              "props": [],
+              "events": [
+                { "name": "onSelectProject", "payload_type": "string (项目ID)" }
+              ],
+              "state": [
+                { "name": "projects", "type": "Project[]", "description": "项目列表数据" },
+                { "name": "total", "type": "integer", "description": "项目总数" },
+                { "name": "page", "type": "integer", "description": "当前页码" },
+                { "name": "pageSize", "type": "integer", "description": "每页条数" },
+                { "name": "loading", "type": "boolean", "description": "加载状态" },
+                { "name": "searchKeyword", "type": "string", "description": "搜索关键词" },
+                { "name": "projectFormVisible", "type": "boolean", "description": "项目表单Modal显隐" },
+                { "name": "editingProject", "type": "object", "description": "编辑中的项目数据，新建时为null" }
+              ],
+              "behavior": [
+                "mount 时请求项目列表（第一页）",
+                "页码/每页条数变化时重新请求",
+                "搜索关键词变化时debounce 300ms后重新请求",
+                "点击创建按钮打开ProjectForm（编辑模式为null）",
+                "点击项目行进入项目详情或跳转部署页",
+                "项目保存成功后关闭form并刷新列表"
+              ],
+              "edge_cases": [
+                "搜索无结果时展示空状态和清除搜索的建议",
+                "项目名过长时表格列截断加tooltip",
+                "翻页到末页后删除最后一条数据自动回退到前一页"
+              ]
+            },
+            {
+              "name": "ProjectForm",
+              "path": "/projects",
+              "description": "项目创建/编辑表单Modal，包含项目名称、描述等字段",
+              "props": [
+                { "name": "visible", "type": "boolean", "required": true, "description": "Modal显隐状态" },
+                { "name": "project", "type": "Project", "required": false, "description": "编辑模式时传入已有项目数据，新建时为null" },
+                { "name": "onClose", "type": "() => void", "required": true, "description": "关闭Modal回调" },
+                { "name": "onSaved", "type": "(project: Project) => void", "required": true, "description": "保存成功回调" }
+              ],
+              "events": [
+                { "name": "onSave", "payload_type": "Project (表单数据)" },
+                { "name": "onCancel", "payload_type": "void" }
+              ],
+              "state": [
+                { "name": "submitting", "type": "boolean", "description": "提交中状态，防止重复提交" },
+                { "name": "formErrors", "type": "object", "description": "表单字段校验错误信息" }
+              ],
+              "behavior": [
+                "mount时根据project参数初始化表单（编辑模式回填数据）",
+                "表单提交前执行字段校验（名称必填且唯一、描述长度限制）",
+                "校验通过后调用项目创建/更新API",
+                "提交完成后触发onSaved回调并关闭Modal"
+              ],
+              "edge_cases": [
+                "项目名称已存在时展示后端返回的重复名称错误",
+                "提交过程中网络中断时展示错误提示，保留表单数据",
+                "表单未保存直接关闭时弹出确认提示"
+              ]
+            },
+            {
+              "name": "EnvironmentList",
+              "path": "/projects/:projectId/environments",
+              "description": "环境列表页面，展示指定项目的所有部署环境及其SSH密钥绑定状态",
+              "props": [
+                { "name": "projectId", "type": "string", "required": true, "description": "从路由参数获取的项目ID" }
+              ],
+              "events": [
+                { "name": "onAddEnvironment", "payload_type": "void" },
+                { "name": "onConfigureSSH", "payload_type": "string (环境ID)" }
+              ],
+              "state": [
+                { "name": "environments", "type": "Environment[]", "description": "环境列表" },
+                { "name": "loading", "type": "boolean", "description": "加载状态" },
+                { "name": "envFormVisible", "type": "boolean", "description": "环境表单Modal显隐" },
+                { "name": "sshConfigVisible", "type": "boolean", "description": "SSH密钥配置Modal显隐" },
+                { "name": "selectedEnvId", "type": "string", "description": "选中编辑或配置SSH的环境ID" }
+              ],
+              "behavior": [
+                "mount时根据projectId请求环境列表",
+                "每个环境项展示环境名称、类型（测试/灰度/正式）、服务器地址、密钥绑定状态",
+                "点击添加按钮打开EnvironmentForm",
+                "点击SSH配置按钮打开SSHKeyConfig",
+                "展示密钥有效性验证状态图标（已验证/未验证/验证失败）"
+              ],
+              "edge_cases": [
+                "项目ID无效时展示404提示并返回项目列表",
+                "项目下无环境时展示空状态并引导创建首个环境",
+                "SSH密钥验证失败时展示失败原因（连接超时/权限拒绝/密钥格式错误）"
+              ]
+            },
+            {
+              "name": "EnvironmentForm",
+              "path": "/projects/:projectId/environments",
+              "description": "环境创建/编辑表单Modal，配置环境名称、类型、服务器地址等信息",
+              "props": [
+                { "name": "visible", "type": "boolean", "required": true, "description": "Modal显隐" },
+                { "name": "environment", "type": "Environment", "required": false, "description": "编辑时的环境数据" },
+                { "name": "projectId", "type": "string", "required": true, "description": "所属项目ID" },
+                { "name": "onClose", "type": "() => void", "required": true, "description": "关闭回调" },
+                { "name": "onSaved", "type": "(env: Environment) => void", "required": true, "description": "保存成功回调" }
+              ],
+              "events": [
+                { "name": "onSave", "payload_type": "Environment (表单数据)" }
+              ],
+              "state": [
+                { "name": "submitting", "type": "boolean", "description": "提交中状态" },
+                { "name": "testResult", "type": "object", "description": "连接测试结果" }
+              ],
+              "behavior": [
+                "mount时根据URL参数中的environmentId回填表单（编辑模式）",
+                "表单含环境名称、类型（单选：测试/灰度/正式）、服务器地址、端口号",
+                "支持可选「保存后测试连接」选项",
+                "提交前校验服务器地址格式和端口范围"
+              ],
+              "edge_cases": [
+                "服务器地址格式不合法（非IP/域名）时提示格式错误",
+                "端口号超出1-65535范围时提示",
+                "环境中名称在项目内重复时展示后端错误"
+              ]
+            },
+            {
+              "name": "SSHKeyConfig",
+              "path": "/projects/:projectId/environments/:envId/ssh",
+              "description": "SSH密钥配置Modal，支持添加、编辑和测试与目标服务器的SSH连接",
+              "props": [
+                { "name": "visible", "type": "boolean", "required": true, "description": "Modal显隐" },
+                { "name": "environmentId", "type": "string", "required": true, "description": "目标环境ID" },
+                { "name": "keyData", "type": "object", "required": false, "description": "已有密钥数据（编辑模式）" },
+                { "name": "onClose", "type": "() => void", "required": true, "description": "关闭回调" }
+              ],
+              "events": [
+                { "name": "onSaved", "payload_type": "object (密钥保存结果)" },
+                { "name": "onTest", "payload_type": "string (环境ID)" }
+              ],
+              "state": [
+                { "name": "keyName", "type": "string", "description": "密钥名称" },
+                { "name": "keyType", "type": "string", "description": "密钥类型（RSA/ECDSA/ED25519）" },
+                { "name": "keyContent", "type": "string", "description": "密钥内容或上传文件" },
+                { "name": "testing", "type": "boolean", "description": "连接测试中状态" },
+                { "name": "testResult", "type": "object", "description": "连接测试结果（成功/失败及原因）" },
+                { "name": "submitting", "type": "boolean", "description": "提交保存中状态" }
+              ],
+              "behavior": [
+                "支持粘贴密钥内容或通过文件上传导入密钥文件",
+                "选择密钥类型后自动校验密钥格式",
+                "点击「测试连接」按钮发起SSH连接验证",
+                "测试成功时展示绿色成功状态，失败时展示具体错误原因",
+                "测试通过后方可保存密钥",
+                "保存成功后自动绑定密钥与目标环境"
+              ],
+              "edge_cases": [
+                "密钥格式不合法（缺少头尾标记）时提示格式错误",
+                "密钥文件大于1MB时拒绝上传",
+                "SSH连接超时（默认10秒）时展示超时提示",
+                "目标服务器拒绝密钥认证时展示Permission denied错误",
+                "测试连接耗时较长时展示加载动画并允许取消"
+              ]
+            },
+            {
+              "name": "DeployForm",
+              "path": "/projects/:projectId/deploy",
+              "description": "一键部署表单页面，选择目标环境、上传文件并触发部署任务",
+              "props": [
+                { "name": "projectId", "type": "string", "required": true, "description": "从路由参数获取的项目ID" },
+                { "name": "environments", "type": "Environment[]", "required": true, "description": "可选环境列表" }
+              ],
+              "events": [
+                { "name": "onDeployStart", "payload_type": "string (部署任务ID)" }
+              ],
+              "state": [
+                { "name": "selectedEnvId", "type": "string", "description": "选中的目标环境ID" },
+                { "name": "filePath", "type": "string", "description": "上传文件路径或已上传文件标识" },
+                { "name": "version", "type": "string", "description": "指定版本号（可选）" },
+                { "name": "description", "type": "string", "description": "部署说明（可选）" },
+                { "name": "submitting", "type": "boolean", "description": "提交中状态" },
+                { "name": "validationErrors", "type": "object", "description": "表单校验错误" }
+              ],
+              "behavior": [
+                "mount时加载项目环境列表并默认选中首个可用环境",
+                "选择环境后校验环境是否已绑定有效SSH密钥",
+                "通过FileUploader子组件上传部署文件",
+                "点击「部署」按钮执行参数校验",
+                "校验通过后调用 POST /api/v1/deploy 触发部署",
+                "部署任务创建成功后跳转到部署进度页面"
+              ],
+              "edge_cases": [
+                "项目下无可用环境时展示提示并引导去环境配置页",
+                "目标环境未绑定SSH密钥时展示警告并要求先配置密钥",
+                "部署文件未上传时禁用部署按钮并提示",
+                "部署API返回失败时展示错误详情并保留表单数据",
+                "部署进行中（已有活跃任务）时提示并发部署风险"
+              ],
+              "children": [
+                {
+                  "name": "FileUploader",
+                  "path": "/projects/:projectId/deploy",
+                  "description": "文件上传组件，支持拖拽上传和点击选择部署文件",
+                  "props": [
+                    { "name": "accept", "type": "string", "required": false, "description": "接受的文件类型，默认全部" },
+                    { "name": "maxSize", "type": "integer", "required": false, "description": "文件大小上限（字节），默认500MB" },
+                    { "name": "disabled", "type": "boolean", "required": false, "description": "是否禁用上传" }
+                  ],
+                  "events": [
+                    { "name": "onFileChange", "payload_type": "object (文件信息：name, path, size)" },
+                    { "name": "onUploadStart", "payload_type": "void" },
+                    { "name": "onUploadError", "payload_type": "string (错误信息)" }
+                  ],
+                  "state": [
+                    { "name": "file", "type": "File", "description": "当前选择的文件对象" },
+                    { "name": "uploadProgress", "type": "integer", "description": "上传进度百分比0-100" },
+                    { "name": "uploading", "type": "boolean", "description": "上传中状态" },
+                    { "name": "error", "type": "string", "description": "上传错误信息" }
+                  ],
+                  "behavior": [
+                    "支持点击选择和拖拽上传两种交互方式",
+                    "选择文件后立即校验文件大小和类型",
+                    "校验通过后自动上传文件并展示进度条",
+                    "上传完成后将文件路径通过onFileChange回传父组件",
+                    "上传过程中可取消上传操作"
+                  ],
+                  "edge_cases": [
+                    "文件超过maxSize时拒绝上传并展示大小超限提示",
+                    "文件类型不在accept范围内时拒绝上传",
+                    "上传过程中网络中断自动重试最多3次",
+                    "同一文件重复上传时提示用户确认覆盖",
+                    "超大文件（>100MB）展示预计上传时间估算"
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "DeployProgress",
+              "path": "/projects/:projectId/deploy/:taskId",
+              "description": "部署进度展示组件，轮询或通过WebSocket实时获取部署状态并驱动进度展示",
+              "props": [
+                { "name": "taskId", "type": "string", "required": true, "description": "部署任务ID" },
+                { "name": "projectId", "type": "string", "required": true, "description": "项目ID" }
+              ],
+              "events": [
+                { "name": "onComplete", "payload_type": "object (部署完成结果)" },
+                { "name": "onError", "payload_type": "string (错误信息)" }
+              ],
+              "state": [
+                { "name": "status", "type": "string", "description": "任务状态：pending/running/success/failed" },
+                { "name": "progress", "type": "integer", "description": "进度百分比0-100" },
+                { "name": "currentStep", "type": "string", "description": "当前执行步骤描述" },
+                { "name": "logs", "type": "string[]", "description": "实时日志行列表" },
+                { "name": "version", "type": "string", "description": "部署版本号" },
+                { "name": "startedAt", "type": "string", "description": "开始时间" },
+                { "name": "completedAt", "type": "string", "description": "完成时间（部署完成后）" },
+                { "name": "error", "type": "string", "description": "错误信息（失败时）" },
+                { "name": "pollingInterval", "type": "integer", "description": "轮询间隔ID，用于清理" }
+              ],
+              "behavior": [
+                "mount时根据taskId发起WebSocket连接订阅实时状态",
+                "WebSocket不可用时降级为轮询（每3秒GET /api/v1/deploy/:taskId）",
+                "收到状态更新时刷新progress、currentStep和logs",
+                "status变为success时触发onComplete并清理轮询",
+                "status变为failed时触发onError并展示错误详情",
+                "部署完成后提供「查看版本历史」和「返回部署页」操作按钮"
+              ],
+              "edge_cases": [
+                "WebSocket连接失败自动切换为HTTP轮询",
+                "轮询中网络中断恢复后自动续连",
+                "部署持续时间超过30分钟时展示超时警告（不断连）",
+                "日志行数量超过1000行时自动折叠最早的部分",
+                "组件卸载前清理WebSocket连接和轮询定时器",
+                "部署成功后进度条以动画方式从当前值过渡到100%"
+              ],
+              "children": [
+                {
+                  "name": "LogViewer",
+                  "path": "/projects/:projectId/deploy/:taskId",
+                  "description": "实时日志查看器组件，支持自动滚动和高亮显示关键日志行",
+                  "props": [
+                    { "name": "logs", "type": "string[]", "required": true, "description": "日志行列表" },
+                    { "name": "maxLines", "type": "integer", "required": false, "description": "最大显示行数，默认1000行" },
+                    { "name": "status", "type": "string", "required": true, "description": "当前部署状态，用于控制滚动行为" }
+                  ],
+                  "events": [],
+                  "state": [
+                    { "name": "autoScroll", "type": "boolean", "description": "是否自动滚动到底部" },
+                    { "name": "filterKeyword", "type": "string", "description": "日志过滤关键词" },
+                    { "name": "filterLevel", "type": "string", "description": "日志级别过滤（ALL/ERROR/WARN/INFO）" }
+                  ],
+                  "behavior": [
+                    "新日志追加时如果autoScroll为true则自动滚动到底部",
+                    "用户手动滚动到非底部位置时暂停自动滚动",
+                    "手动滚动回底部后恢复自动滚动",
+                    "错误级别日志行以红色高亮背景显示",
+                    "支持按关键词搜索过滤日志行",
+                    "支持复制选中日志内容"
+                  ],
+                  "edge_cases": [
+                    "日志行数超过maxLines时移除最早的行维持上限",
+                    "日志中ANSI颜色码在前端正确渲染为颜色",
+                    "大量日志（每秒>50行）时启用虚拟滚动保证性能",
+                    "日志内容包含敏感信息（如密码）时前端不做额外过滤（后端负责脱敏）"
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "VersionHistory",
+              "path": "/projects/:projectId/history",
+              "description": "版本历史列表页面，分页展示项目的所有部署版本记录并支持回滚操作",
+              "props": [
+                { "name": "projectId", "type": "string", "required": true, "description": "项目ID" }
+              ],
+              "events": [
+                { "name": "onRollback", "payload_type": "object (版本记录)" }
+              ],
+              "state": [
+                { "name": "versions", "type": "VersionRecord[]", "description": "版本记录列表" },
+                { "name": "total", "type": "integer", "description": "总记录数" },
+                { "name": "page", "type": "integer", "description": "当前页码" },
+                { "name": "pageSize", "type": "integer", "description": "每页条数" },
+                { "name": "loading", "type": "boolean", "description": "加载状态" },
+                { "name": "filterEnvironment", "type": "string", "description": "按环境筛选" },
+                { "name": "detailVisible", "type": "boolean", "description": "版本详情Drawer显隐" },
+                { "name": "selectedVersion", "type": "object", "description": "当前选中的版本记录" },
+                { "name": "rollbackConfirmVisible", "type": "boolean", "description": "回滚确认Modal显隐" }
+              ],
+              "behavior": [
+                "mount时请求版本历史第一页数据",
+                "页码/筛选条件变化时重新请求数据",
+                "每条版本记录展示版本号、环境、部署人、状态（active/inactive/rolled_back）、部署时间",
+                "点击版本行打开VersionDetail抽屉",
+                "点击「回滚到此版本」按钮打开RollbackConfirm确认框",
+                "回滚成功或失败后刷新版本历史列表"
+              ],
+              "edge_cases": [
+                "项目无部署历史时展示空状态并引导去部署页",
+                "筛选条件无结果时展示空状态并清除筛选的快捷操作",
+                "版本状态为rolled_back时在UI中标记灰色不可回滚",
+                "版本号格式不统一时按部署时间倒序排列",
+                "翻页过程中触发回滚操作，完成后重置到第一页确保数据一致性"
+              ],
+              "children": [
+                {
+                  "name": "VersionDetail",
+                  "path": "/projects/:projectId/history",
+                  "description": "版本详情抽屉组件，展示单个版本的完整部署信息",
+                  "props": [
+                    { "name": "visible", "type": "boolean", "required": true, "description": "Drawer显隐" },
+                    { "name": "version", "type": "VersionRecord", "required": true, "description": "版本记录数据" },
+                    { "name": "onClose", "type": "() => void", "required": true, "description": "关闭回调" }
+                  ],
+                  "events": [
+                    { "name": "onRollback", "payload_type": "string (版本号)" }
+                  ],
+                  "state": [],
+                  "behavior": [
+                    "打开时展示版本完整信息：版本号、环境、部署人、部署时间、状态、部署说明",
+                    "提供「回滚到此版本」按钮（仅当版本状态为active时可用）",
+                    "点击回滚按钮触发onRollback事件"
+                  ],
+                  "edge_cases": [
+                    "版本数据中某些字段为空时展示占位符「-」",
+                    "部署说明超长时展开/收起显示"
+                  ]
+                },
+                {
+                  "name": "RollbackConfirm",
+                  "path": "/projects/:projectId/history",
+                  "description": "回滚确认对话框组件，展示回滚信息并要求用户二次确认",
+                  "props": [
+                    { "name": "visible", "type": "boolean", "required": true, "description": "Modal显隐" },
+                    { "name": "version", "type": "VersionRecord", "required": true, "description": "目标回滚版本" },
+                    { "name": "onConfirm", "type": "(version: string) => void", "required": true, "description": "确认回滚回调" },
+                    { "name": "onCancel", "type": "() => void", "required": true, "description": "取消回滚回调" }
+                  ],
+                  "events": [
+                    { "name": "onRollback", "payload_type": "string (目标版本号)" }
+                  ],
+                  "state": [
+                    { "name": "submitting", "type": "boolean", "description": "回滚提交中状态" },
+                    { "name": "error", "type": "string", "description": "回滚API错误信息" }
+                  ],
+                  "behavior": [
+                    "打开时展示回滚目标版本号、当前版本号、环境名称等关键信息",
+                    "展示回滚操作的风险提示（服务将短暂中断）",
+                    "用户在确认框中输入目标版本号的后四位以确认操作",
+                    "确认后调用 POST /api/v1/deploy/:taskId/rollback 发起回滚",
+                    "回滚任务创建成功后关闭确认框并跳转到回滚任务进度页"
+                  ],
+                  "edge_cases": [
+                    "目标版本与当前版本相同时提示无需回滚并禁用确认按钮",
+                    "回滚API返回失败时展示错误详情并允许取消",
+                    "有并发回滚任务进行中时提示冲突",
+                    "提交过程中禁用关闭按钮和取消操作以防误操作"
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "AuditLogPage",
+              "path": "/audit-logs",
+              "description": "审计日志查询页面，提供多维度筛选和操作日志查看功能",
+              "props": [],
+              "events": [],
+              "state": [
+                { "name": "logs", "type": "AuditLogEntry[]", "description": "日志条目列表" },
+                { "name": "total", "type": "integer", "description": "总记录数" },
+                { "name": "page", "type": "integer", "description": "当前页码" },
+                { "name": "pageSize", "type": "integer", "description": "每页条数" },
+                { "name": "loading", "type": "boolean", "description": "加载状态" },
+                { "name": "filters", "type": "object", "description": "筛选条件：startTime, endTime, operator, actionType" }
+              ],
+              "behavior": [
+                "mount时加载审计日志第一页数据（默认最近7天）",
+                "筛选条件变化时重置到第一页并重新请求",
+                "支持时间范围、操作人、操作类型的多维度组合筛选",
+                "每条日志展示时间戳、操作人、操作描述、操作对象、结果、详情、来源IP",
+                "提供日志导出功能（CSV格式，受最大导出条数限制）"
+              ],
+              "edge_cases": [
+                "筛选时间范围超过30天时提示性能警告",
+                "组合筛选无结果时展示空状态并提供清除所有筛选的快捷操作",
+                "加载大量日志（>10000条）时分页性能优化",
+                "日志详情字段过长时在表格中截断并在tooltip中完整显示"
+              ],
+              "children": [
+                {
+                  "name": "AuditLogFilter",
+                  "path": "/audit-logs",
+                  "description": "审计日志多维筛选器组件，提供时间范围、操作人、操作类型的筛选输入",
+                  "props": [
+                    { "name": "filters", "type": "object", "required": true, "description": "当前筛选条件" },
+                    { "name": "onChange", "type": "(filters: object) => void", "required": true, "description": "筛选条件变化回调" },
+                    { "name": "onSearch", "type": "() => void", "required": true, "description": "触发搜索回调" },
+                    { "name": "onReset", "type": "() => void", "required": true, "description": "重置筛选条件回调" }
+                  ],
+                  "events": [
+                    { "name": "onFilterChange", "payload_type": "object (新筛选条件)" },
+                    { "name": "onReset", "payload_type": "void" }
+                  ],
+                  "state": [
+                    { "name": "startTime", "type": "string", "description": "起始时间（ISO8601）" },
+                    { "name": "endTime", "type": "string", "description": "结束时间（ISO8601）" },
+                    { "name": "operator", "type": "string", "description": "操作人筛选" },
+                    { "name": "actionType", "type": "string", "description": "操作类型筛选" },
+                    { "name": "actionTypeOptions", "type": "string[]", "description": "操作类型下拉选项列表" }
+                  ],
+                  "behavior": [
+                    "提供DatePicker选择时间范围（默认最近7天）",
+                    "操作人输入框支持输入和从历史记录下拉选择",
+                    "操作类型为下拉选择框，选项从后端配置接口获取",
+                    "点击「搜索」按钮触发onSearch回调开始查询",
+                    "点击「重置」按钮清除所有筛选条件恢复默认"
+                  ],
+                  "edge_cases": [
+                    "开始时间晚于结束时间时提示时间范围错误并禁止搜索",
+                    "操作人输入超过50字符时截断",
+                    "操作类型选项加载失败时展示静态默认选项列表"
+                  ]
+                },
+                {
+                  "name": "AuditLogTable",
+                  "path": "/audit-logs",
+                  "description": "审计日志表格组件，展示日志条目并支持排序和分页",
+                  "props": [
+                    { "name": "logs", "type": "AuditLogEntry[]", "required": true, "description": "日志条目数据" },
+                    { "name": "loading", "type": "boolean", "required": true, "description": "加载状态" },
+                    { "name": "total", "type": "integer", "required": true, "description": "总条数" },
+                    { "name": "page", "type": "integer", "required": true, "description": "当前页码" },
+                    { "name": "pageSize", "type": "integer", "required": true, "description": "每页条数" }
+                  ],
+                  "events": [
+                    { "name": "onPageChange", "payload_type": "object {page, pageSize}" },
+                    { "name": "onSort", "payload_type": "object {column, order}" }
+                  ],
+                  "state": [
+                    { "name": "sortedColumn", "type": "string", "description": "当前排序列" },
+                    { "name": "sortOrder", "type": "string", "description": "排序方向（ascend/descend）" },
+                    { "name": "expandedRow", "type": "string", "description": "展开的行ID，查看完整详情" }
+                  ],
+                  "behavior": [
+                    "表格列：时间戳、操作人、操作类型、操作对象、结果、来源IP",
+                    "结果列以标签样式展示（success绿色/failure红色）",
+                    "支持点击行展开查看完整详情",
+                    "支持按时间戳列排序",
+                    "分页变化时触发onPageChange事件"
+                  ],
+                  "edge_cases": [
+                    "日志条目超过100页时隐藏超出页码以保持性能",
+                    "单行详情过长时限制最大高度并启用内部滚动",
+                    "表格数据为空时展示空状态插槽"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "state_design": {
+    "global": [
+      {
+        "name": "UserAuthStore",
+        "type": "GlobalStore",
+        "description": "全局认证状态，包含JWT token、用户信息和角色列表，应用初始化时加载，token过期时清空",
+        "consumers": ["App", "Layout", "Sidebar", "AuditLogPage", "ProjectList"]
+      },
+      {
+        "name": "ProjectStore",
+        "type": "GlobalStore",
+        "description": "全局项目上下文，包含项目列表和当前选中项目ID，项目切换时更新全局状态",
+        "consumers": ["Layout", "ProjectSwitcher", "Sidebar", "EnvironmentList", "DeployForm", "VersionHistory"]
+      },
+      {
+        "name": "DeployStore",
+        "type": "GlobalStore",
+        "description": "全局部署任务状态映射，部署进度页启动时写入，Dashboard和进度页读取轮询结果",
+        "consumers": ["Dashboard", "DeployProgress", "DeployForm"]
+      }
+    ],
+    "caching_strategy": "用户认证信息（token+角色）持久化到localStorage，页面刷新后自动恢复。项目列表缓存5分钟，切换项目时失效。部署日志仅保存在运行时DeployStore中，页面刷新后重新请求。环境列表缓存2分钟，且在当前项目ID不变时复用。审计日志不做前端缓存，每次查询重新请求。侧边栏折叠状态持久化到localStorage。"
+  },
+  "route_design": [
+    {
+      "path": "/",
+      "page": "Dashboard",
+      "title": "仪表盘",
+      "auth": "all",
+      "layout": "default"
+    },
+    {
+      "path": "/projects",
+      "page": "ProjectList",
+      "title": "项目管理",
+      "auth": "admin,operator",
+      "layout": "default"
+    },
+    {
+      "path": "/projects/:projectId/environments",
+      "page": "EnvironmentList",
+      "title": "环境配置",
+      "auth": "admin,operator",
+      "layout": "default"
+    },
+    {
+      "path": "/projects/:projectId/environments/:envId/ssh",
+      "page": "SSHKeyConfig",
+      "title": "SSH密钥配置",
+      "auth": "admin",
+      "layout": "default"
+    },
+    {
+      "path": "/projects/:projectId/deploy",
+      "page": "DeployForm",
+      "title": "一键部署",
+      "auth": "admin,operator",
+      "layout": "default"
+    },
+    {
+      "path": "/projects/:projectId/deploy/:taskId",
+      "page": "DeployProgress",
+      "title": "部署进度",
+      "auth": "all",
+      "layout": "default"
+    },
+    {
+      "path": "/projects/:projectId/history",
+      "page": "VersionHistory",
+      "title": "部署历史",
+      "auth": "all",
+      "layout": "default"
+    },
+    {
+      "path": "/audit-logs",
+      "page": "AuditLogPage",
+      "title": "审计日志",
+      "auth": "admin",
+      "layout": "default"
+    }
+  ],
+  "interaction_flows": [
+    {
+      "name": "一键部署流程",
+      "description": "用户在Web控制台完成从选择项目、选择环境、上传文件到触发部署的完整操作流程",
+      "steps": [
+        "步骤1: 在顶部项目切换器中选择目标项目，Sidebar导航刷新出项目级菜单",
+        "步骤2: 点击侧边栏「一键部署」进入 /projects/:projectId/deploy 页面",
+        "步骤3: 页面自动加载当前项目的可用环境列表，默认选中首个环境",
+        "步骤4: 通过FileUploader拖拽或点击上传部署文件（可执行文件或构建产物）",
+        "步骤5: 可选填写版本号（为空自动生成）和部署说明",
+        "步骤6: 系统校验目标环境已绑定有效SSH密钥，否则展示警告",
+        "步骤7: 点击「部署」按钮，校验通过后调用 POST /api/v1/deploy",
+        "步骤8: 部署任务创建成功，自动跳转到 /projects/:projectId/deploy/:taskId 进度页",
+        "步骤9: 进度页通过WebSocket/轮询实时展示进度百分比、当前步骤和逐行日志",
+        "步骤10: 部署完成展示结果摘要（成功/失败），提供「查看版本历史」和「重新部署」操作"
+      ]
+    },
+    {
+      "name": "版本回滚流程",
+      "description": "用户在版本历史页面选择目标版本并执行回滚操作的完整流程",
+      "steps": [
+        "步骤1: 点击侧边栏「部署历史」进入 /projects/:projectId/history 页面",
+        "步骤2: 页面分页展示历史版本记录列表（版本号、环境、部署人、状态、时间）",
+        "步骤3: 可按环境筛选版本列表",
+        "步骤4: 找到目标回滚版本，点击「回滚到此版本」按钮",
+        "步骤5: 弹出RollbackConfirm确认对话框，展示回滚风险提示和目标版本信息",
+        "步骤6: 用户在确认框中输入目标版本号后四位确认操作",
+        "步骤7: 确认后调用 POST /api/v1/deploy/:taskId/rollback 发起回滚",
+        "步骤8: 回滚任务创建成功后跳转到回滚任务进度页（复用DeployProgress组件）",
+        "步骤9: 回滚完成后自动刷新版本历史列表（重置到第一页）",
+        "步骤10: 回滚版本在列表中状态标记为rolled_back（灰色不可再回滚）"
+      ]
+    },
+    {
+      "name": "项目切换流程",
+      "description": "用户在顶部项目切换器中选择另一个项目，全局上下文随之更新的流程",
+      "steps": [
+        "步骤1: 用户点击顶部栏的项目切换器按钮，展开项目下拉列表",
+        "步骤2: 下拉列表展示用户有权限的所有项目（支持搜索过滤）",
+        "步骤3: 用户选择一个目标项目",
+        "步骤4: 更新全局ProjectStore.currentProjectId和currentProject",
+        "步骤5: 侧边栏导航刷新为当前项目的相关菜单（环境配置、部署、历史）",
+        "步骤6: 如果当前页面是项目级页面（环境/部署/历史），自动跳转到新项目的对应路由",
+        "步骤7: 如果当前页面是全局页面（仪表盘/审计日志），保持页面但重新加载涉及项目的数据"
+      ]
+    },
+    {
+      "name": "环境配置与SSH密钥绑定流程",
+      "description": "管理员为项目配置部署环境并绑定SSH密钥的完整流程",
+      "steps": [
+        "步骤1: 选择目标项目后点击侧边栏「环境配置」进入环境列表页",
+        "步骤2: 点击「添加环境」按钮打开EnvironmentForm Modal",
+        "步骤3: 填写环境名称、选择环境类型（测试/灰度/正式）、填写服务器地址和端口",
+        "步骤4: 保存环境信息，环境列表刷新展示新环境（密钥状态为未配置）",
+        "步骤5: 点击新环境的「配置SSH」按钮打开SSHKeyConfig Modal",
+        "步骤6: 输入密钥名称、选择密钥类型（RSA/ECDSA/ED25519）",
+        "步骤7: 粘贴密钥内容或通过文件上传导入密钥文件",
+        "步骤8: 点击「测试连接」按钮验证SSH连接有效性",
+        "步骤9: 测试成功后保存密钥，环境列表中的密钥状态更新为已验证",
+        "步骤10: 此时该环境可用于一键部署"
+      ]
+    }
+  ],
+  "api_integration": [
+    {
+      "page": "Dashboard",
+      "endpoint": "GET /api/v1/deploy/:taskId",
+      "maps_to": "Dashboard.recentDeployments（最近部署状态轮询）"
+    },
+    {
+      "page": "DeployForm",
+      "endpoint": "POST /api/v1/deploy",
+      "maps_to": "DeployForm.onDeployStart → taskId（触发一键部署）"
+    },
+    {
+      "page": "DeployProgress",
+      "endpoint": "GET /api/v1/deploy/:taskId",
+      "maps_to": "DeployProgress.status/progress/currentStep/logs（轮询部署进度）"
+    },
+    {
+      "page": "RollbackConfirm",
+      "endpoint": "POST /api/v1/deploy/:taskId/rollback",
+      "maps_to": "RollbackConfirm → rollback_task_id（发起版本回滚）"
+    },
+    {
+      "page": "VersionHistory",
+      "endpoint": "GET /api/v1/projects/:projectId/versions",
+      "maps_to": "VersionHistory.versions/total/pagination（版本历史列表）"
+    },
+    {
+      "page": "AuditLogPage",
+      "endpoint": "GET /api/v1/audit-logs",
+      "maps_to": "AuditLogPage.logs/total/pagination/filters（审计日志查询）"
+    }
+  ]
+}
