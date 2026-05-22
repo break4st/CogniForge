@@ -1,0 +1,632 @@
+{
+  "meta": {
+    "doc_id": "sad-002",
+    "type": "sad",
+    "title": "自动化部署系统",
+    "author": "architect_agent",
+    "created": "2026-05-22 17:33"
+  },
+  "system_overview": {
+    "description": "实现将打包好的可执行文件自动化部署到指定远程服务器的功能。支持用户自定义多套部署环境（如测试线、灰度线、正式线），每套环境可通过密钥配置安全连接，部署时自动在远程服务器上创建版本文件夹并生成执行脚本，实现一键式自动化部署。用户可创建和管理多个项目，每个项目拥有独立的部署环境配置，支持在项目间灵活切换，满足多项目并行管理的需求。",
+    "roles": [
+      {
+        "name": "运维人员",
+        "permissions": [
+          "在测试环境一键部署最新版本",
+          "查看部署实时日志和结果反馈"
+        ]
+      },
+      {
+        "name": "项目经理",
+        "permissions": [
+          "管理多个项目的部署配置",
+          "在项目间切换",
+          "统一管理多个项目的部署流程"
+        ]
+      },
+      {
+        "name": "开发人员",
+        "permissions": [
+          "将打包好的可执行文件部署到灰度环境",
+          "在小范围用户中验证新功能"
+        ]
+      },
+      {
+        "name": "部署负责人",
+        "permissions": [
+          "配置正式环境的SSH密钥和连接参数",
+          "确保正式环境的安全连接和稳定部署"
+        ]
+      }
+    ]
+  },
+  "architecture": {
+    "style": "前后端分离分层架构",
+    "description": "系统采用前后端分离架构，前端提供 Web 管理控制台，后端按业务领域划分为项目管理、环境配置、部署编排、密钥管理、审计日志等独立服务模块。通过 API 网关统一路由和鉴权，部署任务通过消息队列异步处理以提升响应速度，密钥凭据加密存储保障安全性。",
+    "layers": [
+      {
+        "name": "表现层",
+        "components": [
+          "Web 管理控制台"
+        ]
+      },
+      {
+        "name": "网关层",
+        "components": [
+          "API 网关"
+        ]
+      },
+      {
+        "name": "服务层",
+        "components": [
+          "项目服务",
+          "环境配置服务",
+          "部署编排服务",
+          "密钥管理服务",
+          "审计日志服务"
+        ]
+      },
+      {
+        "name": "基础设施层",
+        "components": [
+          "关系型数据库",
+          "消息队列",
+          "缓存"
+        ]
+      }
+    ],
+    "connections": [
+      {
+        "protocol": "HTTPS/REST（表现层→网关层）"
+      },
+      {
+        "protocol": "REST（网关层→服务层）"
+      },
+      {
+        "protocol": "AMQP + SQL + Redis（服务层→基础设施层）"
+      },
+      {
+        "protocol": "SSH/SFTP（服务层→远程服务器）"
+      }
+    ],
+    "features": [
+      "前后端分离独立部署",
+      "API 网关统一认证鉴权和路由",
+      "按业务领域拆分服务，独立演进",
+      "部署任务异步化提升响应速度",
+      "SSH 密钥/密码加密存储（AES-256）",
+      "连接预检机制提前发现异常",
+      "实时日志推送（WebSocket）",
+      "全流程审计日志可追溯",
+      "多项目多环境灵活切换"
+    ]
+  },
+  "tech_stack": {
+    "backend": {
+      "language": "Go",
+      "framework": "Go Gin / Hertz"
+    },
+    "frontend": {
+      "framework": "Vue 3",
+      "ui_library": "Element Plus"
+    },
+    "database": "PostgreSQL 15+",
+    "cache": "Redis 7+",
+    "mq": "RabbitMQ",
+    "websocket": "WebSocket (gorilla/websocket)",
+    "ssh": "golang.org/x/crypto/ssh",
+    "auth": "JWT + RBAC"
+  },
+  "components": [
+    {
+      "name": "Web 管理控制台",
+      "type": "frontend",
+      "description": "提供项目、环境、部署任务的图形化管理界面",
+      "responsibilities": [
+        "项目 CRUD 操作界面",
+        "部署环境配置管理界面",
+        "一键部署操作入口",
+        "部署日志和结果实时展示",
+        "连接验证触发和结果展示",
+        "审计日志检索展示"
+      ]
+    },
+    {
+      "name": "API 网关",
+      "type": "gateway",
+      "description": "系统统一入口，负责请求路由、认证鉴权、流量控制",
+      "responsibilities": [
+        "JWT 身份认证和 RBAC 权限校验",
+        "请求路由转发至对应微服务",
+        "请求限流和超时控制",
+        "跨域处理（CORS）",
+        "网关层访问日志记录"
+      ]
+    },
+    {
+      "name": "项目服务",
+      "type": "service",
+      "description": "管理项目生命周期和元数据，提供项目维度隔离",
+      "responsibilities": [
+        "创建/编辑/删除项目",
+        "项目列表查询与详情获取",
+        "项目与部署环境关联管理",
+        "项目间数据隔离与权限控制"
+      ]
+    },
+    {
+      "name": "环境配置服务",
+      "type": "service",
+      "description": "管理每套部署环境的连接参数和配置信息",
+      "responsibilities": [
+        "环境创建/编辑/删除",
+        "环境类型管理（测试/灰度/正式）",
+        "连接参数（主机、端口、用户名）维护",
+        "环境变量配置管理",
+        "环境与项目和凭据的关联维护"
+      ]
+    },
+    {
+      "name": "部署编排服务",
+      "type": "service",
+      "description": "自动化部署核心调度，编排完整部署流程",
+      "responsibilities": [
+        "从消息队列消费部署请求",
+        "编排部署流程（上传文件/创建目录/生成脚本/执行）",
+        "通过 SSH 连接远程服务器执行操作",
+        "实时推送部署进度和日志（WebSocket）",
+        "部署结果持久化和状态更新"
+      ]
+    },
+    {
+      "name": "密钥管理服务",
+      "type": "service",
+      "description": "安全管理 SSH 密钥和密码凭据",
+      "responsibilities": [
+        "SSH 密钥对生成和导入",
+        "密码认证凭据管理",
+        "凭据的 AES-256 加密存储",
+        "连通性验证（预检机制）",
+        "部署时密钥安全注入（临时解密）"
+      ]
+    },
+    {
+      "name": "审计日志服务",
+      "type": "service",
+      "description": "记录所有关键操作的不可变审计日志",
+      "responsibilities": [
+        "记录用户操作日志",
+        "记录部署全链路事件",
+        "审计日志持久化（仅追加，不可修改删除）",
+        "多维度检索（时间/操作类型/用户/项目）"
+      ]
+    },
+    {
+      "name": "关系型数据库",
+      "type": "database",
+      "description": "存储项目、环境、部署记录、审计日志等结构化数据",
+      "responsibilities": [
+        "项目数据持久化",
+        "环境配置数据持久化",
+        "部署记录持久化",
+        "审计日志持久化（仅追加）",
+        "密钥元数据存储（密文）"
+      ]
+    },
+    {
+      "name": "消息队列",
+      "type": "infrastructure",
+      "description": "承载异步部署任务，解耦请求发起方与执行方",
+      "responsibilities": [
+        "部署任务异步投递",
+        "任务消费者负载均衡",
+        "任务失败重试机制"
+      ]
+    },
+    {
+      "name": "缓存",
+      "type": "infrastructure",
+      "description": "提供会话缓存和临时状态存储",
+      "responsibilities": [
+        "JWT 黑名单缓存",
+        "项目和环境列表缓存",
+        "WebSocket 连接状态管理",
+        "部署进度临时存储"
+      ]
+    }
+  ],
+  "contracts": [
+    {
+      "interface": "用户认证接口",
+      "provider": "API 网关",
+      "consumers": [
+        "Web 管理控制台"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/v1/auth/login",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "username": "string",
+          "password": "string"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "token": "string (JWT)",
+          "expires_in": "int (seconds)"
+        }
+      },
+      "description": "用户登录认证，返回 JWT Token"
+    },
+    {
+      "interface": "项目列表查询",
+      "provider": "项目服务",
+      "consumers": [
+        "API 网关"
+      ],
+      "type": "REST",
+      "endpoint": "GET /api/v1/projects",
+      "request": {
+        "path_params": [],
+        "query_params": {
+          "page": "int",
+          "page_size": "int",
+          "search": "string (optional)"
+        },
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "total": "int",
+          "items": [
+            {
+              "id": "string (UUID)",
+              "name": "string",
+              "description": "string",
+              "created_at": "string (ISO8601)"
+            }
+          ]
+        }
+      },
+      "description": "查询当前用户有权限的项目列表，支持分页和搜索"
+    },
+    {
+      "interface": "创建项目",
+      "provider": "项目服务",
+      "consumers": [
+        "API 网关"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/v1/projects",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "name": "string",
+          "description": "string"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string (UUID)",
+          "name": "string",
+          "description": "string",
+          "created_at": "string (ISO8601)"
+        }
+      },
+      "description": "创建新项目，返回项目详情"
+    },
+    {
+      "interface": "环境配置管理",
+      "provider": "环境配置服务",
+      "consumers": [
+        "API 网关"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/v1/projects/{projectId}/environments",
+      "request": {
+        "path_params": [
+          "projectId: string (UUID)"
+        ],
+        "query_params": [],
+        "body": {
+          "name": "string",
+          "type": "string (test|staging|production)",
+          "host": "string",
+          "port": "int",
+          "username": "string",
+          "credential_id": "string (UUID)",
+          "env_vars": "object (optional)"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string (UUID)",
+          "name": "string",
+          "type": "string",
+          "host": "string",
+          "port": "int",
+          "username": "string",
+          "credential_id": "string (UUID)",
+          "status": "string (pending|verified|unreachable)"
+        }
+      },
+      "description": "创建部署环境配置，关联凭据 ID"
+    },
+    {
+      "interface": "触发一键部署",
+      "provider": "部署编排服务",
+      "consumers": [
+        "API 网关"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/v1/deployments",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "project_id": "string (UUID)",
+          "environment_id": "string (UUID)",
+          "version": "string",
+          "artifact_path": "string (服务端可执行文件路径)",
+          "timeout_seconds": "int (optional, default 300)"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "task_id": "string (UUID)",
+          "status": "string (pending)",
+          "message": "string"
+        }
+      },
+      "description": "触发一次异步部署任务，返回 task_id 用于轮询/WebSocket 跟踪进度"
+    },
+    {
+      "interface": "部署日志实时推送",
+      "provider": "部署编排服务",
+      "consumers": [
+        "Web 管理控制台"
+      ],
+      "type": "WS",
+      "endpoint": "WS /api/v1/ws/deploy/{taskId}",
+      "request": {
+        "path_params": [
+          "taskId: string (UUID)"
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 101,
+        "body": {
+          "frame_type": "string (log|status|error|complete)",
+          "data": "string",
+          "timestamp": "string (ISO8601)"
+        }
+      },
+      "description": "WebSocket 连接，实时推送部署步骤的日志和状态变更"
+    },
+    {
+      "interface": "凭据创建（SSH 密钥）",
+      "provider": "密钥管理服务",
+      "consumers": [
+        "API 网关"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/v1/credentials",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "name": "string",
+          "type": "string (ssh_key|password)",
+          "value": "string (私钥内容 或 密码)",
+          "passphrase": "string (optional, SSH 密钥口令)"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string (UUID)",
+          "name": "string",
+          "type": "string",
+          "fingerprint": "string (SSH 公钥指纹, 仅密钥类型)",
+          "created_at": "string (ISO8601)"
+        }
+      },
+      "description": "创建 SSH 密钥或密码凭据，服务端 AES-256 加密后存储，明文不落盘"
+    },
+    {
+      "interface": "连通性验证",
+      "provider": "密钥管理服务",
+      "consumers": [
+        "API 网关"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/v1/environments/{envId}/verify-connection",
+      "request": {
+        "path_params": [
+          "envId: string (UUID)"
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "reachable": "boolean",
+          "latency_ms": "int",
+          "error": "string (optional)",
+          "checked_at": "string (ISO8601)"
+        }
+      },
+      "description": "验证环境连通性，服务临时解密凭据建立 SSH 会话执行预检命令后立即销毁"
+    },
+    {
+      "interface": "审计日志写入",
+      "provider": "审计日志服务",
+      "consumers": [
+        "项目服务",
+        "环境配置服务",
+        "部署编排服务",
+        "密钥管理服务"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/v1/audit-logs",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "action": "string",
+          "actor": "string (用户名)",
+          "resource_type": "string (project|environment|deployment|credential)",
+          "resource_id": "string (UUID)",
+          "detail": "object",
+          "result": "string (success|failure)",
+          "client_ip": "string"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string (UUID)",
+          "created_at": "string (ISO8601)"
+        }
+      },
+      "description": "所有服务在内网调用此接口写入审计日志，日志仅追加不可修改删除"
+    },
+    {
+      "interface": "审计日志检索",
+      "provider": "审计日志服务",
+      "consumers": [
+        "API 网关"
+      ],
+      "type": "REST",
+      "endpoint": "GET /api/v1/audit-logs",
+      "request": {
+        "path_params": [],
+        "query_params": {
+          "start_time": "string (ISO8601, optional)",
+          "end_time": "string (ISO8601, optional)",
+          "action": "string (optional)",
+          "actor": "string (optional)",
+          "project_id": "string (UUID, optional)",
+          "page": "int",
+          "page_size": "int"
+        },
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "total": "int",
+          "items": [
+            {
+              "id": "string (UUID)",
+              "action": "string",
+              "actor": "string",
+              "resource_type": "string",
+              "resource_id": "string (UUID)",
+              "detail": "object",
+              "result": "string",
+              "client_ip": "string",
+              "created_at": "string (ISO8601)"
+            }
+          ]
+        }
+      },
+      "description": "按多维度条件检索审计日志"
+    },
+    {
+      "interface": "部署状态查询",
+      "provider": "部署编排服务",
+      "consumers": [
+        "API 网关"
+      ],
+      "type": "REST",
+      "endpoint": "GET /api/v1/deployments/{taskId}",
+      "request": {
+        "path_params": [
+          "taskId: string (UUID)"
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "task_id": "string (UUID)",
+          "project_id": "string (UUID)",
+          "environment_id": "string (UUID)",
+          "version": "string",
+          "status": "string (pending|running|success|failed)",
+          "started_at": "string (ISO8601, optional)",
+          "completed_at": "string (ISO8601, optional)",
+          "error_message": "string (optional)"
+        }
+      },
+      "description": "查询部署任务的当前状态和结果"
+    }
+  ],
+  "data_flow": [
+    {
+      "name": "一键部署流程",
+      "steps": [
+        "用户在前端选择项目和环境，上传可执行文件并指定版本号",
+        "前端调用部署触发 API，请求经 API 网关路由至部署编排服务",
+        "部署编排服务创建部署任务记录（status: pending），写入数据库",
+        "部署编排服务将任务消息发布到消息队列，立即返回 task_id（HTTP 202）",
+        "消费者从消息队列取出任务开始执行",
+        "调用密钥管理服务获取解密后的 SSH 凭据",
+        "通过 SSH 连接到远程目标服务器",
+        "在远程服务器创建版本目录（如 /opt/app/{project}/{version}/）",
+        "通过 SFTP 上传可执行文件到版本目录",
+        "基于模板生成部署执行脚本并上传至服务器",
+        "设置执行权限并运行脚本",
+        "每一步日志通过 WebSocket 实时推送给前端",
+        "部署完成更新状态为 success/failed",
+        "调用审计日志服务写入完整审计记录"
+      ]
+    },
+    {
+      "name": "项目管理与多环境配置流程",
+      "steps": [
+        "用户创建项目（名称和描述），请求经网关路由至项目服务",
+        "项目服务创建项目记录持久化到数据库",
+        "用户在项目下添加多套部署环境（测试/灰度/正式）",
+        "环境配置服务创建环境记录，关联凭据 ID",
+        "用户通过连通性验证接口预检环境连接状态",
+        "用户可在项目选择器间灵活切换上下文"
+      ]
+    },
+    {
+      "name": "安全凭据管理流程",
+      "steps": [
+        "用户选择凭据类型（SSH 密钥或密码）",
+        "SSH 密钥: 上传私钥内容或系统生成密钥对",
+        "密码: 输入远程服务器登录密码",
+        "密钥管理服务使用 AES-256 加密凭据后存储（明文不出库）",
+        "用户配置环境时关联已注册凭据",
+        "验证连通性时服务临时解密建立 SSH 会话执行预检命令",
+        "部署时编排服务通过密钥管理服务获取临时解密凭据"
+      ]
+    },
+    {
+      "name": "审计追溯流程",
+      "steps": [
+        "各服务在关键操作点调用审计日志服务记录操作",
+        "记录: 操作人、时间、类型、对象、请求详情、结果",
+        "部署操作额外记录: 目标环境、版本、服务器、执行时长",
+        "审计日志追加写入数据库（不可修改或删除）",
+        "授权用户通过管理界面按多维条件检索审计日志"
+      ]
+    }
+  ]
+}
