@@ -328,6 +328,7 @@
     <a href="#s12"><span class="num">12</span>项目源码结构</a>
     <a href="#s13"><span class="num">13</span>Multi-Module MDE</a>
     <a href="#s14"><span class="num">14</span>三层接口一致性</a>
+    <a href="#s15"><span class="num">15</span>WBS 5步流水线</a>
   </div>
   <div class="sidebar-footer">Agentic + Doc-Driven<br>Claude Code Powered</div>
 </nav>
@@ -346,7 +347,7 @@
   </div>
   <div class="badges">
     <span class="badge accent">v2.1</span>
-    <span class="badge"><span class="dot g"></span> 13 张图表</span>
+    <span class="badge"><span class="dot g"></span> 15 张图表</span>
     <span class="badge"><span class="dot a"></span> 35+ 模块</span>
     <span class="badge"><span class="dot p"></span> 8 Agent 角色</span>
   </div>
@@ -518,7 +519,7 @@ graph TD
     <div class="icon-block" style="background:rgba(28,168,196,0.1)">&#x1F4E6;</div>
     <div class="info">
       <h2>4. Agent 委托执行时序</h2>
-      <div class="desc">Agent 只做编排：构建 prompt → 调用 Claude Code → 渲染 HTML → git commit。AI 工作全在 SDK 层</div>
+      <div class="desc">Agent 只做编排：构建 prompt → 调用 Claude Code → 校验（DesignAgent 专属）→ 渲染 HTML → git commit。lld_validator 校验失败自动重试（最多 2 次）</div>
       <div class="src">agents/base.py &middot; agents/pm_agent.py &middot; llm/claude_code_adapter.py</div>
     </div>
   </div>
@@ -549,6 +550,16 @@ sequenceDiagram
     SDK-->>AD: 最终响应
     AD-->>A: LLMResponse(content, usage)
     A->>FS: 检查 JSON 文件存在
+    opt DesignAgent (LLD)
+        A->>FS: lld_validator.validate_lld_json()
+        alt 校验失败
+            FS-->>A: 反馈缺失项
+            A->>AD: 重试修正 prompt（最多 2 次）
+            AD->>SDK: 重新生成
+        else 校验通过
+            A->>WR: wiki_renderer.render_file(json_path)
+        end
+    end
     A->>WR: wiki_renderer.render_file(json_path)
     WR->>FS: 写入 HTML
     A->>G: git_stage_and_commit(files)
@@ -711,7 +722,7 @@ stateDiagram-v2
     <div class="icon-block" style="background:rgba(212,149,11,0.1)">&#x1F4C4;</div>
     <div class="info">
       <h2>7. Wiki 双格式文档渲染</h2>
-      <div class="desc">Claude Code 生成 JSON（Agent Format），WikiRenderer 读取 JSON 按 <code>meta.type</code> 分发渲染为自包含 HTML</div>
+      <div class="desc">Claude Code 生成 JSON（Agent Format），WikiRenderer 通过 <code>load_json_with_repair()</code> 容错读取，按 <code>meta.type</code> + <code>meta.module_type</code> 分发渲染为自包含 HTML</div>
       <div class="src">wiki/wiki_renderer.py : 265 – 315</div>
     </div>
   </div>
@@ -726,8 +737,9 @@ graph LR
     end
 
     subgraph RF["WikiRenderer.render_file()"]
-        R1["① 读取 JSON"]:::r
-        R2["② 提取 meta.type"]:::r
+        R0["⓪ load_json_with_repair()<br/>状态机修复 JSON 字符串内<br/>未转义引号，容错读取"]:::repair
+        R1["① 解析 JSON"]:::r
+        R2["② 提取 meta.type<br/>+ module_type"]:::r
         R3["③ render_to_html() 分发<br/>_render_prd / _render_sad<br/>_render_lld / _render_report<br/>_render_test_case<br/>_render_deploy / _render_adr"]:::r
         R4["④ 注入 _SHARED_CSS<br/>暗色主题 · 响应式 · 打印"]:::r
     end
@@ -737,7 +749,7 @@ graph LR
         U2["👤 人工审批"]:::human
     end
 
-    A1 --> A2 --> R1 --> R2 --> R3 --> R4 --> U1 --> U2
+    A1 --> A2 --> R0 --> R1 --> R2 --> R3 --> R4 --> U1 --> U2
 
     style AF fill:#150d25,stroke:#7c5cf0,color:#b8a9ff
     style RF fill:#0d2025,stroke:#1ca8c4,color:#67e8f9
@@ -745,6 +757,7 @@ graph LR
 
     classDef agent fill:#1e1a3a,stroke:#7c5cf0,color:#b8a9ff,stroke-width:2px,rx:8,ry:8
     classDef json fill:#142238,stroke:#4d8af0,color:#93b4f5,stroke-width:1.5px,rx:6,ry:6
+    classDef repair fill:#2e2410,stroke:#d4950b,color:#fcd34d,stroke-width:1.5px,rx:6,ry:6
     classDef r fill:#142830,stroke:#1ca8c4,color:#67e8f9,stroke-width:1.5px,rx:6,ry:6
     classDef html fill:#143028,stroke:#2ea97a,color:#6ee7b7,stroke-width:1.5px,rx:6,ry:6
     classDef human fill:#2e2410,stroke:#d4950b,color:#fcd34d,stroke-width:2px,rx:8,ry:8
@@ -772,9 +785,10 @@ graph TD
     PRD["📋 PRD JSON"]:::out
     ARCH["🏗️ Architect"]:::arch
     SAD["📐 SAD JSON"]:::out
-    MDE["📏 Design Agent<br/>(读 contracts + 交叉 LLD)"]:::design
-    LLD["📝 LLD JSON<br/>(1 per module)"]:::out
+    MDE["📏 Design Agent<br/>自包含 prompt：SAD 定义<br/>+ contracts + 邻模块 LLD<br/>+ 拓扑 + tech_stack"]:::design
+    LLD["📝 LLD JSON<br/>(1 per module, 5 种<br/>module_type 专属 schema)"]:::out
     CTR["🔗 SAD contracts<br/>(接口契约约束)"]:::contract
+    LLD_EXIST["📂 已有 LLD JSONs<br/>(邻模块接口签名)"]:::data
     TL["🎯 Tech Lead"]:::tl
     WBS["📊 WBS JSON"]:::out
     DEV["💻 Dev Agent"]:::dev
@@ -789,7 +803,7 @@ graph TD
     PM --> PRD --> ARCH --> SAD
     SAD --> CTR --> MDE
     SAD --> MDE
-    PRD --> MDE
+    LLD_EXIST --> MDE
     MDE --> LLD
     PRD --> TL
     SAD --> TL
@@ -807,6 +821,7 @@ graph TD
     classDef arch fill:#1e1a3a,stroke:#7c5cf0,color:#b8a9ff,stroke-width:2px,rx:8,ry:8
     classDef design fill:#1e1a3a,stroke:#7c5cf0,color:#b8a9ff,stroke-width:2px,rx:8,ry:8
     classDef contract fill:#2e2410,stroke:#d4950b,color:#fcd34d,stroke-width:2px,rx:8,ry:8
+    classDef data fill:#0f1a20,stroke:#1ca8c4,color:#67e8f9,stroke-width:2px,rx:8,ry:8
     classDef tl fill:#1e1a3a,stroke:#7c5cf0,color:#b8a9ff,stroke-width:2px,rx:8,ry:8
     classDef dev fill:#142238,stroke:#4d8af0,color:#93b4f5,stroke-width:2px,rx:8,ry:8
     classDef reviewer fill:#2e2410,stroke:#d4950b,color:#fcd34d,stroke-width:2px,rx:8,ry:8
@@ -977,7 +992,7 @@ graph TD
     <div class="icon-block" style="background:rgba(28,168,196,0.1)">&#x1F4E1;</div>
     <div class="info">
       <h2>12. 项目源代码结构</h2>
-      <div class="desc"><code>src/cogniforge/</code> 下全部 35+ Python 模块的 6 层架构分布 — 入口 / 编排 / Agent / LLM / 执行引擎 / 数据存储</div>
+      <div class="desc"><code>src/cogniforge/</code> 下全部 37 个 Python 模块的 6 层架构分布 — 入口 / 编排 / Agent / LLM / 执行引擎 / 数据存储</div>
       <div class="src">pyproject.toml &middot; src/cogniforge/</div>
     </div>
   </div>
@@ -989,6 +1004,7 @@ graph TD
     subgraph L0["🔷 入口层"]
         CLI["cli.py<br/>18 个 Click 命令"]:::entry
         REPL["repl.py<br/>交互式 REPL"]:::entry
+        RTXT["repl_text.py<br/>中文显示字符串<br/>+ Agent Schema"]:::entry
         MAIN["__main__.py"]:::entry
     end
 
@@ -1002,7 +1018,7 @@ graph TD
     end
 
     subgraph L3["🔷 LLM 适配器 llm/"]
-        CAD["claude_code_adapter.py<br/>Text + Agent 双模式"]:::llm
+        CAD["claude_code_adapter.py<br/>Text + Agent 双模式<br/>ROLE_PROMPTS + TOOLS"]:::llm
         OAD["open_code_adapter.py<br/>codex exec"]:::llm
         LBASE["base.py<br/>工厂 + 接口"]:::llm
     end
@@ -1018,8 +1034,11 @@ graph TD
         WIKI["wiki/ — wiki_system<br/>wiki_renderer · adr"]:::data
         CTX_L["context/context_loader.py"]:::data
         CONST["constraints/constraint_loader.py"]:::data
-        GITS["storage/git_storage.py"]:::data
+        GITS["storage/git_storage.py<br/>+ wiki 分支隔离"]:::data
         AUDIT["audit/audit_log.py"]:::data
+        IFCHK["interface_checker.py<br/>交叉比对 SAD+L3"]:::data
+        LLVAL["lld_validator.py<br/>LLD 完整性校验"]:::data
+        WBS_REG["wbs/ — lld_artifact_registry<br/>decomposition_rules<br/>task_stub_generator<br/>task_context_builder<br/>acceptance_criteria<br/>coverage_validator<br/>enriched_wbs_assembler"]:::wbs
     end
 
     CLI --> WF
@@ -1168,6 +1187,58 @@ graph TD
     </div>
   </div>
 </div>
+
+<!-- ═══════════════ 15. WBS MDE→DEV Pipeline ═══════════════ -->
+<div class="section" id="s15">
+  <div class="section-header">
+    <div class="icon-block" style="background:rgba(77,138,240,0.1)">&#x1F4E6;</div>
+    <div class="info">
+      <h2>15. WBS — MDE→DEV 结构化翻译管线</h2>
+      <div class="desc">5 步流水线：机械推导 TaskStub → LLM 批处理丰富 → 覆盖率校验（max 2 rounds 重试）→ TaskContext 构建 → 总装。Dev Agent 直接消费，无需重读完整 LLD</div>
+      <div class="src">wbs/enriched_wbs_assembler.py — assemble() 编排全流程</div>
+    </div>
+  </div>
+  <div class="chart-card" data-chart="15">
+    <div style="position:relative">
+      <div class="section-num">15</div>
+      <div class="mermaid">
+graph TD
+    LLD["📝 LLD JSON<br/>(5 种 module_type)"]:::in
+
+    subgraph MECH["🔷 机械层 — 零 LLM"]
+        REG["① LLDArtifactRegistry<br/>解析 JSON → ArtifactEntry 表"]:::mech
+        RULES["② DecompositionRules<br/>按 module_type 分发 rule-set<br/>→ TaskStub 列表"]:::mech
+    end
+
+    subgraph LLM_BLOCK["🔶 LLM 批处理丰富层"]
+        ENRICH["③ LLM Batch Enrich<br/>填充 description · estimated_hours<br/>priority · 确认/修正 deps<br/>（batch 调用，非逐个 task）"]:::llm
+    end
+
+    subgraph VALIDATE["🔷 校验与上下文层"]
+        COV["④ CoverageValidator<br/>逐 artifact 验证覆盖率<br/>→ 不通过时回到③重试<br/>max 2 rounds"]:::val
+        CTX["⑤ TaskContextBuilder<br/>构建 TaskScope + external_contracts<br/>+ cross_module_deps + tech_stack<br/>+ upstream_artifacts"]:::mech
+    end
+
+    ASM["EnrichedWBSAssembler 总装<br/>→ WBSResult（tasks + coverage）"]:::asm
+    DEV["💻 Dev Agent 直接消费 Task<br/>lld_refs + acceptance_criteria<br/>+ context + layer + expected_output_files<br/>无需重读完整 LLD"]:::done
+
+    LLD --> REG --> RULES --> ENRICH --> COV
+    COV -->|"❌ 覆盖率不足"| ENRICH
+    COV -->|"✅ 通过"| CTX --> ASM --> DEV
+
+    style MECH fill:#0d1525,stroke:#4d8af0,color:#93b4f5
+    style LLM_BLOCK fill:#200d1a,stroke:#c84d90,color:#d8b4fe
+    style VALIDATE fill:#0d2015,stroke:#2ea97a,color:#6ee7b7
+
+    classDef in fill:#1e1a3a,stroke:#7c5cf0,color:#b8a9ff,stroke-width:2px,rx:8,ry:8
+    classDef mech fill:#142238,stroke:#4d8af0,color:#93b4f5,stroke-width:1.5px,rx:6,ry:6
+    classDef llm fill:#281830,stroke:#c84d90,color:#d8b4fe,stroke-width:1.5px,rx:6,ry:6
+    classDef val fill:#2e2410,stroke:#d4950b,color:#fcd34d,stroke-width:1.5px,rx:6,ry:6
+    classDef asm fill:#281830,stroke:#c84d90,color:#d8b4fe,stroke-width:2px,rx:8,ry:8
+    classDef done fill:#143028,stroke:#2ea97a,color:#6ee7b7,stroke-width:3px,rx:8,ry:8
+      </div>
+    </div>
+  </div>
 
 </div>
 

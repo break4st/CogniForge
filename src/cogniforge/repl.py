@@ -626,7 +626,9 @@ class Repl:
         sequentially after all LLM work completes.
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
+        from datetime import datetime
         from cogniforge.wbs.enriched_wbs_assembler import WBSAssembler, WBSResult
+        from cogniforge.wiki.wiki_renderer import render_wbs_module_html
 
         total = len(modules)
         agent = self.agents.get("techlead")
@@ -706,6 +708,23 @@ class Repl:
             # raw is WBSResult
             try:
                 count = agent._register_wbs_tasks(raw.tasks, mod_name)
+
+                # Render combined WBS HTML for this module
+                now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                task_dicts = [
+                    t if isinstance(t, dict) else (
+                        t.to_json() if hasattr(t, "to_json") else {}
+                    )
+                    for t in raw.tasks
+                ]
+                html_path = render_wbs_module_html(
+                    mod_name, task_dicts,
+                    created=now, repo_path=Path.cwd(),
+                )
+                if html_path:
+                    rel_html = str(html_path.relative_to(Path.cwd()))
+                    self.wiki_system.git_storage.repo.index.add([rel_html])
+
                 report = raw.coverage
                 coverage_msg = (
                     f", coverage={report.coverage_pct:.0f}%" if report else ""

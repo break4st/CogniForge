@@ -3085,3 +3085,211 @@ def _render_generic(doc_type: str, d: dict) -> str:
     parts.append(_SECTION_FOOT)
     parts.append(_PAGE_END)
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Combined WBS module HTML (sidebar + all tasks in one page)
+# ---------------------------------------------------------------------------
+
+# Priority / status labels (shared with _render_single_task)
+_PRIO: dict[int, str] = {0: "P0 阻塞", 1: "P1 高", 2: "P2 中", 3: "P3 低"}
+_PRIO_C: dict[int, str] = {0: "#f87171", 1: "#fbbf24", 2: "#5b8def", 3: "#6b7394"}
+_LAYER: dict[int, str] = {0: "Model", 1: "Service", 2: "Endpoint", 3: "Test"}
+_LAYER_CSS: dict[int, str] = {0: "layer-0", 1: "layer-1", 2: "layer-2", 3: "layer-3"}
+
+
+def render_wbs_module_html(module: str, tasks: list[dict],
+                           created: str = "", repo_path: Path | None = None) -> Path | None:
+    """Render all tasks for one module into a single sidebar-navigated HTML page.
+
+    Returns the Path to the generated HTML file, or None on failure.
+    """
+    if not tasks:
+        return None
+
+    total_hours = sum(t.get("estimated_hours", 0) or 0 for t in tasks)
+    doc_id = f"wbs-{module}"
+    title = f"WBS - {module}"
+
+    # ── Sidebar sections ──
+    sections: list[tuple[str, str, str]] = [("overview", "📊", "概览")]
+    for i, t in enumerate(tasks):
+        tid = f"task-{i}"
+        sections.append((tid, "", _esc(t.get("name", f"任务{i+1}")[:28])))
+
+    # ── Page start with sidebar ──
+    parts: list[str] = []
+    sidebar_html = _render_sidebar(doc_id, title, sections)
+    parts.append(
+        f"<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n"
+        f"<meta charset=\"UTF-8\">\n"
+        f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+        f"<title>{_esc(title)} — {_esc(doc_id)}</title>\n"
+        f"<style>{_SHARED_CSS}</style>\n"
+        f"</head>\n<body>\n"
+        f"<div class=\"page-layout\">\n"
+        + sidebar_html
+        + "<button id=\"sidebar-toggle\" class=\"sidebar-toggle\" aria-label=\"菜单\">☰</button>\n"
+        + "<div class=\"main-content\">\n"
+        f"<div class=\"top-bar\">\n"
+        f"  <div class=\"doc-id\">{_esc(doc_id)}</div>\n"
+        f"  <div><span class=\"badge accent\">WBS</span></div>\n"
+        f"</div>\n"
+        f"<h1><span>WBS</span> {_esc(title)}</h1>\n"
+        f"<div class=\"meta\">{_esc(created)} &middot; 作者: techlead_agent</div>\n"
+    )
+
+    # ── Overview section ──
+    parts.append(_section_header("📊", f"概览 — {len(tasks)} 个任务，共 {total_hours:.0f}h",
+                                 "rgba(91,141,239,0.12)", "overview"))
+    cats: dict[str, int] = {}
+    for t in tasks:
+        cat = t.get("category", "未分类")
+        cats[cat] = cats.get(cat, 0) + 1
+    cat_badges = " ".join(
+        f'<span class="badge">{_esc(c)} ({n})</span>'
+        for c, n in sorted(cats.items())
+    )
+    layer_counts: dict[int, int] = {}
+    for t in tasks:
+        l = t.get("layer", 0)
+        layer_counts[l] = layer_counts.get(l, 0) + 1
+    layer_info = " · ".join(
+        f'<span class="layer-badge {_LAYER_CSS.get(l, "layer-other")}">'
+        f'L{l} {_LAYER.get(l, "?")}: {n}</span>'
+        for l, n in sorted(layer_counts.items())
+    )
+    parts.append(f"<p>{cat_badges}</p>")
+    parts.append(f"<p>{layer_info}</p>")
+    parts.append(_SECTION_FOOT)
+
+    # ── Task sections ──
+    for i, t in enumerate(tasks):
+        tid = f"task-{i}"
+        name = _esc(t.get("name", f"任务 {i+1}"))
+        desc = _esc(t.get("description", "") or "(无描述)")
+        task_id = _esc(t.get("task_id", ""))
+        prio = t.get("priority", 2)
+        prio_label = _PRIO.get(prio, f"P{prio}")
+        prio_color = _PRIO_C.get(prio, "#6b7394")
+        cat = _esc(t.get("category", "未分类"))
+        hours = t.get("estimated_hours", 0) or 0
+        deps = t.get("deps", [])
+        layer = t.get("layer", 0)
+        layer_label = _LAYER.get(layer, f"L{layer}")
+        layer_css = _LAYER_CSS.get(layer, "layer-other")
+        exp_files = t.get("expected_output_files", [])
+        lld_refs = t.get("lld_refs", [])
+        ac_list = t.get("acceptance_criteria", [])
+        assignee = _esc(t.get("assignee") or "未分配")
+
+        parts.append(_section_header(
+            f"{i+1}.",
+            f"{name}",
+            "rgba(124,111,247,0.12)",
+            tid,
+        ))
+
+        # Meta row
+        meta_items = [
+            f'<span class="badge">{task_id}</span>',
+            f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;'
+            f'background:{prio_color};margin:0 2px 0 8px"></span> {prio_label}',
+            f'<span class="layer-badge {layer_css}">L{layer} — {layer_label}</span>',
+            f'<span class="badge">{cat}</span>',
+            f'<span style="color:var(--c-muted)">{hours}h · {assignee}</span>',
+        ]
+        parts.append(
+            f'<p style="margin-bottom:12px">{" ".join(meta_items)}</p>'
+        )
+        parts.append(f"<p>{desc}</p>")
+
+        # Dependencies
+        if deps:
+            dep_tags = " ".join(
+                f'<span class="cc-consumer">{_esc(d)}</span>' for d in deps
+            )
+            parts.append(
+                f'<p style="margin-top:10px"><strong>依赖:</strong> {dep_tags}</p>'
+            )
+
+        # Expected output files
+        if exp_files:
+            file_items = "".join(
+                f"<li>{_esc(f)}</li>" for f in exp_files[:6]
+            )
+            more = f"\n<li>... (+{len(exp_files) - 6} 更多)</li>" if len(exp_files) > 6 else ""
+            parts.append(
+                f'<div class="body-label" style="margin-top:12px">预期产出文件</div>'
+                f'<ul class="file-list">{file_items}{more}</ul>'
+            )
+
+        # LLD references
+        if lld_refs:
+            parts.append(
+                f'<div class="body-label" style="margin-top:12px">'
+                f'LLD 设计追溯 ({len(lld_refs)} 项)</div>'
+            )
+            parts.append(
+                '<table class="body-table"><thead><tr>'
+                '<th>章节</th><th>条目</th><th>类型</th></tr></thead><tbody>'
+            )
+            for ref in lld_refs[:10]:
+                section = _esc(ref.get("section", ""))
+                item = _esc(ref.get("item_name", ""))
+                atype = _esc(ref.get("artifact_type", ""))
+                parts.append(
+                    f"<tr><td>{section}</td><td>{item}</td>"
+                    f"<td><span class=\"badge\">{atype}</span></td></tr>"
+                )
+            if len(lld_refs) > 10:
+                parts.append(
+                    f'<tr><td colspan="3">... (+{len(lld_refs) - 10} 更多)</td></tr>'
+                )
+            parts.append("</tbody></table>")
+
+        # Acceptance criteria
+        if ac_list:
+            parts.append(
+                f'<div class="body-label" style="margin-top:12px">'
+                f'验收标准 ({len(ac_list)} 项)</div>'
+            )
+            ac_items = ""
+            for ac in ac_list:
+                if isinstance(ac, dict):
+                    ac_items += (
+                        f'<li>'
+                        f'<span class="ac-vtype-{ac.get("vtype", "invariant")}">'
+                        f'{_esc(ac.get("vtype", ""))}</span> '
+                        f'{_esc(ac.get("criterion", str(ac)))}</li>'
+                    )
+                else:
+                    ac_items += f"<li>{_esc(str(ac))}</li>"
+            parts.append(f'<ul class="ac-list">{ac_items}</ul>')
+
+        parts.append(_SECTION_FOOT)
+
+    # ── Dependency graph ──
+    parts.append(_section_header("🔗", "依赖关系图", "rgba(52,211,153,0.12)", "dep-graph"))
+    parts.append('<pre style="font-size:0.85em;line-height:1.8">')
+    for i, t in enumerate(tasks):
+        name = t.get("name", f"任务 {i+1}")
+        task_deps = t.get("deps", [])
+        if task_deps:
+            for d in task_deps:
+                parts.append(f"{_esc(d)}  →  {_esc(name)}")
+        else:
+            parts.append(f"(入口)  →  {_esc(name)}")
+    parts.append("</pre>")
+    parts.append(_SECTION_FOOT)
+
+    parts.append(_PAGE_END_SIDEBAR)
+    html = "\n".join(parts)
+
+    # Write to .cogniforge/html/tasks/wbs-{module}.html
+    base = repo_path or Path.cwd()
+    out_dir = base / ".cogniforge" / "html" / "tasks"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"wbs-{module}.html"
+    out_path.write_text(html, encoding="utf-8")
+    return out_path
