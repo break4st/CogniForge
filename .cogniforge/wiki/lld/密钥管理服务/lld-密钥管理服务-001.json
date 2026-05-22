@@ -4,470 +4,427 @@
     "type": "lld",
     "module_type": "service",
     "module": "密钥管理服务",
-    "title": "自动化部署系统 - 密钥管理服务详细设计",
+    "title": "密钥管理服务详细设计",
     "author": "design_agent",
     "created": "2026-05-22"
   },
   "overview": {
-    "description": "安全管理SSH密钥和敏感凭证，提供加密存储和访问控制。核心职责包括：SSH密钥的安全加密存储、密钥与部署环境关联绑定、密钥生命周期管理（创建、轮换、吊销）、密钥访问权限控制、密钥解密传递给部署执行服务。",
-    "dependencies": [
-      "PostgreSQL数据库",
-      "审计日志服务"
-    ],
-    "tech_stack": [
-      "Python",
-      "FastAPI",
-      "PostgreSQL 15"
-    ]
+    "description": "安全存储和管理 SSH 密钥，提供密钥的上传、绑定和验证功能。所有 SSH 私钥在落库前使用 AES-256-GCM 算法加密，仅在部署时由部署引擎通过内部接口获取解密后的密钥会话。",
+    "dependencies": ["PostgreSQL 15", "审计日志服务"],
+    "tech_stack": ["Go", "Gin", "Go 1.22+", "PostgreSQL 15", "golang.org/x/crypto/ssh", "RESTful JSON API"]
   },
   "data_models": [
+    {
+      "name": "environments",
+      "type": "reference",
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-数据库-001",
+        "model_name": "environments"
+      },
+      "description": "环境表引用。本服务仅关心环境的存在性校验，不修改环境配置。",
+      "fields": [
+        {"name": "id", "type": "BIGINT", "required": true, "description": "环境唯一标识"}
+      ],
+      "indexes": []
+    },
     {
       "name": "ssh_keys",
       "type": "reference",
       "ownership": "derived",
       "source": {
-        "doc_id": "lld-PostgreSQL数据库-001",
+        "doc_id": "lld-数据库-001",
         "model_name": "ssh_keys"
       },
-      "description": "SSH密钥表引用，本服务管理的全部字段视图，包含AES加密后的私钥密文和密钥派生参数",
+      "description": "SSH 密钥表引用。本服务关心的字段视图，不含部署任务、文件包等无关字段。",
       "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "密钥唯一标识"},
-        {"name": "name", "type": "VARCHAR(128)", "required": true, "description": "密钥名称，便于识别"},
-        {"name": "public_key", "type": "TEXT", "required": true, "description": "SSH公钥内容"},
-        {"name": "encrypted_private_key", "type": "TEXT", "required": true, "description": "AES-256-GCM加密后的SSH私钥内容"},
-        {"name": "encryption_iv", "type": "VARCHAR(64)", "required": true, "description": "AES加密使用的初始向量（base64编码）"},
-        {"name": "encryption_salt", "type": "VARCHAR(64)", "required": true, "description": "PBKDF2密钥派生使用的盐值（base64编码）"},
-        {"name": "fingerprint", "type": "VARCHAR(128)", "required": true, "description": "密钥指纹（SHA256:xxx格式），唯一约束"},
-        {"name": "passphrase_hash", "type": "VARCHAR(256)", "required": false, "description": "私钥密码的哈希值（如设置了passphrase）"},
-        {"name": "status", "type": "VARCHAR(16)", "required": true, "description": "密钥状态：active/revoked，默认 active"},
-        {"name": "created_by", "type": "VARCHAR(64)", "required": true, "description": "创建人用户名"},
-        {"name": "revoked_at", "type": "TIMESTAMPTZ", "required": false, "description": "吊销时间"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "创建时间"},
-        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": true, "description": "更新时间"}
+        {"name": "id", "type": "BIGSERIAL", "required": true, "description": "密钥唯一标识"},
+        {"name": "environment_id", "type": "BIGINT", "required": true, "description": "绑定环境 ID，外键关联 environments.id"},
+        {"name": "key_name", "type": "VARCHAR(255)", "required": true, "description": "密钥名称，同一环境下唯一"},
+        {"name": "encrypted_private_key", "type": "TEXT", "required": true, "description": "AES-256-GCM 加密后的私钥内容（Base64 编码）"},
+        {"name": "passphrase_salt", "type": "VARCHAR(64)", "required": false, "description": "加密使用的盐值（当私钥有 passphrase 时记录）"},
+        {"name": "fingerprint", "type": "VARCHAR(64)", "required": true, "description": "公钥指纹（SHA256:Base64 格式）"},
+        {"name": "bound_at", "type": "TIMESTAMPTZ", "required": true, "description": "密钥绑定到环境的时间"},
+        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "记录创建时间"},
+        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": true, "description": "最后更新时间"}
+      ],
+      "indexes": [
+        {"name": "pk_ssh_keys", "unique": true, "columns": ["id"]},
+        {"name": "idx_ssh_keys_environment_id", "unique": false, "columns": ["environment_id"]},
+        {"name": "uq_ssh_keys_environment_key", "unique": true, "columns": ["environment_id", "key_name"]},
+        {"name": "idx_ssh_keys_fingerprint", "unique": false, "columns": ["fingerprint"]}
+      ]
+    },
+    {
+      "name": "encryption_config",
+      "type": "config",
+      "ownership": "owned",
+      "description": "AES-256 加密配置，由环境变量注入，用于 SSH 私钥的加密存储和解密读取。不存储在数据库中。",
+      "fields": [
+        {"name": "encryption_key", "type": "VARCHAR(64)", "required": true, "description": "AES-256 加密密钥（32 字节，由环境变量 KEY_ENCRYPTION_KEY 注入）"},
+        {"name": "encryption_algorithm", "type": "VARCHAR(32)", "required": true, "description": "加密算法，固定值 AES-256-GCM"}
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "创建密钥（内部）",
+      "name": "绑定密钥",
       "method": "POST",
-      "endpoint": "/api/internal/keys",
-      "description": "接收来自API网关转发的密钥上传请求，对私钥执行AES-256-GCM加密后持久化到数据库，返回密钥元信息（不含私钥）",
+      "endpoint": "/api/v1/environments/:eid/keys",
+      "description": "上传 SSH 私钥，解析公钥指纹，AES-256 加密后存储并与指定环境绑定。如果私钥有 passphrase，使用 salt 衍生密钥后再尝试解析。",
       "parameters": [
-        {"name": "name", "type": "string", "description": "密钥名称，用于界面标识"},
-        {"name": "public_key", "type": "string", "description": "SSH公钥内容（RFC 4253格式）"},
-        {"name": "private_key", "type": "string", "description": "SSH私钥内容（PEM格式），传输通道已由API网关层加密"},
-        {"name": "passphrase", "type": "string", "description": "私钥密码（可选），如有则计算哈希后存储"},
-        {"name": "created_by", "type": "string", "description": "创建人用户名，由API网关从认证上下文中注入"}
+        {"name": "eid", "type": "integer", "description": "环境 ID，路径参数"},
+        {"name": "key_name", "type": "string", "description": "密钥名称，同一环境内唯一，长度 1-255 字符"},
+        {"name": "private_key", "type": "string", "description": "SSH 私钥内容（PEM 格式，以 -----BEGIN ... PRIVATE KEY----- 开头）"},
+        {"name": "passphrase", "type": "string", "description": "私钥的 passphrase（可选，如私钥没有密码则留空）"}
       ],
       "response": {
-        "status": 201,
-        "body": {"id": "string", "name": "string", "fingerprint": "string", "status": "string", "created_at": "string"}
+        "status": 200,
+        "body": {
+          "key_id": "integer",
+          "environment_id": "integer",
+          "fingerprint": "string",
+          "bound_at": "datetime"
+        }
       },
       "error_codes": [
-        {"code": 400, "message": "参数校验失败：name为空、密钥格式非法或字段缺失"},
-        {"code": 409, "message": "密钥指纹重复：同一公钥已被上传过"}
+        {"code": 400, "message": "SSH 私钥格式无效，无法解析"},
+        {"code": 400, "message": "passphrase 错误，无法解密私钥"},
+        {"code": 404, "message": "指定的环境 (eid) 不存在"},
+        {"code": 409, "message": "同一环境下已存在同名密钥"},
+        {"code": 422, "message": "请求体参数校验失败（如 key_name 为空、private_key 为空）"},
+        {"code": 500, "message": "加密过程中发生内部错误"}
       ]
     },
     {
-      "name": "查询密钥列表（内部）",
+      "name": "获取密钥列表",
       "method": "GET",
-      "endpoint": "/api/internal/keys",
-      "description": "按状态和创建人筛选查询密钥列表，支持分页，返回所有密钥的摘要信息（不含私钥）",
+      "endpoint": "/api/v1/environments/:eid/keys",
+      "description": "获取指定环境绑定的所有 SSH 密钥列表，返回密钥的摘要信息（不包含私钥内容）。按绑定时间降序排列。",
       "parameters": [
-        {"name": "status", "type": "string", "description": "筛选条件：active/revoked，不传则查询全部"},
-        {"name": "created_by", "type": "string", "description": "筛选条件：创建人用户名，不传则查询全部"},
-        {"name": "page", "type": "integer", "description": "页码，从1开始，默认1"},
-        {"name": "size", "type": "integer", "description": "每页条数，默认20，最大100"}
+        {"name": "eid", "type": "integer", "description": "环境 ID，路径参数"}
       ],
       "response": {
         "status": 200,
-        "body": {"keys": "array", "total": "integer", "page": "integer", "size": "integer"}
+        "body": {
+          "keys": "KeyInfo[]"
+        }
       },
       "error_codes": [
-        {"code": 400, "message": "分页参数超出范围"}
+        {"code": 404, "message": "指定的环境 (eid) 不存在"}
       ]
     },
     {
-      "name": "查询密钥详情（内部）",
+      "name": "获取密钥详情",
       "method": "GET",
-      "endpoint": "/api/internal/keys/{key_id}",
-      "description": "根据密钥ID查询单个密钥的完整元信息（含公钥，不含加密私钥和明文私钥）",
+      "endpoint": "/api/v1/environments/:eid/keys/:kid",
+      "description": "获取指定 SSH 密钥的详细元信息（不包含私钥内容）。",
       "parameters": [
-        {"name": "key_id", "type": "string", "description": "密钥唯一标识（UUID）"}
+        {"name": "eid", "type": "integer", "description": "环境 ID，路径参数"},
+        {"name": "kid", "type": "integer", "description": "密钥 ID，路径参数"}
       ],
       "response": {
         "status": 200,
-        "body": {"id": "string", "name": "string", "public_key": "string", "fingerprint": "string", "status": "string", "created_by": "string", "created_at": "string", "revoked_at": "string", "updated_at": "string"}
+        "body": {
+          "key_id": "integer",
+          "key_name": "string",
+          "environment_id": "integer",
+          "fingerprint": "string",
+          "bound_at": "datetime",
+          "created_at": "datetime",
+          "updated_at": "datetime"
+        }
       },
       "error_codes": [
-        {"code": 404, "message": "指定的key_id不存在"}
+        {"code": 404, "message": "指定的环境 (eid) 不存在"},
+        {"code": 404, "message": "指定的密钥 (kid) 不存在"}
       ]
     },
     {
-      "name": "吊销密钥（内部）",
-      "method": "POST",
-      "endpoint": "/api/internal/keys/{key_id}/revoke",
-      "description": "将指定密钥状态标记为revoked，吊销后该密钥不可再用于解密，历史部署仍保留引用",
+      "name": "删除密钥",
+      "method": "DELETE",
+      "endpoint": "/api/v1/environments/:eid/keys/:kid",
+      "description": "删除指定 SSH 密钥的绑定关系。删除后不可恢复，部署引擎将无法使用该密钥建立连接。",
       "parameters": [
-        {"name": "key_id", "type": "string", "description": "密钥唯一标识（UUID）"},
-        {"name": "operator_id", "type": "string", "description": "操作人用户ID"},
-        {"name": "operator_name", "type": "string", "description": "操作人用户名"}
+        {"name": "eid", "type": "integer", "description": "环境 ID，路径参数"},
+        {"name": "kid", "type": "integer", "description": "密钥 ID，路径参数"}
       ],
       "response": {
         "status": 200,
-        "body": {"id": "string", "status": "string", "revoked_at": "string"}
+        "body": {
+          "success": "boolean"
+        }
       },
       "error_codes": [
-        {"code": 404, "message": "指定的key_id不存在"},
-        {"code": 409, "message": "密钥已处于revoked状态，不可重复吊销"}
+        {"code": 404, "message": "指定的环境 (eid) 不存在"},
+        {"code": 404, "message": "指定的密钥 (kid) 不存在"},
+        {"code": 500, "message": "数据库删除操作失败"}
       ]
     },
     {
-      "name": "密钥解密（内部）",
+      "name": "验证密钥连接",
       "method": "POST",
-      "endpoint": "/api/internal/keys/decrypt",
-      "description": "部署执行服务在执行部署前请求解密SSH私钥。验证session_token的有效性后，使用AES-256-GCM解密私钥，明文仅存于返回的内存缓冲区中",
+      "endpoint": "/api/v1/environments/:eid/keys/:kid/verify",
+      "description": "使用指定 SSH 密钥尝试连接到环境配置的目标服务器，验证密钥的有效性和服务器可达性。不修改任何持久化数据。",
       "parameters": [
-        {"name": "key_id", "type": "string", "description": "密钥ID"},
-        {"name": "session_token", "type": "string", "description": "内部会话认证令牌，用于验证调用方身份"}
+        {"name": "eid", "type": "integer", "description": "环境 ID，路径参数"},
+        {"name": "kid", "type": "integer", "description": "密钥 ID，路径参数"}
       ],
       "response": {
         "status": 200,
-        "body": {"private_key": "string", "fingerprint": "string"}
+        "body": {
+          "success": "boolean",
+          "message": "string"
+        }
       },
       "error_codes": [
-        {"code": 403, "message": "session_token无效或已过期，拒绝解密请求"},
-        {"code": 404, "message": "指定的key_id不存在"},
-        {"code": 409, "message": "密钥状态为revoked，已吊销的密钥不可解密"},
-        {"code": 500, "message": "AES解密失败：密钥派生错误或密文损坏"}
+        {"code": 404, "message": "指定的环境 (eid) 不存在"},
+        {"code": 404, "message": "指定的密钥 (kid) 不存在"},
+        {"code": 500, "message": "密钥解密失败"},
+        {"code": 502, "message": "SSH 连接验证失败（服务器不可达或认证失败）"}
+      ]
+    },
+    {
+      "name": "获取解密密钥会话",
+      "method": "INTERNAL",
+      "endpoint": "internal",
+      "description": "内部接口。部署引擎在部署流程中调用此接口获取解密后的 SSH 密钥会话（包含私钥内容和指纹），用于建立 SSH 连接完成文件传输和命令执行。调用方使用完毕后必须及时销毁内存中的密钥数据。",
+      "parameters": [
+        {"name": "key_id", "type": "integer", "description": "密钥 ID"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "private_key": "string",
+          "fingerprint": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "指定的密钥 (key_id) 不存在"},
+        {"code": 500, "message": "密钥解密失败（加密密钥错误或数据损坏）"}
       ]
     }
   ],
   "error_handling": {
-    "strategy": "采用统一错误响应格式，前端友好展示。解密相关错误（密钥不存在/已吊销/令牌无效）返回具体错误码以便调用方快速定位；加密解密内部异常返回500，同时记录审计日志和内部告警。",
+    "strategy": "采用分层错误处理。API 层通过 Gin 内置绑定校验捕获参数格式错误返回 400/422；服务层捕获业务逻辑冲突（如密钥名重复）返回 409；资源不存在返回 404；加密/解密基础设施异常返回 500 并记入日志（脱敏，不记录密钥内容）。所有错误统一通过标准化 JSON 响应体返回。",
     "response_format": {
-      "body": {"code": "integer", "error": "string", "detail": "string"}
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
     },
     "categories": [
-      {"code": 400, "name": "参数校验失败", "description": "密钥名称为空、密钥内容格式非法（非PEM格式）、字段类型不匹配、分页参数超限"},
-      {"code": 403, "name": "访问被拒绝", "description": "内部session_token无效或已过期，仅限密钥解密接口返回"},
-      {"code": 404, "name": "密钥不存在", "description": "指定的key_id在数据库中未找到，可能已被物理删除或ID错误"},
-      {"code": 409, "name": "密钥状态冲突", "description": "尝试解密已吊销密钥、重复吊销已吊销密钥、重复上传同一指纹密钥"},
-      {"code": 500, "name": "加密解密内部错误", "description": "AES-GCM解密失败（密钥派生参数错误或密文损坏）、PBKDF2派生异常、硬件熵源不足"}
+      {"code": 400, "name": "Bad Request", "description": "请求参数或 SSH 密钥格式无效。包括：私钥格式无法解析、passphrase 错误、路径参数类型错误。由 API 层校验逻辑捕获后返回。"},
+      {"code": 404, "name": "Not Found", "description": "请求的资源不存在。包括：环境 ID 无效、密钥 ID 无效。服务层查询数据库未找到对应记录时返回。"},
+      {"code": 409, "name": "Conflict", "description": "业务冲突。仅当同一环境下尝试绑定同名密钥时触发，由数据库唯一约束 (environment_id, key_name) 保证。"},
+      {"code": 422, "name": "Unprocessable Entity", "description": "请求体字段校验失败。包括：key_name 为空、private_key 为空、字段类型不匹配、key_name 超长。由 Gin ShouldBindJSON 内置校验器捕获。"},
+      {"code": 500, "name": "Internal Server Error", "description": "服务端内部错误。包括：AES-256-GCM 加密/解密失败、数据库连接异常、密钥衍生失败。日志记录详细错误栈，响应体返回通用错误信息避免泄露敏感细节。"},
+      {"code": 502, "name": "Bad Gateway", "description": "上游 SSH 连接失败。仅用于「验证密钥连接」接口：目标服务器不可达、认证失败或握手超时。"}
     ]
   },
   "domain_objects": [
     {
       "name": "SshKey",
       "object_type": "entity",
-      "description": "SSH密钥实体，映射ssh_keys数据库表。代表一条加密存储的SSH密钥记录",
+      "description": "SSH 密钥领域实体，对应 ssh_keys 表的单条记录。代表一个与环境绑定的 SSH 密钥对，包含加密后的私钥和公钥指纹。",
       "attributes": [
-        {"name": "id", "type": "UUID", "required": true, "source": "db", "description": "密钥唯一标识"},
-        {"name": "name", "type": "String", "required": true, "source": "db", "description": "密钥名称"},
-        {"name": "public_key", "type": "String", "required": true, "source": "db", "description": "SSH公钥内容"},
-        {"name": "encrypted_private_key", "type": "String", "required": true, "source": "db", "description": "AES-256-GCM加密后的私钥（base64编码）"},
-        {"name": "encryption_iv", "type": "String", "required": true, "source": "db", "description": "AES加密IV（base64编码）"},
-        {"name": "encryption_salt", "type": "String", "required": true, "source": "db", "description": "PBKDF2盐值（base64编码）"},
-        {"name": "fingerprint", "type": "String", "required": true, "source": "db", "description": "密钥指纹 SHA256:xxx"},
-        {"name": "passphrase_hash", "type": "String", "required": false, "source": "db", "description": "私钥密码哈希（如设置了passphrase）"},
-        {"name": "status", "type": "KeyStatus", "required": true, "source": "db", "description": "密钥状态：active/revoked"},
-        {"name": "created_by", "type": "String", "required": true, "source": "db", "description": "创建人用户名"},
-        {"name": "revoked_at", "type": "DateTime", "required": false, "source": "db", "description": "吊销时间"},
-        {"name": "created_at", "type": "DateTime", "required": true, "source": "db", "description": "创建时间"},
-        {"name": "updated_at", "type": "DateTime", "required": true, "source": "db", "description": "更新时间"}
+        {"name": "Id", "type": "int64", "required": true, "source": "db", "description": "密钥唯一标识"},
+        {"name": "EnvironmentId", "type": "int64", "required": true, "source": "db", "description": "绑定环境 ID"},
+        {"name": "KeyName", "type": "string", "required": true, "source": "db", "description": "密钥名称，同一环境下唯一"},
+        {"name": "EncryptedPrivateKey", "type": "string", "required": true, "source": "db", "description": "AES-256-GCM 加密后的私钥内容（Base64 编码）"},
+        {"name": "PassphraseSalt", "type": "string", "required": false, "source": "db", "description": "加密使用的盐值（当私钥有 passphrase 时记录）"},
+        {"name": "Fingerprint", "type": "string", "required": true, "source": "db", "description": "公钥指纹（SHA256:Base64 格式）"},
+        {"name": "BoundAt", "type": "time.Time", "required": true, "source": "db", "description": "绑定到环境的时间"},
+        {"name": "CreatedAt", "type": "time.Time", "required": true, "source": "db", "description": "记录创建时间"},
+        {"name": "UpdatedAt", "type": "time.Time", "required": true, "source": "db", "description": "最后更新时间"}
       ]
     },
     {
-      "name": "DecryptedKey",
-      "object_type": "value_object",
-      "description": "解密后的密钥信息值对象，仅存在于内存中，使用后立即销毁，不得持久化到任何存储介质",
+      "name": "BindKeyRequest",
+      "object_type": "dto",
+      "description": "绑定密钥接口的请求 DTO，由 Web 控制台提交。",
       "attributes": [
-        {"name": "private_key", "type": "String", "required": true, "source": "derived", "description": "解密后的私钥明文（PEM格式）"},
-        {"name": "fingerprint", "type": "String", "required": true, "source": "derived", "description": "密钥指纹"}
+        {"name": "KeyName", "type": "string", "required": true, "source": "input", "description": "密钥名称，长度 1-255 字符"},
+        {"name": "PrivateKey", "type": "string", "required": true, "source": "input", "description": "SSH 私钥内容（PEM 格式，以 -----BEGIN ... PRIVATE KEY----- 开头）"},
+        {"name": "Passphrase", "type": "string", "required": false, "source": "input", "description": "私钥的 passphrase（如果私钥存在密码保护）"}
+      ],
+      "maps_to_entity": "SshKey"
+    },
+    {
+      "name": "BindKeyResponse",
+      "object_type": "dto",
+      "description": "绑定密钥接口的响应 DTO，与 SAD 契约严格一致。",
+      "attributes": [
+        {"name": "KeyId", "type": "int64", "required": true, "source": "derived", "description": "新创建的密钥 ID"},
+        {"name": "EnvironmentId", "type": "int64", "required": true, "source": "derived", "description": "绑定的环境 ID"},
+        {"name": "Fingerprint", "type": "string", "required": true, "source": "computed", "description": "从私钥解析出的公钥指纹（SHA256）"},
+        {"name": "BoundAt", "type": "datetime", "required": true, "source": "derived", "description": "绑定完成的时间戳"}
       ]
     },
     {
-      "name": "EncryptedKeyData",
-      "object_type": "value_object",
-      "description": "AES加密后的密钥数据值对象，封装加密密文和派生参数",
+      "name": "KeyInfo",
+      "object_type": "dto",
+      "description": "密钥列表项 DTO，仅返回密钥摘要信息（不含私钥内容）。",
       "attributes": [
-        {"name": "encrypted_private_key", "type": "String", "required": true, "source": "derived", "description": "AES-256-GCM加密后的私钥（base64编码）"},
-        {"name": "encryption_iv", "type": "String", "required": true, "source": "derived", "description": "AES加密IV（base64编码）"},
-        {"name": "encryption_salt", "type": "String", "required": true, "source": "derived", "description": "PBKDF2盐值（base64编码）"}
+        {"name": "KeyId", "type": "int64", "required": true, "source": "db", "description": "密钥 ID"},
+        {"name": "KeyName", "type": "string", "required": true, "source": "db", "description": "密钥名称"},
+        {"name": "Fingerprint", "type": "string", "required": true, "source": "db", "description": "公钥指纹"},
+        {"name": "BoundAt", "type": "datetime", "required": true, "source": "db", "description": "绑定时间"}
+      ]
+    },
+    {
+      "name": "KeyDetail",
+      "object_type": "dto",
+      "description": "密钥详情 DTO，包含密钥的完整元信息（不含私钥内容）。",
+      "attributes": [
+        {"name": "KeyId", "type": "int64", "required": true, "source": "db", "description": "密钥 ID"},
+        {"name": "KeyName", "type": "string", "required": true, "source": "db", "description": "密钥名称"},
+        {"name": "EnvironmentId", "type": "int64", "required": true, "source": "db", "description": "环境 ID"},
+        {"name": "Fingerprint", "type": "string", "required": true, "source": "db", "description": "公钥指纹"},
+        {"name": "BoundAt", "type": "datetime", "required": true, "source": "db", "description": "绑定时间"},
+        {"name": "CreatedAt", "type": "datetime", "required": true, "source": "db", "description": "创建时间"},
+        {"name": "UpdatedAt", "type": "datetime", "required": true, "source": "db", "description": "最后更新时间"}
+      ]
+    },
+    {
+      "name": "VerificationResult",
+      "object_type": "dto",
+      "description": "密钥连接验证结果 DTO。",
+      "attributes": [
+        {"name": "Success", "type": "boolean", "required": true, "source": "computed", "description": "SSH 连接是否成功"},
+        {"name": "Message", "type": "string", "required": true, "source": "computed", "description": "连接结果描述，成功时为「SSH 连接成功」，失败时包含具体错误原因"}
+      ]
+    },
+    {
+      "name": "DecryptedKeySession",
+      "object_type": "value_object",
+      "description": "解密后的 SSH 密钥会话，不可变值对象。用于部署引擎建立 SSH 连接。使用后调用方必须立即清除内存中的私钥内容。",
+      "attributes": [
+        {"name": "PrivateKey", "type": "string", "required": true, "source": "computed", "description": "解密后的 SSH 私钥 PEM 内容"},
+        {"name": "Fingerprint", "type": "string", "required": true, "source": "derived", "description": "公钥指纹，用于连接校验"}
       ]
     },
     {
       "name": "KeyFingerprint",
       "object_type": "value_object",
-      "description": "密钥指纹值对象，基于SSH公钥通过SHA256计算，用于密钥去重和身份标识",
+      "description": "SSH 公钥指纹值对象，不可变。由私钥解析出公钥后计算 SHA256 摘要生成。",
       "attributes": [
-        {"name": "value", "type": "String", "required": true, "source": "computed", "description": "指纹值，格式为SHA256:base64"}
-      ]
-    },
-    {
-      "name": "KeyCreateRequest",
-      "object_type": "dto",
-      "description": "创建密钥的请求DTO",
-      "attributes": [
-        {"name": "name", "type": "String", "required": true, "source": "input", "description": "密钥名称，1~128字符"},
-        {"name": "public_key", "type": "String", "required": true, "source": "input", "description": "SSH公钥内容（RFC 4253格式）"},
-        {"name": "private_key", "type": "String", "required": true, "source": "input", "description": "SSH私钥内容（PEM格式）"},
-        {"name": "passphrase", "type": "String", "required": false, "source": "input", "description": "私钥密码（可选）"},
-        {"name": "created_by", "type": "String", "required": true, "source": "input", "description": "创建人用户名（由API网关注入）"}
-      ]
-    },
-    {
-      "name": "KeyCreateResponse",
-      "object_type": "dto",
-      "description": "创建密钥成功后的响应DTO，仅返回元信息不包含私钥",
-      "attributes": [
-        {"name": "id", "type": "String", "required": true, "source": "derived", "description": "密钥唯一标识"},
-        {"name": "name", "type": "String", "required": true, "source": "derived", "description": "密钥名称"},
-        {"name": "fingerprint", "type": "String", "required": true, "source": "derived", "description": "密钥指纹"},
-        {"name": "status", "type": "String", "required": true, "source": "derived", "description": "密钥状态，创建后为active"},
-        {"name": "created_at", "type": "DateTime", "required": true, "source": "derived", "description": "创建时间"}
-      ]
-    },
-    {
-      "name": "KeyDetailResponse",
-      "object_type": "dto",
-      "description": "密钥详情响应DTO，包含完整的密钥元信息和公钥",
-      "attributes": [
-        {"name": "id", "type": "String", "required": true, "source": "derived", "description": "密钥唯一标识"},
-        {"name": "name", "type": "String", "required": true, "source": "derived", "description": "密钥名称"},
-        {"name": "public_key", "type": "String", "required": true, "source": "derived", "description": "SSH公钥内容"},
-        {"name": "fingerprint", "type": "String", "required": true, "source": "derived", "description": "密钥指纹"},
-        {"name": "status", "type": "String", "required": true, "source": "derived", "description": "密钥状态"},
-        {"name": "created_by", "type": "String", "required": true, "source": "derived", "description": "创建人用户名"},
-        {"name": "created_at", "type": "DateTime", "required": true, "source": "derived", "description": "创建时间"},
-        {"name": "revoked_at", "type": "DateTime", "required": false, "source": "derived", "description": "吊销时间"},
-        {"name": "updated_at", "type": "DateTime", "required": true, "source": "derived", "description": "更新时间"}
-      ]
-    },
-    {
-      "name": "KeyListItem",
-      "object_type": "dto",
-      "description": "密钥列表项DTO，列表场景的轻量摘要",
-      "attributes": [
-        {"name": "id", "type": "String", "required": true, "source": "derived", "description": "密钥唯一标识"},
-        {"name": "name", "type": "String", "required": true, "source": "derived", "description": "密钥名称"},
-        {"name": "fingerprint", "type": "String", "required": true, "source": "derived", "description": "密钥指纹"},
-        {"name": "status", "type": "String", "required": true, "source": "derived", "description": "密钥状态"},
-        {"name": "created_by", "type": "String", "required": true, "source": "derived", "description": "创建人用户名"},
-        {"name": "created_at", "type": "DateTime", "required": true, "source": "derived", "description": "创建时间"},
-        {"name": "revoked_at", "type": "DateTime", "required": false, "source": "derived", "description": "吊销时间"}
-      ]
-    },
-    {
-      "name": "KeyDecryptRequest",
-      "object_type": "dto",
-      "description": "密钥解密请求DTO，由部署执行服务发起",
-      "attributes": [
-        {"name": "key_id", "type": "String", "required": true, "source": "input", "description": "密钥ID"},
-        {"name": "session_token", "type": "String", "required": true, "source": "input", "description": "内部会话认证令牌"}
-      ]
-    },
-    {
-      "name": "KeyDecryptResponse",
-      "object_type": "dto",
-      "description": "密钥解密响应DTO，包含解密后的私钥明文和指纹",
-      "maps_to_entity": "DecryptedKey",
-      "attributes": [
-        {"name": "private_key", "type": "String", "required": true, "source": "derived", "description": "解密后的私钥内容（内存级，用完即弃）"},
-        {"name": "fingerprint", "type": "String", "required": true, "source": "derived", "description": "密钥指纹"}
-      ]
-    },
-    {
-      "name": "KeyRevokeRequest",
-      "object_type": "dto",
-      "description": "吊销密钥请求DTO",
-      "attributes": [
-        {"name": "operator_id", "type": "String", "required": true, "source": "input", "description": "操作人用户ID"},
-        {"name": "operator_name", "type": "String", "required": true, "source": "input", "description": "操作人用户名"}
-      ]
-    },
-    {
-      "name": "KeyStatus",
-      "object_type": "enum",
-      "description": "密钥生命周期状态枚举",
-      "values": [
-        "active",
-        "revoked"
+        {"name": "Value", "type": "string", "required": true, "source": "computed", "description": "SHA256:Base64 格式的指纹字符串"}
       ]
     }
   ],
   "service_contracts": [
     {
       "name": "KeyService",
-      "description": "密钥管理核心服务，处理SSH密钥的加密存储、生命周期管理和解密请求",
+      "description": "SSH 密钥管理的核心业务服务，负责密钥的加密存储、绑定管理、有效性验证和解密提供。",
       "methods": [
         {
-          "name": "createKey",
-          "signature": "(name: str, public_key: str, private_key: str, passphrase: str | None, created_by: str) -> SshKey",
-          "precondition": "name非空且不超过128字符；public_key为合法SSH公钥格式（RFC 4253）；private_key为合法PEM格式私钥；数据库中不存在相同fingerprint的密钥",
-          "postcondition": "私钥经AES-256-GCM加密后持久化到ssh_keys表，返回SshKey实体（不含明文私钥），记录审计日志（action=key.create）",
-          "description": "创建新密钥：计算公钥指纹→校验唯一性→使用PBKDF2派生AES密钥→使用AES-256-GCM加密私钥→持久化到数据库",
+          "name": "BindKey",
+          "signature": "(ctx context.Context, req BindKeyRequest, environmentId int64, actor string) -> BindKeyResponse",
+          "precondition": "environmentId 对应的环境必须存在于 environments 表中；该环境下不存在同名 (key_name) 密钥；private_key 必须是有效的 PEM 格式 SSH 私钥",
+          "postcondition": "私钥已通过 AES-256-GCM 加密后写入 ssh_keys 表；密钥已与环境绑定 (bound_at 已设置为当前时间)；审计日志已记录 key.bind 操作",
+          "description": "解析并校验 SSH 私钥，提取公钥指纹，AES-256-GCM 加密私钥后落库并绑定到指定环境",
           "exceptions": [
-            {"name": "InvalidKeyFormatException", "trigger": "public_key或private_key格式非法（非PEM/非RFC 4253）", "http_status": 400},
-            {"name": "DuplicateFingerprintException", "trigger": "相同fingerprint的密钥已存在于数据库", "http_status": 409}
+            {"name": "EnvironmentNotFound", "trigger": "environmentId 在 environments 表中不存在", "http_status": 404},
+            {"name": "KeyNameConflict", "trigger": "同一环境下已存在同名密钥", "http_status": 409},
+            {"name": "InvalidPrivateKeyFormat", "trigger": "private_key 不是有效的 PEM 格式或无法从私钥中解析出公钥", "http_status": 400},
+            {"name": "InvalidPassphrase", "trigger": "私钥需要 passphrase 但提供的 passphrase 不正确，无法解密私钥", "http_status": 400},
+            {"name": "EncryptionFailure", "trigger": "AES-256-GCM 加密过程中发生错误（如密钥衍生失败）", "http_status": 500}
           ]
         },
         {
-          "name": "getKey",
-          "signature": "(key_id: str) -> SshKey",
-          "precondition": "key_id格式为合法UUID",
-          "postcondition": "返回SshKey实体（含全部字段，不含解密后的明文私钥），若key_id不存在则抛出异常",
-          "description": "根据密钥ID查询单个密钥的完整信息",
+          "name": "ListKeysByEnvironment",
+          "signature": "(ctx context.Context, environmentId int64) -> []KeyInfo",
+          "precondition": "environmentId 对应的环境必须存在",
+          "postcondition": "返回该环境绑定的所有密钥摘要列表（按 bound_at 降序排列），每个 KeyInfo 不包含私钥内容",
+          "description": "查询指定环境下的所有 SSH 密钥摘要信息",
           "exceptions": [
-            {"name": "KeyNotFoundException", "trigger": "指定key_id在数据库中不存在", "http_status": 404}
+            {"name": "EnvironmentNotFound", "trigger": "environmentId 在 environments 表中不存在", "http_status": 404}
           ]
         },
         {
-          "name": "listKeys",
-          "signature": "(status: str | None, created_by: str | None, page: int, size: int) -> tuple[list[SshKey], int]",
-          "precondition": "page >= 1，1 <= size <= 100",
-          "postcondition": "返回符合条件的密钥列表（不含加密私钥和明文私钥）和总数量，列表按created_at降序排列",
-          "description": "按状态和创建人筛选查询密钥列表，支持分页",
-          "exceptions": []
-        },
-        {
-          "name": "decryptKey",
-          "signature": "(key_id: str, session_token: str) -> DecryptedKey",
-          "precondition": "key_id指向的密钥必须存在且status=active；session_token必须通过内部认证校验",
-          "postcondition": "解密后的DecryptedKey值对象返回给调用方，私钥明文仅存于内存，不落盘、不入日志、不缓存，记录审计日志（action=key.decrypt）",
-          "description": "解密SSH私钥：验证session_token→加载加密数据→使用PBKDF2派生密钥→AES-256-GCM解密→返回明文私钥",
+          "name": "GetKeyDetail",
+          "signature": "(ctx context.Context, keyId int64) -> KeyDetail",
+          "precondition": "keyId 对应的密钥记录必须存在于 ssh_keys 表中",
+          "postcondition": "返回密钥的完整元信息 KeyDetail（不含 encrypted_private_key 和 passphrase_salt）",
+          "description": "获取单个密钥的详细元信息，仅返回可见元数据不返回私钥",
           "exceptions": [
-            {"name": "KeyNotFoundException", "trigger": "指定key_id不存在", "http_status": 404},
-            {"name": "KeyRevokedException", "trigger": "密钥status=revoked，已吊销不可解密", "http_status": 409},
-            {"name": "InvalidSessionException", "trigger": "session_token无效或已过期", "http_status": 403},
-            {"name": "DecryptionFailedException", "trigger": "AES解密失败（密文损坏、密钥派生参数错误等）", "http_status": 500}
+            {"name": "KeyNotFound", "trigger": "keyId 在 ssh_keys 表中不存在", "http_status": 404}
           ]
         },
         {
-          "name": "revokeKey",
-          "signature": "(key_id: str, operator_id: str, operator_name: str) -> None",
-          "precondition": "key_id指向的密钥必须存在且status=active",
-          "postcondition": "密钥status更新为revoked，revoked_at设置为当前时间，密钥不可再用于解密操作，记录审计日志（action=key.revoke）",
-          "description": "吊销指定密钥：标记status=revoked并设置revoked_at时间戳",
+          "name": "DeleteKey",
+          "signature": "(ctx context.Context, keyId int64, actor string) -> void",
+          "precondition": "keyId 对应的密钥记录必须存在于 ssh_keys 表中",
+          "postcondition": "密钥记录已从 ssh_keys 表中物理删除；审计日志已记录 key.delete 操作",
+          "description": "物理删除指定的 SSH 密钥及其环境绑定关系。删除后不可恢复。",
           "exceptions": [
-            {"name": "KeyNotFoundException", "trigger": "指定key_id不存在", "http_status": 404},
-            {"name": "KeyAlreadyRevokedException", "trigger": "密钥已处于revoked状态", "http_status": 409}
+            {"name": "KeyNotFound", "trigger": "keyId 在 ssh_keys 表中不存在", "http_status": 404}
           ]
         },
         {
-          "name": "calculateFingerprint",
-          "signature": "(public_key: str) -> str",
-          "precondition": "public_key为合法SSH公钥格式（RFC 4253，以'ssh-rsa'或'ssh-ed25519'等开头）",
-          "postcondition": "返回SHA256公钥指纹字符串，格式为SHA256:base64",
-          "description": "计算SSH公钥的SHA256指纹，用于密钥去重和身份标识",
+          "name": "VerifyKeyConnection",
+          "signature": "(ctx context.Context, keyId int64, serverHost string, serverPort int) -> VerificationResult",
+          "precondition": "keyId 对应的密钥必须存在且可解密；serverHost 和 serverPort 必须来自已验证的环境配置",
+          "postcondition": "密钥已解密并建立 SSH 连接尝试。Success=true 时表示连接成功；Success=false 时 Message 包含具体失败原因。不修改任何持久化数据。",
+          "description": "解密指定密钥，尝试 SSH 连接到目标服务器，验证密钥有效性和服务器可达性",
           "exceptions": [
-            {"name": "InvalidKeyFormatException", "trigger": "public_key格式非法，无法解析公钥内容", "http_status": 400}
+            {"name": "KeyNotFound", "trigger": "keyId 在 ssh_keys 表中不存在", "http_status": 404},
+            {"name": "DecryptionFailure", "trigger": "密钥解密失败（加密密钥错误或数据损坏）", "http_status": 500},
+            {"name": "ConnectionFailed", "trigger": "SSH 连接握手失败（认证被拒、主机密钥不匹配、连接超时等）", "http_status": 502}
+          ]
+        },
+        {
+          "name": "GetDecryptedKeySession",
+          "signature": "(ctx context.Context, keyId int64) -> DecryptedKeySession",
+          "precondition": "keyId 对应的密钥必须存在于 ssh_keys 表中且可正常解密",
+          "postcondition": "密钥已解密并返回 DecryptedKeySession（包含私钥内容和指纹）。本服务不缓存解密后的密钥。调用方必须在使用后立即清零内存中的私钥数据。",
+          "description": "内部方法。解密指定密钥并返回完整的密钥会话信息，供部署引擎建立 SSH 连接",
+          "exceptions": [
+            {"name": "KeyNotFound", "trigger": "keyId 在 ssh_keys 表中不存在", "http_status": 404},
+            {"name": "DecryptionFailure", "trigger": "密钥解密失败（加密密钥错误或数据损坏）", "http_status": 500}
           ]
         }
       ],
       "repository_dependencies": [
-        "findById(key_id: str) -> SshKey | None",
-        "findByName(name: str) -> SshKey | None",
-        "findAll(status: str | None, created_by: str | None, offset: int, limit: int, sort: str) -> list[SshKey]",
-        "countAll(status: str | None, created_by: str | None) -> int",
-        "existsByFingerprint(fingerprint: str) -> bool",
-        "save(ssh_key: SshKey) -> SshKey",
-        "update(ssh_key: SshKey) -> None"
-      ]
-    },
-    {
-      "name": "EncryptionService",
-      "description": "加密解密技术服务，封装AES-256-GCM加密、PBKDF2密钥派生和公钥指纹计算等密码学操作",
-      "methods": [
-        {
-          "name": "encryptPrivateKey",
-          "signature": "(private_key: str, master_key: bytes) -> EncryptedKeyData",
-          "precondition": "private_key非空；master_key为32字节的AES-256主密钥",
-          "postcondition": "生成随机salt和IV，使用PBKDF2-HMAC-SHA256派生加密密钥，使用AES-256-GCM加密私钥，返回包含密文+IV+salt的EncryptedKeyData",
-          "description": "使用主密钥对SSH私钥执行AES-256-GCM加密",
-          "exceptions": [
-            {"name": "EncryptionException", "trigger": "加密过程中发生异常（如系统熵源不足）", "http_status": 500}
-          ]
-        },
-        {
-          "name": "decryptPrivateKey",
-          "signature": "(encrypted_data: EncryptedKeyData, master_key: bytes) -> str",
-          "precondition": "encrypted_data包含合法的密文、IV和salt；master_key为32字节主密钥",
-          "postcondition": "使用PBKDF2-HMAC-SHA256派生解密密钥，执行AES-256-GCM解密，返回私钥明文",
-          "description": "使用主密钥对加密的SSH私钥执行AES-256-GCM解密",
-          "exceptions": [
-            {"name": "DecryptionException", "trigger": "AES-GCM认证失败（密文损坏或密钥错误）、派生参数异常", "http_status": 500}
-          ]
-        },
-        {
-          "name": "deriveKey",
-          "signature": "(master_key: bytes, salt: bytes) -> bytes",
-          "precondition": "master_key为32字节；salt为16字节随机值",
-          "postcondition": "使用PBKDF2-HMAC-SHA256迭代100000次，返回32字节派生密钥",
-          "description": "使用PBKDF2从主密钥派生每次加密使用的具体AES密钥",
-          "exceptions": []
-        },
-        {
-          "name": "calculateFingerprint",
-          "signature": "(public_key: str) -> str",
-          "precondition": "public_key为合法SSH公钥格式",
-          "postcondition": "返回格式为SHA256:base64的指纹字符串",
-          "description": "计算SSH公钥的SHA256指纹",
-          "exceptions": [
-            {"name": "InvalidKeyFormatException", "trigger": "无法解析公钥内容", "http_status": 400}
-          ]
-        }
-      ],
-      "repository_dependencies": []
-    },
-    {
-      "name": "SessionValidator",
-      "description": "内部会话令牌验证服务，校验部署执行服务发起的解密请求是否持有合法令牌",
-      "methods": [
-        {
-          "name": "validateToken",
-          "signature": "(session_token: str) -> bool",
-          "precondition": "session_token非空",
-          "postcondition": "返回布尔值表示令牌是否有效且在有效期内",
-          "description": "验证内部会话令牌的合法性和时效性",
-          "exceptions": []
-        }
-      ],
-      "repository_dependencies": [
-        "findValidSession(token: str) -> Session | None"
+        "FindById(id int64) -> SshKey?",
+        "FindByEnvironmentId(environmentId int64) -> []SshKey",
+        "FindByEnvironmentIdAndKeyName(environmentId int64, keyName string) -> SshKey?",
+        "Insert(key *SshKey) -> SshKey",
+        "Delete(id int64) -> error",
+        "ExistsByFingerprint(fingerprint string) -> bool"
       ]
     }
   ],
   "business_rules": {
     "invariants": [
-      "同一密钥指纹（fingerprint）在数据库中必须唯一，防止同一SSH密钥对重复存储",
-      "已吊销（revoked）的密钥不得再用于解密操作，任何解密请求必须前置检查status=active",
-      "私钥解密后的明文内容仅存在于方法调用栈和返回值的堆内存中，不得持久化到磁盘、数据库、日志文件或缓存系统",
-      "加密私钥使用的AES密钥必须通过PBKDF2-HMAC-SHA256从系统主密钥+随机盐值派生，不得使用固定密钥或直接存储主密钥",
-      "每次加密操作必须使用独立的随机IV和随机盐值，不得重用",
-      "密钥名称在单个用户范围内应可识别，但不强制全局唯一"
+      "所有 SSH 私钥在写入数据库前必须经过 AES-256-GCM 加密，禁止明文存储私钥",
+      "同一环境下密钥名 (key_name) 必须唯一，由数据库唯一索引 uq_ssh_keys_environment_key 保证",
+      "公钥指纹 (fingerprint) 必须可溯源：每次绑定密钥时从私钥中提取公钥并计算 SHA256 指纹，禁止手动指定或修改",
+      "所有密钥相关的对外响应 DTO 永远不包含私钥内容 (encrypted_private_key) 和盐值 (passphrase_salt)",
+      "解密后的密钥会话 (DecryptedKeySession) 仅限部署引擎内部使用，不得暴露给 Web 控制台或写入审计日志",
+      "密钥删除操作不可逆，物理删除后无法恢复"
     ],
     "state_machines": [
       {
         "entity": "SshKey",
-        "states": ["active", "revoked"],
+        "states": ["active", "deleted"],
         "transitions": [
-          {"from": "active", "to": "revoked", "trigger": "运维人员执行吊销操作", "actor": "运维人员（operator角色）"}
+          {"from": "nonexistent", "to": "active", "trigger": "BindKey 成功执行", "actor": "用户（Web 控制台）"},
+          {"from": "active", "to": "deleted", "trigger": "DeleteKey 成功执行", "actor": "用户（Web 控制台）"}
         ],
         "irreversible_rules": [
-          "revoked状态的密钥不可回退到active状态——吊销操作不可逆",
-          "已吊销密钥的加密私钥数据保留在数据库中，不可物理删除，以支持历史部署记录的审计追溯"
+          "active -> deleted 转换不可逆：密钥一旦删除无法恢复，部署引擎将无法使用该密钥建立连接。如需重新使用必须上传新密钥。"
         ],
-        "concurrency": "密钥吊销操作为单线程事务，通过数据库行级锁（SELECT ... FOR UPDATE）防止并发重复吊销。解密操作不持有锁，仅检查status字段"
+        "concurrency": "同一环境下并发绑定同名密钥时，由数据库唯一索引 (environment_id, key_name) 保证只插入成功一条，其余请求返回 409 Conflict。并发删除操作基于 PostgreSQL 行级锁保护，同一时刻只有一个删除请求能成功。"
       }
     ],
     "cross_service_rules": [
-      "密钥吊销后，必须通过审计日志服务的 POST /api/internal/audit-logs 接口记录完整的吊销操作轨迹（action=key.revoke, resource_type=key）",
-      "密钥创建后，必须通过审计日志服务记录创建操作（action=key.create, resource_type=key）",
-      "密钥解密后，必须通过审计日志服务记录解密操作（action=key.decrypt, resource_type=key），但detail中不得包含解密后的私钥明文",
-      "密钥管理服务不直接调用部署执行服务或环境管理服务；密钥吊销后，环境管理服务应通过查询密钥状态自行感知并标记关联环境",
-      "密钥解密接口（POST /api/internal/keys/decrypt）仅接受来自部署执行服务的经过认证的内部请求，通过session_token机制进行身份验证"
+      "绑定密钥 (BindKey) 完成后必须同步调用审计日志服务记录 key.bind 操作，请求参数为：action=key.bind, actor=当前用户, resource_type=key, resource_id=新密钥 ID, detail={key_name, environment_id, fingerprint}",
+      "删除密钥 (DeleteKey) 完成后必须同步调用审计日志服务记录 key.delete 操作，请求参数为：action=key.delete, actor=当前用户, resource_type=key, resource_id=被删除密钥 ID, detail={key_name, environment_id}",
+      "获取解密密钥会话 (GetDecryptedKeySession) 由部署引擎在部署流程中内部调用，密钥管理服务本身不记录该操作的审计日志（由部署引擎统一记录部署过程），但需在应用日志中记录脱敏操作轨迹（仅记录 key_id 和时间，不记录私钥内容）",
+      "环境管理服务删除环境时，必须先清理该环境下的所有密钥绑定，否则数据库外键约束会阻止删除。环境管理服务应在事务中先调用本服务的 DeleteKey 接口再删除环境。"
     ]
   }
 }
