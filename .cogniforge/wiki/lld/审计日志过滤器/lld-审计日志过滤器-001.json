@@ -1,0 +1,259 @@
+{
+  "meta": {
+    "doc_id": "lld-审计日志过滤器-001",
+    "type": "lld",
+    "module_type": "gateway",
+    "module": "审计日志过滤器",
+    "title": "审计日志过滤器详细设计",
+    "author": "design_agent",
+    "created": "2026-05-22"
+  },
+  "overview": {
+    "description": "请求级审计过滤器，作为API网关的中间件组件，自动捕获所有经过网关的HTTP请求元数据。在请求处理路径中以异步非阻塞方式工作：提取请求方身份（JWT Token解析）、来源IP、请求时间戳、HTTP方法和路径、请求体摘要；待上游服务响应后捕获响应状态码和耗时；将完整的原始审计事件打包后投递到Redis Stream（audit:events），由审计日志服务异步消费持久化。过滤器本身不阻塞请求流程，投递失败不影响主请求路径的响应返回，保证网关的可用性不受审计功能影响。",
+    "dependencies": ["API网关", "认证中间件", "Redis缓存", "审计日志服务"],
+    "tech_stack": ["Go", "Gin", "Redis 7+", "JWT (JSON Web Token)"]
+  },
+  "data_models": [
+    {
+      "name": "AuditEvent",
+      "type": "store",
+      "ownership": "owned",
+      "description": "审计事件消息体，由过滤器在请求处理过程中组装，投递到Redis Stream（audit:events）供审计日志服务消费。每一条代表一次API请求的完整审计记录。",
+      "fields": [
+        {"name": "event_type", "type": "string", "required": true, "description": "事件类型，固定为 audit"},
+        {"name": "event_id", "type": "string (UUID)", "required": true, "description": "事件唯一标识，由过滤器生成"},
+        {"name": "timestamp", "type": "string (ISO8601)", "required": true, "description": "事件发生的服务器时间"},
+        {"name": "operator", "type": "string", "required": true, "description": "操作人用户名，从JWT Token的sub或username声明提取"},
+        {"name": "operator_id", "type": "string (UUID)", "required": false, "description": "操作人用户ID，从JWT Token的sub声明提取"},
+        {"name": "action", "type": "string", "required": true, "description": "操作描述，由过滤器根据HTTP方法和路径自动生成，格式为「{method} {path}」"},
+        {"name": "action_type", "type": "string", "required": true, "description": "操作类型分类，由过滤器根据路径前缀自动归类：deploy/project/environment/key/version/auth/rollback/file"},
+        {"name": "target", "type": "string", "required": false, "description": "操作对象标识，由过滤器从路径参数中提取"},
+        {"name": "target_type", "type": "string", "required": false, "description": "操作对象类型：project/environment/key/version/task/file"},
+        {"name": "result", "type": "string", "required": true, "description": "操作结果：success/failure，根据上游服务响应的HTTP状态码判断（2xx/3xx为success，其余为failure）"},
+        {"name": "detail", "type": "string", "required": false, "description": "操作详情JSON，包含请求体摘要和响应体摘要（仅保留关键字段，不包含敏感信息如密钥内容）"},
+        {"name": "http_method", "type": "string", "required": true, "description": "HTTP请求方法：GET/POST/PUT/DELETE"},
+        {"name": "http_path", "type": "string", "required": true, "description": "HTTP请求路径"},
+        {"name": "http_status", "type": "integer", "required": true, "description": "上游服务响应的HTTP状态码"},
+        {"name": "duration_ms", "type": "integer", "required": true, "description": "请求处理耗时（毫秒），从过滤器接收到上游响应返回的时间间隔"},
+        {"name": "ip_address", "type": "string", "required": true, "description": "客户端来源IP地址，支持IPv4和IPv6格式，从X-Forwarded-For或X-Real-IP或RemoteAddr提取"},
+        {"name": "user_agent", "type": "string", "required": false, "description": "客户端User-Agent请求头"},
+        {"name": "request_id", "type": "string (UUID)", "required": true, "description": "请求追踪ID，由API网关在请求入口处生成，贯穿整个请求链路"},
+        {"name": "project_context", "type": "string", "required": false, "description": "当前项目上下文ID，从JWT Token的project声明提取"}
+      ]
+    },
+    {
+      "name": "AuditFilterConfig",
+      "type": "config",
+      "ownership": "owned",
+      "description": "审计日志过滤器的运行时配置，控制事件采样率、排除路径、Redis Stream连接参数等。配置项在过滤器初始化时加载，支持运行时通过配置中心热更新。",
+      "fields": [
+        {"name": "redis_stream_key", "type": "string", "required": true, "description": "Redis Stream键名，固定为 audit:events"},
+        {"name": "redis_consumer_group", "type": "string", "required": true, "description": "Redis消费者组名，固定为 audit-log-service"},
+        {"name": "max_stream_length", "type": "integer", "required": true, "description": "Redis Stream最大长度，超过后丢弃旧消息，默认100000"},
+        {"name": "publish_timeout_ms", "type": "integer", "required": true, "description": "Redis发布超时（毫秒），超时后放弃投递不阻塞请求，默认100"},
+        {"name": "exclude_paths", "type": "array[string]", "required": true, "description": "不审计的路径列表，如健康检查端点 /api/health、WebSocket端点 /api/v1/ws/"},
+        {"name": "exclude_methods", "type": "array[string]", "required": false, "description": "不审计的HTTP方法列表，默认仅排除 OPTIONS"},
+        {"name": "sample_rate", "type": "float", "required": true, "description": "审计采样率 0.0~1.0，默认1.0（全量采样）"},
+        {"name": "max_detail_body_bytes", "type": "integer", "required": true, "description": "记录到detail字段的请求/响应体最大字节数，超过则截断，默认4096"},
+        {"name": "sensitive_headers", "type": "array[string]", "required": true, "description": "存储在detail中需脱敏的请求头列表，默认包含 Authorization、Cookie、X-Session-Token"},
+        {"name": "sensitive_path_params", "type": "array[string]", "required": false, "description": "需脱敏的路径参数名列表，默认包含 passphrase、token、secret"},
+        {"name": "async_workers", "type": "integer", "required": true, "description": "异步投递的工作goroutine数量，默认4"},
+        {"name": "retry_count", "type": "integer", "required": true, "description": "投递失败最大重试次数，默认0（不重试）"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "PublishAuditEvent",
+      "method": "MQ",
+      "endpoint": "redis:audit:events (Redis Stream XADD)",
+      "description": "将组装好的审计事件消息投递到Redis Stream（audit:events），由审计日志服务的AuditEventConsumer异步消费。投递操作为非阻塞，使用独立的goroutine池处理，投递超时或Redis不可用时直接丢弃事件并记录WARN日志，不阻塞主请求路径。消息体为AuditEvent数据模型的JSON序列化。",
+      "parameters": [
+        {"name": "event_id", "type": "string (UUID)", "description": "事件唯一标识，由过滤器生成"},
+        {"name": "event_type", "type": "string", "description": "事件类型，固定为 audit"},
+        {"name": "timestamp", "type": "string (ISO8601)", "description": "事件发生时间"},
+        {"name": "operator", "type": "string", "description": "操作人用户名（从JWT Token提取）"},
+        {"name": "operator_id", "type": "string (UUID)", "description": "操作人用户ID（可选）"},
+        {"name": "action", "type": "string", "description": "操作描述，由过滤器根据请求路径自动生成"},
+        {"name": "action_type", "type": "string", "description": "操作类型，由过滤器根据请求路径前缀自动归类"},
+        {"name": "target", "type": "string", "description": "操作对象标识，由过滤器从路径参数中提取"},
+        {"name": "target_type", "type": "string", "description": "操作对象类型"},
+        {"name": "result", "type": "string", "description": "操作结果：success/failure"},
+        {"name": "detail", "type": "string", "description": "操作详情JSON（可选），最大4096字节"},
+        {"name": "http_method", "type": "string", "description": "HTTP请求方法"},
+        {"name": "http_path", "type": "string", "description": "HTTP请求路径"},
+        {"name": "http_status", "type": "integer", "description": "上游服务响应的HTTP状态码"},
+        {"name": "duration_ms", "type": "integer", "description": "请求处理耗时（毫秒）"},
+        {"name": "ip_address", "type": "string", "description": "客户端来源IP地址"},
+        {"name": "user_agent", "type": "string", "description": "客户端User-Agent（可选）"},
+        {"name": "request_id", "type": "string (UUID)", "description": "请求追踪ID"},
+        {"name": "project_context", "type": "string", "description": "当前项目上下文ID（可选）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "message_id": "string (Redis Stream消息ID, 格式为 timestamp-sequence)",
+          "published": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": "PUBLISH_TIMEOUT", "message": "Redis XADD 操作超时（超过 publish_timeout_ms），事件丢弃并记录WARN日志"},
+        {"code": "PUBLISH_FAILED", "message": "Redis连接中断或Stream不可写，事件丢弃并记录ERROR日志"},
+        {"code": "STREAM_OVERFLOW", "message": "Redis Stream长度超过 max_stream_length 上限，自动截断旧消息"}
+      ]
+    },
+    {
+      "name": "HealthCheck",
+      "method": "GET",
+      "endpoint": "/api/health",
+      "description": "网关健康检查端点，返回网关及审计过滤器的运行状态。该端点被配置在 exclude_paths 中，不进行审计采集。",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "status": "string (ok/unhealthy)",
+          "version": "string (服务版本号)",
+          "uptime_seconds": "integer",
+          "components": {
+            "redis": "string (connected/disconnected)",
+            "audit_filter": "string (running/degraded/stopped)"
+          }
+        }
+      },
+      "error_codes": [
+        {"code": 503, "message": "网关依赖的Redis或上游服务不可用"}
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "审计日志过滤器遵循「审计不影响请求」的首要原则。审计事件组装和投递过程中发生的所有错误均不可阻塞或延迟主请求路径。投递超时或Redis不可用时丢弃事件并记录WARN级别日志；事件体序列化失败时记录ERROR日志并跳过该事件；过滤器自身panic时由recovery中间件捕获并记录CRITICAL告警，但不影响请求继续向下游转发。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": 500,
+        "name": "事件发布失败",
+        "description": "审计事件投递到Redis Stream时发生错误。触发条件：Redis连接中断、XADD命令执行超时、Stream不可写。处理方式：丢弃事件并记录服务日志，不重试（retry_count默认0），不阻塞请求。持续失败时触发运维告警。"
+      },
+      {
+        "code": 503,
+        "name": "Redis不可用",
+        "description": "过滤器依赖的Redis服务完全不可用，所有审计事件投递均失败。触发条件：Redis宕机、网络分区。处理方式：所有请求正常转发到上游服务，审计事件全部丢弃。健康检查接口返回 degraded 状态。Redis恢复后自动恢复正常采集。"
+      }
+    ]
+  },
+  "route_table": [
+    {
+      "path_pattern": "/api/health",
+      "upstream": "API网关（自处理）",
+      "description": "网关健康检查端点，被 exclude_paths 排除，不进行审计采集"
+    },
+    {
+      "path_pattern": "/api/v1/projects**",
+      "upstream": "项目管理服务",
+      "description": "项目管理相关API：项目CRUD、成员管理、项目切换。action_type 归类为 project"
+    },
+    {
+      "path_pattern": "/api/v1/environments**",
+      "upstream": "环境管理服务",
+      "description": "环境配置管理API：环境CRUD、健康检查、密钥绑定。action_type 归类为 environment"
+    },
+    {
+      "path_pattern": "/api/v1/keys**",
+      "upstream": "密钥管理服务",
+      "description": "SSH密钥管理API：密钥CRUD、验证、绑定解绑。action_type 归类为 key"
+    },
+    {
+      "path_pattern": "/api/v1/versions**",
+      "upstream": "版本管理服务",
+      "description": "版本历史查询API：版本列表、版本详情。action_type 归类为 version"
+    },
+    {
+      "path_pattern": "/api/v1/deploy**",
+      "upstream": "部署编排服务",
+      "description": "部署任务API：触发部署、查询状态、回滚操作。action_type 归类为 deploy（部署）或 rollback（回滚）"
+    },
+    {
+      "path_pattern": "/api/v1/ws/deploy/**",
+      "upstream": "部署编排服务",
+      "description": "部署进度WebSocket端点。根据 exclude_paths 配置可选是否审计，WS长连接仅记录连接建立事件"
+    },
+    {
+      "path_pattern": "/api/v1/audit-logs**",
+      "upstream": "审计日志服务",
+      "description": "审计日志查询与导出API：日志查询、CSV导出、告警查询。action_type 归类为 auth"
+    },
+    {
+      "path_pattern": "/internal/v1/files/**",
+      "upstream": "文件存储服务",
+      "description": "文件存储内部API：上传、下载、列表、删除。action_type 归类为 file。该路径为内部服务间调用，从请求来源判断是否记录审计"
+    }
+  ],
+  "middleware_chain": [
+    "Client Request → Recovery (panic恢复) → RequestID (生成追踪ID) → AccessLog (访问日志) → CORS (跨域处理) → Auth (JWT认证与角色校验) → AuditFilter (审计日志过滤器) → RateLimiter (限流) → Router (路由分发) → Upstream Service",
+    "Response ← Recovery ← RequestID ← AccessLog ← CORS ← Auth ← AuditFilter ← RateLimiter ← Router ← Upstream Service"
+  ],
+  "auth_policy": {
+    "public_endpoints": [
+      "/api/health"
+    ],
+    "auth_method": "JWT Bearer Token，从 Authorization 请求头提取。Token中包含用户身份声明（sub/username/role）和当前项目上下文（project_id）。Token由认证中间件签发和校验，审计过滤器仅从已校验的JWT声明中读取信息，不重复执行认证逻辑。",
+    "role_path_map": [
+      {"path": "GET /api/v1/projects", "roles": ["admin", "maintainer", "developer", "viewer"]},
+      {"path": "POST /api/v1/projects", "roles": ["admin"]},
+      {"path": "GET /api/v1/projects/:projectId", "roles": ["admin", "maintainer", "developer", "viewer"]},
+      {"path": "PUT /api/v1/projects/:projectId", "roles": ["admin", "maintainer"]},
+      {"path": "DELETE /api/v1/projects/:projectId", "roles": ["admin"]},
+      {"path": "GET /api/v1/projects/:projectId/members", "roles": ["admin", "maintainer", "developer", "viewer"]},
+      {"path": "POST /api/v1/projects/:projectId/members", "roles": ["admin"]},
+      {"path": "PUT /api/v1/projects/:projectId/members/:userId", "roles": ["admin"]},
+      {"path": "DELETE /api/v1/projects/:projectId/members/:userId", "roles": ["admin"]},
+      {"path": "GET /api/v1/projects/:projectId/environments", "roles": ["admin", "maintainer", "developer", "viewer"]},
+      {"path": "POST /api/v1/environments", "roles": ["admin", "maintainer"]},
+      {"path": "GET /api/v1/environments/:envId", "roles": ["admin", "maintainer", "developer", "viewer"]},
+      {"path": "PUT /api/v1/environments/:envId", "roles": ["admin", "maintainer"]},
+      {"path": "DELETE /api/v1/environments/:envId", "roles": ["admin"]},
+      {"path": "POST /api/v1/environments/:envId/health-check", "roles": ["admin", "maintainer"]},
+      {"path": "POST /api/v1/environments/:envId/bind-key", "roles": ["admin", "maintainer"]},
+      {"path": "GET /api/v1/keys", "roles": ["admin", "maintainer", "developer"]},
+      {"path": "POST /api/v1/keys", "roles": ["admin", "maintainer"]},
+      {"path": "GET /api/v1/keys/:id", "roles": ["admin", "maintainer", "developer"]},
+      {"path": "PUT /api/v1/keys/:id", "roles": ["admin", "maintainer"]},
+      {"path": "DELETE /api/v1/keys/:id", "roles": ["admin"]},
+      {"path": "POST /api/v1/keys/:id/validate", "roles": ["admin", "maintainer"]},
+      {"path": "POST /api/v1/keys/:id/bind", "roles": ["admin", "maintainer"]},
+      {"path": "POST /api/v1/keys/:id/unbind", "roles": ["admin"]},
+      {"path": "GET /api/v1/versions**", "roles": ["admin", "maintainer", "developer", "viewer"]},
+      {"path": "POST /api/v1/deploy", "roles": ["admin", "maintainer", "developer"]},
+      {"path": "GET /api/v1/deploy/:taskId", "roles": ["admin", "maintainer", "developer", "viewer"]},
+      {"path": "POST /api/v1/deploy/:taskId/rollback", "roles": ["admin", "maintainer"]},
+      {"path": "WS /api/v1/ws/deploy/:taskId", "roles": ["admin", "maintainer", "developer", "viewer"]},
+      {"path": "GET /api/v1/audit-logs**", "roles": ["admin"]},
+      {"path": "POST /api/v1/audit-logs", "roles": ["admin", "maintainer", "developer"]},
+      {"path": "GET /api/v1/audit-logs/export", "roles": ["admin"]},
+      {"path": "GET /api/v1/audit-logs/alerts", "roles": ["admin"]}
+    ],
+    "token_expiry": "access 2h, refresh 7d"
+  },
+  "rate_limiting": {
+    "global": "每 IP 100 req/s",
+    "per_user": "每 user 1000 req/min",
+    "special_endpoints": [
+      {"endpoint": "POST /api/v1/deploy", "limit": "每 user 10 req/min"},
+      {"endpoint": "POST /api/v1/deploy/:taskId/rollback", "limit": "每 user 5 req/min"},
+      {"endpoint": "GET /api/v1/audit-logs/export", "limit": "每 user 3 req/min"},
+      {"endpoint": "POST /api/v1/keys", "limit": "每 user 30 req/min"},
+      {"endpoint": "POST /api/v1/keys/:id/validate", "limit": "每 user 20 req/min"},
+      {"endpoint": "POST /api/v1/environments/:envId/health-check", "limit": "每 user 10 req/min"},
+      {"endpoint": "POST /api/v1/projects", "limit": "每 user 10 req/min"},
+      {"endpoint": "GET /api/v1/audit-logs/export", "limit": "每 user 3 req/min"},
+      {"endpoint": "POST /api/v1/projects/:projectId/members", "limit": "每 user 20 req/min"},
+      {"endpoint": "PUT /api/v1/keys/:id", "limit": "每 user 20 req/min"}
+    ]
+  }
+}

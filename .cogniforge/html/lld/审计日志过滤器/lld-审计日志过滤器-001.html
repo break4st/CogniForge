@@ -1,0 +1,981 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>审计日志过滤器详细设计 — lld-审计日志过滤器-001</title>
+<style>
+  :root {
+    --c-bg: #0b0f19; --c-surface: #131926; --c-card: #191e2e;
+    --c-border: #252b3d; --c-text: #c8d2e0; --c-heading: #e2e8f4;
+    --c-muted: #6b7394; --c-accent: #5b8def; --c-accent2: #7c6ff7;
+    --c-green: #34d399; --c-amber: #fbbf24; --c-red: #f87171;
+    --c-cyan: #22d3ee; --radius: 10px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+    background: var(--c-bg); color: var(--c-text);
+    line-height: 1.75; font-size: 15px;
+    max-width: 860px; margin: 0 auto; padding: 48px 40px 80px;
+  }
+  body:has(.page-layout) { max-width: none; margin: 0; padding: 0; }
+  .top-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 40px; padding-bottom: 24px;
+    border-bottom: 1px solid var(--c-border);
+  }
+  .doc-id { font-size: 0.8em; color: var(--c-muted); font-family: monospace; }
+  .badge {
+    display: inline-flex; padding: 5px 14px; border-radius: 20px;
+    font-size: 0.78em; font-weight: 500;
+    background: rgba(255,255,255,0.04); border: 1px solid var(--c-border);
+    color: var(--c-muted);
+  }
+  .badge.accent { border-color: rgba(91,141,239,0.3); color: var(--c-accent); }
+  .badge.green  { border-color: rgba(52,211,153,0.3); color: var(--c-green); }
+  h1 {
+    font-size: 2.4em; font-weight: 800; color: #fff;
+    letter-spacing: -1px; line-height: 1.2; margin-bottom: 6px;
+  }
+  h1 span {
+    background: linear-gradient(135deg, var(--c-accent), var(--c-cyan));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .meta { font-size: 0.85em; color: var(--c-muted); margin-bottom: 4px; }
+  .section { margin-bottom: 36px; }
+  .section-header {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 18px;
+  }
+  .section-header .icon {
+    width: 40px; height: 40px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.2em; flex-shrink: 0;
+  }
+  .section-header h2 {
+    font-size: 1.25em; font-weight: 700; color: var(--c-heading);
+  }
+  .section-body {
+    background: var(--c-card); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 28px 32px;
+  }
+  .section-body p { margin-bottom: 12px; }
+  .section-body p:last-child { margin-bottom: 0; }
+  .req-item {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .req-item:last-child { margin-bottom: 0; }
+  .req-item h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); margin-bottom: 6px; }
+  .req-desc { font-size: 0.9em; color: var(--c-muted); margin-bottom: 10px; }
+  .ac-list { list-style: none; padding: 0; margin: 0; }
+  .ac-list li {
+    padding: 4px 0 4px 18px; position: relative;
+    font-size: 0.88em; color: var(--c-text);
+  }
+  .ac-list li::before {
+    content: ""; position: absolute; left: 0; top: 12px;
+    width: 6px; height: 6px; border-radius: 50%; background: var(--c-green);
+  }
+  .ac-label {
+    font-size: 0.75em; font-weight: 600; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .story-item {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 14px 18px; border-radius: 8px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    margin-bottom: 8px;
+  }
+  .story-item:last-child { margin-bottom: 0; }
+  .story-role {
+    font-size: 0.8em; font-weight: 600; color: var(--c-accent);
+    background: rgba(91,141,239,0.1); padding: 2px 10px;
+    border-radius: 12px; white-space: nowrap; flex-shrink: 0;
+  }
+  .story-text { font-size: 0.92em; }
+  .story-text .goal { color: var(--c-muted); font-size: 0.88em; }
+  .priority-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .priority-tag {
+    display: inline-flex; padding: 6px 14px; border-radius: 6px;
+    font-size: 0.85em; font-weight: 500;
+  }
+  .priority-tag.high   { background: rgba(248,113,113,0.1);  color: #fca5a5; }
+  .priority-tag.medium { background: rgba(251,191,36,0.1);  color: #fcd34d; }
+  .priority-tag.low    { background: rgba(107,115,148,0.15); color: #9ca3af; }
+  .comp-item {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .comp-item h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); }
+  .comp-type {
+    font-size: 0.78em; color: var(--c-accent); margin-bottom: 8px;
+  }
+  .comp-resp { margin-top: 8px; font-size: 0.88em; }
+  .comp-resp li { margin: 2px 0; }
+
+  /* ── Contract Groups ── */
+  .contract-group {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); margin-bottom: 12px; overflow: hidden;
+  }
+  .contract-group[open] { border-color: rgba(91,141,239,0.25); }
+  .contract-group summary {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 20px; cursor: pointer; user-select: none;
+    font-weight: 600; font-size: 0.95em; color: var(--c-heading);
+    background: rgba(255,255,255,0.015);
+  }
+  .contract-group summary:hover { background: rgba(255,255,255,0.03); }
+  .contract-group summary::-webkit-details-marker { display: none; }
+  .contract-group summary::before {
+    content: "›"; display: inline-block; font-size: 1.3em; font-weight: 400;
+    width: 16px; color: var(--c-muted); transition: transform 0.2s;
+  }
+  .contract-group[open] summary::before { transform: rotate(90deg); }
+  .cg-count {
+    font-size: 0.78em; font-weight: 500; color: var(--c-muted);
+    background: rgba(255,255,255,0.04); padding: 2px 10px; border-radius: 10px;
+  }
+  .contract-card {
+    padding: 16px 20px; border-top: 1px solid var(--c-border);
+  }
+  .contract-card:first-of-type { border-top: 1px solid var(--c-border); }
+  .cc-head {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .cc-head .cc-name { font-weight: 600; font-size: 0.93em; color: var(--c-heading); }
+  .method-badge {
+    font-family: monospace; font-size: 0.75em; font-weight: 700;
+    padding: 3px 8px; border-radius: 5px; white-space: nowrap;
+  }
+  .method-badge.get      { background: rgba(52,211,153,0.15);  color: var(--c-green); }
+  .method-badge.post     { background: rgba(91,141,239,0.15);  color: var(--c-accent); }
+  .method-badge.put      { background: rgba(251,191,36,0.12);  color: var(--c-amber); }
+  .method-badge.delete   { background: rgba(248,113,113,0.12); color: var(--c-red); }
+  .method-badge.patch    { background: rgba(34,211,238,0.12);  color: var(--c-cyan); }
+  .method-badge.mq       { background: rgba(124,111,247,0.13); color: var(--c-accent2); }
+  .method-badge.ws       { background: rgba(124,111,247,0.13); color: var(--c-accent2); }
+  .method-badge.frontend { background: rgba(34,211,238,0.12);  color: var(--c-cyan); }
+  .method-badge.internal { background: rgba(107,115,148,0.15); color: var(--c-muted); }
+  .cc-endpoint {
+    font-family: monospace; font-size: 0.82em; color: var(--c-text);
+    background: rgba(255,255,255,0.03); padding: 2px 8px; border-radius: 4px;
+  }
+  .cc-type-tag {
+    font-size: 0.72em; font-weight: 600; padding: 3px 8px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    background: rgba(91,141,239,0.1); color: var(--c-accent);
+  }
+  .cc-meta {
+    font-size: 0.82em; color: var(--c-muted); margin-bottom: 6px;
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .cc-meta .cc-consumer {
+    font-size: 0.85em; color: var(--c-accent2);
+    background: rgba(124,111,247,0.08); padding: 1px 8px; border-radius: 4px;
+  }
+  .cc-desc { font-size: 0.85em; color: var(--c-muted); margin-bottom: 10px; }
+  .body-table {
+    width: 100%; border-collapse: collapse; font-size: 0.8em; margin: 6px 0 4px;
+  }
+  .body-table th {
+    text-align: left; padding: 5px 10px; font-weight: 600;
+    color: var(--c-muted); font-size: 0.85em; text-transform: uppercase;
+    letter-spacing: 0.4px; border-bottom: 2px solid var(--c-border);
+    background: rgba(255,255,255,0.015);
+  }
+  .body-table td {
+    padding: 4px 10px; border-bottom: 1px solid rgba(255,255,255,0.04);
+    color: var(--c-text);
+  }
+  .body-table .field-type { color: var(--c-accent); font-family: monospace; font-size: 0.9em; }
+  .body-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 2px;
+  }
+  .model-item {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .model-item h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); }
+  table {
+    width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9em;
+  }
+  th {
+    text-align: left; padding: 10px 14px; font-weight: 600;
+    color: var(--c-muted); font-size: 0.8em; text-transform: uppercase;
+    letter-spacing: 0.5px; border-bottom: 2px solid var(--c-border);
+  }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--c-border); }
+  tr:hover td { background: rgba(255,255,255,0.015); }
+  .footer {
+    margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--c-border);
+    text-align: center; color: var(--c-muted); font-size: 0.8em;
+  }
+  /* ── System Overview ── */
+  .overview-hero {
+    background: linear-gradient(135deg, rgba(124,111,247,0.08), rgba(91,141,239,0.05));
+    border: 1px solid rgba(124,111,247,0.18); border-radius: var(--radius);
+    padding: 24px 28px; margin-bottom: 24px;
+  }
+  .overview-hero .hero-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-accent2);
+    text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 10px;
+  }
+  .overview-hero p { font-size: 1.02em; line-height: 1.85; color: var(--c-text); }
+  .role-cards {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
+  }
+  .role-card {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 22px 20px; text-align: center;
+  }
+  .role-card .role-icon {
+    width: 48px; height: 48px; border-radius: 50%; margin: 0 auto 12px;
+    display: flex; align-items: center; justify-content: center; font-size: 1.3em;
+  }
+  .role-card .role-name {
+    font-size: 1em; font-weight: 700; color: var(--c-heading); margin-bottom: 10px;
+  }
+  .role-card .role-perms {
+    font-size: 0.84em; color: var(--c-muted); line-height: 1.7;
+    list-style: none; padding: 0;
+  }
+  .role-card .role-perms li { padding: 1px 0; }
+
+  /* ── Architecture Diagram ── */
+  .arch-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 24px 20px 20px; margin-bottom: 22px;
+  }
+  .arch-tier {
+    display: flex; align-items: center; margin-bottom: 4px;
+  }
+  .arch-tier-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0;
+    width: 52px; text-align: right; padding-right: 16px;
+  }
+  .arch-tier-boxes { display: flex; gap: 8px; flex: 1; flex-wrap: wrap; }
+  .arch-box {
+    border-radius: 8px; padding: 12px 16px; text-align: center;
+    font-weight: 600; font-size: 0.85em; flex: 1; min-width: 80px;
+  }
+  .arch-box.frontend {
+    background: rgba(34,211,238,0.12); border: 1px solid rgba(34,211,238,0.28);
+    color: var(--c-cyan);
+  }
+  .arch-box.gateway {
+    background: rgba(124,111,247,0.13); border: 1px solid rgba(124,111,247,0.3);
+    color: var(--c-accent2);
+  }
+  .arch-box.service {
+    background: rgba(91,141,239,0.1); border: 1px solid rgba(91,141,239,0.22);
+    color: var(--c-accent);
+  }
+  .arch-box.db {
+    background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.22);
+    color: var(--c-green);
+  }
+  .arch-box.cache {
+    background: rgba(251,191,36,0.09); border: 1px solid rgba(251,191,36,0.22);
+    color: var(--c-amber);
+  }
+  .arch-box.mq {
+    background: rgba(248,113,113,0.07); border: 1px solid rgba(248,113,113,0.18);
+    color: var(--c-red);
+  }
+  .arch-overview {
+    display: flex; align-items: center; gap: 0; margin-bottom: 20px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 8px; overflow: hidden;
+  }
+  .arch-ov-item {
+    flex: 1; text-align: center; padding: 16px 12px; position: relative;
+  }
+  .arch-ov-item .ov-count {
+    font-size: 1.8em; font-weight: 800; line-height: 1.1;
+  }
+  .arch-ov-item .ov-label {
+    font-size: 0.75em; color: var(--c-muted); margin-top: 4px;
+  }
+  .arch-ov-arrow {
+    font-size: 1.1em; color: var(--c-muted); flex-shrink: 0;
+    padding: 0 2px;
+  }
+  .arch-style-badge {
+    display: inline-flex; padding: 6px 16px; border-radius: 20px;
+    font-size: 0.85em; font-weight: 700; margin-bottom: 16px;
+    background: linear-gradient(135deg, rgba(124,111,247,0.15), rgba(91,141,239,0.1));
+    border: 1px solid rgba(124,111,247,0.25); color: var(--c-accent2);
+  }
+  .arch-features {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px;
+    padding-top: 16px; border-top: 1px solid var(--c-border);
+  }
+  .arch-feature-tag {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 14px; border-radius: 18px; font-size: 0.82em; font-weight: 500;
+    background: rgba(255,255,255,0.03); border: 1px solid var(--c-border);
+    color: var(--c-text);
+  }
+  .arch-feature-tag .dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  }
+  .arch-desc { margin-bottom: 18px; color: var(--c-text); line-height: 1.8; }
+
+  /* ── Topology ── */
+  .topo-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 24px 20px 20px; margin-bottom: 22px;
+  }
+  .topo-tier {
+    display: flex; align-items: stretch; margin-bottom: 2px;
+  }
+  .topo-tier-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0;
+    width: 52px; text-align: right; padding-right: 16px; padding-top: 12px;
+  }
+  .topo-tier-content { flex: 1; display: flex; flex-wrap: wrap; gap: 8px; }
+  .topo-node {
+    border-radius: 8px; padding: 10px 15px; text-align: center;
+    font-weight: 600; font-size: 0.83em; flex: 1; min-width: 80px;
+  }
+  .topo-node.frontend {
+    background: rgba(34,211,238,0.12); border: 1px solid rgba(34,211,238,0.28);
+    color: var(--c-cyan);
+  }
+  .topo-node.gateway {
+    background: rgba(124,111,247,0.13); border: 1px solid rgba(124,111,247,0.3);
+    color: var(--c-accent2);
+  }
+  .topo-node.service {
+    background: rgba(91,141,239,0.1); border: 1px solid rgba(91,141,239,0.22);
+    color: var(--c-accent);
+  }
+  .topo-node.db {
+    background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.22);
+    color: var(--c-green);
+  }
+  .topo-node.cache {
+    background: rgba(251,191,36,0.09); border: 1px solid rgba(251,191,36,0.22);
+    color: var(--c-amber);
+  }
+  .topo-node.mq {
+    background: rgba(248,113,113,0.07); border: 1px solid rgba(248,113,113,0.18);
+    color: var(--c-red);
+  }
+  .topo-connector {
+    display: flex; align-items: center; padding: 2px 0 2px 52px;
+    gap: 10px; flex-wrap: wrap;
+  }
+  .topo-connector-line {
+    flex: 1; min-width: 60px; display: flex; align-items: center; gap: 6px;
+    color: var(--c-muted); font-size: 0.75em; font-weight: 500;
+  }
+  .topo-connector-line::before {
+    content: ""; display: inline-block; width: 12px; height: 1px;
+    background: var(--c-border); flex-shrink: 0;
+  }
+  .topo-connector-line .proto {
+    color: var(--c-accent2); font-family: monospace; font-size: 0.9em;
+    background: rgba(124,111,247,0.08); padding: 1px 6px; border-radius: 4px;
+  }
+
+  /* ── Data Flow ── */
+  .flow-cards { display: flex; flex-direction: column; gap: 16px; }
+  .flow-card {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 20px 22px;
+  }
+  .flow-card-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+  }
+  .flow-card-header .flow-num {
+    width: 28px; height: 28px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.8em; font-weight: 700; flex-shrink: 0;
+  }
+  .flow-card-header .flow-name {
+    font-weight: 700; font-size: 0.95em; color: var(--c-heading);
+  }
+  .flow-steps {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+  }
+  .flow-step {
+    font-size: 0.82em; padding: 5px 10px; border-radius: 6px;
+    background: rgba(255,255,255,0.03); border: 1px solid var(--c-border);
+    color: var(--c-text); white-space: nowrap;
+  }
+  .flow-step.start  { border-color: rgba(52,211,153,0.3);  color: var(--c-green); }
+  .flow-step.mid    { border-color: rgba(91,141,239,0.25);  color: var(--c-accent); }
+  .flow-step.end    { border-color: rgba(124,111,247,0.3);  color: var(--c-accent2); }
+  .flow-arrow { color: var(--c-muted); font-size: 0.85em; flex-shrink: 0; }
+
+  /* ── Error Handling ── */
+  .err-strategy {
+    background: linear-gradient(135deg, rgba(251,191,36,0.06), rgba(248,113,113,0.04));
+    border: 1px solid rgba(251,191,36,0.2);
+    border-radius: var(--radius); padding: 20px 24px; margin-bottom: 20px;
+  }
+  .err-strategy .err-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-amber);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;
+  }
+  .err-strategy p { font-size: 0.92em; line-height: 1.8; color: var(--c-text); }
+
+  .err-format-box {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 20px;
+  }
+  .err-format-box .err-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;
+  }
+  .err-format-box pre {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.84em; color: var(--c-text);
+    background: rgba(0,0,0,0.2); padding: 14px 18px; border-radius: 6px;
+    overflow-x: auto; line-height: 1.7;
+  }
+
+  .err-categories { display: flex; flex-direction: column; gap: 10px; }
+  .err-category {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px;
+    display: flex; gap: 16px; align-items: flex-start;
+  }
+  .err-category:hover { border-color: rgba(255,255,255,0.1); }
+  .err-code-badge {
+    font-family: monospace; font-size: 0.85em; font-weight: 700;
+    padding: 6px 12px; border-radius: 6px; white-space: nowrap;
+    flex-shrink: 0; min-width: 48px; text-align: center;
+  }
+  .err-code-badge._4xx { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+  .err-code-badge._5xx { background: rgba(248,113,113,0.12); color: var(--c-red); }
+  .err-code-badge._other { background: rgba(124,111,247,0.1); color: var(--c-accent2); }
+  .err-category-body { flex: 1; min-width: 0; }
+  .err-category-body .err-cat-name {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 6px;
+  }
+  .err-category-body .err-cat-desc {
+    font-size: 0.85em; color: var(--c-muted); line-height: 1.7;
+  }
+
+  /* ── Domain Objects ── */
+  .domain-obj {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .domain-obj h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); margin-bottom: 6px; }
+  .obj-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 0.72em; font-weight: 600; margin-left: 6px;
+  }
+  .obj-tag.entity   { background: rgba(91,141,239,0.12);  color: var(--c-accent); }
+  .obj-tag.dto      { background: rgba(52,211,153,0.12);  color: var(--c-green); }
+  .obj-tag.value_object { background: rgba(124,111,247,0.1); color: var(--c-accent2); }
+  .obj-tag.enum     { background: rgba(251,191,36,0.1);   color: var(--c-amber); }
+  .attr-source-tag {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 0.7em; font-weight: 600; font-family: monospace;
+    color: var(--c-muted); background: rgba(107,115,148,0.1);
+  }
+
+  /* ── Service Contracts ── */
+  .svc-contract {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); margin-bottom: 12px; overflow: hidden;
+  }
+  .svc-contract summary {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 20px; cursor: pointer; user-select: none;
+    font-weight: 600; font-size: 0.95em; color: var(--c-heading);
+    background: rgba(255,255,255,0.015);
+  }
+  .svc-contract summary:hover { background: rgba(255,255,255,0.03); }
+  .svc-contract summary::-webkit-details-marker { display: none; }
+  .svc-contract summary::before {
+    content: "›"; display: inline-block; font-size: 1.3em; font-weight: 400;
+    width: 16px; color: var(--c-muted); transition: transform 0.2s;
+  }
+  .svc-contract[open] summary::before { transform: rotate(90deg); }
+  .svc-method {
+    padding: 16px 20px; border-top: 1px solid var(--c-border);
+  }
+  .svc-method-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .svc-method-header .method-name {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading);
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+  }
+  .svc-method-header .return-type {
+    font-size: 0.82em; color: var(--c-accent); font-family: monospace;
+    background: rgba(91,141,239,0.08); padding: 2px 8px; border-radius: 4px;
+  }
+  .sig-block {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.84em; color: var(--c-text);
+    background: rgba(255,255,255,0.02); padding: 10px 14px;
+    border-radius: 6px; margin: 8px 0; overflow-x: auto;
+    border: 1px solid var(--c-border);
+  }
+  .pre-post {
+    display: flex; gap: 12px; margin: 8px 0; flex-wrap: wrap;
+  }
+  .pre-post-item {
+    flex: 1; min-width: 180px;
+    background: rgba(255,255,255,0.015); border: 1px solid var(--c-border);
+    border-radius: 6px; padding: 10px 14px;
+  }
+  .pre-post-item .pp-label {
+    font-size: 0.68em; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .pre-post-item.pre .pp-label { color: var(--c-green); }
+  .pre-post-item.post .pp-label { color: var(--c-accent); }
+  .pre-post-item .pp-text { font-size: 0.84em; color: var(--c-text); }
+  .exc-item {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 14px; margin: 2px 4px 2px 0;
+    font-size: 0.8em; background: rgba(248,113,113,0.06);
+    border: 1px solid rgba(248,113,113,0.15);
+  }
+  .exc-item .exc-name { font-weight: 600; color: var(--c-red); font-family: monospace; font-size: 0.85em; }
+  .exc-item .exc-http { font-size: 0.82em; color: var(--c-muted); }
+  .repo-dep {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.82em; color: var(--c-muted);
+    padding: 2px 0 2px 12px; border-left: 2px solid var(--c-border);
+    margin: 2px 0 2px 8px;
+  }
+
+  /* ── Business Rules ── */
+  .invariant-list {
+    list-style: none; padding: 0; margin: 0;
+  }
+  .invariant-list li {
+    padding: 8px 14px; margin-bottom: 6px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 6px; font-size: 0.9em;
+    display: flex; align-items: flex-start; gap: 10px;
+  }
+  .invariant-list li .inv-icon {
+    color: var(--c-amber); font-weight: 700; flex-shrink: 0;
+  }
+  .state-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 20px; margin-bottom: 12px;
+  }
+  .state-diagram .sd-title {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 12px;
+  }
+  .state-row {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px;
+  }
+  .state-node {
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 8px 18px; border-radius: 20px; font-size: 0.85em; font-weight: 600;
+    border: 1px solid var(--c-border); background: var(--c-card);
+    color: var(--c-text);
+  }
+  .state-node.active { border-color: rgba(91,141,239,0.4); color: var(--c-accent); background: rgba(91,141,239,0.06); }
+  .state-node.terminal { border-color: rgba(52,211,153,0.3); color: var(--c-green); background: rgba(52,211,153,0.06); }
+  .state-node.error   { border-color: rgba(248,113,113,0.3); color: var(--c-red); background: rgba(248,113,113,0.06); }
+  .state-arrow {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 0.78em; color: var(--c-muted); padding: 0 4px;
+  }
+  .state-arrow .trigger-text {
+    font-size: 0.85em; background: rgba(107,115,148,0.1);
+    padding: 2px 8px; border-radius: 4px;
+  }
+  .irrev-rule {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 12px; border-radius: 14px; margin: 4px;
+    font-size: 0.8em; background: rgba(248,113,113,0.06);
+    border: 1px solid rgba(248,113,113,0.15); color: var(--c-red);
+  }
+  .cross-svc-rule {
+    padding: 6px 12px; margin: 4px 0;
+    font-size: 0.85em; color: var(--c-accent2);
+    background: rgba(124,111,247,0.05); border-left: 3px solid rgba(124,111,247,0.3);
+    border-radius: 4px;
+  }
+
+  /* ── Component Tree ── */
+  .comp-node {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 16px 20px; margin-bottom: 8px;
+    margin-left: 0;
+  }
+  .comp-node.child { margin-left: 20px; border-left: 2px solid rgba(91,141,239,0.2); }
+  .comp-node .cn-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;
+  }
+  .comp-node .cn-name { font-weight: 600; font-size: 0.95em; color: var(--c-heading); }
+  .comp-node .cn-path {
+    font-family: monospace; font-size: 0.78em; color: var(--c-accent);
+    background: rgba(91,141,239,0.08); padding: 2px 8px; border-radius: 4px;
+  }
+  .cn-section { margin: 8px 0; }
+  .cn-section .cn-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .cn-tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 4px; margin: 2px;
+    font-size: 0.78em; background: rgba(255,255,255,0.03);
+    border: 1px solid var(--c-border); color: var(--c-text);
+  }
+  .cn-tag.prop { border-color: rgba(91,141,239,0.2); color: var(--c-accent); }
+  .cn-tag.event { border-color: rgba(52,211,153,0.2); color: var(--c-green); }
+  .cn-tag.state { border-color: rgba(251,191,36,0.2); color: var(--c-amber); }
+  .cn-behavior { font-size: 0.84em; color: var(--c-text); }
+  .cn-edge { font-size: 0.82em; color: var(--c-muted); }
+  .cn-edge .edge-icon { color: var(--c-amber); }
+
+  /* ── State Design ── */
+  .state-global-item {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 10px 14px; margin-bottom: 6px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 6px;
+  }
+  .state-global-item .sg-name {
+    font-weight: 600; font-size: 0.9em; color: var(--c-heading); font-family: monospace;
+  }
+  .state-global-item .sg-type {
+    font-size: 0.82em; color: var(--c-accent); font-family: monospace;
+    background: rgba(91,141,239,0.06); padding: 1px 6px; border-radius: 3px;
+  }
+
+  /* ── Route Design ── */
+  .route-row {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 14px; border-bottom: 1px solid var(--c-border);
+  }
+  .route-row:last-child { border-bottom: none; }
+
+  /* ── Interaction Flows ── */
+  .flow-timeline {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 16px 20px; margin-bottom: 12px;
+  }
+  .flow-timeline .ft-title {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 10px;
+  }
+  .ft-step {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 6px 0; font-size: 0.86em;
+  }
+  .ft-step .ft-num {
+    width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+    background: rgba(91,141,239,0.1); color: var(--c-accent);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 0.8em;
+  }
+  .ft-step .ft-text { color: var(--c-text); padding-top: 2px; }
+
+  /* ── Gateway ── */
+  .mw-flow {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+    padding: 14px 18px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; margin-bottom: 12px;
+  }
+  .mw-node {
+    padding: 6px 14px; border-radius: 6px; font-size: 0.84em; font-weight: 500;
+    background: var(--c-card); border: 1px solid var(--c-border);
+    color: var(--c-text); white-space: nowrap;
+  }
+  .mw-node.special {
+    border-color: rgba(91,141,239,0.25); color: var(--c-accent);
+    background: rgba(91,141,239,0.06);
+  }
+  .mw-arrow { color: var(--c-muted); font-size: 0.85em; }
+
+  .auth-matrix {
+    width: 100%; border-collapse: collapse; font-size: 0.85em;
+  }
+  .auth-matrix th {
+    text-align: left; padding: 8px 12px; font-weight: 600;
+    color: var(--c-muted); border-bottom: 2px solid var(--c-border);
+  }
+  .auth-matrix td { padding: 8px 12px; border-bottom: 1px solid var(--c-border); }
+  .role-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px; margin: 1px 3px 1px 0;
+    font-size: 0.82em; background: rgba(91,141,239,0.08); color: var(--c-accent);
+  }
+
+  @media (max-width: 700px) {
+    body { padding: 24px 16px 48px; }
+    h1 { font-size: 1.6em; }
+    .section-body { padding: 20px 16px; }
+    .role-cards { grid-template-columns: 1fr; }
+    .arch-overview { flex-wrap: wrap; }
+    .arch-ov-arrow { display: none; }
+    .arch-tier { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .arch-tier-label { width: auto; text-align: left; padding-right: 0; }
+    .arch-arrows { padding-left: 0; justify-content: flex-start; }
+    .arch-tier-boxes { width: 100%; }
+    .topo-tier { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .topo-tier-label { width: auto; text-align: left; padding-right: 0; padding-top: 0; }
+    .topo-connector { padding-left: 0; }
+    .flow-steps { flex-direction: column; align-items: flex-start; }
+    .flow-arrow { display: none; }
+    .cc-head { flex-direction: column; align-items: flex-start; gap: 6px; }
+    .cc-meta { flex-direction: column; align-items: flex-start; }
+    .page-layout { flex-direction: column; }
+    .sidebar { display: none; }
+    .sidebar.mobile-open { display: flex; }
+    .sidebar-toggle { display: flex; }
+  }
+
+  /* ── Sidebar Layout ── */
+  .page-layout {
+    display: flex; min-height: 100vh;
+  }
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0;
+    width: 230px; overflow-y: auto;
+    background: var(--c-surface); border-right: 1px solid var(--c-border);
+    display: flex; flex-direction: column; padding: 24px 0;
+    z-index: 100;
+  }
+  .sidebar-header {
+    padding: 0 20px 20px; border-bottom: 1px solid var(--c-border); margin-bottom: 12px;
+  }
+  .sidebar-header .sid {
+    font-size: 0.72em; font-weight: 600; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .sidebar-header .stitle {
+    font-size: 0.95em; font-weight: 700; color: var(--c-heading);
+    margin-top: 4px; line-height: 1.3;
+  }
+  .sidebar-nav { flex: 1; padding: 0 12px; }
+  .sidebar-link {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; border-radius: 7px;
+    font-size: 0.86em; color: var(--c-muted); text-decoration: none;
+    margin-bottom: 2px; transition: all 0.15s;
+  }
+  .sidebar-link:hover { color: var(--c-text); background: rgba(255,255,255,0.03); }
+  .sidebar-link.active {
+    color: var(--c-accent); background: rgba(91,141,239,0.1);
+    font-weight: 600;
+  }
+  .sidebar-link .sl-icon { font-size: 1.05em; width: 20px; text-align: center; flex-shrink: 0; }
+  .sidebar-toggle {
+    display: none; position: fixed; top: 12px; left: 12px; z-index: 200;
+    width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--c-border);
+    background: var(--c-surface); color: var(--c-text); font-size: 1.2em;
+    cursor: pointer; align-items: center; justify-content: center;
+  }
+  .main-content {
+    margin-left: 230px; flex: 1; min-width: 0;
+    max-width: 860px; padding: 48px 40px 80px;
+  }
+  html { scroll-behavior: smooth; }
+  /* ── WBS / Task new fields ── */
+  .layer-badge {
+    display: inline-block; padding: 2px 10px; border-radius: 12px;
+    font-size: 0.8em; font-weight: 600; margin-right: 8px;
+  }
+  .layer-0 { background: rgba(124,111,247,0.15); color: var(--c-accent2); }
+  .layer-1 { background: rgba(91,141,239,0.15); color: var(--c-accent); }
+  .layer-2 { background: rgba(52,211,153,0.15); color: var(--c-green); }
+  .layer-3 { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+  .layer-other { background: rgba(107,115,148,0.12); color: var(--c-muted); }
+  .file-list { list-style: none; padding: 0; margin: 0; }
+  .file-list li {
+    font-family: "JetBrains Mono", "Cascadia Code", monospace;
+    font-size: 0.88em; color: var(--c-accent);
+    padding: 3px 0; border-bottom: 1px solid var(--c-border);
+  }
+  .file-list li:last-child { border-bottom: none; }
+  .ref-table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+  .ref-table th, .ref-table td {
+    text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--c-border);
+  }
+  .ref-table th { color: var(--c-muted); font-weight: 500; font-size: 0.85em; }
+  .ac-item {
+    padding: 6px 10px; border-radius: 6px; margin-bottom: 4px;
+    border: 1px solid var(--c-border); font-size: 0.92em;
+  }
+  .ac-item .ac-vtype {
+    display: inline-block; padding: 1px 8px; border-radius: 4px;
+    font-size: 0.78em; font-weight: 600; margin-right: 6px;
+  }
+  .ac-vtype-precondition  { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+  .ac-vtype-postcondition { background: rgba(52,211,153,0.15); color: var(--c-green); }
+  .ac-vtype-http_status   { background: rgba(91,141,239,0.15); color: var(--c-accent); }
+  .ac-vtype-invariant     { background: rgba(239,68,68,0.12); color: var(--c-red); }
+  .ac-vtype-state_transition { background: rgba(124,111,247,0.13); color: var(--c-accent2); }
+  .ac-vtype-field_definition { background: rgba(34,211,238,0.12); color: var(--c-cyan); }
+  .upstream-item {
+    padding: 8px 12px; border-radius: 6px; margin-bottom: 6px;
+    background: rgba(52,211,153,0.06); border: 1px solid rgba(52,211,153,0.15);
+  }
+  .upstream-item .up-name { font-weight: 600; color: var(--c-heading); }
+  .scope-summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
+  .scope-card {
+    padding: 8px 12px; border-radius: 6px; border: 1px solid var(--c-border);
+    font-size: 0.9em;
+  }
+  .scope-card .sc-count { font-size: 1.4em; font-weight: 700; color: var(--c-accent); }
+  .scope-card .sc-label { color: var(--c-muted); font-size: 0.82em; }
+  @media print {
+    body { background: #fff; color: #222; }
+    .section-body, .req-item, .story-item { background: #fff; border: 1px solid #ddd; }
+    h1 { color: #111; }
+  }
+</style>
+</head>
+<body>
+<div class="page-layout">
+<nav class="sidebar" id="sidebar"><div class="sidebar-header"><div class="sid">lld-审计日志过滤器-001</div><div class="stitle">审计日志过滤器详细设计</div></div><div class="sidebar-nav"><a href="#overview" class="sidebar-link"><span class="sl-icon">📄</span>概述</a><a href="#route-table" class="sidebar-link"><span class="sl-icon">🔀</span>路由表 (9)</a><a href="#middleware-chain" class="sidebar-link"><span class="sl-icon">⛓️</span>中间件链</a><a href="#auth-policy" class="sidebar-link"><span class="sl-icon">🔐</span>认证授权</a><a href="#rate-limiting" class="sidebar-link"><span class="sl-icon">🚦</span>限流规则</a><a href="#models" class="sidebar-link"><span class="sl-icon">🗄️</span>数据模型 (2)</a><a href="#interfaces" class="sidebar-link"><span class="sl-icon">🔌</span>接口定义 (2)</a><a href="#errors" class="sidebar-link"><span class="sl-icon">⚠️</span>错误处理</a></div></nav><button id="sidebar-toggle" class="sidebar-toggle" aria-label="菜单">☰</button>
+<div class="main-content">
+<div class="top-bar">
+  <div class="doc-id">lld-审计日志过滤器-001</div>
+  <div><span class="badge accent">详细设计文档</span></div>
+</div>
+<h1><span>详细设计文档</span> 审计日志过滤器详细设计</h1>
+<div class="meta">2026-05-22 &middot; 作者: design_agent</div>
+
+<div class="section" id="overview">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(124,111,247,0.12)">📄</div>
+    <h2>概述</h2>
+  </div>
+  <div class="section-body">
+
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap"><div class="arch-style-badge">审计日志过滤器</div><span class="badge accent">🔀 网关层</span></div>
+<div class="arch-desc">请求级审计过滤器，作为API网关的中间件组件，自动捕获所有经过网关的HTTP请求元数据。在请求处理路径中以异步非阻塞方式工作：提取请求方身份（JWT Token解析）、来源IP、请求时间戳、HTTP方法和路径、请求体摘要；待上游服务响应后捕获响应状态码和耗时；将完整的原始审计事件打包后投递到Redis Stream（audit:events），由审计日志服务异步消费持久化。过滤器本身不阻塞请求流程，投递失败不影响主请求路径的响应返回，保证网关的可用性不受审计功能影响。</div>
+<div style="margin-bottom:12px"><span style="font-size:0.82em;color:var(--c-muted)">依赖: </span><span class="cc-consumer" style="margin:2px">API网关</span><span class="cc-consumer" style="margin:2px">认证中间件</span><span class="cc-consumer" style="margin:2px">Redis缓存</span><span class="cc-consumer" style="margin:2px">审计日志服务</span></div>
+<div style="margin-bottom:8px"><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Go</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Gin</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Redis 7+</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>JWT (JSON Web Token)</span></div>
+  </div>
+</div>
+
+<div class="section" id="route-table">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(124,111,247,0.12)">🔀</div>
+    <h2>路由表 (9)</h2>
+  </div>
+  <div class="section-body">
+
+<table style="width:100%;border-collapse:collapse;font-size:0.9em"><thead><tr><th>Path Pattern</th><th>Upstream</th><th>说明</th></tr></thead><tbody><tr><td style="font-family:monospace">/api/health</td><td><strong>API网关（自处理）</strong></td><td style="color:var(--c-muted)">网关健康检查端点，被 exclude_paths 排除，不进行审计采集</td></tr><tr><td style="font-family:monospace">/api/v1/projects**</td><td><strong>项目管理服务</strong></td><td style="color:var(--c-muted)">项目管理相关API：项目CRUD、成员管理、项目切换。action_type 归类为 project</td></tr><tr><td style="font-family:monospace">/api/v1/environments**</td><td><strong>环境管理服务</strong></td><td style="color:var(--c-muted)">环境配置管理API：环境CRUD、健康检查、密钥绑定。action_type 归类为 environment</td></tr><tr><td style="font-family:monospace">/api/v1/keys**</td><td><strong>密钥管理服务</strong></td><td style="color:var(--c-muted)">SSH密钥管理API：密钥CRUD、验证、绑定解绑。action_type 归类为 key</td></tr><tr><td style="font-family:monospace">/api/v1/versions**</td><td><strong>版本管理服务</strong></td><td style="color:var(--c-muted)">版本历史查询API：版本列表、版本详情。action_type 归类为 version</td></tr><tr><td style="font-family:monospace">/api/v1/deploy**</td><td><strong>部署编排服务</strong></td><td style="color:var(--c-muted)">部署任务API：触发部署、查询状态、回滚操作。action_type 归类为 deploy（部署）或 rollback（回滚）</td></tr><tr><td style="font-family:monospace">/api/v1/ws/deploy/**</td><td><strong>部署编排服务</strong></td><td style="color:var(--c-muted)">部署进度WebSocket端点。根据 exclude_paths 配置可选是否审计，WS长连接仅记录连接建立事件</td></tr><tr><td style="font-family:monospace">/api/v1/audit-logs**</td><td><strong>审计日志服务</strong></td><td style="color:var(--c-muted)">审计日志查询与导出API：日志查询、CSV导出、告警查询。action_type 归类为 auth</td></tr><tr><td style="font-family:monospace">/internal/v1/files/**</td><td><strong>文件存储服务</strong></td><td style="color:var(--c-muted)">文件存储内部API：上传、下载、列表、删除。action_type 归类为 file。该路径为内部服务间调用，从请求来源判断是否记录审计</td></tr></tbody></table>
+  </div>
+</div>
+
+<div class="section" id="middleware-chain">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(91,141,239,0.12)">⛓️</div>
+    <h2>中间件链</h2>
+  </div>
+  <div class="section-body">
+
+<div class="mw-flow"><span class="mw-node special">Client Request → Recovery (panic恢复) → RequestID (生成追踪ID) → AccessLog (访问日志) → CORS (跨域处理) → Auth (JWT认证与角色校验) → AuditFilter (审计日志过滤器) → RateLimiter (限流) → Router (路由分发) → Upstream Service</span><span class="mw-arrow">→</span><span class="mw-node special">Response ← Recovery ← RequestID ← AccessLog ← CORS ← Auth ← AuditFilter ← RateLimiter ← Router ← Upstream Service</span></div>
+  </div>
+</div>
+
+<div class="section" id="auth-policy">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(251,191,36,0.12)">🔐</div>
+    <h2>认证授权</h2>
+  </div>
+  <div class="section-body">
+
+<div style="margin-bottom:8px"><strong style="font-size:0.82em;color:var(--c-muted)">公开端点: </strong><span class="cn-tag">/api/health</span></div>
+<div style="margin-bottom:8px"><strong style="font-size:0.82em;color:var(--c-muted)">认证方式: </strong><span class="role-tag">JWT Bearer Token，从 Authorization 请求头提取。Token中包含用户身份声明（sub/username/role）和当前项目上下文（project_id）。Token由认证中间件签发和校验，审计过滤器仅从已校验的JWT声明中读取信息，不重复执行认证逻辑。</span></div>
+<div style="margin-bottom:12px"><strong style="font-size:0.82em;color:var(--c-muted)">Token 策略: </strong><span class="cn-tag">access 2h, refresh 7d</span></div>
+<table class="auth-matrix"><thead><tr><th>路径</th><th>允许角色</th></tr></thead><tbody><tr><td style="font-family:monospace;font-size:0.85em">GET /api/v1/projects</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span> <span class="role-tag">developer</span> <span class="role-tag">viewer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">POST /api/v1/projects</td><td><span class="role-tag">admin</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">GET /api/v1/projects/:projectId</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span> <span class="role-tag">developer</span> <span class="role-tag">viewer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">PUT /api/v1/projects/:projectId</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">DELETE /api/v1/projects/:projectId</td><td><span class="role-tag">admin</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">GET /api/v1/projects/:projectId/members</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span> <span class="role-tag">developer</span> <span class="role-tag">viewer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">POST /api/v1/projects/:projectId/members</td><td><span class="role-tag">admin</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">PUT /api/v1/projects/:projectId/members/:userId</td><td><span class="role-tag">admin</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">DELETE /api/v1/projects/:projectId/members/:userId</td><td><span class="role-tag">admin</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">GET /api/v1/projects/:projectId/environments</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span> <span class="role-tag">developer</span> <span class="role-tag">viewer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">POST /api/v1/environments</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">GET /api/v1/environments/:envId</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span> <span class="role-tag">developer</span> <span class="role-tag">viewer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">PUT /api/v1/environments/:envId</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">DELETE /api/v1/environments/:envId</td><td><span class="role-tag">admin</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">POST /api/v1/environments/:envId/health-check</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">POST /api/v1/environments/:envId/bind-key</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">GET /api/v1/keys</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span> <span class="role-tag">developer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">POST /api/v1/keys</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">GET /api/v1/keys/:id</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span> <span class="role-tag">developer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">PUT /api/v1/keys/:id</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">DELETE /api/v1/keys/:id</td><td><span class="role-tag">admin</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">POST /api/v1/keys/:id/validate</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">POST /api/v1/keys/:id/bind</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">POST /api/v1/keys/:id/unbind</td><td><span class="role-tag">admin</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">GET /api/v1/versions**</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span> <span class="role-tag">developer</span> <span class="role-tag">viewer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">POST /api/v1/deploy</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span> <span class="role-tag">developer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">GET /api/v1/deploy/:taskId</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span> <span class="role-tag">developer</span> <span class="role-tag">viewer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">POST /api/v1/deploy/:taskId/rollback</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">WS /api/v1/ws/deploy/:taskId</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span> <span class="role-tag">developer</span> <span class="role-tag">viewer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">GET /api/v1/audit-logs**</td><td><span class="role-tag">admin</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">POST /api/v1/audit-logs</td><td><span class="role-tag">admin</span> <span class="role-tag">maintainer</span> <span class="role-tag">developer</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">GET /api/v1/audit-logs/export</td><td><span class="role-tag">admin</span></td></tr><tr><td style="font-family:monospace;font-size:0.85em">GET /api/v1/audit-logs/alerts</td><td><span class="role-tag">admin</span></td></tr></tbody></table>
+  </div>
+</div>
+
+<div class="section" id="rate-limiting">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(248,113,113,0.12)">🚦</div>
+    <h2>限流规则</h2>
+  </div>
+  <div class="section-body">
+
+<div style="margin-bottom:8px"><span class="cn-tag">全局</span> 每 IP 100 req/s</div>
+<div style="margin-bottom:8px"><span class="cn-tag">每用户</span> 每 user 1000 req/min</div>
+<table class="body-table"><thead><tr><th>端点</th><th>限制</th></tr></thead><tbody><tr><td style="font-family:monospace">POST /api/v1/deploy</td><td>每 user 10 req/min</td></tr><tr><td style="font-family:monospace">POST /api/v1/deploy/:taskId/rollback</td><td>每 user 5 req/min</td></tr><tr><td style="font-family:monospace">GET /api/v1/audit-logs/export</td><td>每 user 3 req/min</td></tr><tr><td style="font-family:monospace">POST /api/v1/keys</td><td>每 user 30 req/min</td></tr><tr><td style="font-family:monospace">POST /api/v1/keys/:id/validate</td><td>每 user 20 req/min</td></tr><tr><td style="font-family:monospace">POST /api/v1/environments/:envId/health-check</td><td>每 user 10 req/min</td></tr><tr><td style="font-family:monospace">POST /api/v1/projects</td><td>每 user 10 req/min</td></tr><tr><td style="font-family:monospace">GET /api/v1/audit-logs/export</td><td>每 user 3 req/min</td></tr><tr><td style="font-family:monospace">POST /api/v1/projects/:projectId/members</td><td>每 user 20 req/min</td></tr><tr><td style="font-family:monospace">PUT /api/v1/keys/:id</td><td>每 user 20 req/min</td></tr></tbody></table>
+  </div>
+</div>
+
+<div class="section" id="models">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(91,141,239,0.12)">🗄️</div>
+    <h2>数据模型 (2)</h2>
+  </div>
+  <div class="section-body">
+
+<details class="contract-group" open><summary>状态存储 <span class="cg-count">1</span></summary><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗃️ AuditEvent<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(107,115,148,0.12);color:var(--c-muted);margin-left:6px">自有</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">审计事件消息体，由过滤器在请求处理过程中组装，投递到Redis Stream（audit:events）供审计日志服务消费。每一条代表一次API请求的完整审计记录。</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>event_type <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>事件类型，固定为 audit</td></tr><tr><td>event_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string (UUID)</td><td>事件唯一标识，由过滤器生成</td></tr><tr><td>timestamp <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string (ISO8601)</td><td>事件发生的服务器时间</td></tr><tr><td>operator <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>操作人用户名，从JWT Token的sub或username声明提取</td></tr><tr><td>operator_id</td><td class="field-type">string (UUID)</td><td>操作人用户ID，从JWT Token的sub声明提取</td></tr><tr><td>action <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>操作描述，由过滤器根据HTTP方法和路径自动生成，格式为「{method} {path}」</td></tr><tr><td>action_type <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>操作类型分类，由过滤器根据路径前缀自动归类：deploy/project/environment/key/version/auth/rollback/file</td></tr><tr><td>target</td><td class="field-type">string</td><td>操作对象标识，由过滤器从路径参数中提取</td></tr><tr><td>target_type</td><td class="field-type">string</td><td>操作对象类型：project/environment/key/version/task/file</td></tr><tr><td>result <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>操作结果：success/failure，根据上游服务响应的HTTP状态码判断（2xx/3xx为success，其余为failure）</td></tr><tr><td>detail</td><td class="field-type">string</td><td>操作详情JSON，包含请求体摘要和响应体摘要（仅保留关键字段，不包含敏感信息如密钥内容）</td></tr><tr><td>http_method <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>HTTP请求方法：GET/POST/PUT/DELETE</td></tr><tr><td>http_path <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>HTTP请求路径</td></tr><tr><td>http_status <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">integer</td><td>上游服务响应的HTTP状态码</td></tr><tr><td>duration_ms <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">integer</td><td>请求处理耗时（毫秒），从过滤器接收到上游响应返回的时间间隔</td></tr><tr><td>ip_address <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>客户端来源IP地址，支持IPv4和IPv6格式，从X-Forwarded-For或X-Real-IP或RemoteAddr提取</td></tr><tr><td>user_agent</td><td class="field-type">string</td><td>客户端User-Agent请求头</td></tr><tr><td>request_id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string (UUID)</td><td>请求追踪ID，由API网关在请求入口处生成，贯穿整个请求链路</td></tr><tr><td>project_context</td><td class="field-type">string</td><td>当前项目上下文ID，从JWT Token的project声明提取</td></tr></tbody></table></div></details>
+<details class="contract-group" open><summary>配置定义 <span class="cg-count">1</span></summary><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">⚙️ AuditFilterConfig<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(107,115,148,0.12);color:var(--c-muted);margin-left:6px">自有</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">审计日志过滤器的运行时配置，控制事件采样率、排除路径、Redis Stream连接参数等。配置项在过滤器初始化时加载，支持运行时通过配置中心热更新。</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>redis_stream_key <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>Redis Stream键名，固定为 audit:events</td></tr><tr><td>redis_consumer_group <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">string</td><td>Redis消费者组名，固定为 audit-log-service</td></tr><tr><td>max_stream_length <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">integer</td><td>Redis Stream最大长度，超过后丢弃旧消息，默认100000</td></tr><tr><td>publish_timeout_ms <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">integer</td><td>Redis发布超时（毫秒），超时后放弃投递不阻塞请求，默认100</td></tr><tr><td>exclude_paths <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">array[string]</td><td>不审计的路径列表，如健康检查端点 /api/health、WebSocket端点 /api/v1/ws/</td></tr><tr><td>exclude_methods</td><td class="field-type">array[string]</td><td>不审计的HTTP方法列表，默认仅排除 OPTIONS</td></tr><tr><td>sample_rate <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">float</td><td>审计采样率 0.0~1.0，默认1.0（全量采样）</td></tr><tr><td>max_detail_body_bytes <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">integer</td><td>记录到detail字段的请求/响应体最大字节数，超过则截断，默认4096</td></tr><tr><td>sensitive_headers <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">array[string]</td><td>存储在detail中需脱敏的请求头列表，默认包含 Authorization、Cookie、X-Session-Token</td></tr><tr><td>sensitive_path_params</td><td class="field-type">array[string]</td><td>需脱敏的路径参数名列表，默认包含 passphrase、token、secret</td></tr><tr><td>async_workers <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">integer</td><td>异步投递的工作goroutine数量，默认4</td></tr><tr><td>retry_count <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">integer</td><td>投递失败最大重试次数，默认0（不重试）</td></tr></tbody></table></div></details>
+  </div>
+</div>
+
+<div class="section" id="interfaces">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(34,211,238,0.12)">🔌</div>
+    <h2>接口定义 (2)</h2>
+  </div>
+  <div class="section-body">
+
+<div class="contract-card"><div class="cc-head"><span class="method-badge mq">MQ</span><span class="cc-endpoint">redis:audit:events (Redis Stream XADD)</span><span class="cc-name">PublishAuditEvent</span></div><div class="cc-desc">将组装好的审计事件消息投递到Redis Stream（audit:events），由审计日志服务的AuditEventConsumer异步消费。投递操作为非阻塞，使用独立的goroutine池处理，投递超时或Redis不可用时直接丢弃事件并记录WARN日志，不阻塞主请求路径。消息体为AuditEvent数据模型的JSON序列化。</div><table class="body-table"><thead><tr><th>参数</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>event_id</td><td class="field-type">string (UUID)</td><td>事件唯一标识，由过滤器生成</td></tr><tr><td>event_type</td><td class="field-type">string</td><td>事件类型，固定为 audit</td></tr><tr><td>timestamp</td><td class="field-type">string (ISO8601)</td><td>事件发生时间</td></tr><tr><td>operator</td><td class="field-type">string</td><td>操作人用户名（从JWT Token提取）</td></tr><tr><td>operator_id</td><td class="field-type">string (UUID)</td><td>操作人用户ID（可选）</td></tr><tr><td>action</td><td class="field-type">string</td><td>操作描述，由过滤器根据请求路径自动生成</td></tr><tr><td>action_type</td><td class="field-type">string</td><td>操作类型，由过滤器根据请求路径前缀自动归类</td></tr><tr><td>target</td><td class="field-type">string</td><td>操作对象标识，由过滤器从路径参数中提取</td></tr><tr><td>target_type</td><td class="field-type">string</td><td>操作对象类型</td></tr><tr><td>result</td><td class="field-type">string</td><td>操作结果：success/failure</td></tr><tr><td>detail</td><td class="field-type">string</td><td>操作详情JSON（可选），最大4096字节</td></tr><tr><td>http_method</td><td class="field-type">string</td><td>HTTP请求方法</td></tr><tr><td>http_path</td><td class="field-type">string</td><td>HTTP请求路径</td></tr><tr><td>http_status</td><td class="field-type">integer</td><td>上游服务响应的HTTP状态码</td></tr><tr><td>duration_ms</td><td class="field-type">integer</td><td>请求处理耗时（毫秒）</td></tr><tr><td>ip_address</td><td class="field-type">string</td><td>客户端来源IP地址</td></tr><tr><td>user_agent</td><td class="field-type">string</td><td>客户端User-Agent（可选）</td></tr><tr><td>request_id</td><td class="field-type">string (UUID)</td><td>请求追踪ID</td></tr><tr><td>project_context</td><td class="field-type">string</td><td>当前项目上下文ID（可选）</td></tr></tbody></table><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>message_id</td><td class="field-type">string (Redis Stream消息ID, 格式为 timestamp-sequence)</td></tr><tr><td>published</td><td class="field-type">boolean</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>PUBLISH_TIMEOUT</td><td>Redis XADD 操作超时（超过 publish_timeout_ms），事件丢弃并记录WARN日志</td></tr><tr><td>PUBLISH_FAILED</td><td>Redis连接中断或Stream不可写，事件丢弃并记录ERROR日志</td></tr><tr><td>STREAM_OVERFLOW</td><td>Redis Stream长度超过 max_stream_length 上限，自动截断旧消息</td></tr></tbody></table></div>
+<div class="contract-card"><div class="cc-head"><span class="method-badge get">GET</span><span class="cc-endpoint">/api/health</span><span class="cc-name">HealthCheck</span></div><div class="cc-desc">网关健康检查端点，返回网关及审计过滤器的运行状态。该端点被配置在 exclude_paths 中，不进行审计采集。</div><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>status</td><td class="field-type">string (ok/unhealthy)</td></tr><tr><td>version</td><td class="field-type">string (服务版本号)</td></tr><tr><td>uptime_seconds</td><td class="field-type">integer</td></tr><tr><td>components</td><td class="field-type">{'redis': 'string (connected/disconnected)', 'audit_filter': 'string (running/degraded/stopped)'}</td></tr></tbody></table><div class="body-label">错误码</div><table class="body-table"><thead><tr><th>状态码</th><th>说明</th></tr></thead><tbody><tr><td>503</td><td>网关依赖的Redis或上游服务不可用</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<div class="section" id="errors">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(251,191,36,0.12)">⚠️</div>
+    <h2>错误处理</h2>
+  </div>
+  <div class="section-body">
+
+<div class="err-strategy"><div class="err-label">处理策略</div><p>审计日志过滤器遵循「审计不影响请求」的首要原则。审计事件组装和投递过程中发生的所有错误均不可阻塞或延迟主请求路径。投递超时或Redis不可用时丢弃事件并记录WARN级别日志；事件体序列化失败时记录ERROR日志并跳过该事件；过滤器自身panic时由recovery中间件捕获并记录CRITICAL告警，但不影响请求继续向下游转发。</p></div>
+<div class="err-format-box"><div class="err-label">统一错误响应体</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td class="field-type">code</td><td class="field-type">integer</td></tr><tr><td class="field-type">error</td><td class="field-type">string</td></tr><tr><td class="field-type">detail</td><td class="field-type">string</td></tr></tbody></table></div>
+<div class="err-categories"><div class="err-category"><span class="err-code-badge _5xx">500</span><div class="err-category-body"><div class="err-cat-name">事件发布失败</div><div class="err-cat-desc">审计事件投递到Redis Stream时发生错误。触发条件：Redis连接中断、XADD命令执行超时、Stream不可写。处理方式：丢弃事件并记录服务日志，不重试（retry_count默认0），不阻塞请求。持续失败时触发运维告警。</div></div></div><div class="err-category"><span class="err-code-badge _5xx">503</span><div class="err-category-body"><div class="err-cat-name">Redis不可用</div><div class="err-cat-desc">过滤器依赖的Redis服务完全不可用，所有审计事件投递均失败。触发条件：Redis宕机、网络分区。处理方式：所有请求正常转发到上游服务，审计事件全部丢弃。健康检查接口返回 degraded 状态。Redis恢复后自动恢复正常采集。</div></div></div></div>
+  </div>
+</div>
+
+<div class="footer">CogniForge 文档驱动系统</div>
+</div>
+</div>
+
+<script>
+(function() {
+  var links = document.querySelectorAll('.sidebar-link');
+  var sections = [];
+  links.forEach(function(l) { var s = document.getElementById(l.getAttribute('href').slice(1)); if (s) sections.push([s, l]); });
+  function update() {
+    var top = window.scrollY + 80;
+    var active = null;
+    sections.forEach(function(p) { if (p[0].offsetTop <= top) active = p[1]; });
+    links.forEach(function(l) { l.classList.remove('active'); });
+    if (active) active.classList.add('active');
+  }
+  window.addEventListener('scroll', update, {passive: true});
+  update();
+
+  var toggle = document.getElementById('sidebar-toggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function() { sidebar.classList.toggle('mobile-open'); });
+  }
+})();
+</script>
+</body>
+</html>
