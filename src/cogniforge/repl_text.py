@@ -136,35 +136,37 @@ APPROVE_CONFIRM = "  确认审批通过？"
 REJECT_PROMPT = "  拒绝原因"
 REJECT_DEFAULT = "需要改进"
 
-# Interactive modification — system prompt appended when launching Claude Code
-PM_INTERACTIVE_SYSTEM_PROMPT = (
-    "你是 CogniForge 系统的 PM (Product Manager) Agent。\n"
-    "当前正在对已生成的 PRD 文档进行交互式修改完善。\n"
-    "请读取用户当前工作目录下的 PRD 文件（位于 .cogniforge/wiki/prd/ 目录），\n"
-    "根据用户的反馈意见，直接修改 PRD JSON 文件。\n"
+# ── Interactive modification via claude -p --session-id ─────────────────
+# System prompt appended to claude -p during modification sessions.
+# The prompt template instructs Claude to return the full modified JSON.
+# Schema enforcement is handled by --json-schema, not by this prompt.
+
+MODIFY_SESSION_SYSTEM_PROMPT = (
+    "你是 CogniForge 系统的文档修改 Agent。\n"
+    "用户会给你一份当前文档的 JSON 内容和修改要求。\n"
+    "你的任务是根据用户要求修改 JSON 文档，并返回完整的修改后 JSON。\n"
     "所有文字使用中文。\n"
-    "不要写入 .html 文件（HTML 由系统自动渲染）。\n"
-    "修改完成后向用户确认变更内容。"
+    "只返回纯 JSON，不要 markdown 代码块包裹，不要多余解释文字。"
 )
 
-ARCHITECT_INTERACTIVE_SYSTEM_PROMPT = (
-    "你是 CogniForge 系统的 Architect Agent。\n"
-    "当前正在对已生成的 SAD（系统架构文档）进行交互式修改完善。\n"
-    "请读取用户当前工作目录下的 SAD 文件（位于 .cogniforge/wiki/sad/ 目录），\n"
-    "根据用户的反馈意见，直接修改 SAD JSON 文件。\n"
-    "所有文字使用中文。\n"
-    "不要写入 .html 文件（HTML 由系统自动渲染）。\n"
-    "修改完成后向用户确认变更内容。"
-)
-
-# Role → interactive system prompt
-INTERACTIVE_SYSTEM_PROMPTS: dict[str, str] = {
-    "pm": PM_INTERACTIVE_SYSTEM_PROMPT,
-    "architect": ARCHITECT_INTERACTIVE_SYSTEM_PROMPT,
+# Role → system prompt (used as --append-system-prompt)
+MODIFY_SESSION_SYSTEM_PROMPTS: dict[str, str] = {
+    "pm": MODIFY_SESSION_SYSTEM_PROMPT,
+    "architect": MODIFY_SESSION_SYSTEM_PROMPT,
 }
 
 # Steps that use interactive modification (2-option menu instead of 3)
 INTERACTIVE_STEPS: set[str] = {"prd", "sad"}
+
+# ── Per-turn prompt template for claude -p ──────────────────────────────
+
+def modify_turn_prompt(current_json: str, user_request: str) -> str:
+    """Build the prompt for one claude -p modification turn."""
+    return (
+        f"当前文档 JSON:\n{current_json}\n\n"
+        f"用户修改要求: {user_request}\n\n"
+        f"请根据用户要求修改文档，返回完整的修改后 JSON。"
+    )
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SAD / 架构设计 — 选择自己描述还是 Agent 自主设计

@@ -41,9 +41,9 @@ from cogniforge.repl_text import (
     CHOICE_REJECT,
     CHOICE_RETRY,
     CHOICE_MODIFY,
-    PM_INTERACTIVE_SYSTEM_PROMPT,
-    INTERACTIVE_SYSTEM_PROMPTS,
+    MODIFY_SESSION_SYSTEM_PROMPTS,
     INTERACTIVE_STEPS,
+    modify_turn_prompt,
     REJECT_PROMPT,
     REJECT_DEFAULT,
     APPROVE_OK,
@@ -1294,90 +1294,23 @@ class Repl:
                 return self._exec_reject({"comment": reason})
             elif action_choice == "modify":
                 self._exec_interactive_session(agent_role)
-                # Re-render if PRD changed, then loop back to menu
-                self._rerender_after_interactive()
+                # Session handles its own rendering; loop back to menu
             elif action_choice == "retry":
                 click.echo(f"\n  {C_DIM}请直接输入新的描述来重新执行此步骤{C_RESET}")
                 return ""
 
     def _exec_interactive_session(self, agent_role: str) -> None:
-        """Launch interactive Claude Code session for iterative refinement.
+        """REPL-managed multi-turn modification via claude -p --session-id.
 
-        The user gets a full Claude Code TUI with agent context so they can
-        chat naturally, read/edit files, and refine the output until satisfied.
+        Each turn calls claude -p with --json-schema for format enforcement
+        and --session-id for conversation continuity.  No interactive TUI.
         """
-
-        # Find the latest artifact for this agent role
-        artifact_path = self._find_latest_artifact(agent_role)
-        if artifact_path is None:
-            click.echo(f"\n  {C_AMBER}⚠ 未找到 {agent_role} 的产物文件，但仍可进入交互模式{C_RESET}")
-
-        # Record mtime to detect changes
-        mtime_before = artifact_path.stat().st_mtime if artifact_path else 0
-
-        model = getattr(self.agent, 'model', 'claude-sonnet-4-20250514')
-        cli_path = getattr(self.agent, 'claude_cli_path', 'claude')
-        repo_path = str(getattr(self.agent, 'repo_path', Path.cwd()))
-
-        system_prompt = INTERACTIVE_SYSTEM_PROMPTS.get(
-            agent_role, PM_INTERACTIVE_SYSTEM_PROMPT
-        )
-        if artifact_path:
-            system_prompt += (
-                f"\n\n当前产物文件路径: {artifact_path}\n"
-                f"工作目录: {repo_path}"
-            )
-
-        # ── Purple box: entering interactive session ──────────────────────
-        click.echo()
-        artifact_info = str(artifact_path.relative_to(repo_path)) if artifact_path else "(未找到)"
-        click.echo(_draw_box(
-            top_line="交互式修改模式 — 已启动",
-            lines=[
-                f"产物: {artifact_info}",
-                "与 Agent 对话修改文档，输入 /exit 返回审批菜单。",
-            ],
-        ))
-
-        # Build command with tool restrictions scoped to the artifact
-        cmd = [
-            cli_path, "--model", model,
-            "--tools", "Read,Edit,Write",
-            "--append-system-prompt", system_prompt,
-        ]
-        if artifact_path:
-            rel = str(artifact_path.relative_to(repo_path))
-            prd_dir = str(Path(rel).parent)
-            cmd.extend([
-                "--allowedTools",
-                f"Read({prd_dir}/**),Edit({prd_dir}/**),Write({prd_dir}/**)",
-            ])
-
-        try:
-            subprocess.run(cmd, cwd=repo_path, check=False)
-        except FileNotFoundError:
-            click.echo(f"  {C_RED}✗{C_RESET} 未找到 Claude Code CLI，请确认已安装")
-            return
-
-        # ── Purple box: returned from interactive session ─────────────────
-        click.echo()
-        click.echo(_draw_box(
-            top_line="交互式修改模式 — 已退出",
-            lines=["已返回 CogniForge 审批流程。"],
-        ))
-
-        # Track mtime for re-render check
-        if artifact_path and artifact_path.exists():
-            self._interactive_mtime_after = artifact_path.stat().st_mtime
-        else:
-            self._interactive_mtime_after = 0
-        self._interactive_mtime_before = mtime_before
-        self._interactive_artifact_path = artifact_path
-
-    def _find_latest_artifact(self, agent_role: str) -> Optional[Path]:
-        """Find the latest artifact file for a given agent role."""
         import glob as _glob
+        import time as _time
 
+        repo_path = Path(getattr(self.agent, 'repo_path', Path.cwd()))
+
+        # ── Find artifact ─────────────────────────────────────────────────
         role_dir_map = {
             "pm": ".cogniforge/wiki/prd",
             "architect": ".cogniforge/wiki/sad",
@@ -1388,61 +1321,201 @@ class Repl:
             "devops": ".cogniforge/wiki/ops",
         }
         dir_path = role_dir_map.get(agent_role)
-        if not dir_path:
-            return None
+        artifact_path = None
+        if dir_path:
+            files = sorted(_glob.glob(str(repo_path / dir_path / "*.json")))
+            artifact_path = Path(files[-1]) if files else None
 
-        pattern = str(Path.cwd() / dir_path / "*.json")
-        files = sorted(_glob.glob(pattern))
-        return Path(files[-1]) if files else None
-
-    def _rerender_after_interactive(self) -> None:
-        """Re-render HTML and commit if the artifact was modified during interactive session."""
-        artifact_path = getattr(self, '_interactive_artifact_path', None)
-        mtime_before = getattr(self, '_interactive_mtime_before', 0)
-        mtime_after = getattr(self, '_interactive_mtime_after', 0)
-
-        if not artifact_path or not artifact_path.exists():
-            return
-        if mtime_after == mtime_before:
-            click.echo(f"\n  {C_DIM}(文档未变更){C_RESET}")
+        if artifact_path is None:
+            click.echo(
+                f"\n  {C_AMBER}⚠ 未找到 {agent_role} 的产物文件，"
+                f"无法进入交互模式{C_RESET}"
+            )
             return
 
-        # Re-render HTML
-        try:
-            from cogniforge.wiki.wiki_renderer import render_file
-            html_path = render_file(artifact_path)
-            click.echo(f"\n  {C_GREEN}✓{C_RESET} 文档已更新")
-            if html_path:
-                abs_path = html_path.resolve()
-                link = f"\033]8;;file://{abs_path}\033\\{html_path}\033]8;;\033\\"
-                click.echo(f"       {link}")
+        # ── Session setup ─────────────────────────────────────────────────
+        step_value = self._agent_role_to_step(agent_role)
+        session_id = f"{step_value or agent_role}-mod-{int(_time.time())}"
+        schema_path = repo_path / f"schemas/{step_value}-schema.json"
 
-            # Commit changes
-            if self.wiki_system:
-                try:
-                    repo_path = getattr(self.agent, 'repo_path', Path.cwd())
-                    self.wiki_system.git_storage.repo.index.add([
-                        str(artifact_path.relative_to(repo_path)),
-                    ])
-                    if html_path:
-                        self.wiki_system.git_storage.repo.index.add([
-                            str(html_path.relative_to(repo_path)),
-                        ])
-                    self.wiki_system.git_storage.commit(
-                        "docs: update after interactive refinement", "pm_agent"
-                    )
-                except Exception:
-                    pass
-        except Exception as exc:
-            click.echo(f"  {C_AMBER}⚠ HTML 渲染失败: {exc}{C_RESET}")
+        model = getattr(self.agent, 'model', 'claude-sonnet-4-20250514')
+        cli_path = getattr(self.agent, 'claude_cli_path', 'claude')
+        system_prompt = MODIFY_SESSION_SYSTEM_PROMPTS.get(
+            agent_role, MODIFY_SESSION_SYSTEM_PROMPTS.get("pm", "")
+        )
 
-        # Clean up temp attributes
-        for attr in ('_interactive_artifact_path', '_interactive_mtime_before',
-                      '_interactive_mtime_after'):
+        # ── Open purple box (no bottom — loop runs inside) ────────────────
+        box_title = f"交互式修改 — {step_value.upper()}" if step_value else "交互式修改"
+        box_lines = [
+            f"产物: {artifact_path.relative_to(repo_path)}",
+            "输入修改意见，Agent 逐轮修改文档。输入 /done 完成。",
+        ]
+        # Pre-compute box width so the closing border matches
+        _all = [box_title] + box_lines
+        _box_w = max(_display_width(ln) for ln in _all)
+        _box_w = max(_box_w, _display_width(box_title) + 2)
+        click.echo()
+        click.echo(_draw_box(
+            top_line=box_title, lines=box_lines, bottom_close=False,
+        ))
+
+        # ── Helper: parse claude -p output ────────────────────────────────
+        def _parse_result(stdout: str) -> str | None:
+            """Extract the JSON document from claude -p --output-format json."""
+            if not stdout.strip():
+                return None
             try:
-                delattr(self, attr)
-            except AttributeError:
-                pass
+                outer = json.loads(stdout)
+                if isinstance(outer, dict) and "result" in outer:
+                    return outer["result"]
+                return stdout
+            except json.JSONDecodeError:
+                return stdout
+
+        # ── Helper: re-render and commit ──────────────────────────────────
+        def _save_and_render(json_text: str) -> None:
+            from cogniforge.wiki.wiki_renderer import render_file
+            artifact_path.write_text(json_text, encoding="utf-8")
+            try:
+                html_path = render_file(artifact_path)
+                _box_print(f"{C_GREEN}✓{C_RESET} 文档已更新")
+                if html_path:
+                    rel_link = str(html_path.relative_to(repo_path))
+                    _box_print(f"{C_DIM}{rel_link}{C_RESET}")
+                if self.wiki_system:
+                    try:
+                        self.wiki_system.git_storage.repo.index.add([
+                            str(artifact_path.relative_to(repo_path)),
+                        ])
+                        if html_path:
+                            self.wiki_system.git_storage.repo.index.add([
+                                str(html_path.relative_to(repo_path)),
+                            ])
+                        self.wiki_system.git_storage.commit(
+                            "docs: update after interactive refinement", "pm_agent"
+                        )
+                    except Exception:
+                        pass
+            except Exception as exc:
+                _box_print(f"{C_AMBER}⚠ HTML 渲染失败: {exc}{C_RESET}")
+
+        # ── Helpers for bordered output ───────────────────────────────────
+        def _strip_ansi(text: str) -> str:
+            """Remove ANSI escape sequences so display-width is accurate."""
+            return re.sub(r"\033\[[0-9;]*m", "", text)
+
+        def _box_print(text: str) -> None:
+            """Print a line inside the open purple box with left/right borders."""
+            P, R = C_PURPLE, C_RESET
+            for line in str(text).split("\n"):
+                dw = _display_width(_strip_ansi(line))
+                pad = " " * max(0, _box_w - dw)
+                click.echo(f"  {P}│{R} {line}{pad} {P}│{R}")
+
+        def _box_empty() -> None:
+            """Print an empty line inside the box."""
+            P, R = C_PURPLE, C_RESET
+            click.echo(f"  {P}│{R}{' ' * (_box_w + 2)} {P}│{R}")
+
+        def _box_input(prompt_text: str) -> str:
+            """Read user input with left border, inside the box."""
+            P, R = C_PURPLE, C_RESET
+            try:
+                return input(f"  {P}│{R} {prompt_text}").strip()
+            except (EOFError, KeyboardInterrupt):
+                return ""
+
+        # ── Multi-turn loop ───────────────────────────────────────────────
+        _box_empty()
+        while True:
+            try:
+                user_input = _box_input(
+                    f"cogniforge [修改 {step_value or agent_role}]: "
+                )
+            except (EOFError, KeyboardInterrupt):
+                break
+
+            if user_input in ("", "/done", "/exit", "/quit"):
+                break
+
+            if user_input.startswith("/"):
+                continue
+
+            # Read current JSON
+            try:
+                current_json = artifact_path.read_text(encoding="utf-8")
+            except Exception:
+                _box_print(f"{C_RED}✗{C_RESET} 无法读取产物文件")
+                continue
+
+            prompt = modify_turn_prompt(current_json, user_input)
+
+            # Build command
+            cmd = [
+                cli_path, "-p", prompt,
+                "--session-id", session_id,
+                "--output-format", "json",
+                "--model", model,
+                "--append-system-prompt", system_prompt,
+            ]
+            if schema_path.exists():
+                cmd.extend(["--json-schema", str(schema_path)])
+
+            # Execute
+            spinner = Spinner("Agent 正在修改")
+            spinner.start()
+            try:
+                result = subprocess.run(
+                    cmd, cwd=str(repo_path), check=False,
+                    capture_output=True, text=True, timeout=300,
+                )
+            except subprocess.TimeoutExpired:
+                spinner.stop()
+                _box_print(f"{C_RED}✗{C_RESET} 请求超时，请重试")
+                continue
+            except FileNotFoundError:
+                spinner.stop()
+                _box_print(f"{C_RED}✗{C_RESET} 未找到 Claude Code CLI")
+                return
+            finally:
+                spinner.stop()
+
+            if result.returncode != 0:
+                err = (result.stderr or result.stdout or "").strip()
+                _box_print(f"{C_RED}✗{C_RESET} Claude Code 返回错误: {err[:100]}")
+                continue
+
+            # Parse output
+            json_output = _parse_result(result.stdout)
+            if json_output is None:
+                _box_print(f"{C_RED}✗{C_RESET} 未能解析 Claude Code 输出")
+                continue
+
+            # Strip markdown code fences if present
+            json_output = _extract_json(json_output)
+
+            # Validate it's parseable JSON
+            try:
+                json.loads(json_output)
+            except json.JSONDecodeError as e:
+                _box_print(f"{C_RED}✗{C_RESET} 输出不是合法 JSON: {e}")
+                continue
+
+            # Save and re-render
+            _save_and_render(json_output)
+            _box_empty()
+
+        # ── Close purple box ───────────────────────────────────────────
+        click.echo(f"  {C_PURPLE}╰{'─' * (_box_w + 2)}╯{C_RESET}")
+        click.echo(f"  {C_DIM}已返回 CogniForge 审批流程。{C_RESET}")
+
+    @staticmethod
+    def _agent_role_to_step(agent_role: str) -> Optional[str]:
+        """Map agent role to workflow step."""
+        for step_key, schema in AGENT_SCHEMAS.items():
+            if schema.get("agent") == agent_role:
+                return step_key
+        return None
 
     def _post_agent_menu(self, step) -> str:
         """Interactive menu shown after each agent execution.
