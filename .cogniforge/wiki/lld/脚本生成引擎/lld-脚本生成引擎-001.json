@@ -1,0 +1,382 @@
+{
+  "meta": {
+    "doc_id": "lld-脚本生成引擎-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "脚本生成引擎",
+    "title": "脚本生成引擎详细设计",
+    "author": "design_agent",
+    "created": "2026-05-22"
+  },
+  "overview": {
+    "description": "根据部署配置自动生成远程服务器的启动脚本、健康检查脚本和服务注册脚本。根据项目类型（Go二进制/Java JAR/Node.js/Python等）选择对应的标准脚本模板，注入环境变量和启动参数，生成systemd服务注册文件和健康检查脚本，支持用户自定义前置/后置脚本扩展。生成的脚本内容通过内部API返回给部署编排服务，由远程命令执行器写入部署目录并执行。",
+    "dependencies": ["部署编排服务", "远程命令执行器"],
+    "tech_stack": ["Go", "Gin"]
+  },
+  "data_models": [
+    {
+      "name": "environments",
+      "type": "reference",
+      "ownership": "derived",
+      "source": {"doc_id": "lld-PostgreSQL主数据库-001", "model_name": "environments"},
+      "description": "部署环境配置——脚本生成引擎关注环境的基础元信息以确定脚本中的环境标识和路径规则",
+      "fields": [
+        {"name": "id", "type": "UUID", "required": true, "description": "环境标识"},
+        {"name": "project_id", "type": "UUID", "required": true, "description": "所属项目ID"},
+        {"name": "name", "type": "VARCHAR(64)", "required": true, "description": "环境名称，如「测试线」「灰度线」「正式线」"}
+      ],
+      "indexes": []
+    },
+    {
+      "name": "deployment_versions",
+      "type": "reference",
+      "ownership": "derived",
+      "source": {"doc_id": "lld-PostgreSQL主数据库-001", "model_name": "deployment_versions"},
+      "description": "部署版本记录——脚本生成引擎关注版本号和部署目录路径以生成正确路径引用的启动脚本",
+      "fields": [
+        {"name": "version", "type": "VARCHAR(64)", "required": true, "description": "部署版本号"},
+        {"name": "deploy_path", "type": "VARCHAR(1024)", "required": true, "description": "远程服务器上的部署目录绝对路径"}
+      ],
+      "indexes": []
+    },
+    {
+      "name": "script_template_config",
+      "type": "config",
+      "ownership": "owned",
+      "description": "脚本模板配置，按项目类型和脚本类型分类。内置模板在编译时嵌入Go二进制，用户自定义模板可在运行时从配置文件加载。模板使用Go text/template语法，占位符格式为{{.PlaceholderName}}。",
+      "fields": [
+        {"name": "project_type", "type": "string", "required": true, "description": "适用项目类型：go_binary/java_jar/nodejs/python/custom"},
+        {"name": "script_type", "type": "string", "required": true, "description": "脚本类型：startup/shutdown/healthcheck/service_registration"},
+        {"name": "template_content", "type": "string", "required": true, "description": "模板正文，含{{.Placeholder}}占位符"},
+        {"name": "is_builtin", "type": "boolean", "required": true, "description": "是否为内置模板，内置模板不允许修改"},
+        {"name": "description", "type": "string", "required": false, "description": "模板用途说明"}
+      ]
+    },
+    {
+      "name": "custom_hook_config",
+      "type": "config",
+      "ownership": "owned",
+      "description": "用户自定义脚本钩子配置，支持在标准流程前后插入自定义脚本片段",
+      "fields": [
+        {"name": "hook_type", "type": "string", "required": true, "description": "钩子类型：pre_deploy/post_deploy/pre_startup/post_shutdown"},
+        {"name": "script_content", "type": "string", "required": true, "description": "自定义脚本正文"},
+        {"name": "order", "type": "integer", "required": false, "description": "同类型钩子的执行顺序，升序排列"},
+        {"name": "timeout_seconds", "type": "integer", "required": false, "description": "钩子执行的超时时间，默认30秒"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "GenerateScripts",
+      "method": "INTERNAL",
+      "endpoint": "internal/script-generator/generate",
+      "description": "生成部署所需的全套脚本（启动脚本 + 停止脚本 + 健康检查脚本 + 服务注册脚本）。部署编排服务在文件传输完成后调用此接口获取所有脚本内容，然后由远程命令执行器写入服务器。",
+      "parameters": [
+        {"name": "request", "type": "ScriptGenerationRequest", "description": "脚本生成请求，包含项目类型、部署路径、环境变量、启动参数、自定义钩子等完整配置"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "task_id": "string (UUID, 部署任务ID)",
+          "scripts": "array（GeneratedScript对象列表，包含所有生成的脚本名称、内容、路径和元数据）",
+          "deploy_path": "string（远程部署目录绝对路径，脚本将写入此目录）",
+          "generated_at": "string (ISO8601时间戳)"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "不支持的projectType，合法值参见GetSupportedTypes接口"},
+        {"code": 400, "message": "模板渲染失败，存在未解析的占位符或变量缺失"},
+        {"code": 400, "message": "自定义钩子脚本语法验证失败"},
+        {"code": 500, "message": "内部模板引擎错误，内置模板损坏或加载失败"}
+      ]
+    },
+    {
+      "name": "PreviewScript",
+      "method": "INTERNAL",
+      "endpoint": "internal/script-generator/preview",
+      "description": "预览指定类型的脚本生成结果，不包含文件元数据。部署编排服务可在执行前调用此接口让用户确认脚本内容。",
+      "parameters": [
+        {"name": "request", "type": "ScriptGenerationRequest", "description": "脚本生成请求"},
+        {"name": "script_type", "type": "string", "description": "要预览的脚本类型：startup/shutdown/healthcheck/service_registration"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "script_type": "string（脚本类型）",
+          "content": "string（渲染后的完整脚本正文）",
+          "variables": "array（渲染时注入的变量名列表，用于用户确认）",
+          "rendered_at": "string (ISO8601时间戳)"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "不支持的scriptType"},
+        {"code": 400, "message": "不支持的projectType"},
+        {"code": 400, "message": "模板渲染失败"}
+      ]
+    },
+    {
+      "name": "GetSupportedTypes",
+      "method": "INTERNAL",
+      "endpoint": "internal/script-generator/types",
+      "description": "查询脚本生成引擎支持的项目类型和脚本类型列表。部署编排服务在编排部署流程时调用此接口验证项目类型的合法性。",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "project_types": "array（支持的项目类型，如 go_binary/java_jar/nodejs/python/custom）",
+          "script_types": "array（支持的脚本类型，如 startup/shutdown/healthcheck/service_registration）",
+          "custom_hook_types": "array（支持的钩子类型，如 pre_deploy/post_deploy/pre_startup/post_shutdown）"
+        }
+      },
+      "error_codes": []
+    }
+  ],
+  "error_handling": {
+    "strategy": "脚本生成错误统一捕获并转换为结构化错误响应返回给部署编排服务。模板在服务启动时预编译验证，内置模板语法错误在启动阶段即暴露，不延迟到运行时。变量占位符解析失败时返回具体未匹配的占位符名称，便于快速定位问题。自定义钩子脚本在注入前执行基础语法检查（shebang合法性、shell语法简单校验）。生成流程为纯计算无副作用，出错时不会对远程服务器产生任何影响，调用方可安全重试。",
+    "response_format": {
+      "body": {
+        "code": "integer(HTTP状态码或自定义业务码)",
+        "error": "string(错误分类标识)",
+        "detail": "string(详细错误描述，包含具体占位符或模板名称)"
+      }
+    },
+    "categories": [
+      {
+        "code": 400,
+        "name": "UnsupportedProjectType",
+        "description": "请求中的projectType不在支持的项目类型列表中触发。处理方式：返回400，detail字段列出所有合法项目类型，引导调用方先调用GetSupportedTypes查询。"
+      },
+      {
+        "code": 400,
+        "name": "TemplateRenderError",
+        "description": "模板渲染过程中发现未定义的占位符或变量类型不匹配。处理方式：返回400，detail字段标注具体模板名称和失败占位符，调用方可修正输入后重试。"
+      },
+      {
+        "code": 400,
+        "name": "CustomHookValidationError",
+        "description": "自定义钩子脚本校验不通过（shebang缺失或存在高风险命令）。处理方式：返回400，detail字段说明校验失败原因和具体脚本行号。"
+      },
+      {
+        "code": 400,
+        "name": "InvalidServiceConfig",
+        "description": "服务注册配置校验失败（如服务名称为空、描述缺失等）。处理方式：返回400，detail字段列出所有配置校验失败的字段名。"
+      },
+      {
+        "code": 500,
+        "name": "InternalTemplateError",
+        "description": "内置模板在预编译阶段通过但运行时执行异常，属于内部错误。处理方式：返回500，detail字段包含模板执行错误栈，触发运维告警。"
+      },
+      {
+        "code": 500,
+        "name": "TemplateLoadError",
+        "description": "自定义模板从配置文件加载失败（文件不存在、格式错误或权限不足）。处理方式：返回500，detail字段包含文件路径和具体错误原因，触发运维告警。"
+      }
+    ]
+  },
+  "domain_objects": [
+    {
+      "name": "ScriptGenerationRequest",
+      "object_type": "dto",
+      "description": "脚本生成请求DTO，由部署编排服务组装后传入，包含生成脚本所需的全部配置信息",
+      "attributes": [
+        {"name": "taskId", "type": "UUID", "required": true, "source": "input", "description": "部署任务ID，用于日志追踪和结果关联"},
+        {"name": "projectType", "type": "ProjectType", "required": true, "source": "input", "description": "项目类型，决定选用哪套脚本模板"},
+        {"name": "appName", "type": "String", "required": true, "source": "input", "description": "可执行文件或入口文件名（不含路径）"},
+        {"name": "deployPath", "type": "String", "required": true, "source": "input", "description": "远程服务器上的部署目录绝对路径，如 /app/releases/v1.2.3"},
+        {"name": "logPath", "type": "String", "required": false, "source": "input", "description": "日志输出目录，默认 {deployPath}/logs"},
+        {"name": "environmentName", "type": "String", "required": true, "source": "input", "description": "环境名称，用于在脚本中标识运行环境"},
+        {"name": "envVars", "type": "List<EnvironmentVariable>", "required": false, "source": "input", "description": "注入脚本的环境变量列表，含敏感值标记"},
+        {"name": "startArgs", "type": "List<String>", "required": false, "source": "input", "description": "启动参数列表，传给可执行文件"},
+        {"name": "port", "type": "Integer", "required": false, "source": "input", "description": "应用监听端口，用于健康检查脚本生成"},
+        {"name": "serviceConfig", "type": "ServiceRegistrationConfig", "required": false, "source": "input", "description": "服务注册配置，非空时生成systemd/initd服务文件"},
+        {"name": "customHooks", "type": "List<CustomHookConfig>", "required": false, "source": "input", "description": "自定义脚本钩子列表"}
+      ],
+      "maps_to_entity": null
+    },
+    {
+      "name": "ScriptGenerationResult",
+      "object_type": "dto",
+      "description": "脚本生成结果DTO，包含所有生成的脚本及其元数据",
+      "attributes": [
+        {"name": "taskId", "type": "UUID", "required": true, "source": "input", "description": "对应请求中的部署任务ID"},
+        {"name": "scripts", "type": "List<GeneratedScript>", "required": true, "source": "computed", "description": "生成的脚本列表"},
+        {"name": "deployPath", "type": "String", "required": true, "source": "input", "description": "脚本写入的目标部署目录"},
+        {"name": "generatedAt", "type": "DateTime", "required": true, "source": "computed", "description": "脚本生成时间"}
+      ],
+      "maps_to_entity": null
+    },
+    {
+      "name": "GeneratedScript",
+      "object_type": "entity",
+      "description": "单个生成的脚本实体，包含脚本内容和文件元数据，由远程命令执行器负责写入和设置权限",
+      "attributes": [
+        {"name": "name", "type": "String", "required": true, "source": "computed", "description": "文件名，如 start.sh / stop.sh / healthcheck.sh / app.service"},
+        {"name": "scriptType", "type": "ScriptType", "required": true, "source": "computed", "description": "脚本类型分类"},
+        {"name": "content", "type": "String", "required": true, "source": "computed", "description": "渲染后的脚本完整正文"},
+        {"name": "relativePath", "type": "String", "required": true, "source": "computed", "description": "相对于deployPath的存放路径，通常为 ./"},
+        {"name": "executable", "type": "Boolean", "required": true, "source": "computed", "description": "是否需要可执行权限（chmod +x）"},
+        {"name": "checksum", "type": "String", "required": false, "source": "computed", "description": "脚本内容的SHA256校验和，用于完整性验证"}
+      ]
+    },
+    {
+      "name": "ScriptTemplate",
+      "object_type": "entity",
+      "description": "脚本模板实体，定义按项目类型和脚本类型分类的模板。内置模板在Go编译时通过embed嵌入二进制，自定义模板从外部配置文件加载",
+      "attributes": [
+        {"name": "id", "type": "UUID", "required": true, "source": "db", "description": "模板唯一标识"},
+        {"name": "projectType", "type": "ProjectType", "required": true, "source": "db", "description": "适用项目类型"},
+        {"name": "scriptType", "type": "ScriptType", "required": true, "source": "db", "description": "脚本类型"},
+        {"name": "templateName", "type": "String", "required": true, "source": "db", "description": "模板名称"},
+        {"name": "templateContent", "type": "String", "required": true, "source": "db", "description": "模板正文，Go text/template语法"},
+        {"name": "isBuiltin", "type": "Boolean", "required": true, "source": "db", "description": "是否为内置模板"}
+      ]
+    },
+    {
+      "name": "EnvironmentVariable",
+      "object_type": "value_object",
+      "description": "环境变量值对象，由部署编排服务从环境和项目配置中提取后传入脚本生成引擎",
+      "attributes": [
+        {"name": "key", "type": "String", "required": true, "source": "input", "description": "环境变量名，全大写蛇形命名"},
+        {"name": "value", "type": "String", "required": true, "source": "input", "description": "环境变量值"},
+        {"name": "sensitive", "type": "Boolean", "required": true, "source": "input", "description": "是否为敏感值，为true时在日志中脱敏为******"}
+      ]
+    },
+    {
+      "name": "ServiceRegistrationConfig",
+      "object_type": "value_object",
+      "description": "服务注册配置值对象，定义生成的systemd unit文件参数",
+      "attributes": [
+        {"name": "serviceName", "type": "String", "required": true, "source": "input", "description": "服务名称，用作systemd unit文件名"},
+        {"name": "description", "type": "String", "required": true, "source": "input", "description": "服务描述"},
+        {"name": "after", "type": "List<String>", "required": false, "source": "input", "description": "服务启动依赖，默认 [network.target]"},
+        {"name": "restartPolicy", "type": "String", "required": false, "source": "input", "description": "重启策略：always/on-failure/no，默认 always"},
+        {"name": "runAsUser", "type": "String", "required": false, "source": "input", "description": "运行用户，默认 root"},
+        {"name": "workingDirectory", "type": "String", "required": false, "source": "input", "description": "工作目录，默认 deployPath"}
+      ]
+    },
+    {
+      "name": "CustomHookConfig",
+      "object_type": "entity",
+      "description": "自定义脚本钩子配置，由用户在项目配置中定义，在标准脚本执行前后插入执行",
+      "attributes": [
+        {"name": "hookType", "type": "String", "required": true, "source": "input", "description": "钩子类型：pre_deploy / post_deploy / pre_startup / post_shutdown"},
+        {"name": "scriptContent", "type": "String", "required": true, "source": "input", "description": "自定义脚本正文"},
+        {"name": "order", "type": "Integer", "required": false, "source": "input", "description": "同类型钩子的执行优先级，升序执行，默认 50"},
+        {"name": "timeoutSeconds", "type": "Integer", "required": false, "source": "input", "description": "执行超时秒数，默认 30"}
+      ]
+    },
+    {
+      "name": "ProjectType",
+      "object_type": "enum",
+      "description": "项目类型枚举，决定使用哪个模板集合生成脚本",
+      "values": [
+        "go_binary — Go语言编译的二进制可执行文件，直接启动",
+        "java_jar — Java JAR包，使用 java -jar 启动",
+        "nodejs — Node.js 应用，使用 node 或 npm start 启动",
+        "python — Python 应用，使用 python 或 gunicorn/uvicorn 启动",
+        "custom — 用户完全自定义的启动方式"
+      ]
+    },
+    {
+      "name": "ScriptType",
+      "object_type": "enum",
+      "description": "脚本类型枚举，标识每个生成脚本的用途和生命周期阶段",
+      "values": [
+        "startup — 应用启动脚本，设置环境变量、cwd、执行启动命令并记录PID",
+        "shutdown — 应用停止脚本，根据PID优雅终止进程",
+        "healthcheck — 健康检查脚本，通过端口/TCP/HTTP探测应用状态",
+        "service_registration — 服务注册配置（systemd unit），实现开机自启和进程托管",
+        "pre_hook — 用户自定义前置钩子，在启动前执行（如数据库迁移）",
+        "post_hook — 用户自定义后置钩子，在停止后执行（如清理缓存）"
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "name": "ScriptGeneratorService",
+      "description": "脚本生成引擎的核心服务，负责根据部署配置和项目类型生成远程服务器运行所需的全部脚本",
+      "methods": [
+        {
+          "name": "GenerateAllScripts",
+          "signature": "(request: ScriptGenerationRequest) -> ScriptGenerationResult",
+          "precondition": "request.projectType 是已注册的 ProjectType 枚举值；request.deployPath 非空且格式化为绝对路径（以/开头）；request.appName 非空",
+          "postcondition": "返回值 ScriptGenerationResult.scripts 至少包含一个 startup 类型的脚本；所有脚本的 checksum 与正文内容匹配；对相同的 request 反复调用返回语义相同的内容（幂等性）；result.generatedAt 按服务器时钟返回",
+          "description": "生成全套部署脚本，包含启动、停止、健康检查和服务注册脚本。按固定顺序生成：停止脚本 → 启动脚本 → 健康检查脚本 → 服务注册脚本（如有配置）→ 自定义钩子脚本（按order排序）。每类脚本按 projectType 选择对应模板渲染。",
+          "exceptions": [
+            {"name": "UnsupportedProjectTypeError", "trigger": "request.projectType 不在已注册的 ProjectType 枚举中", "http_status": 400},
+            {"name": "TemplateRenderError", "trigger": "模板渲染时发现未定义的占位符或模板语法错误", "http_status": 400},
+            {"name": "CustomHookValidationError", "trigger": "自定义钩子脚本未通过语法安全检查（如高风险命令或shebang缺失）", "http_status": 400},
+            {"name": "InternalTemplateError", "trigger": "内置模板运行时报错或自定义模板加载失败", "http_status": 500}
+          ]
+        },
+        {
+          "name": "GenerateStartupScript",
+          "signature": "(request: ScriptGenerationRequest) -> GeneratedScript",
+          "precondition": "request.deployPath 非空；request.appName 非空；request.projectType 合法",
+          "postcondition": "返回值.GeneratedScript.scriptType == ScriptType.startup；返回值.GeneratedScript.executable == true；脚本内容包含完整的 shebang（#!/bin/bash）和环境变量注入段",
+          "description": "仅生成启动脚本，不连带生成其他类型脚本。启动脚本结构：shebang → 环境变量导出段 → 目录切换 → PID文件声明 → nohup启动或systemd-run调用 → PID记录",
+          "exceptions": [
+            {"name": "UnsupportedProjectTypeError", "trigger": "不支持的projectType", "http_status": 400},
+            {"name": "TemplateRenderError", "trigger": "占位符渲染失败", "http_status": 400}
+          ]
+        },
+        {
+          "name": "GenerateHealthCheckScript",
+          "signature": "(request: ScriptGenerationRequest) -> GeneratedScript",
+          "precondition": "request.port 在 1-65535 范围内；request.appName 非空",
+          "postcondition": "返回值.GeneratedScript.scriptType == ScriptType.healthcheck；脚本根据 projectType 使用对应的探测方式（如 Go二进制和Java JAR使用端口检测，Node.js使用HTTP /health 端点）",
+          "description": "生成健康检查脚本。Go二进制和Java JAR项目使用 /proc/net/tcp + PID文件双重确认；Node.js/Python项目使用 curl/wget 请求应用HTTP端点确认。脚本以 exit code 0/非0 表示健康/不健康。",
+          "exceptions": [
+            {"name": "UnsupportedProjectTypeError", "trigger": "不支持的projectType", "http_status": 400},
+            {"name": "InvalidPortError", "trigger": "port 为空或不在 1-65535 范围内", "http_status": 400},
+            {"name": "TemplateRenderError", "trigger": "模板渲染失败", "http_status": 400}
+          ]
+        },
+        {
+          "name": "GenerateServiceRegistrationScript",
+          "signature": "(request: ScriptGenerationRequest) -> GeneratedScript",
+          "precondition": "request.serviceConfig 非空且 serviceConfig.serviceName 非空",
+          "postcondition": "返回值.GeneratedScript.scriptType == ScriptType.service_registration；返回值.GeneratedScript.name 包含 serviceConfig.serviceName 作为文件名前缀",
+          "description": "生成 systemd service unit 文件内容。包含 [Unit] 段（Description/After）、[Service] 段（ExecStart/WorkingDirectory/Restart/User）、[Install] 段（WantedBy）。脚本文件由远程命令执行器写入 /etc/systemd/system/ 目录并执行 systemctl daemon-reload。",
+          "exceptions": [
+            {"name": "InvalidServiceConfigError", "trigger": "serviceConfig 为 nil 或 serviceName 为空", "http_status": 400},
+            {"name": "TemplateRenderError", "trigger": "模板渲染失败", "http_status": 400}
+          ]
+        },
+        {
+          "name": "PreviewScript",
+          "signature": "(request: ScriptGenerationRequest, scriptType: ScriptType) -> String",
+          "precondition": "request.projectType 合法；scriptType 对应的模板存在",
+          "postcondition": "返回的字符串是完整渲染后的脚本正文，与写入文件的内容一致；不修改任何系统状态",
+          "description": "预览指定类型的脚本渲染结果。部署编排服务可在部署前调用此接口将脚本内容展示给用户确认，确认无误后再执行实际部署。此方法纯计算，无副作用。",
+          "exceptions": [
+            {"name": "UnsupportedProjectTypeError", "trigger": "不支持的projectType", "http_status": 400},
+            {"name": "UnsupportedScriptTypeError", "trigger": "参数 scriptType 对应的模板不存在", "http_status": 400},
+            {"name": "TemplateRenderError", "trigger": "模板渲染失败", "http_status": 400}
+          ]
+        }
+      ],
+      "repository_dependencies": [
+        "FindScriptTemplate(projectType: ProjectType, scriptType: ScriptType) -> ScriptTemplate? — 查询指定项目类型和脚本类型的模板，返回 nil 时回退到内置模板",
+        "FindCustomHooks(environmentId: string) -> []CustomHookConfig — 查询指定环境的自定义钩子列表，按 order 升序返回",
+        "FindProjectTypeConfig(projectType: ProjectType) -> map[string]string? — 查询指定项目类型的额外配置参数（如 Java JAR 的默认 JVM 参数、Node.js 的入口文件名规则）"
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "所有生成的脚本必须包含完整的 shebang 行（#!/bin/bash），保证在远程服务器上可直接解释执行",
+      "脚本必须幂等——对同一部署目录重复生成和执行不产生冲突（启动前先停止已有进程、目录存在不报错）",
+      "敏感环境变量（sensitive=true）在脚本中以引用的脱敏占位符注入，不以明文值直接写入脚本正文",
+      "自定义钩子脚本不能包含 rm -rf /、mkfs、dd if=/dev/zero 等高危命令，校验阶段拒绝生成",
+      "所有生成的脚本文件名在同一个部署上下文中必须唯一"
+    ],
+    "state_machines": [],
+    "cross_service_rules": [
+      "脚本内容必须与远程命令执行器预期的目录结构一致——deployPath 对应部署目录，logPath 对应日志目录，PID文件写入 deployPath",
+      "生成的 systemd service 文件必须由远程命令执行器写入 /etc/systemd/system/ 目录并执行 systemctl daemon-reload，脚本生成引擎不直接操作远程文件系统",
+      "部署编排服务应在调用 GenerateScripts 前先验证所有输入的合法性和完整性，避免在执行层才暴露参数错误",
+      "脚本模板的版本更新（新增占位符或修改模板结构）必须同步更新部署编排服务的 ScriptGenerationRequest 组装逻辑，保持契约一致性"
+    ]
+  }
+}
