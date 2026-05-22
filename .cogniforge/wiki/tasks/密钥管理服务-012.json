@@ -1,9 +1,13 @@
 {
   "task_id": "密钥管理服务-012",
-  "name": "实现验证密钥连接接口",
-  "description": "实现 POST /api/v1/environments/:eid/keys/:kid/verify。路径参数 eid(环境ID), kid(密钥ID)。调用 KeyService.VerifyKeyConnection 尝试 SSH 连接到环境配置的目标服务器。不修改任何持久化数据。成功返回 200 JSON {success: bool, message: string}。错误映射: 404(环境或密钥不存在), 500(密钥解密失败), 502(SSH连接失败/认证失败/超时)。产出物: Gin handler + 路由注册。",
+  "name": "实现业务不变量校验",
+  "description": "实现以下业务规则:\n  - SSH私钥必须始终以AES-256-GCM加密后持久化，任何环节不允许以明文形式写盘（包括临时文件和日志）\n  - 每个SSH密钥的指纹（基于公钥MD5哈希）必须在全局唯一，未软删除的记录不可出现指纹重复\n  - 密钥解密API（POST /api/keys/{id}/decrypt）仅限内部服务（部署引擎服务、SSH连接池服务）通过内部网络调用，API网关层必须拦截外部请求\n  - 已软删除（deleted_at非空）或状态为revoked/compromised的密钥不得用于解密操作\n  - SSH公钥必须可解析为合法的OpenSSH格式，支持RSA（>=2048位）、Ed25519、ECDSA（P-256/P-384/P-521）算法\n  - 密钥名称在同一用户下建议唯一（软约束，不做数据库唯一索引，UI层提示重复风险）",
   "module": "密钥管理服务",
-  "deps": [],
+  "deps": [
+    "密钥管理服务-009",
+    "密钥管理服务-010",
+    "密钥管理服务-008"
+  ],
   "status": "pending",
   "priority": 2,
   "assignee": "dev",
@@ -11,76 +15,13 @@
   "actual_hours": null,
   "category": "service",
   "changed_files": [],
-  "created_at": "2026-05-22T12:29:18.953892",
-  "updated_at": "2026-05-22T12:29:18.953921",
+  "created_at": "2026-05-22T15:03:26.984204",
+  "updated_at": "2026-05-22T15:03:26.984229",
   "result": null,
   "error": null,
-  "lld_refs": [
-    {
-      "module": "",
-      "doc_id": "",
-      "section": "business_rules",
-      "item_name": "SshKey",
-      "artifact_type": "state_machine",
-      "sub_item": null
-    }
-  ],
+  "lld_refs": [],
   "acceptance_criteria": [],
-  "context": {
-    "module_type": "service",
-    "lld_path": ".cogniforge/wiki/lld/密钥管理服务/lld-密钥管理服务-001.json",
-    "module_overview": "安全存储和管理 SSH 密钥，提供密钥的上传、绑定和验证功能。所有 SSH 私钥在落库前使用 AES-256-GCM 算法加密，仅在部署时由部署引擎通过内部接口获取解密后的密钥会话。",
-    "scope": {
-      "data_models": [],
-      "domain_objects": [],
-      "interfaces": [],
-      "service_contracts": [],
-      "business_rules": {
-        "state_machines": [
-          {
-            "entity": "SshKey",
-            "states": [
-              "active",
-              "deleted"
-            ],
-            "transitions": [
-              {
-                "from": "nonexistent",
-                "to": "active",
-                "trigger": "BindKey 成功执行",
-                "actor": "用户（Web 控制台）"
-              },
-              {
-                "from": "active",
-                "to": "deleted",
-                "trigger": "DeleteKey 成功执行",
-                "actor": "用户（Web 控制台）"
-              }
-            ],
-            "irreversible_rules": [
-              "active -> deleted 转换不可逆：密钥一旦删除无法恢复，部署引擎将无法使用该密钥建立连接。如需重新使用必须上传新密钥。"
-            ],
-            "concurrency": "同一环境下并发绑定同名密钥时，由数据库唯一索引 (environment_id, key_name) 保证只插入成功一条，其余请求返回 409 Conflict。并发删除操作基于 PostgreSQL 行级锁保护，同一时刻只有一个删除请求能成功。"
-          }
-        ]
-      },
-      "error_handling": {},
-      "extra_sections": {}
-    },
-    "external_contracts": [],
-    "cross_module_deps": [],
-    "tech_stack": [
-      "Go",
-      "Gin",
-      "Go 1.22+",
-      "PostgreSQL 15",
-      "golang.org/x/crypto/ssh",
-      "RESTful JSON API"
-    ],
-    "upstream_artifacts": []
-  },
-  "expected_output_files": [
-    "src/密钥管理服务/service/state_machine.go"
-  ],
-  "layer": 1
+  "context": null,
+  "expected_output_files": [],
+  "layer": 0
 }
