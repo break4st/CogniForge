@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -410,10 +411,14 @@ _OWNERSHIP_RULES: dict[str, str] = {
 class DesignAgent(BaseAgent):
     """Design Agent (MDE) — delegates to Claude Code to generate LLD JSON."""
 
-    def run(self, input_data: dict) -> dict:
+    def run(self, input_data: dict, progress_callback: Callable[[str], None] | None = None) -> dict:
         try:
             if self.agent is None:
                 raise AgentError("DesignAgent requires a Claude Code agent")
+
+            def _progress(phase: str) -> None:
+                if progress_callback:
+                    progress_callback(phase)
 
             module = input_data.get("module", "unknown")
             title = input_data.get("title", f"LLD - {module}")
@@ -421,6 +426,8 @@ class DesignAgent(BaseAgent):
             data_models = input_data.get("data_models", [])
             interfaces = input_data.get("interfaces", [])
             error_handling = input_data.get("error_handling", "")
+
+            _progress("组装提示词")
 
             existing = self.wiki_system.list_documents(DocumentType.LLD, module=module)
             seq = len(existing) + 1
@@ -469,6 +476,7 @@ class DesignAgent(BaseAgent):
                 + f"使用中文、只写 JSON 不写 HTML、完成后回复确认"
             )
 
+            _progress("LLM 生成中")
             response = self.agent.generate_agentic(prompt, role="design")
 
             # ── Validation loop (max 2 retries) ──
@@ -484,6 +492,7 @@ class DesignAgent(BaseAgent):
                         message=f"LLM did not produce {json_path}"
                     )
 
+                _progress("校验 JSON")
                 from cogniforge.lld_validator import validate_lld_json, format_validation_report
                 validation = validate_lld_json(json_abs)
                 validation_report = format_validation_report(validation)
@@ -493,6 +502,7 @@ class DesignAgent(BaseAgent):
 
                 if correction_attempts < max_corrections:
                     correction_attempts += 1
+                    _progress("LLM 修正中")
                     fix_prompt = (
                         f"你刚才生成的 LLD JSON 校验未通过：\n\n"
                         f"{validation_report}\n\n"
@@ -507,6 +517,7 @@ class DesignAgent(BaseAgent):
                 json_path, title, response.content,
                 validation=validation_report,
                 correction_attempts=correction_attempts,
+                progress_callback=_progress,
             )
 
         except Exception as e:
@@ -680,7 +691,12 @@ class DesignAgent(BaseAgent):
         return "\n".join(parts) if parts else ""
 
     def _commit_and_result(self, json_path: Path, title: str, reasoning: str = "",
-                           validation: str = "", correction_attempts: int = 0) -> dict:
+                           validation: str = "", correction_attempts: int = 0,
+                           progress_callback: Callable[[str], None] | None = None) -> dict:
+        def _progress(phase: str) -> None:
+            if progress_callback:
+                progress_callback(phase)
+
         json_abs = Path(self.config.repo_path) / json_path
         if not json_abs.exists():
             return self.format_result(status="failed",
@@ -689,12 +705,14 @@ class DesignAgent(BaseAgent):
         rel_json = str(json_path.relative_to(self.config.repo_path))
         self.wiki_system.git_storage.repo.index.add([rel_json])
 
+        _progress("渲染 HTML")
         from cogniforge.wiki.wiki_renderer import render_file
         html_path = render_file(json_abs)
         rel_html = str(html_path.relative_to(self.config.repo_path)) if html_path else ""
         if rel_html:
             self.wiki_system.git_storage.repo.index.add([rel_html])
 
+        _progress("Git 提交")
         self.wiki_system.git_storage.commit(f"feat: add LLD - {title}", "design_agent")
 
         artifacts = [rel_json]

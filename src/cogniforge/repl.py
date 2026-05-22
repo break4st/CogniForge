@@ -290,6 +290,112 @@ class Spinner:
             time.sleep(0.08)
 
 
+class ParallelProgress:
+    """Multi-line live status panel for parallel agent tasks.
+
+    Renders one line per active task on stderr, refreshed in-place via ANSI
+    escape codes.  Caller is responsible for calling :meth:`stop` before
+    printing anything to stdout (e.g. a result line) and :meth:`start`
+    afterwards so the panel and regular output don't interleave.
+    """
+
+    _SPINNER_CHARS = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._tasks: dict[str, str] = {}  # name -> phase
+        self._frame = 0
+        self._running = False
+        self._thread: threading.Thread | None = None
+        self._lines = 0
+
+    # -- public API -------------------------------------------------------
+
+    def register(self, name: str) -> None:
+        with self._lock:
+            self._tasks[name] = "准备中"
+
+    def update(self, name: str, phase: str) -> None:
+        with self._lock:
+            if name in self._tasks:
+                self._tasks[name] = phase
+
+    def remove(self, name: str) -> None:
+        with self._lock:
+            self._tasks.pop(name, None)
+
+    @property
+    def active(self) -> bool:
+        with self._lock:
+            return len(self._tasks) > 0
+
+    def start(self) -> None:
+        if not self.active:
+            return
+        self._running = True
+        self._lines = 0
+        self._thread = threading.Thread(target=self._draw_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=0.5)
+            self._thread = None
+        # Erase every line the panel previously rendered
+        for _ in range(self._lines):
+            sys.stderr.write("\r\033[K\033[A")
+        sys.stderr.write("\r\033[K")
+        sys.stderr.flush()
+        self._lines = 0
+
+    # -- internals --------------------------------------------------------
+
+    def _draw_loop(self) -> None:
+        while self._running:
+            self._draw()
+            time.sleep(0.1)
+
+    def _draw(self) -> None:
+        with self._lock:
+            if not self._tasks:
+                return
+
+            self._frame += 1
+            frame = self._frame
+
+            # Collect task name → phase lines
+            entries = list(self._tasks.items())
+            # Sort for stable display order
+            entries.sort(key=lambda x: x[0])
+
+            lines: list[str] = []
+            for name, phase in entries:
+                char = self._SPINNER_CHARS[
+                    (frame + hash(name)) % len(self._SPINNER_CHARS)
+                ]
+                # Ensure phase fits so lines stay properly aligned
+                lines.append(
+                    f"  {C_AMBER}{char}{C_RESET} {name}  [{phase}]"
+                )
+
+            # Move cursor back up to overwrite previous render
+            if self._lines > 0:
+                sys.stderr.write(f"\033[{self._lines}A")
+
+            for line in lines:
+                sys.stderr.write("\r\033[K" + line + "\n")
+
+            # Clear leftover lines when task count shrinks
+            if len(lines) < self._lines:
+                for _ in range(self._lines - len(lines)):
+                    sys.stderr.write("\r\033[K\n")
+                sys.stderr.write(f"\033[{self._lines - len(lines)}A")
+
+            self._lines = len(lines)
+            sys.stderr.flush()
+
+
 # ---------------------------------------------------------------------------
 # Multi-line input helper
 # ---------------------------------------------------------------------------
@@ -440,52 +546,40 @@ class Repl:
                     f"并行生成 {len(group)} 个 {label} 模块 ..."
                 )
 
+                progress = ParallelProgress()
+
                 with ThreadPoolExecutor(max_workers=max_w) as executor:
                     future_map: dict = {}
                     for comp in group:
                         mod_name = comp.get("name", "unknown")
+                        progress.register(mod_name)
                         input_data = {
                             "module": mod_name,
                             "title": f"LLD - {mod_name}",
                             "overview": comp.get("description", ""),
                         }
-                        future = executor.submit(agent.run, input_data)
+                        # Closure captures current mod_name for progress callback
+                        def _cb(phase: str, _name: str = mod_name) -> None:
+                            progress.update(_name, phase)
+                        future = executor.submit(agent.run, input_data, _cb)
                         future_map[future] = mod_name
 
-                    pending: set[str] = set(future_map.values())
-                    completed = 0
-                    total_in = len(group)
-
-                    def _progress_msg() -> str:
-                        if not pending:
-                            return f"全部 {total_in} 个模块已完成"
-                        waiting = ", ".join(sorted(pending)[:3])
-                        if len(pending) > 3:
-                            waiting += f" ... +{len(pending)-3}"
-                        return (
-                            f"已完成 {completed}/{total_in}"
-                            f"  |  等待: {waiting}"
-                        )
-
-                    spinner = Spinner(_progress_msg())
-                    spinner.start()
+                    progress.start()
                     try:
                         for future in as_completed(future_map):
                             mod_name = future_map[future]
-                            pending.discard(mod_name)
+                            progress.stop()
                             try:
                                 result = future.result()
                             except Exception as e:
                                 result = {"status": "failed", "message": str(e)}
-                            completed += 1
-                            spinner.message = _progress_msg()
-                            spinner.stop()
+                            progress.remove(mod_name)
                             self._print_lld_result(mod_name, result)
                             results.append(result)
-                            if pending:
-                                spinner.start()
+                            if progress.active:
+                                progress.start()
                     finally:
-                        spinner.stop()
+                        progress.stop()
 
         # Summary
         success_count = sum(1 for r in results if r.get("status") == "success")
