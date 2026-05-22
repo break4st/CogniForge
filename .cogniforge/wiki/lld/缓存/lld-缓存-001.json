@@ -1,0 +1,313 @@
+{
+  "meta": {
+    "doc_id": "lld-缓存-001",
+    "type": "lld",
+    "module_type": "infrastructure",
+    "module": "缓存",
+    "title": "缓存模块详细设计",
+    "author": "design_agent",
+    "created": "2026-05-22 15:54"
+  },
+  "overview": {
+    "description": "高频读取数据缓存，提升系统响应性能。基于 Redis 7 实现部署状态实时缓存、项目列表缓存、会话状态管理和数据库查询结果缓存四大职责，通过统一缓存接口为各服务层模块提供键值存取、Hash 操作、分布式锁等能力。",
+    "dependencies": ["关系型数据库"],
+    "tech_stack": ["Redis 7"]
+  },
+  "data_models": [
+    {
+      "name": "DeployStatusCache",
+      "type": "struct",
+      "ownership": "owned",
+      "description": "部署状态实时缓存。存储于 Redis key deploy:status:{deployment_id}，value 为 JSON 序列化的完整部署状态对象。由部署引擎服务在每次状态变更时写入，WebSocket 推送服务和状态查询接口从此处读取。数据模型与 DeployStatusAPI 响应 body 一致。",
+      "fields": [
+        {"name": "deployment_id", "type": "string (uuid)", "required": true, "description": "部署唯一标识"},
+        {"name": "status", "type": "string", "required": true, "description": "部署状态: pending/running/success/failed"},
+        {"name": "progress", "type": "integer (0-100)", "required": true, "description": "部署进度百分比"},
+        {"name": "current_step", "type": "string", "required": true, "description": "当前执行步骤描述"},
+        {"name": "logs", "type": "array<LogEntry>", "required": true, "description": "部署日志条目列表"},
+        {"name": "started_at", "type": "string (datetime)", "required": true, "description": "部署开始时间"},
+        {"name": "finished_at", "type": "string (datetime, optional)", "required": false, "description": "部署完成时间，仅状态为 success/failed 时有值"}
+      ]
+    },
+    {
+      "name": "ProjectListCache",
+      "type": "struct",
+      "ownership": "owned",
+      "description": "项目列表分页缓存。存储于 Redis key project:list:{page}:{page_size}，value 为 JSON 序列化的项目列表分页结果。减少项目管理服务高频列表查询时的数据库压力。当项目发生增删改操作时，通过缓存失效通知清除此缓存。",
+      "fields": [
+        {"name": "items", "type": "array<Project>", "required": true, "description": "项目列表数据"},
+        {"name": "total", "type": "integer", "required": true, "description": "项目总数"},
+        {"name": "page", "type": "integer", "required": true, "description": "当前页码"},
+        {"name": "page_size", "type": "integer", "required": true, "description": "每页数量"}
+      ]
+    },
+    {
+      "name": "SessionState",
+      "type": "struct",
+      "ownership": "owned",
+      "description": "用户会话状态管理。存储于 Redis hash session:{session_token}，包含用户当前激活项目上下文、角色等字段。会话有效期 24 小时，每次访问时自动续期。",
+      "fields": [
+        {"name": "session_id", "type": "string", "required": true, "description": "会话标识（JWT token 或 Session ID）"},
+        {"name": "user_id", "type": "string (uuid)", "required": true, "description": "用户ID"},
+        {"name": "project_id", "type": "string (uuid)", "required": true, "description": "当前激活项目ID"},
+        {"name": "role", "type": "string", "required": true, "description": "用户角色: developer/operator/project_manager"},
+        {"name": "expires_at", "type": "string (datetime)", "required": true, "description": "会话过期时间"}
+      ]
+    },
+    {
+      "name": "QueryResultCache",
+      "type": "struct",
+      "ownership": "owned",
+      "description": "数据库查询结果缓存。存储于 Redis key query:cache:{md5(sql+params)}，value 为 JSON 序列化的原始查询结果。用于缓存高频但低频变更的数据库查询，通过 SQL 语句和参数的 MD5 哈希作为唯一键。默认 TTL 10 分钟。",
+      "fields": [
+        {"name": "result", "type": "object", "required": true, "description": "查询结果（JSON 序列化对象或数组）"},
+        {"name": "cached_at", "type": "string (datetime)", "required": true, "description": "缓存写入时间"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "CacheGet",
+      "method": "INTERNAL",
+      "endpoint": "内部: cache/get",
+      "description": "根据 key 获取缓存值。key 不存在时 value 返回 null。",
+      "parameters": [
+        {"name": "key", "type": "string", "description": "缓存键"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "value": "string|null",
+          "ttl_remaining": "integer"
+        }
+      },
+      "error_codes": [
+        {"code": 500, "message": "Redis 连接失败或操作超时"}
+      ]
+    },
+    {
+      "name": "CacheSet",
+      "method": "INTERNAL",
+      "endpoint": "内部: cache/set",
+      "description": "写入缓存键值对。value 须为可 JSON 序列化的字符串，ttl_seconds 控制过期时长。",
+      "parameters": [
+        {"name": "key", "type": "string", "description": "缓存键"},
+        {"name": "value", "type": "string", "description": "缓存值（JSON 序列化字符串）"},
+        {"name": "ttl_seconds", "type": "integer", "description": "过期时间（秒），0 表示永不过期"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 500, "message": "Redis 连接失败或操作超时"}
+      ]
+    },
+    {
+      "name": "CacheDelete",
+      "method": "INTERNAL",
+      "endpoint": "内部: cache/delete",
+      "description": "删除指定 key 的缓存数据。返回是否实际删除了数据。",
+      "parameters": [
+        {"name": "key", "type": "string", "description": "缓存键"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "deleted": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 500, "message": "Redis 连接失败或操作超时"}
+      ]
+    },
+    {
+      "name": "CacheExists",
+      "method": "INTERNAL",
+      "endpoint": "内部: cache/exists",
+      "description": "检查指定 key 在 Redis 中是否存在。",
+      "parameters": [
+        {"name": "key", "type": "string", "description": "缓存键"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "exists": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 500, "message": "Redis 连接失败或操作超时"}
+      ]
+    },
+    {
+      "name": "CacheSetNX",
+      "method": "INTERNAL",
+      "endpoint": "内部: cache/setnx",
+      "description": "原子操作：仅当 key 不存在时设置值。用于分布式锁和防缓存击穿场景。",
+      "parameters": [
+        {"name": "key", "type": "string", "description": "缓存键"},
+        {"name": "value", "type": "string", "description": "缓存值（JSON 序列化字符串）"},
+        {"name": "ttl_seconds", "type": "integer", "description": "过期时间（秒），锁场景建议设置为业务操作预估时间的 3 倍"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "set": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 500, "message": "Redis 连接失败或操作超时"}
+      ]
+    },
+    {
+      "name": "CacheHGet",
+      "method": "INTERNAL",
+      "endpoint": "内部: cache/hget",
+      "description": "获取 Redis Hash 中指定字段的值。",
+      "parameters": [
+        {"name": "key", "type": "string", "description": "Hash 键"},
+        {"name": "field", "type": "string", "description": "字段名"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "value": "string|null"
+        }
+      },
+      "error_codes": [
+        {"code": 500, "message": "Redis 连接失败或操作超时"}
+      ]
+    },
+    {
+      "name": "CacheHSet",
+      "method": "INTERNAL",
+      "endpoint": "内部: cache/hset",
+      "description": "设置 Redis Hash 中指定字段的值。若 Hash 不存在则自动创建。",
+      "parameters": [
+        {"name": "key", "type": "string", "description": "Hash 键"},
+        {"name": "field", "type": "string", "description": "字段名"},
+        {"name": "value", "type": "string", "description": "字段值（JSON 序列化字符串）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 500, "message": "Redis 连接失败或操作超时"}
+      ]
+    },
+    {
+      "name": "CacheHGetAll",
+      "method": "INTERNAL",
+      "endpoint": "内部: cache/hgetall",
+      "description": "获取 Redis Hash 中所有字段的键值对。用于会话状态等全字段读取场景。",
+      "parameters": [
+        {"name": "key", "type": "string", "description": "Hash 键"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "fields": "object"
+        }
+      },
+      "error_codes": [
+        {"code": 500, "message": "Redis 连接失败或操作超时"}
+      ]
+    },
+    {
+      "name": "CacheExpire",
+      "method": "INTERNAL",
+      "endpoint": "内部: cache/expire",
+      "description": "为已存在的 key 设置或更新过期时间。",
+      "parameters": [
+        {"name": "key", "type": "string", "description": "缓存键"},
+        {"name": "ttl_seconds", "type": "integer", "description": "过期时间（秒）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 500, "message": "Redis 连接失败或操作超时"}
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "Redis 操作异常采用分级降级策略。连接超时或命令执行失败时向上层抛出自定义 CacheException，由调用方决定降级路径（返回过期缓存/回退查数据库）；连接不可达时触发缓存熔断，后续请求 5 秒内直接返回 null 并记录告警日志，到期后自动半开探测恢复。",
+    "response_format": {
+      "body": {"code": "integer", "error": "string", "detail": "string"}
+    },
+    "categories": [
+      {"code": 5001, "name": "CacheConnectionError", "description": "Redis 连接不可达或连接池耗尽。触发熔断，后续请求 5 秒内直接降级返回 null，同时写入告警日志。熔断到期后放行一个探测请求。"},
+      {"code": 5002, "name": "CacheTimeoutError", "description": "Redis 命令执行超时（默认 3 秒）。仅返回当前错误，不触发熔断，上层应降级查数据库。"},
+      {"code": 5003, "name": "CacheSerializationError", "description": "缓存值 JSON 序列化或反序列化失败。记录错误日志并删除该无效缓存项。"},
+      {"code": 5004, "name": "CacheKeyNotFound", "description": "请求的 key 在 Redis 中不存在。返回 value=null / exists=false，非异常场景。"}
+    ]
+  },
+  "topology": {
+    "namespaces": [
+      {
+        "name": "deploy:status",
+        "description": "部署状态缓存命名空间。Key 格式: deploy:status:{deployment_id}",
+        "data_type": "string (JSON)",
+        "default_ttl_seconds": 3600,
+        "usage": "存放部署状态数据，供 WebSocket 推送和状态查询接口读取。部署引擎服务每次状态变更时写入，缓存模块作为 DeployStatusAPI 的消费者按需回源获取全量数据刷新缓存。"
+      },
+      {
+        "name": "project:list",
+        "description": "项目列表缓存命名空间。Key 格式: project:list:{page}:{page_size}",
+        "data_type": "string (JSON)",
+        "default_ttl_seconds": 300,
+        "usage": "缓存项目列表分页查询结果。项目管理服务在项目增删改时通过 cache:invalidate 频道广播失效通知。"
+      },
+      {
+        "name": "session",
+        "description": "用户会话状态命名空间。Key 格式: session:{session_token}",
+        "data_type": "hash",
+        "default_ttl_seconds": 86400,
+        "usage": "存储用户会话上下文，包括 user_id、project_id、role 等字段。每次请求鉴权时自动续期 TTL。"
+      },
+      {
+        "name": "query:cache",
+        "description": "数据库查询结果缓存命名空间。Key 格式: query:cache:{md5(sql+params)}",
+        "data_type": "string (JSON)",
+        "default_ttl_seconds": 600,
+        "usage": "缓存高频执行的数据库查询结果。查询语句和参数拼接后取 MD5 哈希作为缓存键，数据变更对应 namespace 整体失效。"
+      }
+    ],
+    "key_patterns": [
+      {"pattern": "deploy:status:*", "description": "部署状态缓存，通配 deployment_id (uuid)", "ttl_seconds": 3600},
+      {"pattern": "project:list:*", "description": "项目列表缓存，通配分页参数 page:page_size", "ttl_seconds": 300},
+      {"pattern": "session:*", "description": "会话状态缓存，通配 session_token", "ttl_seconds": 86400},
+      {"pattern": "query:cache:*", "description": "查询结果缓存，通配 MD5 哈希", "ttl_seconds": 600}
+    ],
+    "expiry_strategy": "基于 TTL 的自动过期为主策略，配合 Redis maxmemory-policy=volatile-lru 近似 LRU 淘汰应对内存上限。高频变更数据（deploy:status）使用短 TTL 避免脏读；数据快照（project:list）使用中等 TTL 平衡命中率和新鲜度；用户会话（session）使用长 TTL 并支持访问自动续期。主动失效通过 cache:invalidate 频道广播实现。",
+    "pub_sub_channels": [
+      {
+        "channel": "cache:invalidate",
+        "description": "缓存失效通知频道。业务服务在数据变更后向此频道发布需失效的 key 模式（如 project:list:*），各缓存模块实例收到消息后执行本地批量删除。消息格式: {\"pattern\": \"project:list:*\"}"
+      }
+    ]
+  },
+  "connection_contracts": {
+    "description": "Redis 连接池配置，各服务实例共用同一 Redis 集群（单机部署阶段使用单实例）。",
+    "pool_size": 20,
+    "min_idle": 5,
+    "max_idle": 10,
+    "connect_timeout_seconds": 5,
+    "command_timeout_seconds": 3,
+    "retry_on_timeout": true,
+    "max_retries": 3,
+    "health_check_interval_seconds": 30,
+    "sentinel": {
+      "enabled": false,
+      "description": "生产环境建议启用 Redis Sentinel 实现高可用，当前仅做单机部署设计。后续可切换为 sentinel 模式无需修改业务代码。"
+    }
+  }
+}
