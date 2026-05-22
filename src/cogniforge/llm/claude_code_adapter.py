@@ -1,4 +1,4 @@
-"""Claude Code adapter — text mode for NL→JSON, agent mode via Anthropic SDK."""
+"""Claude Code adapter — text mode for NL→JSON, agent mode via CLI."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
 
 from cogniforge.llm.base import BaseLLMAdapter, LLMResponse, LLMMessage
 
@@ -50,71 +49,14 @@ ROLE_PROMPTS: dict[str, str] = {
     ),
 }
 
-# ---------------------------------------------------------------------------
-# Tool definitions (mirroring Claude Code core tools)
-# ---------------------------------------------------------------------------
-
-TOOLS = [
-    {
-        "name": "read_file",
-        "description": "Read the contents of a file. Use this to understand existing code, documentation, or context.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Path to the file to read, relative to project root."},
-            },
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "write_file",
-        "description": "Write or overwrite a file. Creates parent directories if needed.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Path to write to, relative to project root."},
-                "content": {"type": "string", "description": "Full file content to write."},
-            },
-            "required": ["path", "content"],
-        },
-    },
-    {
-        "name": "list_dir",
-        "description": "List files in a directory.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Directory path, relative to project root."},
-            },
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "run_bash",
-        "description": "Run a shell command. Use for testing, building, or inspecting the project.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "command": {"type": "string", "description": "The shell command to execute."},
-            },
-            "required": ["command"],
-        },
-    },
-]
-
-# ---------------------------------------------------------------------------
-# Adapter
-# ---------------------------------------------------------------------------
-
-
 class ClaudeCodeAdapter(BaseLLMAdapter):
     """Two-mode adapter:
 
     - **Text mode** (``generate``): ``claude -p`` without tools — fast, for
       NL→JSON extraction in the REPL.
 
-    - **Agent mode** (``generate_agentic``): Anthropic SDK with tool use —
-      Claude reads files, writes output, runs commands.  Full agent loop.
+    - **Agent mode** (``generate_agentic``): ``claude -p`` with ``--tools`` —
+      Claude reads files, writes output, runs commands via CLI.
     """
 
     # ------------------------------------------------------------------
@@ -163,7 +105,7 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
         return self.generate(prompt=prompt, **kwargs)
 
     # ------------------------------------------------------------------
-    # Agent mode — Anthropic SDK with tool use
+    # Agent mode — claude -p with --tools
     # ------------------------------------------------------------------
 
     def generate_agentic(
@@ -175,189 +117,43 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
         max_turns: int = 20,
         **kwargs,
     ) -> LLMResponse:
-        """Run Claude as an agent with tool access via the Anthropic SDK.
+        """Agent mode via ``claude -p`` with ``--tools``.
 
-        The agent can read files, write output, and run commands.  We handle
-        the tool-use loop ourselves — no CLI permission issues.
+        Claude CLI handles the tool-use loop autonomously — we just pass the
+        prompt, role, and tool configuration on the command line.  The final
+        text response is parsed from the JSON output.
         """
-        client = self._get_anthropic_client()
-        if client is None:
-            return self._fallback_agentic(prompt, role=role, **kwargs)
+        model = kwargs.get("model", self.model)
 
-        system_parts: list[str] = []
+        cmd = [
+            self.claude_cli_path, "-p", "-",
+            "--output-format", "json",
+            "--model", model,
+            "--tools", "Read,Write,Edit,Bash,Glob,Grep",
+            "--permission-mode", "acceptEdits",
+            "--max-turns", str(max_turns),
+        ]
+
         if role and role in ROLE_PROMPTS:
-            system_parts.append(ROLE_PROMPTS[role])
+            cmd.extend(["--append-system-prompt", ROLE_PROMPTS[role]])
 
-        # Inject per-role constraints (from .md file or built-in default)
+        # Build the full prompt: constraints (if any) + user prompt + workdir
+        full_prompt = prompt
         constraint_loader = self.config.get("constraint_loader")
         if constraint_loader and role:
             constraints = constraint_loader.load(role)
             if constraints:
-                system_parts.append(constraints)
+                full_prompt = f"# 约束\n{constraints}\n\n# 任务\n{prompt}"
 
-        system_parts.append(
-            f"工作目录: {self.repo_path}\n"
-            "你可以使用 read_file / write_file / list_dir / run_bash 工具完成任务。\n"
-            "所有文件路径相对于项目根目录。完成后用中文回复。"
-        )
-        system = "\n\n".join(system_parts)
-
-        messages: list[dict] = [{"role": "user", "content": prompt}]
-        effective_tools = tools or TOOLS
-        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-
-        for _ in range(max_turns):
-            response = client.messages.create(
-                model=kwargs.get("model", self.model),
-                max_tokens=kwargs.get("max_tokens", 8192),
-                system=system,
-                messages=messages,
-                tools=effective_tools,
-            )
-
-            # Tally usage
-            u = response.usage
-            usage["input_tokens"] += u.input_tokens
-            usage["output_tokens"] += u.output_tokens
-            usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
-
-            # Collect text + tool_use blocks
-            text_parts: list[str] = []
-            tool_uses: list[dict] = []
-
-            for block in response.content:
-                if block.type == "text":
-                    text_parts.append(block.text)
-                elif block.type == "tool_use":
-                    tool_uses.append({
-                        "id": block.id,
-                        "name": block.name,
-                        "input": block.input,
-                    })
-
-            # If the model called tools, execute them and continue
-            if tool_uses and response.stop_reason == "tool_use":
-                messages.append({"role": "assistant", "content": response.content})
-                tool_results: list[dict] = []
-                for tu in tool_uses:
-                    result_text = self._execute_tool(tu["name"], tu["input"])
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tu["id"],
-                        "content": result_text,
-                    })
-                messages.append({"role": "user", "content": tool_results})
-                continue
-
-            # No more tool calls — finished
-            return LLMResponse(
-                content="\n".join(text_parts),
-                model=kwargs.get("model", self.model),
-                provider="claude_code",
-                usage=usage,
-            )
-
-        return LLMResponse(
-            content="(exceeded max turns)",
-            model=kwargs.get("model", self.model),
-            provider="claude_code",
-            usage=usage,
+        full_prompt += (
+            f"\n\n工作目录: {self.repo_path}\n"
+            "完成后用中文回复。"
         )
 
-    # ------------------------------------------------------------------
-    # Tool execution
-    # ------------------------------------------------------------------
-
-    def _execute_tool(self, name: str, inp: dict) -> str:
-        """Execute a tool call and return the result text."""
-        try:
-            if name == "read_file":
-                p = self.repo_path / inp["path"]
-                if not p.exists():
-                    return f"Error: file not found: {inp['path']}"
-                content = p.read_text(encoding="utf-8")
-                if len(content) > 8000:
-                    content = content[:8000] + f"\n... (truncated, total {len(content)} chars)"
-                return content
-
-            elif name == "write_file":
-                p = self.repo_path / inp["path"]
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text(inp["content"], encoding="utf-8")
-                return f"Successfully wrote {len(inp['content'])} chars to {inp['path']}"
-
-            elif name == "list_dir":
-                p = self.repo_path / inp["path"]
-                if not p.exists():
-                    return f"Error: directory not found: {inp['path']}"
-                items = sorted(os.listdir(p))
-                return "\n".join(items[:50])
-
-            elif name == "run_bash":
-                result = subprocess.run(
-                    inp["command"], shell=True, capture_output=True, text=True,
-                    timeout=120, cwd=str(self.repo_path),
-                )
-                out = result.stdout
-                if result.stderr:
-                    out += f"\n[stderr]\n{result.stderr}"
-                if len(out) > 4000:
-                    out = out[:4000] + f"\n... (truncated)"
-                return f"exit: {result.returncode}\n{out}"
-
-            else:
-                return f"Unknown tool: {name}"
-
-        except Exception as e:
-            return f"Tool error ({name}): {e}"
+        return self._invoke_cli_stdin(cmd, full_prompt)
 
     # ------------------------------------------------------------------
-    # Fallback — claude -p with tools (for environments where SDK can't auth)
-    # ------------------------------------------------------------------
-
-    def _fallback_agentic(self, prompt, *, role=None, **kwargs) -> LLMResponse:
-        """Fallback: use ``claude -p`` with tools flags.  Passes prompt via
-        stdin to avoid OS ARG_MAX limit when prompt is large."""
-        model = kwargs.get("model", self.model)
-        cmd = [
-            self.claude_cli_path, "-p", "-",
-            "--output-format", "json", "--model", model,
-            "--tools", "Read,Write,Edit,Bash",
-            "--permission-mode", "acceptEdits",
-        ]
-        if role and role in ROLE_PROMPTS:
-            cmd.extend(["--append-system-prompt", ROLE_PROMPTS[role]])
-        return self._invoke_cli_stdin(cmd, prompt)
-
-    def _get_anthropic_client(self):
-        """Create an Anthropic client.  Reads auth from env vars set by claude."""
-        api_key = self.api_key
-        base_url = None
-
-        # Try env vars that Claude Code sets (supports DeepSeek, etc.)
-        if not api_key:
-            api_key = os.environ.get("ANTHROPIC_AUTH_TOKEN", "")
-        if not api_key:
-            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-
-        base_url = os.environ.get("ANTHROPIC_BASE_URL", "")
-        if not base_url:
-            base_url = None  # use SDK default
-
-        if not api_key:
-            return None
-
-        try:
-            import anthropic
-            kwargs = {"api_key": api_key}
-            if base_url:
-                kwargs["base_url"] = base_url
-            return anthropic.Anthropic(**kwargs)
-        except ImportError:
-            return None
-
-    # ------------------------------------------------------------------
-    # CLI invocation (shared by text mode and fallback)
+    # Prompt helpers (shared by text mode and agent mode)
     # ------------------------------------------------------------------
 
     def _invoke_cli(self, command: list[str]) -> LLMResponse:

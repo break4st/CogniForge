@@ -67,6 +67,35 @@ class OpenCodeAdapter(BaseLLMAdapter):
             usage=usage
         )
 
+    def generate_agentic(
+        self,
+        prompt: str,
+        *,
+        role: str | None = None,
+        tools: list[dict] | None = None,
+        max_turns: int = 20,
+        **kwargs,
+    ) -> LLMResponse:
+        """Agent mode via ``codex exec --full-auto``."""
+        full_prompt = prompt
+        if role:
+            full_prompt = f"# Role: {role}\n\n{full_prompt}"
+        full_prompt += f"\n\n工作目录: {self.repo_path}\n完成后用中文回复。"
+
+        content, usage = self._run_codex_exec(
+            prompt=full_prompt,
+            model=kwargs.get("model", self.model),
+            approval_mode="never",
+            sandbox="read-only",
+            full_auto=True,
+        )
+        return LLMResponse(
+            content=content,
+            model=kwargs.get("model", self.model),
+            provider="open_code",
+            usage=usage,
+        )
+
     def generate_messages(
         self,
         messages: list[LLMMessage],

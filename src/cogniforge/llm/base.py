@@ -95,6 +95,30 @@ class BaseLLMAdapter(ABC):
         """
         pass
 
+    @abstractmethod
+    def generate_agentic(
+        self,
+        prompt: str,
+        *,
+        role: str | None = None,
+        tools: list[dict] | None = None,
+        max_turns: int = 20,
+        **kwargs,
+    ) -> LLMResponse:
+        """Agent mode with tool use — the LLM reads/writes files and runs commands.
+
+        Args:
+            prompt: The task prompt.
+            role: Optional role name for system-prompt injection.
+            tools: Optional list of tool definitions (adapter defaults if None).
+            max_turns: Maximum tool-use round-trips.
+            **kwargs: Provider-specific options (model, max_tokens, etc.).
+
+        Returns:
+            LLMResponse with content and metadata.
+        """
+        pass
+
     @property
     @abstractmethod
     def provider_name(self) -> str:
