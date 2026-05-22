@@ -1,187 +1,23 @@
 {
   "task_id": "项目管理服务-009",
-  "name": "测试 CreateProjectRequest 和 CreateProjectResponse 领域对象",
-  "description": "为 CreateProjectRequest 和 CreateProjectResponse 编写单元测试：验证字段赋值和读取正确性；验证 JSON 序列化与反序列化（含字段名映射）；验证缺少必填字段时的零值行为；测试边界值（空字符串、超长字符串）。使用 Go 原生 testing 包 + table-driven 模式。产出：models/createprojectrequest_test.go 和 models/createprojectresponse_test.go。",
+  "name": "定义 ProjectUpdateRequest 领域对象",
+  "description": "实现 ProjectUpdateRequest (domain_object_dto), 属性: name, description",
   "module": "项目管理服务",
   "deps": [],
   "status": "pending",
   "priority": 2,
   "assignee": "dev",
-  "estimated_hours": 4.0,
+  "estimated_hours": 2.0,
   "actual_hours": null,
-  "category": "service",
+  "category": "model",
   "changed_files": [],
-  "created_at": "2026-05-22T12:05:37.634751",
-  "updated_at": "2026-05-22T12:05:37.634801",
+  "created_at": "2026-05-22T15:03:17.622705",
+  "updated_at": "2026-05-22T15:03:17.622734",
   "result": null,
   "error": null,
-  "lld_refs": [
-    {
-      "module": "",
-      "doc_id": "",
-      "section": "service_contracts",
-      "item_name": "ProjectService",
-      "artifact_type": "service_contract",
-      "sub_item": null
-    }
-  ],
+  "lld_refs": [],
   "acceptance_criteria": [],
-  "context": {
-    "module_type": "service",
-    "lld_path": ".cogniforge/wiki/lld/项目管理服务/lld-项目管理服务-001.json",
-    "module_overview": "管理项目生命周期，维护项目及其关联的环境和部署记录",
-    "scope": {
-      "data_models": [],
-      "domain_objects": [],
-      "interfaces": [],
-      "service_contracts": [
-        {
-          "name": "ProjectService",
-          "description": "管理项目创建、查询、更新和删除操作，协调审计日志记录",
-          "methods": [
-            {
-              "name": "CreateProject",
-              "signature": "(ctx context.Context, req CreateProjectRequest) -> (CreateProjectResponse, error)",
-              "precondition": "req.name 非空且长度不超过 255；req.identifier 非空、长度不超过 128 且匹配正则 ^[a-zA-Z0-9_-]+$；req.identifier 未在系统中存在",
-              "postcondition": "新项目记录持久化至 projects 表，主键 id 由数据库自增生成，created_at 设为当前时间；审计日志服务记录 action=project.create、resource_type=project、resource_id=新项目 id",
-              "description": "创建新项目，校验参数合法性后写入数据库，返回项目基本信息",
-              "exceptions": [
-                {
-                  "name": "ErrInvalidArgument",
-                  "trigger": "name 或 identifier 为空、超长或包含非法字符",
-                  "http_status": 400
-                },
-                {
-                  "name": "ErrConflictIdentifier",
-                  "trigger": "identifier 在数据库中已存在（唯一约束冲突 23505）",
-                  "http_status": 409
-                },
-                {
-                  "name": "ErrInternal",
-                  "trigger": "数据库写入失败或审计日志 RPC 调用异常",
-                  "http_status": 500
-                }
-              ]
-            },
-            {
-              "name": "ListProjects",
-              "signature": "(ctx context.Context) -> (ProjectList, error)",
-              "precondition": "无",
-              "postcondition": "返回所有项目记录的摘要列表，total 等于数组长度；系统中无项目时返回空数组和 total=0",
-              "description": "获取系统中所有项目的列表",
-              "exceptions": [
-                {
-                  "name": "ErrInternal",
-                  "trigger": "数据库查询失败",
-                  "http_status": 500
-                }
-              ]
-            },
-            {
-              "name": "GetProject",
-              "signature": "(ctx context.Context, id int64) -> (Project, error)",
-              "precondition": "id 必须为正整数",
-              "postcondition": "返回与 id 匹配的完整项目实体；不存在时返回 ErrProjectNotFound",
-              "description": "按主键 ID 获取单个项目的完整信息",
-              "exceptions": [
-                {
-                  "name": "ErrProjectNotFound",
-                  "trigger": "指定 id 的项目在数据库中不存在",
-                  "http_status": 404
-                },
-                {
-                  "name": "ErrInvalidArgument",
-                  "trigger": "id 为 0 或负数",
-                  "http_status": 400
-                },
-                {
-                  "name": "ErrInternal",
-                  "trigger": "数据库查询失败",
-                  "http_status": 500
-                }
-              ]
-            },
-            {
-              "name": "UpdateProject",
-              "signature": "(ctx context.Context, id int64, req UpdateProjectRequest) -> (Project, error)",
-              "precondition": "id 对应的项目必须存在；如果 req.name 不为 nil 则其值不能为空字符串；如果 req.identifier 不为 nil 则其值必须唯一且通过格式校验",
-              "postcondition": "项目记录更新成功，updated_at 更新为当前时间戳；审计日志服务记录 action=project.update 并包含变更字段摘要",
-              "description": "部分更新项目信息，仅处理 req 中非 nil 的指针字段，未提供的字段保持不变",
-              "exceptions": [
-                {
-                  "name": "ErrProjectNotFound",
-                  "trigger": "指定 id 的项目不存在",
-                  "http_status": 404
-                },
-                {
-                  "name": "ErrInvalidArgument",
-                  "trigger": "name 被显式设置为空字符串或 identifier 格式无效",
-                  "http_status": 400
-                },
-                {
-                  "name": "ErrConflictIdentifier",
-                  "trigger": "修改后的 identifier 与系统中另一项目冲突",
-                  "http_status": 409
-                },
-                {
-                  "name": "ErrInternal",
-                  "trigger": "数据库更新失败或审计日志调用异常",
-                  "http_status": 500
-                }
-              ]
-            },
-            {
-              "name": "DeleteProject",
-              "signature": "(ctx context.Context, id int64) -> error",
-              "precondition": "id 对应的项目必须存在；项目下无关联的环境（通过环境管理服务确认）；项目下无活跃的部署任务（通过部署引擎服务确认）",
-              "postcondition": "项目记录从数据库永久删除（物理删除）；审计日志服务记录 action=project.delete、actor=当前用户、detail=删除的项目 ID 和名称",
-              "description": "物理删除指定项目及其所有关联信息，删除前执行级联依赖检查",
-              "exceptions": [
-                {
-                  "name": "ErrProjectNotFound",
-                  "trigger": "指定 id 的项目在数据库中不存在",
-                  "http_status": 404
-                },
-                {
-                  "name": "ErrProjectHasDependencies",
-                  "trigger": "项目下仍存在关联的环境或运行中的部署任务，拒绝删除以保护数据完整性",
-                  "http_status": 409
-                },
-                {
-                  "name": "ErrInternal",
-                  "trigger": "数据库删除失败或依赖检查服务调用异常",
-                  "http_status": 500
-                }
-              ]
-            }
-          ],
-          "repository_dependencies": [
-            "FindAll() -> ([]Project, error)",
-            "FindByID(id int64) -> (*Project, error)",
-            "FindByIdentifier(identifier string) -> (*Project, error)",
-            "Create(project *Project) -> error",
-            "Update(project *Project) -> error",
-            "Delete(id int64) -> error"
-          ]
-        }
-      ],
-      "business_rules": {},
-      "error_handling": {},
-      "extra_sections": {}
-    },
-    "external_contracts": [],
-    "cross_module_deps": [],
-    "tech_stack": [
-      "Go",
-      "Gin",
-      "Go 1.22+",
-      "PostgreSQL 15",
-      "RESTful JSON API"
-    ],
-    "upstream_artifacts": []
-  },
-  "expected_output_files": [
-    "src/项目管理服务/service/projectservice.go"
-  ],
-  "layer": 1
+  "context": null,
+  "expected_output_files": [],
+  "layer": 0
 }
