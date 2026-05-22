@@ -15,9 +15,190 @@
   "updated_at": "2026-05-22T12:48:40.988378",
   "result": null,
   "error": null,
-  "lld_refs": [],
+  "lld_refs": [
+    {
+      "module": "",
+      "doc_id": "",
+      "section": "service_contracts",
+      "item_name": "FileService",
+      "artifact_type": "service_contract",
+      "sub_item": null
+    }
+  ],
   "acceptance_criteria": [],
-  "context": null,
-  "expected_output_files": [],
-  "layer": 0
+  "context": {
+    "module_type": "service",
+    "lld_path": ".cogniforge/wiki/lld/文件存储服务/lld-文件存储服务-001.json",
+    "module_overview": "存储用户上传的可执行文件包，支持版本化管理和按需下载。作为基础设施层服务，负责文件在磁盘上的物理存储和元数据管理，为部署引擎提供文件包获取能力，为 Web 控制台提供上传和查询接口",
+    "scope": {
+      "data_models": [],
+      "domain_objects": [],
+      "interfaces": [],
+      "service_contracts": [
+        {
+          "name": "FileService",
+          "description": "文件存储核心服务，管理文件包的上传、查询、删除和按需下载，负责存储配额校验和文件完整性验证",
+          "methods": [
+            {
+              "name": "UploadFile",
+              "signature": "(req: FilePackageUploadRequest, actorId: Long) -> FilePackage",
+              "precondition": "请求参数通过基础校验；project_id 在数据库中存在；上传文件大小不超过 max_file_size_bytes；该项目内已有文件包总 size 加上新文件 size 不超过配额；version 不为空时同一 project_id 内唯一",
+              "postcondition": "新文件数据写入磁盘路径 {storage_root_path}/{project_id}/{new_id}/{fileName}；计算并持久化 SHA256 checksum；file_packages 表插入新记录；返回含 id 的完整 FilePackage 实体",
+              "description": "上传可执行文件包，执行校验约束检查和磁盘写入，返回文件包元数据",
+              "exceptions": [
+                {
+                  "name": "ProjectNotFoundException",
+                  "trigger": "project_id 对应的项目记录在数据库中不存在",
+                  "http_status": 404
+                },
+                {
+                  "name": "QuotaExceededException",
+                  "trigger": "上传后该项目总存储用量将超出配额限制",
+                  "http_status": 413
+                },
+                {
+                  "name": "FileSizeExceededException",
+                  "trigger": "上传文件大小超过 max_file_size_bytes 配置值",
+                  "http_status": 413
+                },
+                {
+                  "name": "DuplicateVersionException",
+                  "trigger": "version 不为空且同一 project_id 内已存在相同 version 的文件包记录",
+                  "http_status": 409
+                },
+                {
+                  "name": "UnsupportedFileTypeException",
+                  "trigger": "上传文件扩展名不在 allowed_file_extensions 列表中",
+                  "http_status": 415
+                },
+                {
+                  "name": "FileIOException",
+                  "trigger": "磁盘写入失败（空间不足 / 权限拒绝 / 目录创建失败）",
+                  "http_status": 500
+                }
+              ]
+            },
+            {
+              "name": "ListFilePackages",
+              "signature": "(projectId: Long, page: Integer, pageSize: Integer) -> FilePackageListResponse",
+              "precondition": "project_id 在数据库中存在",
+              "postcondition": "返回该项目的文件包列表，按 created_at 降序排列；分页字段有效；items 为空数组而非 null",
+              "description": "分页查询指定项目下的所有文件包元数据列表",
+              "exceptions": [
+                {
+                  "name": "ProjectNotFoundException",
+                  "trigger": "project_id 对应的项目在数据库中不存在",
+                  "http_status": 404
+                }
+              ]
+            },
+            {
+              "name": "GetFilePackageDetail",
+              "signature": "(packageId: Long) -> FilePackageResponse",
+              "precondition": "packageId 对应的文件包记录在数据库中存在",
+              "postcondition": "返回文件包元数据 DTO（不含二进制内容）",
+              "description": "查询单个文件包的元数据详情",
+              "exceptions": [
+                {
+                  "name": "FilePackageNotFoundException",
+                  "trigger": "packageId 对应的文件包在数据库中不存在",
+                  "http_status": 404
+                }
+              ]
+            },
+            {
+              "name": "DeleteFilePackage",
+              "signature": "(packageId: Long) -> void",
+              "precondition": "packageId 对应的文件包在数据库中存在；该文件包未被任何部署任务引用",
+              "postcondition": "从磁盘删除物理文件；从 file_packages 表删除元数据记录；调用审计日志服务记录删除操作",
+              "description": "删除指定文件包，同时清理磁盘文件和数据库记录。删除前通过部署引擎服务校验文件包是否被引用",
+              "exceptions": [
+                {
+                  "name": "FilePackageNotFoundException",
+                  "trigger": "packageId 对应的文件包在数据库中不存在",
+                  "http_status": 404
+                },
+                {
+                  "name": "FilePackageInUseException",
+                  "trigger": "文件包已被部署任务引用，为保证部署历史可追溯拒绝删除",
+                  "http_status": 409
+                },
+                {
+                  "name": "FileIOException",
+                  "trigger": "磁盘文件删除失败（文件已被手动移动 / 权限不足）",
+                  "http_status": 500
+                }
+              ]
+            },
+            {
+              "name": "GetFilePackageBinary",
+              "signature": "(packageId: Long) -> InternalFilePackageDownload",
+              "precondition": "packageId 对应的文件包在数据库中存在；对应的磁盘文件可读",
+              "postcondition": "从磁盘读取文件二进制数据；计算读取数据的 SHA256 并与库中 checksum 比对；一致则返回 InternalFilePackageDownload DTO，不一致则返回 ChecksumMismatchException",
+              "description": "内部 RPC 调用：根据文件包 ID 读取磁盘文件二进制数据及元数据，供部署引擎使用",
+              "exceptions": [
+                {
+                  "name": "FilePackageNotFoundException",
+                  "trigger": "packageId 对应的文件包在数据库中不存在",
+                  "http_status": 404
+                },
+                {
+                  "name": "FileIOException",
+                  "trigger": "磁盘文件读取失败（文件丢失 / 损坏 / 权限不足）",
+                  "http_status": 500
+                },
+                {
+                  "name": "ChecksumMismatchException",
+                  "trigger": "读取文件后计算的 SHA256 与数据库记录不一致，文件已被篡改或损坏",
+                  "http_status": 500
+                }
+              ]
+            },
+            {
+              "name": "GetProjectStorageUsage",
+              "signature": "(projectId: Long) -> StorageUsage",
+              "precondition": "project_id 在数据库中存在",
+              "postcondition": "计算并返回项目当前存储用量（SUM size）、文件数（COUNT）、配额和使用百分比",
+              "description": "查询指定项目的存储空间使用情况和配额信息",
+              "exceptions": [
+                {
+                  "name": "ProjectNotFoundException",
+                  "trigger": "project_id 对应的项目在数据库中不存在",
+                  "http_status": 404
+                }
+              ]
+            }
+          ],
+          "repository_dependencies": [
+            "findById(id: Long) -> Optional<FilePackage>",
+            "findByProjectIdOrderByCreatedAtDesc(projectId: Long, page: Integer, pageSize: Integer) -> List<FilePackage>",
+            "countByProjectId(projectId: Long) -> Long",
+            "sumSizeByProjectId(projectId: Long) -> Long",
+            "findByProjectIdAndVersion(projectId: Long, version: String) -> Optional<FilePackage>",
+            "existsByProjectIdAndVersion(projectId: Long, version: String) -> Boolean",
+            "findByProjectId(projectId: Long) -> List<FilePackage>",
+            "save(filePackage: FilePackage) -> FilePackage",
+            "deleteById(id: Long) -> void"
+          ]
+        }
+      ],
+      "business_rules": {},
+      "error_handling": {},
+      "extra_sections": {}
+    },
+    "external_contracts": [],
+    "cross_module_deps": [],
+    "tech_stack": [
+      "Go",
+      "Gin",
+      "Go 1.22+",
+      "PostgreSQL 15",
+      "RESTful JSON API"
+    ],
+    "upstream_artifacts": []
+  },
+  "expected_output_files": [
+    "src/文件存储服务/service/fileservice.go"
+  ],
+  "layer": 1
 }
