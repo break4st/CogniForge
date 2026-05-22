@@ -4,512 +4,509 @@
     "type": "lld",
     "module_type": "service",
     "module": "部署编排服务",
-    "title": "部署编排服务详细设计",
+    "title": "部署编排服务 - 详细设计",
     "author": "design_agent",
     "created": "2026-05-22"
   },
   "overview": {
-    "description": "部署任务的核心编排引擎，负责执行部署的完整工作流：传输文件 -> 创建目录 -> 生成脚本 -> 执行命令。接收API网关的部署请求，通过SSH连接池服务获取远程服务器连接句柄，在远程服务器上完成文件传输、版本目录创建、启动/停止/健康检查脚本生成和命令执行，通过WebSocket实时推送各步骤状态和日志流，最终将部署结果持久化到数据库供版本追溯和回滚。",
-    "dependencies": ["SSH连接池服务", "文件存储", "PostgreSQL数据库"],
-    "tech_stack": ["Python", "FastAPI", "PostgreSQL", "SSH/SCP/SFTP", "WebSocket"]
+    "description": "部署任务的核心编排器，负责版本文件夹创建、文件上传、脚本生成和执行。接收部署请求并创建部署任务，通过SSH在远程创建版本文件夹，上传可执行文件到远程服务器，生成并执行启动脚本，收集部署日志和状态反馈，发布部署状态事件到消息队列。",
+    "dependencies": ["SSH连接池", "密钥存储服务", "消息队列", "PostgreSQL数据库", "文件存储"],
+    "tech_stack": ["Go", "Gin", "PostgreSQL 15", "RabbitMQ", "golang.org/x/crypto/ssh", "gorilla/websocket"]
   },
   "data_models": [
     {
-      "name": "deploy_record",
+      "name": "deployments",
       "type": "reference",
       "ownership": "derived",
       "source": {
         "doc_id": "lld-PostgreSQL数据库-001",
-        "model_name": "deploy_records"
+        "model_name": "deployments"
       },
-      "description": "部署任务记录，存储每一次部署操作的全量信息",
+      "description": "部署任务表，本服务关心ID、项目/环境关联、版本、状态、文件路径、步骤JSON和完成时间",
       "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "部署任务唯一标识，主键"},
-        {"name": "project_id", "type": "UUID", "required": true, "description": "目标项目ID，外键 -> projects.id"},
-        {"name": "environment_id", "type": "UUID", "required": true, "description": "目标环境ID，外键 -> environments.id"},
-        {"name": "version", "type": "VARCHAR(100)", "required": true, "description": "部署版本号"},
-        {"name": "file_id", "type": "UUID", "required": true, "description": "可执行文件ID，外键 -> file_records.id"},
-        {"name": "status", "type": "VARCHAR(20)", "required": true, "description": "部署状态枚举：PENDING/RUNNING/SUCCESS/FAILED/ROLLED_BACK"},
-        {"name": "started_at", "type": "TIMESTAMPTZ", "required": false, "description": "部署开始执行时间"},
-        {"name": "completed_at", "type": "TIMESTAMPTZ", "required": false, "description": "部署完成时间"},
-        {"name": "duration_ms", "type": "INTEGER", "required": false, "description": "部署总耗时（毫秒）"},
-        {"name": "triggered_by", "type": "UUID", "required": false, "description": "触发人用户ID，外键 -> users.id"},
-        {"name": "rollback_from", "type": "UUID", "required": false, "description": "回滚来源部署记录ID，自引用外键 -> deploy_records.id"},
-        {"name": "error_message", "type": "TEXT", "required": false, "description": "部署失败时的错误信息"},
+        {"name": "id", "type": "UUID", "required": true, "description": "部署任务唯一标识"},
+        {"name": "project_id", "type": "UUID", "required": true, "description": "关联项目ID"},
+        {"name": "environment_id", "type": "UUID", "required": true, "description": "关联目标环境ID"},
+        {"name": "version", "type": "VARCHAR(255)", "required": true, "description": "部署版本号"},
+        {"name": "status", "type": "VARCHAR(50)", "required": true, "description": "部署状态: pending/running/success/failed"},
+        {"name": "file_path", "type": "TEXT", "required": false, "description": "可执行文件路径"},
+        {"name": "steps", "type": "JSONB", "required": false, "description": "部署步骤JSON概要"},
         {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "创建时间"},
-        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": true, "description": "更新时间"}
+        {"name": "completed_at", "type": "TIMESTAMPTZ", "required": false, "description": "完成时间"}
       ]
     },
     {
-      "name": "deploy_step",
+      "name": "deployment_steps",
       "type": "reference",
       "ownership": "derived",
       "source": {
         "doc_id": "lld-PostgreSQL数据库-001",
-        "model_name": "deploy_steps"
+        "model_name": "deployment_steps"
       },
-      "description": "部署步骤明细，记录一次部署中各步骤的执行状态",
+      "description": "部署步骤明细表，本服务负责创建和更新步骤记录",
       "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "步骤记录唯一标识，主键"},
-        {"name": "deploy_id", "type": "UUID", "required": true, "description": "所属部署记录ID，外键 -> deploy_records.id"},
-        {"name": "step_name", "type": "VARCHAR(100)", "required": true, "description": "步骤名称"},
-        {"name": "status", "type": "VARCHAR(20)", "required": true, "description": "步骤状态枚举：PENDING/RUNNING/SUCCESS/FAILED"},
-        {"name": "sequence", "type": "INTEGER", "required": true, "description": "步骤序号，决定执行顺序"},
+        {"name": "id", "type": "UUID", "required": true, "description": "步骤唯一标识"},
+        {"name": "deployment_id", "type": "UUID", "required": true, "description": "所属部署任务ID"},
+        {"name": "step_name", "type": "VARCHAR(255)", "required": true, "description": "步骤名称"},
+        {"name": "status", "type": "VARCHAR(50)", "required": true, "description": "步骤状态: pending/running/success/failed"},
+        {"name": "output", "type": "TEXT", "required": false, "description": "步骤执行输出日志"},
         {"name": "started_at", "type": "TIMESTAMPTZ", "required": false, "description": "步骤开始时间"},
-        {"name": "completed_at", "type": "TIMESTAMPTZ", "required": false, "description": "步骤完成时间"},
-        {"name": "duration_ms", "type": "INTEGER", "required": false, "description": "步骤耗时（毫秒）"}
+        {"name": "completed_at", "type": "TIMESTAMPTZ", "required": false, "description": "步骤完成时间"}
       ]
     },
     {
-      "name": "deploy_log",
+      "name": "deployment_logs",
       "type": "reference",
       "ownership": "derived",
       "source": {
         "doc_id": "lld-PostgreSQL数据库-001",
-        "model_name": "deploy_logs"
+        "model_name": "deployment_logs"
       },
-      "description": "部署日志明细，记录部署过程中的逐条日志输出",
+      "description": "部署日志表，本服务负责记录的实时写入",
       "fields": [
-        {"name": "id", "type": "BIGSERIAL", "required": true, "description": "日志记录自增ID，主键"},
-        {"name": "deploy_id", "type": "UUID", "required": true, "description": "所属部署记录ID，外键 -> deploy_records.id"},
-        {"name": "step_id", "type": "UUID", "required": false, "description": "所属步骤ID，外键 -> deploy_steps.id，可为空（全局日志）"},
-        {"name": "level", "type": "VARCHAR(10)", "required": true, "description": "日志级别：DEBUG/INFO/WARN/ERROR"},
+        {"name": "id", "type": "BIGSERIAL", "required": true, "description": "日志自增ID"},
+        {"name": "deployment_id", "type": "UUID", "required": true, "description": "所属部署任务ID"},
+        {"name": "message_type", "type": "VARCHAR(50)", "required": true, "description": "消息类型: log/status/error"},
         {"name": "message", "type": "TEXT", "required": true, "description": "日志内容"},
-        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "日志产生时间"}
+        {"name": "step", "type": "VARCHAR(255)", "required": false, "description": "当前步骤名称"},
+        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "日志生成时间"}
       ]
     },
     {
-      "name": "environment_ref",
+      "name": "environments",
       "type": "reference",
       "ownership": "derived",
       "source": {
         "doc_id": "lld-PostgreSQL数据库-001",
         "model_name": "environments"
       },
-      "description": "部署环境配置（仅含本服务关心的连接参数字段）",
+      "description": "部署环境表，本服务关心目标服务器连接参数和关联密钥",
       "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "环境唯一标识，主键"},
-        {"name": "project_id", "type": "UUID", "required": true, "description": "所属项目ID，外键 -> projects.id"},
-        {"name": "host", "type": "VARCHAR(255)", "required": true, "description": "远程服务器主机名或IP地址"},
-        {"name": "port", "type": "INTEGER", "required": true, "description": "SSH端口号"},
-        {"name": "username", "type": "VARCHAR(100)", "required": true, "description": "SSH登录用户名"}
+        {"name": "id", "type": "UUID", "required": true, "description": "环境唯一标识"},
+        {"name": "project_id", "type": "UUID", "required": true, "description": "所属项目ID"},
+        {"name": "host", "type": "VARCHAR(255)", "required": true, "description": "目标服务器地址"},
+        {"name": "port", "type": "INTEGER", "required": true, "description": "SSH端口"},
+        {"name": "username", "type": "VARCHAR(255)", "required": true, "description": "登录用户名"},
+        {"name": "key_id", "type": "UUID", "required": false, "description": "关联密钥ID"}
       ]
     },
     {
-      "name": "file_record_ref",
+      "name": "projects",
       "type": "reference",
       "ownership": "derived",
       "source": {
         "doc_id": "lld-PostgreSQL数据库-001",
-        "model_name": "file_records"
+        "model_name": "projects"
       },
-      "description": "可执行文件记录（仅含本服务关心的字段）",
+      "description": "项目表，本服务仅查询项目名称信息",
       "fields": [
-        {"name": "id", "type": "UUID", "required": true, "description": "文件记录唯一标识，主键"},
-        {"name": "project_id", "type": "UUID", "required": true, "description": "所属项目ID，外键 -> projects.id"},
-        {"name": "file_name", "type": "VARCHAR(255)", "required": true, "description": "原始文件名"},
-        {"name": "version", "type": "VARCHAR(100)", "required": true, "description": "文件版本号"},
-        {"name": "storage_path", "type": "TEXT", "required": true, "description": "文件存储路径（磁盘或对象存储路径）"}
+        {"name": "id", "type": "UUID", "required": true, "description": "项目唯一标识"},
+        {"name": "name", "type": "VARCHAR(255)", "required": true, "description": "项目名称"}
       ]
     },
     {
-      "name": "deploy_workflow_step_config",
+      "name": "MQExchangeConfig",
       "type": "config",
       "ownership": "owned",
-      "description": "部署工作流步骤配置，定义每个执行步骤的顺序、超时和重试策略。默认4个步骤：文件传输、创建目录、生成脚本、执行命令",
+      "description": "部署编排服务依赖的消息队列Exchange和RoutingKey定义",
       "fields": [
-        {"name": "step_name", "type": "string", "required": true, "description": "步骤名称，如「文件传输」「创建目录」「生成脚本」「执行命令」"},
-        {"name": "sequence", "type": "integer", "required": true, "description": "步骤序号，决定串行执行顺序（1~N）"},
-        {"name": "timeout_seconds", "type": "integer", "required": true, "description": "步骤超时时间（秒），超时视为FAILED"},
-        {"name": "retry_count", "type": "integer", "required": true, "description": "失败重试次数，重试耗尽仍失败则标记步骤为FAILED"},
-        {"name": "description", "type": "string", "required": false, "description": "步骤说明"}
-      ]
-    },
-    {
-      "name": "remote_path_config",
-      "type": "config",
-      "ownership": "owned",
-      "description": "远程服务器目录路径模板配置，定义部署相关路径的生成模板",
-      "fields": [
-        {"name": "path_key", "type": "string", "required": true, "description": "路径键名，如 base_dir、version_dir、scripts_dir"},
-        {"name": "template", "type": "string", "required": true, "description": "路径模板，支持 {project}/{env}/{version} 占位符替换"},
-        {"name": "description", "type": "string", "required": false, "description": "路径用途说明"}
+        {"name": "task_exchange", "type": "string", "required": true, "description": "部署任务发布Exchange: exchange.deployment.task"},
+        {"name": "task_routing_key", "type": "string", "required": true, "description": "部署任务路由键: task.deploy"},
+        {"name": "status_exchange", "type": "string", "required": true, "description": "状态变更事件Exchange: exchange.deployment.status"},
+        {"name": "status_routing_key", "type": "string", "required": true, "description": "状态变更路由键前缀: status.#"},
+        {"name": "log_exchange", "type": "string", "required": true, "description": "日志事件Exchange: exchange.deployment.log"},
+        {"name": "log_routing_key", "type": "string", "required": true, "description": "日志路由键前缀: log.#"}
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "ExecuteDeploy",
+      "name": "部署触发API",
       "method": "POST",
-      "endpoint": "/api/v1/deploys",
-      "description": "发起一键部署任务，接收部署请求后创建任务记录并异步执行，返回任务ID供前端通过WebSocket轮询状态",
+      "endpoint": "/api/v1/deployments",
+      "description": "触发一键自动化部署，返回任务ID供后续追踪",
       "parameters": [
-        {"name": "project_id", "type": "string (UUID)", "description": "目标项目ID"},
-        {"name": "environment_id", "type": "string (UUID)", "description": "目标环境ID"},
+        {"name": "project_id", "type": "string", "description": "项目ID"},
+        {"name": "environment_id", "type": "string", "description": "目标环境ID"},
         {"name": "version", "type": "string", "description": "部署版本号"},
-        {"name": "file_id", "type": "string (UUID)", "description": "可执行文件ID"}
+        {"name": "file_path", "type": "string", "description": "可执行文件路径（可选）"}
       ],
       "response": {
-        "status": 202,
+        "status": 201,
         "body": {
-          "deploy_id": "string (UUID，部署任务ID)",
-          "status": "string (PENDING/RUNNING/SUCCESS/FAILED)",
-          "created_at": "string (ISO datetime)"
+          "deployment_id": "string",
+          "status": "string",
+          "created_at": "string"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "请求参数校验失败：必填字段缺失或格式错误"},
-        {"code": 404, "message": "项目/环境/文件不存在"},
-        {"code": 409, "message": "该项目下该环境已有PENDING或RUNNING状态的部署任务，禁止并发"},
-        {"code": 500, "message": "服务内部错误"}
+        {"code": 400, "message": "请求参数验证失败，如缺少必填字段或格式错误"},
+        {"code": 409, "message": "冲突，该项目+环境已有 running 状态的部署任务"},
+        {"code": 500, "message": "创建部署任务失败，数据库或消息队列异常"}
       ]
     },
     {
-      "name": "GetDeployStatus",
-      "method": "WS",
-      "endpoint": "/api/v1/deploys/{deploy_id}/status",
-      "description": "通过WebSocket实时推送部署任务的各步骤状态和日志流，部署结束后推送最终状态并关闭连接",
-      "parameters": [
-        {"name": "deploy_id", "type": "string (UUID)", "description": "部署任务ID（路径参数）"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "step": "string (当前步骤名)",
-          "status": "string (RUNNING/SUCCESS/FAILED)",
-          "progress": "number (0-100)",
-          "log": "string (当前日志片段)",
-          "timestamp": "string (ISO datetime)"
-        }
-      },
-      "error_codes": [
-        {"code": 400, "message": "deploy_id格式无效"},
-        {"code": 404, "message": "部署任务不存在"},
-        {"code": 500, "message": "WebSocket连接异常"}
-      ]
-    },
-    {
-      "name": "GetHistory",
+      "name": "部署状态查询API",
       "method": "GET",
-      "endpoint": "/api/v1/deploys/history",
-      "description": "查询指定项目的部署历史记录，支持按环境过滤和分页，用于版本追溯和回滚",
+      "endpoint": "/api/v1/deployments/{id}",
+      "description": "查询部署任务的当前状态和进度详情",
       "parameters": [
-        {"name": "project_id", "type": "string (UUID)", "description": "按项目过滤（必填）"},
-        {"name": "environment_id", "type": "string (UUID)", "description": "按环境过滤（可选）"},
-        {"name": "page", "type": "integer", "description": "分页页码，从1开始"},
-        {"name": "page_size", "type": "integer", "description": "每页数量，默认20"},
-        {"name": "status", "type": "string", "description": "按部署状态过滤（可选）"}
+        {"name": "id", "type": "string", "description": "部署任务ID（路径参数）"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "items": "array (DeployTask列表)",
-          "total": "integer (总记录数)",
-          "page": "integer (当前页码)",
-          "page_size": "integer (每页数量)"
+          "id": "string",
+          "project_id": "string",
+          "environment_id": "string",
+          "version": "string",
+          "status": "string",
+          "steps": "array(object)",
+          "created_at": "string",
+          "completed_at": "string"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "查询参数校验失败（如project_id格式错误）"},
-        {"code": 404, "message": "项目不存在"}
+        {"code": 404, "message": "部署任务不存在"},
+        {"code": 500, "message": "查询失败，数据库异常"}
       ]
     },
     {
-      "name": "GetConnection",
-      "method": "INTERNAL",
-      "endpoint": "SshPoolService.GetConnection (gRPC)",
-      "description": "【消费】从SSH连接池服务获取到目标服务器的SSH连接句柄。部署编排服务在执行部署时，根据环境配置中的host/port/username和关联密钥的指纹，调用此接口获取连接",
+      "name": "部署日志WebSocket",
+      "method": "WS",
+      "endpoint": "/api/v1/ws/deployments/{id}/logs",
+      "description": "通过WebSocket实时推送部署过程的日志输出和状态变更",
       "parameters": [
-        {"name": "host", "type": "string", "description": "目标服务器主机名或IP"},
-        {"name": "port", "type": "integer", "description": "SSH端口号"},
-        {"name": "username", "type": "string", "description": "SSH登录用户名"},
-        {"name": "key_fingerprint", "type": "string", "description": "密钥指纹，用于从密钥管理服务获取解密密钥"}
+        {"name": "id", "type": "string", "description": "部署任务ID（路径参数）"}
       ],
       "response": {
-        "status": 200,
+        "status": 101,
         "body": {
-          "connection_id": "string (UUID，连接句柄)",
-          "session_id": "string (会话标识)",
-          "expires_at": "string (ISO datetime，连接超时时间)"
+          "type": "string",
+          "timestamp": "string",
+          "message": "string",
+          "step": "string"
         }
       },
       "error_codes": [
-        {"code": 400, "message": "连接参数无效"},
-        {"code": 401, "message": "密钥认证失败（密钥已吊销或指纹不匹配）"},
-        {"code": 503, "message": "连接池已满或SSH服务不可达"}
+        {"code": 404, "message": "部署任务ID不存在"},
+        {"code": 500, "message": "WebSocket 连接建立失败"}
       ]
     }
   ],
   "error_handling": {
-    "strategy": "部署编排服务的错误分三层处理：1) 请求校验层——参数缺失或格式错误直接返回400；2) 业务校验层——部署冲突(409)、资源不存在(404)由服务方法显式抛出业务异常；3) 执行层——SSH连接失败、SCP传输异常、脚本执行错误等运行时错误，捕获后标记对应步骤为FAILED，等待重试耗尽后标记部署为FAILED并记录错误信息到deploy_records.error_message，通过WebSocket推送失败状态。所有SSH操作设置超时（30秒），调用SSH连接池设置gRPC超时（30秒），超时或不可用按依赖方错误处理。",
+    "strategy": "采用统一JSON错误响应格式。参数校验错误返回4xx，业务冲突返回409，服务依赖异常返回502或503，内部错误返回500。所有错误记录审计日志，可重试错误（如MQ临时失败）由后台worker自动重试。",
     "response_format": {
-      "body": {"code": "integer", "error": "string", "detail": "string"}
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
     },
     "categories": [
-      {"code": "400", "name": "参数校验错误", "description": "请求体JSON解析失败、必填字段缺失、字段类型或格式不符合约束"},
-      {"code": "404", "name": "资源不存在", "description": "引用的项目、环境、文件或部署记录在数据库中不存在"},
-      {"code": "409", "name": "部署冲突", "description": "同一项目+环境下已有PENDING或RUNNING状态的部署任务，禁止并发发起新部署"},
-      {"code": "500", "name": "部署执行内部错误", "description": "SSH/SCP操作异常、脚本生成/执行失败、数据库写入异常等运行时错误，标记部署为FAILED"},
-      {"code": "502", "name": "上游服务调用失败", "description": "调用SSH连接池服务gRPC接口超时或返回错误，记录依赖方错误详情"},
-      {"code": "503", "name": "SSH服务暂不可用", "description": "SSH连接池已满、目标服务器不可达或端口未开放，返回503提示客户端稍后重试"}
+      {"code": 400, "name": "参数校验错误", "description": "请求体缺少必填字段、字段格式不合法（如UUID格式错误、版本号为非法字符串），返回具体错误字段名"},
+      {"code": 404, "name": "资源不存在", "description": "请求的部署任务ID、环境ID或项目ID在数据库中不存在"},
+      {"code": 409, "name": "业务冲突", "description": "目标项目+环境存在running状态的部署任务；部署版本号已存在"},
+      {"code": 502, "name": "依赖服务异常", "description": "SSH连接池或密钥存储服务返回错误，返回上游错误详情"},
+      {"code": 503, "name": "消息队列不可用", "description": "RabbitMQ连接断开导致无法发布部署任务或状态事件"},
+      {"code": 500, "name": "内部错误", "description": "数据库写入失败、SSH命令执行异常等不可预期错误，返回通用错误信息"}
     ]
   },
   "domain_objects": [
     {
-      "name": "DeployTask",
+      "name": "DeploymentTask",
       "object_type": "entity",
-      "description": "部署任务实体，表示一次部署操作的完整生命周期，状态由状态机管理",
+      "description": "部署任务实体，映射 deployments 表，代表一次完整的自动化部署流程",
       "attributes": [
         {"name": "id", "type": "UUID", "required": true, "source": "db", "description": "部署任务唯一标识"},
-        {"name": "project_id", "type": "UUID", "required": true, "source": "db", "description": "目标项目ID"},
-        {"name": "environment_id", "type": "UUID", "required": true, "source": "db", "description": "目标环境ID"},
-        {"name": "version", "type": "String", "required": true, "source": "db", "description": "部署版本号"},
-        {"name": "file_id", "type": "UUID", "required": true, "source": "db", "description": "可执行文件ID"},
-        {"name": "status", "type": "DeployStatus", "required": true, "source": "db", "description": "当前部署状态"},
-        {"name": "error_message", "type": "String", "required": false, "source": "db", "description": "部署失败时的错误信息"},
-        {"name": "triggered_by", "type": "UUID", "required": false, "source": "db", "description": "触发人用户ID"},
-        {"name": "rollback_from", "type": "UUID", "required": false, "source": "db", "description": "回滚来源部署记录ID"},
-        {"name": "started_at", "type": "DateTime", "required": false, "source": "db", "description": "部署开始执行时间"},
-        {"name": "completed_at", "type": "DateTime", "required": false, "source": "db", "description": "部署完成时间"},
-        {"name": "duration_ms", "type": "Integer", "required": false, "source": "db", "description": "部署总耗时（毫秒）"},
-        {"name": "steps", "type": "List[DeployStep]", "required": false, "source": "derived", "description": "部署步骤列表，从deploy_steps表关联查询"},
+        {"name": "project_id", "type": "UUID", "required": true, "source": "input", "description": "所属项目ID"},
+        {"name": "environment_id", "type": "UUID", "required": true, "source": "input", "description": "目标环境ID"},
+        {"name": "version", "type": "String", "required": true, "source": "input", "description": "部署版本号"},
+        {"name": "status", "type": "DeploymentStatus", "required": true, "source": "computed", "description": "部署状态，由状态机驱动变化"},
+        {"name": "file_path", "type": "String", "required": false, "source": "input", "description": "可执行文件路径（可选），为空时由文件存储模块提供"},
+        {"name": "steps", "type": "[]DeploymentStep", "required": false, "source": "derived", "description": "部署步骤列表，从 deployment_steps 表加载"},
         {"name": "created_at", "type": "DateTime", "required": true, "source": "db", "description": "创建时间"},
-        {"name": "updated_at", "type": "DateTime", "required": true, "source": "db", "description": "更新时间"}
+        {"name": "completed_at", "type": "DateTime", "required": false, "source": "db", "description": "完成时间，终态时写入"}
       ]
     },
     {
-      "name": "DeployStep",
+      "name": "DeploymentStep",
       "object_type": "entity",
-      "description": "部署步骤实体，表示一次部署中某个工作流步骤的执行状态",
+      "description": "部署步骤实体，映射 deployment_steps 表，记录部署流程中的单个步骤执行情况",
       "attributes": [
-        {"name": "id", "type": "UUID", "required": true, "source": "db", "description": "步骤记录唯一标识"},
-        {"name": "deploy_id", "type": "UUID", "required": true, "source": "db", "description": "所属部署任务ID"},
-        {"name": "step_name", "type": "String", "required": true, "source": "db", "description": "步骤名称"},
-        {"name": "status", "type": "StepStatus", "required": true, "source": "db", "description": "步骤执行状态"},
-        {"name": "sequence", "type": "Integer", "required": true, "source": "db", "description": "步骤序号，决定串行执行顺序"},
+        {"name": "id", "type": "UUID", "required": true, "source": "db", "description": "步骤唯一标识"},
+        {"name": "deployment_id", "type": "UUID", "required": true, "source": "db", "description": "所属部署任务ID"},
+        {"name": "step_name", "type": "String", "required": true, "source": "input", "description": "步骤名称，如: 创建版本目录/上传文件/生成脚本/执行启动"},
+        {"name": "status", "type": "StepStatus", "required": true, "source": "computed", "description": "步骤执行状态"},
+        {"name": "output", "type": "String", "required": false, "source": "computed", "description": "步骤执行输出日志"},
         {"name": "started_at", "type": "DateTime", "required": false, "source": "db", "description": "步骤开始时间"},
-        {"name": "completed_at", "type": "DateTime", "required": false, "source": "db", "description": "步骤完成时间"},
-        {"name": "duration_ms", "type": "Integer", "required": false, "source": "db", "description": "步骤耗时（毫秒）"}
+        {"name": "completed_at", "type": "DateTime", "required": false, "source": "db", "description": "步骤完成时间"}
       ]
     },
     {
-      "name": "DeployLogEntry",
-      "object_type": "value_object",
-      "description": "部署日志条目值对象，记录部署过程中的单条日志输出，不可变",
+      "name": "DeploymentLog",
+      "object_type": "entity",
+      "description": "部署日志实体，映射 deployment_logs 表，记录部署过程中的实时日志条目",
       "attributes": [
-        {"name": "id", "type": "Long", "required": true, "source": "db", "description": "日志自增ID"},
-        {"name": "deploy_id", "type": "UUID", "required": true, "source": "db", "description": "所属部署任务ID"},
-        {"name": "step_id", "type": "UUID", "required": false, "source": "db", "description": "所属步骤ID"},
-        {"name": "level", "type": "LogLevel", "required": true, "source": "db", "description": "日志级别"},
-        {"name": "message", "type": "String", "required": true, "source": "db", "description": "日志内容"},
-        {"name": "created_at", "type": "DateTime", "required": true, "source": "db", "description": "日志产生时间"}
+        {"name": "id", "type": "Int64", "required": true, "source": "db", "description": "日志自增ID"},
+        {"name": "deployment_id", "type": "UUID", "required": true, "source": "db", "description": "所属部署任务ID"},
+        {"name": "message_type", "type": "LogMessageType", "required": true, "source": "input", "description": "消息类型: log/status/error"},
+        {"name": "message", "type": "String", "required": true, "source": "input", "description": "日志内容"},
+        {"name": "step", "type": "String", "required": false, "source": "input", "description": "当前步骤名称"},
+        {"name": "created_at", "type": "DateTime", "required": true, "source": "db", "description": "日志生成时间"}
       ]
     },
     {
-      "name": "SshConnectionInfo",
-      "object_type": "value_object",
-      "description": "SSH连接信息值对象，从SSH连接池服务获取的连接句柄，不可变",
+      "name": "CreateDeploymentRequest",
+      "object_type": "dto",
+      "description": "部署触发API的请求体，包含项目、环境、版本和可选文件路径",
       "attributes": [
-        {"name": "connection_id", "type": "UUID", "required": true, "source": "input", "description": "连接句柄唯一标识"},
-        {"name": "session_id", "type": "String", "required": true, "source": "input", "description": "会话标识，用于SCP/SFTP通道复用"},
-        {"name": "expires_at", "type": "DateTime", "required": true, "source": "input", "description": "连接超时时间，超时后需重新获取"}
+        {"name": "project_id", "type": "String", "required": true, "source": "input", "description": "项目ID，UUID格式"},
+        {"name": "environment_id", "type": "String", "required": true, "source": "input", "description": "目标环境ID，UUID格式"},
+        {"name": "version", "type": "String", "required": true, "source": "input", "description": "部署版本号，正则: ^[\\\\w.-]+$"},
+        {"name": "file_path", "type": "String", "required": false, "source": "input", "description": "可执行文件路径，从文件存储模块获取的文件标识"}
+      ],
+      "maps_to_entity": "DeploymentTask"
+    },
+    {
+      "name": "CreateDeploymentResponse",
+      "object_type": "dto",
+      "description": "部署触发API的响应体，返回刚创建的任务ID、初始状态和时间",
+      "attributes": [
+        {"name": "deployment_id", "type": "String", "required": true, "source": "computed", "description": "新建部署任务ID"},
+        {"name": "status", "type": "String", "required": true, "source": "computed", "description": "初始状态，固定为 pending"},
+        {"name": "created_at", "type": "String", "required": true, "source": "computed", "description": "创建时间，ISO 8601格式"}
+      ],
+      "maps_to_entity": "DeploymentTask"
+    },
+    {
+      "name": "DeploymentDetailResponse",
+      "object_type": "dto",
+      "description": "部署状态查询API的响应体，包含部署任务完整详情和步骤信息",
+      "attributes": [
+        {"name": "id", "type": "String", "required": true, "source": "db", "description": "部署任务ID"},
+        {"name": "project_id", "type": "String", "required": true, "source": "db", "description": "项目ID"},
+        {"name": "environment_id", "type": "String", "required": true, "source": "db", "description": "环境ID"},
+        {"name": "version", "type": "String", "required": true, "source": "db", "description": "版本号"},
+        {"name": "status", "type": "String", "required": true, "source": "db", "description": "部署状态"},
+        {"name": "steps", "type": "[]Object", "required": true, "source": "derived", "description": "部署步骤详情数组，每步含名称/状态/输出/时间"},
+        {"name": "created_at", "type": "String", "required": true, "source": "db", "description": "创建时间"},
+        {"name": "completed_at", "type": "String", "required": false, "source": "db", "description": "完成时间，running/null时为空"}
+      ],
+      "maps_to_entity": "DeploymentTask"
+    },
+    {
+      "name": "WebSocketLogMessage",
+      "object_type": "dto",
+      "description": "部署日志WebSocket推送的消息帧结构，通过MQ消费日志事件后转发给前端",
+      "attributes": [
+        {"name": "type", "type": "String", "required": true, "source": "input", "description": "消息类型: log/status/error"},
+        {"name": "timestamp", "type": "String", "required": true, "source": "computed", "description": "消息时间戳，ISO 8601格式"},
+        {"name": "message", "type": "String", "required": true, "source": "input", "description": "日志内容文本"},
+        {"name": "step", "type": "String", "required": true, "source": "input", "description": "当前部署步骤名称"}
+      ],
+      "maps_to_entity": "DeploymentLog"
+    },
+    {
+      "name": "SSHExecuteRequest",
+      "object_type": "dto",
+      "description": "调用SSH连接池执行命令的请求体，由本服务构造后发给SSH连接池模块",
+      "attributes": [
+        {"name": "host", "type": "String", "required": true, "source": "derived", "description": "目标服务器地址，从环境配置获取"},
+        {"name": "port", "type": "Int", "required": true, "source": "derived", "description": "SSH端口，从环境配置获取"},
+        {"name": "username", "type": "String", "required": true, "source": "derived", "description": "登录用户名，从环境配置获取"},
+        {"name": "auth_type", "type": "String", "required": true, "source": "derived", "description": "认证类型: key/password，从密钥类型推导"},
+        {"name": "auth_data", "type": "String", "required": true, "source": "derived", "description": "认证凭证，从密钥存储服务获取解密后的值"},
+        {"name": "commands", "type": "[]String", "required": true, "source": "input", "description": "待执行的命令列表，由本服务按步骤生成"}
       ]
     },
     {
-      "name": "DeployStatus",
+      "name": "SSHExecuteResponse",
+      "object_type": "dto",
+      "description": "SSH连接池执行命令的响应体",
+      "attributes": [
+        {"name": "session_id", "type": "String", "required": true, "source": "db", "description": "SSH会话ID"},
+        {"name": "output", "type": "String", "required": true, "source": "db", "description": "命令执行输出文本"},
+        {"name": "exit_code", "type": "Int", "required": true, "source": "db", "description": "退出码，0表示成功"}
+      ]
+    },
+    {
+      "name": "DeploymentTaskMessage",
+      "object_type": "dto",
+      "description": "发布到消息队列的部署任务消息结构",
+      "attributes": [
+        {"name": "task_id", "type": "String", "required": true, "source": "computed", "description": "部署任务ID"},
+        {"name": "project_id", "type": "String", "required": true, "source": "input", "description": "项目ID"},
+        {"name": "environment_id", "type": "String", "required": true, "source": "input", "description": "环境ID"},
+        {"name": "version", "type": "String", "required": true, "source": "input", "description": "部署版本号"},
+        {"name": "file_path", "type": "String", "required": false, "source": "input", "description": "可执行文件路径"},
+        {"name": "created_at", "type": "String", "required": true, "source": "computed", "description": "创建时间"}
+      ]
+    },
+    {
+      "name": "TaskStatusEvent",
+      "object_type": "dto",
+      "description": "部署状态变更事件，发布到 exchange.deployment.status",
+      "attributes": [
+        {"name": "task_id", "type": "String", "required": true, "source": "computed", "description": "部署任务ID"},
+        {"name": "project_id", "type": "String", "required": false, "source": "derived", "description": "项目ID"},
+        {"name": "status", "type": "String", "required": true, "source": "computed", "description": "当前部署状态"},
+        {"name": "step", "type": "String", "required": false, "source": "computed", "description": "当前步骤名"},
+        {"name": "message", "type": "String", "required": false, "source": "computed", "description": "状态描述信息"},
+        {"name": "timestamp", "type": "String", "required": true, "source": "computed", "description": "事件时间戳"}
+      ]
+    },
+    {
+      "name": "LogEvent",
+      "object_type": "dto",
+      "description": "部署日志事件，发布到 exchange.deployment.log",
+      "attributes": [
+        {"name": "task_id", "type": "String", "required": true, "source": "computed", "description": "部署任务ID"},
+        {"name": "type", "type": "String", "required": true, "source": "input", "description": "日志类型: log/status/error"},
+        {"name": "message", "type": "String", "required": false, "source": "input", "description": "日志内容"},
+        {"name": "step", "type": "String", "required": false, "source": "input", "description": "当前步骤名"},
+        {"name": "timestamp", "type": "String", "required": true, "source": "computed", "description": "事件时间戳"}
+      ]
+    },
+    {
+      "name": "SSHConnectionInfo",
+      "object_type": "value_object",
+      "description": "SSH连接参数值对象，由环境配置和密钥信息组合而成，不可变",
+      "attributes": [
+        {"name": "host", "type": "String", "required": true, "source": "derived", "description": "目标服务器地址"},
+        {"name": "port", "type": "Int", "required": true, "source": "derived", "description": "SSH端口号"},
+        {"name": "username", "type": "String", "required": true, "source": "derived", "description": "登录用户名"},
+        {"name": "auth_type", "type": "String", "required": true, "source": "derived", "description": "认证类型: key/password"},
+        {"name": "auth_data", "type": "String", "required": true, "source": "derived", "description": "解密后的认证凭证（SSH私钥或密码）"}
+      ]
+    },
+    {
+      "name": "DeploymentStatus",
       "object_type": "enum",
-      "description": "部署任务状态枚举，定义部署的完整生命周期状态",
-      "values": ["PENDING", "RUNNING", "SUCCESS", "FAILED", "ROLLED_BACK"]
+      "description": "部署任务状态枚举，定义整个部署生命周期中的状态集合",
+      "values": ["pending", "running", "success", "failed"]
     },
     {
       "name": "StepStatus",
       "object_type": "enum",
       "description": "部署步骤状态枚举",
-      "values": ["PENDING", "RUNNING", "SUCCESS", "FAILED"]
+      "values": ["pending", "running", "success", "failed"]
     },
     {
-      "name": "LogLevel",
+      "name": "LogMessageType",
       "object_type": "enum",
-      "description": "日志级别枚举",
-      "values": ["DEBUG", "INFO", "WARN", "ERROR"]
-    },
-    {
-      "name": "DeployCreateRequest",
-      "object_type": "dto",
-      "description": "创建部署任务的请求DTO，由API网关解析HTTP请求体后传入服务层",
-      "attributes": [
-        {"name": "project_id", "type": "UUID", "required": true, "source": "input", "description": "目标项目ID"},
-        {"name": "environment_id", "type": "UUID", "required": true, "source": "input", "description": "目标环境ID"},
-        {"name": "version", "type": "String", "required": true, "source": "input", "description": "部署版本号"},
-        {"name": "file_id", "type": "UUID", "required": true, "source": "input", "description": "可执行文件ID"}
-      ],
-      "maps_to_entity": "DeployTask"
-    },
-    {
-      "name": "DeployCreateResponse",
-      "object_type": "dto",
-      "description": "创建部署任务的响应DTO，返回部署任务ID和初始状态供前端轮询",
-      "attributes": [
-        {"name": "deploy_id", "type": "UUID", "required": true, "source": "computed", "description": "生成的部署任务ID"},
-        {"name": "status", "type": "String", "required": true, "source": "computed", "description": "初始部署状态（PENDING）"},
-        {"name": "created_at", "type": "String", "required": true, "source": "computed", "description": "ISO格式的创建时间"}
-      ],
-      "maps_to_entity": "DeployTask"
-    },
-    {
-      "name": "DeployStatusMessage",
-      "object_type": "dto",
-      "description": "WebSocket实时状态推送消息DTO，按步骤粒度推送部署进度和日志",
-      "attributes": [
-        {"name": "step", "type": "String", "required": true, "source": "computed", "description": "当前正在执行的步骤名称"},
-        {"name": "status", "type": "String", "required": true, "source": "computed", "description": "当前步骤状态：RUNNING/SUCCESS/FAILED"},
-        {"name": "progress", "type": "Float", "required": true, "source": "computed", "description": "整体进度百分比（0-100）"},
-        {"name": "log", "type": "String", "required": true, "source": "computed", "description": "当前日志片段，增量推送"},
-        {"name": "timestamp", "type": "String", "required": true, "source": "computed", "description": "ISO格式的消息时间戳"}
-      ]
-    },
-    {
-      "name": "DeployHistoryQuery",
-      "object_type": "dto",
-      "description": "部署历史查询请求DTO",
-      "attributes": [
-        {"name": "project_id", "type": "UUID", "required": true, "source": "input", "description": "按项目ID过滤"},
-        {"name": "environment_id", "type": "UUID", "required": false, "source": "input", "description": "按环境ID过滤（可选）"},
-        {"name": "status", "type": "String", "required": false, "source": "input", "description": "按部署状态过滤（可选）"},
-        {"name": "page", "type": "Integer", "required": false, "source": "input", "description": "分页页码，默认1"},
-        {"name": "page_size", "type": "Integer", "required": false, "source": "input", "description": "每页数量，默认20"}
-      ]
-    },
-    {
-      "name": "DeployHistoryResponse",
-      "object_type": "dto",
-      "description": "部署历史查询响应DTO",
-      "attributes": [
-        {"name": "items", "type": "List[DeployTask]", "required": true, "source": "computed", "description": "部署记录列表"},
-        {"name": "total", "type": "Integer", "required": true, "source": "computed", "description": "匹配条件的总记录数"},
-        {"name": "page", "type": "Integer", "required": true, "source": "computed", "description": "当前页码"},
-        {"name": "page_size", "type": "Integer", "required": true, "source": "computed", "description": "每页数量"}
-      ]
+      "description": "日志消息类型枚举，用于标记日志分类",
+      "values": ["log", "status", "error"]
     }
   ],
   "service_contracts": [
     {
-      "name": "DeployOrchestrationService",
-      "description": "部署编排核心服务，管理部署任务的完整生命周期：创建、执行、状态推送、取消、回滚",
+      "name": "DeploymentService",
+      "description": "部署任务的核心编排服务，负责部署全生命周期管理：创建、执行、状态跟踪、日志推送",
       "methods": [
         {
-          "name": "execute_deploy",
-          "signature": "(request: DeployCreateRequest, triggered_by: UUID) -> DeployCreateResponse",
-          "precondition": "请求参数已通过格式校验（project_id/environment_id/version/file_id均为合法UUID或非空字符串）；项目中指定的文件记录存在且版本匹配；环境中关联的SSH密钥状态为ACTIVE；同一project_id+environment_id下不存在PENDING或RUNNING状态的部署任务",
-          "postcondition": "在deploy_records表中创建一条状态为PENDING的新部署记录并返回deploy_id；异步工作流被提交到后台任务队列开始执行；部署步骤记录（deploy_steps）按工作流配置初始化，全部初始状态为PENDING",
-          "description": "创建部署任务并启动异步执行工作流。先校验资源和并发约束，写入数据库后立即返回202，后台按工作流步骤串行执行",
+          "name": "CreateDeployment",
+          "signature": "(ctx context.Context, req CreateDeploymentRequest) -> (CreateDeploymentResponse, error)",
+          "precondition": "项目ID和环境ID在数据库中真实存在；项目+环境当前无 running 状态的部署任务；版本号格式合法且未被该项目使用",
+          "postcondition": "deployments 表中插入一条 status=pending 的新记录；部署任务消息已发布到 MQ exchange.deployment.task 队列；返回包含新建任务ID的响应",
+          "description": "接收部署触发请求，校验参数、检查业务约束、创建部署任务记录并发布到消息队列异步执行",
           "exceptions": [
-            {"name": "ResourceNotFoundError", "trigger": "project_id/environment_id/file_id在数据库中不存在", "http_status": 404},
-            {"name": "DeployConflictError", "trigger": "同一project_id+environment_id下已有PENDING或RUNNING状态的部署任务", "http_status": 409},
-            {"name": "SshConnectionError", "trigger": "执行阶段调用SSH连接池服务获取连接失败（超时或拒绝）", "http_status": 502},
-            {"name": "DeployExecutionError", "trigger": "部署执行过程中命令执行失败或脚本生成异常", "http_status": 500}
+            {"name": "ValidationError", "trigger": "必填参数缺失（project_id/environment_id/version）或格式不合法", "http_status": 400},
+            {"name": "ActiveDeploymentConflictError", "trigger": "同一项目+环境已有 running 状态的部署任务，不允许同时部署", "http_status": 409},
+            {"name": "DuplicateVersionError", "trigger": "版本号在该项目中已存在，不允许重复使用", "http_status": 409},
+            {"name": "MqPublishError", "trigger": "部署任务消息发布到 RabbitMQ 失败", "http_status": 503},
+            {"name": "DatabaseError", "trigger": "插入部署任务记录到 PostgreSQL 失败", "http_status": 500}
           ]
         },
         {
-          "name": "get_deploy_status_stream",
-          "signature": "(deploy_id: UUID) -> AsyncIterator[DeployStatusMessage]",
-          "precondition": "deploy_id对应的部署记录在deploy_records表中存在；调用方已建立WebSocket连接",
-          "postcondition": "连接保持打开状态，每当部署步骤状态变更或新日志产生时推送DeployStatusMessage；部署最终状态（SUCCESS/FAILED）推送后关闭WebSocket连接；若部署已完成（查询时已终态），直接推送最终状态后关闭",
-          "description": "通过WebSocket流式推送部署任务的实时状态。订阅数据库变更事件或内存中状态队列，按步骤粒度推送进度和日志",
+          "name": "GetDeployment",
+          "signature": "(ctx context.Context, id string) -> (DeploymentDetailResponse, error)",
+          "precondition": "id 为有效的 UUID 格式",
+          "postcondition": "返回部署任务的所有字段（含 steps 数组和完成时间）；若任务不存在则返回 404",
+          "description": "根据部署任务ID查询完整状态详情，包括状态、步骤进度和时间信息",
           "exceptions": [
-            {"name": "ResourceNotFoundError", "trigger": "deploy_id对应的部署记录不存在", "http_status": 404},
-            {"name": "WebSocketDisconnectError", "trigger": "客户端主动断开连接或网络异常", "http_status": 500}
+            {"name": "InvalidIdError", "trigger": "id 参数不是有效的 UUID 格式", "http_status": 400},
+            {"name": "DeploymentNotFoundError", "trigger": "指定 id 的记录在 deployments 表中不存在", "http_status": 404},
+            {"name": "DatabaseError", "trigger": "查询数据库时发生连接中断或超时", "http_status": 500}
           ]
         },
         {
-          "name": "get_deploy_history",
-          "signature": "(query: DeployHistoryQuery) -> DeployHistoryResponse",
-          "precondition": "query.project_id为必填且格式合法（可选过滤条件environment_id/status也通过格式校验）",
-          "postcondition": "返回分页部署历史列表，按created_at降序排列；items为空数组表示无匹配记录",
-          "description": "按项目/环境/状态过滤查询部署历史记录，支持分页，用于前端展示部署历史列表和版本追溯",
+          "name": "ExecuteDeploymentTask",
+          "signature": "(ctx context.Context, msg DeploymentTaskMessage) -> error",
+          "precondition": "消息来自 MQ queue.deployment.task；task_id 对应的 deployment 记录存在且 status=pending；对应环境配置和密钥信息可获取",
+          "postcondition": "部署状态按顺序推进: pending→running→success/failed；每个步骤在 deployment_steps 中创建对应记录；步骤命令通过 SSH 连接池执行；日志实时写入 deployment_logs 并发布到 MQ exchange.deployment.log；终态时 deployments.completed_at 被写入；状态变更事件发布到 MQ exchange.deployment.status",
+          "description": "MQ消费者处理函数，执行部署任务的完整编排流程：创建版本目录→上传文件→生成启动脚本→执行启动脚本，收集各步骤日志和状态",
           "exceptions": [
-            {"name": "ValidationError", "trigger": "查询参数格式校验失败（如UUID格式错误）", "http_status": 400},
-            {"name": "ResourceNotFoundError", "trigger": "project_id对应的项目不存在", "http_status": 404}
+            {"name": "DeploymentNotFoundError", "trigger": "task_id 对应的部署记录在数据库中不存在或已被删除", "http_status": 500},
+            {"name": "EnvironmentConfigError", "trigger": "环境ID关联的服务器配置不完整（缺失 host/port/username/key_id）", "http_status": 500},
+            {"name": "KeyRetrievalError", "trigger": "从密钥存储服务获取 SSH 凭证失败", "http_status": 502},
+            {"name": "SSHExecutionError", "trigger": "SSH 命令执行返回非零退出码或连接超时", "http_status": 502},
+            {"name": "StepExecutionError", "trigger": "部署步骤执行失败，触发状态迁移到 failed", "http_status": 500}
           ]
         },
         {
-          "name": "cancel_deploy",
-          "signature": "(deploy_id: UUID, canceled_by: UUID) -> None",
-          "precondition": "deploy_id对应的部署记录存在且当前status为RUNNING",
-          "postcondition": "部署记录的status更新为FAILED，error_message记录「用户取消」；正在进行中的SSH命令被强制终止；deploy_steps中当前运行步骤标记为FAILED，后续步骤标记为PENDING不执行；通过WebSocket推送取消通知",
-          "description": "用户主动取消进行中的部署任务，终止SSH执行并清理远程临时文件",
+          "name": "StreamDeploymentLogs",
+          "signature": "(ctx context.Context, id string, sendFn func(WebSocketLogMessage) error) -> error",
+          "precondition": "id 对应的部署任务记录存在；WebSocket 连接已建立且鉴权通过",
+          "postcondition": "消费 MQ queue.deployment.log 中该 task_id 的消息并转发给 sendFn；消息格式严格按 WebSocketLogMessage 结构；连接关闭或上下文取消时退出循环",
+          "description": "WebSocket 处理器，消费消息队列中指定部署任务的日志事件，通过 WebSocket 连接实时推送给前端控制台",
           "exceptions": [
-            {"name": "ResourceNotFoundError", "trigger": "deploy_id对应的部署记录不存在", "http_status": 404},
-            {"name": "InvalidStateError", "trigger": "部署不处于RUNNING状态（终态任务不可取消）", "http_status": 409}
-          ]
-        },
-        {
-          "name": "rollback_deploy",
-          "signature": "(original_deploy_id: UUID, triggered_by: UUID) -> DeployCreateResponse",
-          "precondition": "original_deploy_id对应的历史部署记录存在且status为SUCCESS；同一project_id+environment_id下不存在PENDING或RUNNING状态的部署任务",
-          "postcondition": "创建新的部署记录，version和file_id引用原始部署记录的对应字段；新记录的rollback_from字段设为original_deploy_id；新记录状态为PENDING，异步工作流开始执行；原始部署记录的status不变",
-          "description": "基于历史成功部署版本发起回滚部署，利用原版本的文件创建新部署任务",
-          "exceptions": [
-            {"name": "ResourceNotFoundError", "trigger": "original_deploy_id对应的历史部署不存在", "http_status": 404},
-            {"name": "InvalidStateError", "trigger": "原始部署不是SUCCESS状态（无法回滚失败的部署）", "http_status": 409},
-            {"name": "DeployConflictError", "trigger": "同一项目+环境已有进行中的部署", "http_status": 409}
+            {"name": "DeploymentNotFoundError", "trigger": "指定 id 的部署任务不存在", "http_status": 404},
+            {"name": "MqConsumeError", "trigger": "从 RabbitMQ 消费日志事件时连接中断或通道异常", "http_status": 503},
+            {"name": "WebSocketSendError", "trigger": "WebSocket 连接已关闭或写入超时", "http_status": 500}
           ]
         }
       ],
       "repository_dependencies": [
-        "findDeployRecordById(id: UUID) -> DeployRecord?",
-        "findDeployRecordsByProjectEnv(query: DeployHistoryQuery) -> PageResult[DeployRecord]",
-        "existsActiveDeploy(projectId: UUID, environmentId: UUID) -> boolean",
-        "createDeployRecord(record: DeployRecord) -> DeployRecord",
-        "updateDeployRecordStatus(id: UUID, status: str, errorMessage: str?) -> void",
-        "createDeploySteps(steps: List[DeployStep]) -> void",
-        "updateDeployStepStatus(id: UUID, status: str) -> void",
-        "findDeployStepByDeployAndSeq(deployId: UUID, seq: int) -> DeployStep?",
-        "appendDeployLog(log: DeployLogEntry) -> void",
-        "queryDeployLogs(deployId: UUID, stepId: UUID?, afterId: Long) -> List[DeployLogEntry]",
-        "findEnvironmentById(id: UUID) -> Environment?",
-        "findFileRecordById(id: UUID) -> FileRecord?",
-        "findKeyFingerprintByEnvironmentId(environmentId: UUID) -> String?",
-        "createAuditLog(action: str, actorId: UUID, resourceType: str, resourceId: str, detail: dict) -> void"
+        "FindDeploymentByID(id string) -> (*DeploymentTask, error)",
+        "CreateDeployment(deployment *DeploymentTask) -> error",
+        "UpdateDeploymentStatus(id string, status string) -> error",
+        "UpdateDeploymentCompleted(id string, status string, completedAt string) -> error",
+        "FindActiveDeployment(projectID string, environmentID string) -> (*DeploymentTask, error)",
+        "FindDeploymentSteps(deploymentID string) -> ([]DeploymentStep, error)",
+        "CreateDeploymentStep(step *DeploymentStep) -> error",
+        "UpdateDeploymentStep(id string, status string, output string) -> error",
+        "CreateDeploymentLog(log *DeploymentLog) -> error",
+        "FindDeploymentLogsByID(deploymentID string, sinceID int64) -> ([]DeploymentLog, error)",
+        "FindEnvironmentByID(id string) -> (*Environment, error)",
+        "FindProjectByID(id string) -> (*Project, error)"
       ]
     }
   ],
   "business_rules": {
     "invariants": [
-      "同一项目(project_id)下同一环境(environment_id)中，同一时刻最多只能有一条部署记录的status为PENDING或RUNNING",
-      "部署步骤必须严格按照sequence序号从小到大串行执行，sequence N必须在前一步（sequence N-1）的status为SUCCESS时才能执行",
-      "deploy_records.status必须始终为DeployStatus枚举中的合法值（PENDING/RUNNING/SUCCESS/FAILED/ROLLED_BACK），不允许其他字符串",
-      "回滚创建的新部署记录必须填写rollback_from字段，指向被回滚的原始部署记录ID",
-      "部署版本号（version）在同一个项目中通过file_records的project_id+version唯一索引保障，不允许同一项目出现重复版本号"
+      "同一项目+同一环境不允许同时存在两个 running 状态的部署任务",
+      "部署版本号在同一项目内必须唯一，不允许重复部署相同版本",
+      "部署步骤必须严格按照「创建版本目录→上传文件→生成脚本→执行启动」顺序执行，不可跳跃或并行",
+      "部署状态流转必须遵守状态机定义，不可跳过 running 直接从 pending 到 success",
+      "每一个 deployment_step 必须关联一个有效的 deployment_id",
+      "SSH连接凭证必须通过密钥存储服务获取，本服务不得直接存储明文认证信息"
     ],
     "state_machines": [
       {
-        "entity": "DeployTask",
-        "states": ["PENDING", "RUNNING", "SUCCESS", "FAILED", "ROLLED_BACK"],
+        "entity": "DeploymentTask",
+        "states": ["pending", "running", "success", "failed"],
         "transitions": [
-          {"from": "PENDING", "to": "RUNNING", "trigger": "编排引擎后台异步任务开始拉取任务执行", "actor": "系统内部"},
-          {"from": "RUNNING", "to": "SUCCESS", "trigger": "工作流所有步骤全部成功完成", "actor": "系统内部"},
-          {"from": "RUNNING", "to": "FAILED", "trigger": "任一步骤执行失败且重试耗尽，或步骤超时", "actor": "系统内部"},
-          {"from": "RUNNING", "to": "FAILED", "trigger": "用户主动调用cancel_deploy取消部署", "actor": "用户"},
-          {"from": "SUCCESS", "to": "ROLLED_BACK", "trigger": "用户选择此版本作为回滚目标发起rollback_deploy", "actor": "用户"},
-          {"from": "FAILED", "to": "ROLLED_BACK", "trigger": "用户选择此版本作为回滚目标发起rollback_deploy", "actor": "用户"}
+          {"from": "pending", "to": "running", "trigger": "DeploymentService.ExecuteDeploymentTask 开始执行第一个步骤", "actor": "系统（MQ消费者worker）"},
+          {"from": "running", "to": "success", "trigger": "所有部署步骤执行完毕且退出码均为 0", "actor": "系统（步骤执行器）"},
+          {"from": "running", "to": "failed", "trigger": "任意步骤执行返回非零退出码或抛出未恢复异常", "actor": "系统（步骤执行器）"},
+          {"from": "pending", "to": "failed", "trigger": "预校验失败（环境不可达/密钥无效）或用户主动取消部署", "actor": "系统/用户"}
         ],
         "irreversible_rules": [
-          "SUCCESS -> RUNNING 不可逆：已成功的部署无法重新执行",
-          "FAILED -> RUNNING 不可逆：已失败的部署无法重新执行，必须新建部署",
-          "ROLLED_BACK -> 任何状态 不可逆：被回滚过的部署版本不可再发生任何状态转换",
-          "PENDING -> FAILED 直跳不可逆：PENDING状态的部署可在未进入RUNNING前被取消或系统异常标记为FAILED，但FAILED不可回退到PENDING"
+          "success 和 failed 为吸收态（absorbing state），一旦到达不可转换到任何其他状态",
+          "不可从 success 回退到 running 或 pending",
+          "不可从 failed 恢复到 running，需要重新创建部署任务"
         ],
-        "concurrency": "通过数据库事务+行级锁（SELECT ... FOR UPDATE）校验并发：在createDeployRecord事务中，先以project_id+environment_id过滤deploy_records表并对命中行加互斥锁，检查是否存在PENDING/RUNNING状态的记录。不存在时允许插入新记录。结合复合索引idx_deploy_records_project_env_created加速过滤查询。唯一索引保障同一project_id+environment_id+created_at组合的唯一性（虽不直接防并发创建，但事务内锁机制兜底）。"
+        "concurrency": "通过数据库层唯一约束+状态检查确保并发安全：CreateDeployment 方法中先查询是否存在 running 状态的部署（SELECT ... FOR UPDATE），存在则返回 409 冲突；状态更新使用乐观锁 WHERE status=当前状态，影响行数为 0 时说明并发冲突需重试"
       }
     ],
     "cross_service_rules": [
-      "调用SSH连接池服务GetConnection必须在30秒内返回，超时视为目标服务器不可达，当前部署标记为FAILED，error_message记录「SSH连接超时」",
-      "从SSH连接池获取的连接句柄有有效期（expires_at），单次部署全程必须在此时间内完成，若部署步骤超过连接有效期，需在下一个步骤开始前重新获取连接",
-      "SCP/SFTP文件传输失败时，部署编排服务必须在当前步骤异常处理中清理远程服务器上已创建的部分目录和文件，并调用SSH连接池服务归还连接（release），防止连接泄漏",
-      "密钥认证失败（SSH连接池返回401）表示密钥已吊销或指纹不匹配，部署编排服务不得重试，直接标记部署为FAILED，并通过审计日志记录密钥异常事件，提醒安全管理员核查",
-      "文件存储服务的可执行文件在部署传输前应校验checksum（SHA256），若校验和不匹配则立即终止部署并标记FAILED，防止部署损坏的文件",
-      "所有部署变更（创建、取消、回滚）完成后必须写入审计日志（audit_logs），记录操作人、操作类型（DEPLOY_START/DEPLOY_CANCEL/DEPLOY_ROLLBACK）、部署ID、版本号和结果"
+      "部署任务创建后必须立即发布到 MQ exchange.deployment.task，确保消息不丢失（使用事务确认模式），MQ 发布失败需回滚数据库写入",
+      "SSH 执行前必须先从密钥存储服务 (GET /api/v1/keys/{key_id}) 获取解密后的连接凭证，获取失败则步骤标记 failed",
+      "每次状态变更（pending→running/running→success/running→failed）必须同步完成两件事：写入 deployments 表 + 发布到 MQ exchange.deployment.status，使用最终一致性保证（先写 DB 再发 MQ，MQ 失败则本地日志兜底）",
+      "每一条部署日志必须写入 deployment_logs 表并发布到 MQ exchange.deployment.log，日志服务通过异步方式消费和分发，写 DB 失败不影响部署主流程（日志可降级，使用缓冲队列暂存）",
+      "文件上传到远程服务器前如需从文件存储模块获取文件内容，调用文件存储内部接口 DownloadFile 获取文件流，上传完成后记录文件路径到 deployments.file_path",
+      "WebSocket 日志推送服务通过消费 MQ queue.deployment.log 队列获取日志事件，MQ 断开时 WebSocket 客户端应自动重连并拉取最近缺失的日志作为补偿"
     ]
   }
 }
