@@ -34,7 +34,7 @@ class Config(BaseModel):
     )
 
     # Execution settings
-    max_workers: int = Field(default=4)
+    max_workers: int = Field(default=10)
     default_timeout: int = Field(default=300)
 
     # LLM settings

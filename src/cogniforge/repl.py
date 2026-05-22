@@ -556,7 +556,7 @@ class Repl:
                 results.append(result)
             else:
                 # Parallel within layer
-                max_w = min(len(group), 4)
+                max_w = min(len(group), 10)
                 batch_start = counter + 1
                 batch_end = counter + len(group)
                 counter = batch_end
