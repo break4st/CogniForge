@@ -14,6 +14,7 @@ import termios
 import threading
 import time
 import tty
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -1306,7 +1307,6 @@ class Repl:
         and --session-id for conversation continuity.  No interactive TUI.
         """
         import glob as _glob
-        import time as _time
 
         repo_path = Path(getattr(self.agent, 'repo_path', Path.cwd()))
 
@@ -1335,7 +1335,7 @@ class Repl:
 
         # ── Session setup ─────────────────────────────────────────────────
         step_value = self._agent_role_to_step(agent_role)
-        session_id = f"{step_value or agent_role}-mod-{int(_time.time())}"
+        session_id = str(uuid.uuid4())
         schema_path = repo_path / f"schemas/{step_value}-schema.json"
 
         model = getattr(self.agent, 'model', 'claude-sonnet-4-20250514')
@@ -1450,9 +1450,9 @@ class Repl:
 
             prompt = modify_turn_prompt(current_json, user_input)
 
-            # Build command
+            # Build command — prompt goes via stdin to avoid ARG_MAX
             cmd = [
-                cli_path, "-p", prompt,
+                cli_path, "-p", "-",
                 "--session-id", session_id,
                 "--output-format", "json",
                 "--model", model,
@@ -1467,7 +1467,8 @@ class Repl:
             try:
                 result = subprocess.run(
                     cmd, cwd=str(repo_path), check=False,
-                    capture_output=True, text=True, timeout=300,
+                    capture_output=True, text=True, timeout=600,
+                    input=prompt,
                 )
             except subprocess.TimeoutExpired:
                 spinner.stop()
