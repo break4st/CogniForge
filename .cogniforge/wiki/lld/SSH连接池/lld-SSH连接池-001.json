@@ -2,207 +2,69 @@
   "meta": {
     "doc_id": "lld-SSH连接池-001",
     "type": "lld",
-    "module_type": "infrastructure",
+    "module_type": "service",
     "module": "SSH连接池",
-    "title": "SSH连接池详细设计 - 基于paramiko的高性能SSH连接复用组件",
+    "title": "LLD - SSH连接池",
     "author": "design_agent",
-    "created": "2026-05-21T00:00:00Z"
+    "created": "2026-05-22"
   },
   "overview": {
-    "description": "预创建和维护的SSH连接复用池，减少频繁建立和断开SSH连接的开销，提升部署效率。支持连接预热、健康检测、自动修复和排队机制，基于paramiko库实现SSH协议栈。",
-    "dependencies": ["SSH连接管理服务", "加密密钥存储"],
-    "tech_stack": ["SSH / SFTP / SCP", "Python"]
+    "description": "管理到远程服务器的SSH连接池，复用连接减少握手开销。提供连接创建和复用、健康检查、自动重连、超时管理、并发连接控制能力，供部署编排服务通过内部REST接口执行远程命令。",
+    "dependencies": ["密钥存储服务"],
+    "tech_stack": ["Go", "Gin", "golang.org/x/crypto/ssh"]
   },
-  "data_models": [],
-  "interfaces": [
+  "data_models": [
     {
-      "name": "获取SSH连接",
-      "method": "INTERNAL",
-      "endpoint": "acquire",
-      "description": "从连接池获取一个SSH连接。优先返回池中该目标的空闲连接，若无空闲连接且未达到最大连接数则新建连接，否则阻塞等待直到超时。",
-      "parameters": [
-        {"name": "host", "type": "string", "description": "目标服务器IP或域名"},
-        {"name": "port", "type": "integer", "description": "SSH端口号，默认22"},
-        {"name": "username", "type": "string", "description": "SSH登录用户名"},
-        {"name": "auth_method", "type": "string", "description": "认证方式：password/key_file/key_content"},
-        {"name": "auth_credential", "type": "string", "description": "认证凭据（密码或密钥指纹/私钥内容）"},
-        {"name": "timeout_seconds", "type": "integer", "description": "连接超时时间，默认30"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "connection_id": "string",
-          "host": "string",
-          "port": "integer",
-          "transport": "object",
-          "acquired_at": "string"
-        }
-      },
-      "error_codes": [
-        {"code": 4001, "message": "SSH连接参数无效（host、username或auth_credential为空）"},
-        {"code": 4002, "message": "认证失败，密码或密钥不正确"},
-        {"code": 5001, "message": "连接池已满且等待超时"},
-        {"code": 5002, "message": "SSH连接建立失败，目标主机不可达或协议异常"}
-      ]
-    },
-    {
-      "name": "释放SSH连接",
-      "method": "INTERNAL",
-      "endpoint": "release",
-      "description": "将使用完毕的SSH连接归还到连接池。连接经过健康检查确认可用后放回空闲队列，异常连接则关闭并从池中移除。",
-      "parameters": [
-        {"name": "connection_id", "type": "string", "description": "要释放的连接ID"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "success": "boolean",
-          "status": "string"
-        }
-      },
-      "error_codes": [
-        {"code": 4004, "message": "连接ID不存在或已过期"},
-        {"code": 5003, "message": "连接释放异常，自动执行关闭清理"}
-      ]
-    },
-    {
-      "name": "批量健康检查",
-      "method": "INTERNAL",
-      "endpoint": "health_check",
-      "description": "对连接池中所有连接执行健康检查，通过SSH keepalive心跳验证连接可用性，自动关闭并移除异常连接。",
-      "parameters": [
-        {"name": "pool_group", "type": "string", "description": "池组标识（为空则检查所有池组）"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "total_connections": "integer",
-          "healthy": "integer",
-          "unhealthy": "integer",
-          "unhealthy_connections": "array"
-        }
-      },
-      "error_codes": [
-        {"code": 5004, "message": "健康检查执行过程中发生内部异常"}
-      ]
-    },
-    {
-      "name": "查询连接池状态",
-      "method": "INTERNAL",
-      "endpoint": "pool_status",
-      "description": "查询连接池当前状态的统计信息，包括总连接数、活跃数、空闲数、排队数等。",
-      "parameters": [
-        {"name": "pool_group", "type": "string", "description": "池组标识（为空则返回全局统计）"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "pool_group": "string",
-          "total": "integer",
-          "active": "integer",
-          "idle": "integer",
-          "max_size": "integer",
-          "pending": "integer",
-          "health": "string"
-        }
-      },
-      "error_codes": [
-        {"code": 5004, "message": "池状态查询异常"}
-      ]
-    },
-    {
-      "name": "销毁异常连接",
-      "method": "INTERNAL",
-      "endpoint": "invalidate",
-      "description": "主动销毁一个异常连接，从连接池中移除并关闭底层SSH传输通道。",
-      "parameters": [
-        {"name": "connection_id", "type": "string", "description": "要销毁的连接ID"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "success": "boolean"
-        }
-      },
-      "error_codes": [
-        {"code": 4004, "message": "连接ID不存在"}
+      "name": "PoolConfig",
+      "type": "config",
+      "ownership": "owned",
+      "description": "SSH连接池全局配置，控制连接复用策略、超时和健康检查参数",
+      "fields": [
+        {"name": "max_idle", "type": "int", "required": true, "description": "每台目标服务器的最大空闲连接数，默认值 5"},
+        {"name": "max_active", "type": "int", "required": true, "description": "每台目标服务器的最大活跃连接数，默认值 10"},
+        {"name": "idle_timeout", "type": "duration", "required": true, "description": "空闲连接超时，超过此时间未使用的连接将被关闭，默认值 5m"},
+        {"name": "connect_timeout", "type": "duration", "required": true, "description": "SSH拨号超时时间，超过此时间未建立连接则视为失败，默认值 10s"},
+        {"name": "health_check_interval", "type": "duration", "required": true, "description": "健康检查周期，定期检测空闲连接可用性，默认值 30s"},
+        {"name": "max_retry", "type": "int", "required": true, "description": "自动重连最大尝试次数，默认值 3"},
+        {"name": "retry_interval", "type": "duration", "required": true, "description": "重连间隔时间，默认值 2s"},
+        {"name": "command_timeout", "type": "duration", "required": true, "description": "单条命令执行超时时间，默认值 60s"}
       ]
     }
   ],
-  "business_rules": {
-    "invariants": [
-      {
-        "id": "INV_POOL_CAPACITY",
-        "description": "每个池组中单个目标主机的连接总数始终不超过 max_size_per_host，空闲连接数始终不超过 max_idle_per_host",
-        "severity": "critical",
-        "enforcement": "acquire 操作在达到上限时排队等待而非新建连接；release 操作归还空闲连接时若空闲数超额则按 LRU 淘汰"
+  "interfaces": [
+    {
+      "name": "SSH执行接口",
+      "method": "POST",
+      "endpoint": "/internal/ssh/execute",
+      "description": "内部接口，部署编排服务通过此接口在远程服务器执行命令。系统自动从连接池获取或创建到目标服务器的SSH连接，执行命令后返回输出结果，连接归还池中复用。",
+      "parameters": [
+        {"name": "host", "type": "string", "description": "目标服务器IP地址或域名"},
+        {"name": "port", "type": "int", "description": "SSH服务端口号，通常为 22"},
+        {"name": "username", "type": "string", "description": "登录用户名"},
+        {"name": "auth_type", "type": "string", "description": "认证类型，枚举值：key（密钥认证）/ password（密码认证）"},
+        {"name": "auth_data", "type": "string", "description": "认证凭证，auth_type=key 时传入密钥内容（PEM格式），auth_type=password 时传入密码明文"},
+        {"name": "commands", "type": "[]string", "description": "待执行的命令列表，按顺序依次执行"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "session_id": "string",
+          "output": "string",
+          "exit_code": "int"
+        }
       },
-      {
-        "id": "INV_CONNECTION_LIFECYCLE",
-        "description": "每条被 acquire 出去的连接必须且仅能被 release 一次，不允许重复释放或悬挂未归还",
-        "severity": "critical",
-        "enforcement": "连接状态机追踪每条连接的 acquire/release 状态，重复 release 返回 4004 错误"
-      },
-      {
-        "id": "INV_IDLE_TIMEOUT",
-        "description": "空闲连接存活时长不得超过 max_idle_seconds（600s），超时连接必须自动关闭并从池中移除",
-        "severity": "high",
-        "enforcement": "后台驱逐线程（eviction_run_interval_seconds=60s）周期性扫描并关闭超时空闲连接"
-      },
-      {
-        "id": "INV_CONNECTION_VALIDITY",
-        "description": "池中所有连接必须时刻保持健康可用，异常或失效连接在检测到后立即移除",
-        "severity": "critical",
-        "enforcement": "test_on_borrow（获取时检验）、test_on_return（归还时检验）、test_while_idle（空闲时定时检测）三重保证"
-      },
-      {
-        "id": "INV_MIN_IDLE_GUARANTEE",
-        "description": "当系统负载不高时，每个池组的空闲连接数应逐渐收敛至 min_idle_per_host，避免频繁建连",
-        "severity": "medium",
-        "enforcement": "驱逐策略优先保留活跃连接，空闲连接回缩至 min_idle_per_host 后停止驱逐"
-      }
-    ],
-    "preconditions": [
-      {
-        "id": "PRE_AUTH_CREDENTIAL_VALID",
-        "description": "发起 SSH 连接前必须提供有效的认证凭据（密码或私钥），且凭据必须来自加密密钥存储服务",
-        "enforcement": "auth_credential 为空或未通过格式校验时直接返回 4001，不发起网络请求"
-      },
-      {
-        "id": "PRE_HOST_REACHABLE",
-        "description": "建立连接前应通过快速网络探测（如 TCP SYN）确认目标主机可达",
-        "enforcement": "TCP 连接超时（connect_timeout=30s）失败后返回 5002 并触发指数退避重试"
-      }
-    ],
-    "postconditions": [
-      {
-        "id": "POST_CONNECTION_ACTIVE",
-        "description": "acquire 操作返回的连接必须经过保活检测确认可用",
-        "enforcement": "test_on_borrow 执行 SSH keepalive 命令验证通道有效性，失败则从池中移除并重试获取下一个"
-      },
-      {
-        "id": "POST_CONNECTION_CLEANUP",
-        "description": "release 操作后的连接必须经过健康检查，异常连接不得回池",
-        "enforcement": "test_on_return 执行快速健康检测，异常连接直接关闭并调用 invalidate 从池中移除"
-      }
-    ],
-    "constraints": [
-      {
-        "id": "CON_MAX_POOL_GROUPS",
-        "description": "全局最大支持的池组数量",
-        "value": 100,
-        "rationale": "避免过多池组占用过多内存，每个池组平均管理数十个连接"
-      },
-      {
-        "id": "CON_DEFAULT_PORT",
-        "description": "SSH 默认端口固定为 22，不允许使用低于 1024 的其他特权端口",
-        "value": 22,
-        "rationale": "安全合规要求，避免特权端口扫描风险"
-      }
-    ]
-  },
+      "error_codes": [
+        {"code": 400, "message": "请求参数不合法，如 host 为空、port 超出范围、auth_type 不是 key/password"},
+        {"code": 401, "message": "SSH认证失败，用户名或凭证不正确，或密钥格式不合法"},
+        {"code": 408, "message": "SSH连接超时或命令执行超时"},
+        {"code": 429, "message": "连接池资源耗尽，目标服务器的活跃连接数已达上限，请稍后重试"},
+        {"code": 500, "message": "服务器内部错误，如 SSH 拨号异常、连接意外断开"},
+        {"code": 502, "message": "目标服务器不可达或网络异常"}
+      ]
+    }
+  ],
   "error_handling": {
-    "strategy": "SSH连接操作失败时按错误类型分类处理：认证类错误直接向上层报错且不重试，网络类错误触发自动重试（指数退避）和连接重建，资源耗尽类错误触发排队等待并在超时后报错。所有异常连接自动关闭并从池中移除，确保池中连接始终可用。",
+    "strategy": "SSH连接池服务采用分层错误处理策略。参数校验错误直接返回 4xx；SSH协议层错误（认证失败、连接超时、网络不可达）映射为对应的 4xx/5xx 状态码；连接池资源耗尽返回 429 让调用方退避重试；内部状态异常统一返回 500 并记录详细错误日志用于排查。连接池内部优雅处理错误连接：标记为 ERROR 状态，关闭后从池中移除，不影响其他连接复用。",
     "response_format": {
       "body": {
         "code": "integer",
@@ -212,109 +74,221 @@
     },
     "categories": [
       {
-        "code": 4001,
-        "name": "参数校验失败",
-        "description": "SSH连接参数（host、username、auth_credential）为空或格式不合法，直接向上层返回错误"
+        "code": 400,
+        "name": "参数校验错误",
+        "description": "请求参数不合法：host 为空、port 不在 1-65535 范围、auth_type 不是 key 或 password、commands 为空列表或条目超过限制（最大 100 条），detail 字段标注具体失败原因"
       },
       {
-        "code": 4002,
-        "name": "认证失败",
-        "description": "SSH密码或密钥认证失败，关闭连接并从池中移除，记录安全告警日志"
+        "code": 401,
+        "name": "SSH认证失败",
+        "description": "SSH 握手阶段认证失败：用户名不存在、密钥/密码错误、密钥 PEM 格式解析失败、密钥权限不安全（权限过于开放会被 ssh 拒绝），不重试直接返回"
       },
       {
-        "code": 4003,
-        "name": "主机不可达",
-        "description": "目标SSH主机端口未开放或网络不可达，记录告警日志，触发健康检查机制移除无效连接"
+        "code": 408,
+        "name": "连接或执行超时",
+        "description": "connect_timeout 内未能完成 TCP 拨号或 SSH 握手，或 command_timeout 内命令未执行完毕，调用方可根据幂等性决定是否重试"
       },
       {
-        "code": 4004,
-        "name": "无效连接ID",
-        "description": "连接ID不存在或已被销毁，返回无效参数错误"
+        "code": 429,
+        "name": "连接池资源耗尽",
+        "description": "目标服务器的活跃连接数已达 max_active 上限，且等待超时后仍无法获取可用连接，调用方应退避重试（建议至少等待 1s）"
       },
       {
-        "code": 5001,
-        "name": "连接池满等待超时",
-        "description": "该目标主机的连接池已达最大连接数且所有连接均在被使用，请求在等待队列中排队超过max_wait_seconds",
-        "retry_policy": "调用方可在收到此错误后等待一段时间重试"
+        "code": 502,
+        "name": "目标服务器不可达",
+        "description": "TCP 拨号阶段返回 connection refused / no route to host 等网络层错误，说明目标服务器地址不可达或 SSH 服务未监听"
       },
       {
-        "code": 5002,
-        "name": "SSH连接建立失败",
-        "description": "建立新SSH连接时发生网络超时或协议错误，自动重试2次（指数退避2s→4s），全部失败后返回错误",
-        "retry_policy": "内部自动重试2次（指数退避2s→4s）"
-      },
-      {
-        "code": 5003,
-        "name": "连接释放异常",
-        "description": "归还连接到池时发生IO错误或传输通道已关闭，强制关闭并清理该连接，不阻塞调用方"
-      },
-      {
-        "code": 5004,
-        "name": "内部执行异常",
-        "description": "健康检查或状态查询过程中发生未预期异常，记录完整错误日志后返回错误"
+        "code": 500,
+        "name": "服务内部错误",
+        "description": "SSH 库调用异常、连接意外断开导致 session 创建失败、池内部状态损坏等不可预知错误，记录完整异常栈到日志用于排查"
       }
     ]
   },
-  "topology": {
-    "buckets": [
-      {
-        "name": "connection_pool_bucket",
-        "key": "ssh:pool:{host}:{port}:{username}",
-        "description": "按 (host:port:username) 三元组哈希分桶，同一目标的连接请求始终路由到同一桶，每个桶独立维护空闲队列、活跃计数和最大容量",
-        "shard_strategy": "一致性哈希",
-        "capacity_per_bucket": 10
-      }
-    ],
-    "pool_groups": [
-      {
-        "name": "default",
-        "description": "默认SSH连接池组，按 (host:port:username) 三元组自动分组管理，每个目标独立维护连接队列",
-        "max_size_per_host": 10,
-        "min_idle_per_host": 1,
-        "max_idle_per_host": 3,
-        "max_wait_seconds": 30,
-        "health_check_interval_seconds": 30,
-        "eviction_interval_seconds": 60
-      }
-    ],
-    "pool_identity_pattern": "ssh:pool:{host}:{port}:{username}",
-    "idle_recycle_strategy": "空闲连接数超过max_idle_per_host时，按LRU策略淘汰多余连接；空闲连接持续存活超过600秒（max_idle_timeout）且当前请求量低时逐步缩容至min_idle_per_host",
-    "warmup_strategy": "模块启动时自动为配置中已注册的远程目标预热连接，预创建min_idle_per_host个连接。部署任务批量下发前可按需触发预热，减少首次部署延迟。"
-  },
-  "connection_contracts": {
-    "ssh_params": {
-      "default_port": 22,
-      "default_connect_timeout_seconds": 30,
-      "default_command_timeout_seconds": 300,
-      "keepalive_interval_seconds": 15,
-      "keepalive_count_max": 3,
-      "compression": true,
-      "use_sftp": true,
-      "sftp_max_channels": 5
+  "domain_objects": [
+    {
+      "name": "SSHConnection",
+      "object_type": "entity",
+      "description": "SSH连接实体，表示一条到远程服务器的已建立连接。每个连接由 (host, port, username) 三元组唯一标识，在池内维护其生命周期状态",
+      "attributes": [
+        {"name": "id", "type": "string", "required": true, "source": "computed", "description": "连接唯一标识，UUID v4 格式，连接创建时生成"},
+        {"name": "host", "type": "string", "required": true, "source": "input", "description": "目标服务器地址"},
+        {"name": "port", "type": "int", "required": true, "source": "input", "description": "SSH端口"},
+        {"name": "username", "type": "string", "required": true, "source": "input", "description": "登录用户名"},
+        {"name": "auth_type", "type": "string", "required": true, "source": "input", "description": "认证类型，来自 AuthType 枚举"},
+        {"name": "status", "type": "string", "required": true, "source": "computed", "description": "连接状态，来自 ConnectionStatus 枚举"},
+        {"name": "created_at", "type": "time.Time", "required": true, "source": "computed", "description": "连接建立时间"},
+        {"name": "last_used_at", "type": "time.Time", "required": true, "source": "computed", "description": "最近一次使用时间，用于空闲淘汰判断"},
+        {"name": "use_count", "type": "int", "required": true, "source": "computed", "description": "该连接被复用的总次数，从 1 开始计数"},
+        {"name": "error_message", "type": "string", "required": false, "source": "computed", "description": "连接错误信息，status=ERROR 时记录原因"}
+      ]
     },
-    "authentication": {
-      "methods": ["password", "key_file", "key_content"],
-      "preferred_order": ["key_content", "key_file", "password"],
-      "key_retrieval": "从加密密钥存储服务获取SSH私钥内容，密钥指纹用于缓存和验证"
+    {
+      "name": "SSHSession",
+      "object_type": "entity",
+      "description": "SSH会话实体，表示一次命令执行会话。每次 Execute 调用创建一个新的 SSH session（golang.org/x/crypto/ssh.Session），在同一连接上可顺序创建多个 session",
+      "attributes": [
+        {"name": "id", "type": "string", "required": true, "source": "computed", "description": "会话唯一标识，UUID v4 格式"},
+        {"name": "connection_id", "type": "string", "required": true, "source": "computed", "description": "所属连接的 ID"},
+        {"name": "host", "type": "string", "required": true, "source": "input", "description": "目标服务器地址，冗余字段便于追踪"},
+        {"name": "commands", "type": "[]string", "required": true, "source": "input", "description": "执行的命令列表"},
+        {"name": "output", "type": "string", "required": false, "source": "computed", "description": "命令执行的标准输出和标准错误合并输出"},
+        {"name": "exit_code", "type": "int", "required": false, "source": "computed", "description": "命令执行退出码，0 表示成功，非零表示失败"},
+        {"name": "started_at", "type": "time.Time", "required": true, "source": "computed", "description": "会话开始时间"},
+        {"name": "ended_at", "type": "time.Time", "required": false, "source": "computed", "description": "会话结束时间，执行完成后设置"},
+        {"name": "duration_ms", "type": "int64", "required": false, "source": "computed", "description": "执行耗时毫秒数，ended_at - started_at"}
+      ]
     },
-    "connection_lifecycle": {
-      "max_idle_seconds": 600,
-      "max_lifetime_seconds": 3600,
-      "connection_refresh_enabled": true,
-      "description": "连接空闲超过600秒后从池中关闭，连接存活超过3600秒后强制重建防止token/密钥轮换后失效"
+    {
+      "name": "ExecuteRequest",
+      "object_type": "dto",
+      "description": "命令执行请求 DTO，对应 POST /internal/ssh/execute 的请求体，字段名和类型与 SAD 契约严格一致",
+      "attributes": [
+        {"name": "host", "type": "string", "required": true, "source": "input", "description": "目标服务器地址，必填，非空"},
+        {"name": "port", "type": "int", "required": true, "source": "input", "description": "SSH端口，范围 1-65535"},
+        {"name": "username", "type": "string", "required": true, "source": "input", "description": "登录用户名"},
+        {"name": "auth_type", "type": "string", "required": true, "source": "input", "description": "认证类型，key 或 password"},
+        {"name": "auth_data", "type": "string", "required": true, "source": "input", "description": "认证凭证内容"},
+        {"name": "commands", "type": "[]string", "required": true, "source": "input", "description": "待执行的命令列表，长度 1-100 条，每条命令不超过 4096 字符"}
+      ],
+      "maps_to_entity": ""
     },
-    "pool_behavior": {
-      "test_on_borrow": true,
-      "test_on_return": true,
-      "test_while_idle": true,
-      "eviction_run_interval_seconds": 60,
-      "description": "获取和归还连接时均执行快速保活检测，空闲连接由定时任务定期检查，异常连接自动驱逐"
+    {
+      "name": "ExecuteResponse",
+      "object_type": "dto",
+      "description": "命令执行响应 DTO，对应 POST /internal/ssh/execute 的响应体，字段名和类型与 SAD 契约严格一致",
+      "attributes": [
+        {"name": "session_id", "type": "string", "required": true, "source": "derived", "description": "会话 ID，UUID 字符串"},
+        {"name": "output", "type": "string", "required": true, "source": "derived", "description": "命令执行的标准输出和标准错误合并结果"},
+        {"name": "exit_code", "type": "int", "required": true, "source": "derived", "description": "命令执行退出码，0 表示成功"}
+      ],
+      "maps_to_entity": ""
     },
-    "sftp_contract": {
-      "default_transfer_timeout_seconds": 600,
-      "max_transfer_retries": 2,
-      "transfer_buffer_size_bytes": 32768,
-      "description": "SFTP文件传输参数，大文件传输时自动启用压缩和分块传输"
+    {
+      "name": "PoolStatus",
+      "object_type": "dto",
+      "description": "连接池状态 DTO，用于内部监控和健康检查汇报",
+      "attributes": [
+        {"name": "total_connections", "type": "int", "required": true, "source": "computed", "description": "当前连接总数（含空闲和活跃）"},
+        {"name": "idle_connections", "type": "int", "required": true, "source": "computed", "description": "空闲连接数"},
+        {"name": "active_connections", "type": "int", "required": true, "source": "computed", "description": "活跃连接数"},
+        {"name": "total_sessions", "type": "int64", "required": true, "source": "computed", "description": "累计会话总数"},
+        {"name": "failed_sessions", "type": "int64", "required": true, "source": "computed", "description": "失败会话总数"},
+        {"name": "healthy", "type": "bool", "required": true, "source": "computed", "description": "连接池整体健康状态"}
+      ],
+      "maps_to_entity": ""
+    },
+    {
+      "name": "AuthType",
+      "object_type": "enum",
+      "description": "SSH认证类型枚举，定义系统支持的认证方式",
+      "values": ["key", "password"]
+    },
+    {
+      "name": "ConnectionStatus",
+      "object_type": "enum",
+      "description": "SSH连接生命周期状态枚举",
+      "values": ["CREATED", "IDLE", "IN_USE", "ERROR", "CLOSED"]
+    },
+    {
+      "name": "SessionStatus",
+      "object_type": "enum",
+      "description": "SSH会话执行状态枚举",
+      "values": ["RUNNING", "SUCCESS", "FAILED", "TIMEOUT"]
     }
+  ],
+  "service_contracts": [
+    {
+      "name": "SSHConnectionPoolService",
+      "description": "SSH连接池服务，管理到远程服务器的SSH连接生命周期，提供连接复用、健康检查和命令执行能力。所有方法接收 context.Context 作为第一个参数以支持超时和链路追踪",
+      "methods": [
+        {
+          "name": "Execute",
+          "signature": "(ctx context.Context, req *ExecuteRequest) -> (*ExecuteResponse, error)",
+          "precondition": "req.host 非空且为合法IP或域名；req.port 在 1-65535 范围内；req.auth_type 为 AuthType 枚举合法值（key/password）；req.auth_data 非空；req.commands 长度在 1-100 之间且每条命令不超过 4096 字符；无针对 (host, port, username) 的并发限制冲突",
+          "postcondition": "从连接池获取或创建到目标服务器的SSH连接，在连接上依次执行 req.commands 中的每条命令，返回合并的 output、最终退出码和 session_id；执行完毕后连接归还池中（IDLE状态）；执行过程中连接断开时触发自动重连（最多 max_retry 次）；命令执行超时返回 TIMEOUT 错误并标记连接为 ERROR",
+          "description": "在远程服务器上执行命令列表。通过连接池复用SSH连接减少握手开销，支持自动重连和超时控制。返回会话ID供后续排查追踪",
+          "exceptions": [
+            {"name": "ErrInvalidRequest", "trigger": "请求参数校验失败（host为空、port越界、auth_type非法、commands为空或超长）", "http_status": 400},
+            {"name": "ErrAuthFailed", "trigger": "SSH握手认证失败（用户名不存在、密钥/密码错误、密钥PEM格式不合法或密钥权限不安全）", "http_status": 401},
+            {"name": "ErrConnectionTimeout", "trigger": "TCP拨号或SSH握手超过 connect_timeout 未完成", "http_status": 408},
+            {"name": "ErrCommandTimeout", "trigger": "单条命令执行超过 command_timeout", "http_status": 408},
+            {"name": "ErrPoolExhausted", "trigger": "目标服务器的活跃连接数已达 max_active 上限且等待超时", "http_status": 429},
+            {"name": "ErrHostUnreachable", "trigger": "TCP拨号返回 connection refused / no route to host 等网络层错误", "http_status": 502},
+            {"name": "ErrInternal", "trigger": "SSH库调用异常、连接意外断开、池内部状态损坏等不可预知错误", "http_status": 500}
+          ]
+        },
+        {
+          "name": "HealthCheck",
+          "signature": "(ctx context.Context) -> (*PoolStatus, error)",
+          "precondition": "连接池已初始化",
+          "postcondition": "对池中所有 IDLE 状态的连接发送 SSH keepalive 请求校验可用性；不可用的连接标记为 ERROR 并关闭移除；返回当前连接池的聚合状态统计",
+          "description": "健康检查方法，遍历所有空闲连接发送 SSH keepalive 探活，清理已断开的连接，返回池状态快照。由内部定时器周期性触发",
+          "exceptions": [
+            {"name": "ErrInternal", "trigger": "健康检查遍历过程中池内部数据结构损坏", "http_status": 500}
+          ]
+        },
+        {
+          "name": "CloseIdleConnections",
+          "signature": "(ctx context.Context, idleThreshold time.Duration) -> (closedCount int, error)",
+          "precondition": "idleThreshold > 0",
+          "postcondition": "遍历池中所有 IDLE 状态的连接，关闭 last_used_at 超过 idleThreshold 的连接；返回被关闭的连接数量；EVICTED 状态的连接不触发健康检查",
+          "description": "关闭超过空闲阈值的连接，释放系统资源。由内部定时器周期性调用，间隔为 PoolConfig.idle_timeout",
+          "exceptions": [
+            {"name": "ErrInvalidArgument", "trigger": "idleThreshold <= 0", "http_status": 400}
+          ]
+        }
+      ],
+      "repository_dependencies": [
+        "acquireConnection(host: string, port: int, username: string, authType: string, authData: string) -> (*SSHConnection, error) — 从池中获取空闲连接或创建新连接，实现核心复用逻辑",
+        "releaseConnection(connId: string) -> error — 将连接归还池中，状态设为 IDLE，更新 last_used_at",
+        "markConnectionError(connId: string, errMsg: string) -> error — 标记连接为 ERROR，触发重连或关闭流程",
+        "closeConnection(connId: string) -> error — 关闭SSH连接并从池中移除，释放 TCP 资源",
+        "findIdleConnection(host: string, port: int, username: string) -> (*SSHConnection, error) — 按目标服务器查找空闲连接（LRU优先返回最久未使用的）",
+        "countConnectionsByTarget(host: string, port: int, username: string) -> (idle: int, active: int) — 统计目标服务器的连接分布，用于并发控制",
+        "iterateIdleConnections() -> ([]*SSHConnection, error) — 遍历所有空闲连接，供健康检查和空闲淘汰使用"
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "每台目标服务器 (host, port, username) 的活跃连接数不得超过 max_active，空闲连接数不得超过 max_idle",
+      "IDLE 状态的连接超过 idle_timeout 未使用必须被关闭并从池中移除",
+      "ERROR 状态的连接不得超过 max_retry 次重连尝试，超过后标记为 CLOSED 终态",
+      "同一 SSH 连接 (golang.org/x/crypto/ssh.Client) 在同一时刻只允许一个 session 执行命令，避免 TCP 复用冲突",
+      "连接池启动时必须执行初始健康检查，确保可用连接正常",
+      "认证凭证（auth_data）在使用完毕后必须在内存中及时清零，避免凭证残留"
+    ],
+    "state_machines": [
+      {
+        "entity": "SSHConnection",
+        "states": ["CREATED", "IDLE", "IN_USE", "ERROR", "CLOSED"],
+        "transitions": [
+          {"from": "CREATED", "to": "IDLE", "trigger": "SSH拨号和握手成功，连接加入空闲池待复用", "actor": "SSHConnectionPoolService"},
+          {"from": "CREATED", "to": "CLOSED", "trigger": "SSH握手期间发生不可恢复错误（认证失败/网络不可达），直接关闭", "actor": "SSHConnectionPoolService"},
+          {"from": "IDLE", "to": "IN_USE", "trigger": "acquireConnection 命中空闲连接，借出执行命令", "actor": "SSHConnectionPoolService"},
+          {"from": "IDLE", "to": "CLOSED", "trigger": "空闲超时淘汰（last_used_at + idle_timeout < now）或被健康检查发现连接已断开", "actor": "定时器/健康检查"},
+          {"from": "IN_USE", "to": "IDLE", "trigger": "命令执行完毕（成功或失败），连接归还池中", "actor": "SSHConnectionPoolService"},
+          {"from": "IN_USE", "to": "ERROR", "trigger": "命令执行过程中连接断开或发生SSH协议层错误，释放 session 后标记", "actor": "SSHConnectionPoolService"},
+          {"from": "ERROR", "to": "IDLE", "trigger": "自动重连成功（重新建立SSH连接），重试次数 +1", "actor": "SSHConnectionPoolService"},
+          {"from": "ERROR", "to": "CLOSED", "trigger": "重连已达 max_retry 上限或重连过程中发生不可恢复错误", "actor": "SSHConnectionPoolService"},
+          {"from": "CLOSED", "to": "CREATED", "trigger": "重新建立新连接（从CLOSED到CREATED是新连接，原连接已销毁）", "actor": "SSHConnectionPoolService"}
+        ],
+        "irreversible_rules": [
+          "CLOSED 状态为连接终态，已关闭的连接不可再进入 IDLE 或 IN_USE，如需使用必须创建新连接（进入 CREATED）",
+          "IDLE -> ERROR 不可逆，空闲连接不会直接进入错误状态，只有 IN_USE 期间发生故障的连接才能进入 ERROR",
+          "CREATED -> CLOSED（握手失败）不可重试进入 IDLE，调用方必须重新发起 Execute 请求触发新连接创建"
+        ],
+        "concurrency": "连接池内部使用 sync.RWMutex 保护连接映射表。acquireConnection 和 releaseConnection 操作加写锁保证线程安全。针对同一目标服务器的并发连接限制通过计数信号量（Semaphore）实现：acquire 时检查 active < max_active，不满足时阻塞等待（带超时）或直接返回 ErrPoolExhausted。健康检查和空闲淘汰使用读锁遍历连接列表，单个连接关闭时短暂升级为写锁。避免长时间持有锁导致吞吐下降"
+      }
+    ],
+    "cross_service_rules": [
+      "部署编排服务调用 POST /internal/ssh/execute 前，应从密钥存储服务获取解密后的SSH凭证并传入 auth_data 字段，不得明文存储凭证",
+      "部署编排服务应确保同一目标服务器的命令执行请求可安全并发，SSH连接池内部通过计数信号量控制并发上限，超出时返回 429",
+      "SSH连接池不持久化连接状态到数据库，所有连接在服务重启后丢失，部署编排服务需要在重启后重新建立连接",
+      "若密钥存储服务返回的解密凭证格式不合法（如非PEM格式密钥），SSH连接池返回 401 错误，部署编排服务应根据错误类型决定是否重试获取凭证",
+      "审计日志服务需记录所有通过 SSH连接池执行的远程命令的调用信息（目标服务器、用户名、命令摘要、执行结果）供安全审计追溯。该职责由调用方（部署编排服务）负责触发审计日志记录",
+      "部署编排服务在接收到 502（目标服务器不可达）或 408（连接超时）错误时，应考虑目标服务器是否在维护中或网络分区，避免高频重试导致连接池被无效连接请求阻塞"
+    ]
   }
 }
