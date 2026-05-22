@@ -1,0 +1,467 @@
+{
+  "meta": {
+    "doc_id": "lld-环境配置服务-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "环境配置服务",
+    "title": "LLD - 环境配置服务",
+    "author": "design_agent",
+    "created": "2026-05-22"
+  },
+  "overview": {
+    "description": "管理每套部署环境的连接参数、目标服务器信息和关联密钥，提供环境CRUD操作、环境类型管理（测试/灰度/正式）、服务器目标配置、环境与密钥关联管理、连通性验证能力。本服务是部署流程的前置条件模块，为部署编排服务提供环境配置基础数据。",
+    "dependencies": ["PostgreSQL数据库", "密钥存储服务"],
+    "tech_stack": ["Go", "Gin", "PostgreSQL 15", "golang.org/x/crypto/ssh"]
+  },
+  "data_models": [
+    {
+      "name": "environments",
+      "type": "reference",
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-PostgreSQL数据库-001",
+        "model_name": "environments"
+      },
+      "description": "部署环境表（派生自 PostgreSQL 数据库 LLD），本服务关心的字段视图，包含环境连接参数、目标服务器信息和关联密钥引用。",
+      "fields": [
+        {"name": "id", "type": "UUID", "required": true, "description": "环境唯一标识，主键"},
+        {"name": "project_id", "type": "UUID", "required": true, "description": "所属项目ID，外键关联 projects.id"},
+        {"name": "name", "type": "VARCHAR(255)", "required": true, "description": "环境名称"},
+        {"name": "env_type", "type": "VARCHAR(50)", "required": true, "description": "环境类型，枚举值: test/gray/production"},
+        {"name": "host", "type": "VARCHAR(255)", "required": true, "description": "目标服务器地址"},
+        {"name": "port", "type": "INTEGER", "required": true, "description": "SSH端口，默认22"},
+        {"name": "username", "type": "VARCHAR(255)", "required": true, "description": "登录用户名"},
+        {"name": "key_id", "type": "UUID", "required": false, "description": "关联密钥ID，外键关联 deployment_keys.id"},
+        {"name": "status", "type": "VARCHAR(50)", "required": false, "description": "连通状态，默认值: unknown"},
+        {"name": "created_at", "type": "TIMESTAMPTZ", "required": true, "description": "创建时间"},
+        {"name": "updated_at", "type": "TIMESTAMPTZ", "required": true, "description": "更新时间"},
+        {"name": "deleted_at", "type": "TIMESTAMPTZ", "required": false, "description": "软删除时间，非空表示已删除"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "环境列表查询",
+      "method": "GET",
+      "endpoint": "/api/v1/environments",
+      "description": "查询指定项目下的所有部署环境列表，按创建时间降序排列，不包含已软删除的环境",
+      "parameters": [
+        {"name": "project_id", "type": "string", "description": "所属项目ID（必填），限定查询范围为指定项目"},
+        {"name": "page", "type": "int", "description": "页码，默认1"},
+        {"name": "page_size", "type": "int", "description": "每页条数，默认20，最大100"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "environments": "array<object>",
+          "total": "int",
+          "page": "int",
+          "page_size": "int"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "缺少必填参数 project_id"},
+        {"code": 401, "message": "认证失败或令牌过期"}
+      ]
+    },
+    {
+      "name": "环境详情查询",
+      "method": "GET",
+      "endpoint": "/api/v1/environments/{id}",
+      "description": "根据环境ID查询单个环境的详细信息，包含连接参数和连通状态",
+      "parameters": [
+        {"name": "id", "type": "string", "description": "环境ID（路径参数）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string",
+          "name": "string",
+          "env_type": "string",
+          "host": "string",
+          "status": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "环境不存在或已被删除"}
+      ]
+    },
+    {
+      "name": "创建环境",
+      "method": "POST",
+      "endpoint": "/api/v1/environments",
+      "description": "创建新的部署环境，填写连接参数并可选关联部署密钥",
+      "parameters": [
+        {"name": "project_id", "type": "string", "description": "所属项目ID（query参数，必填）"},
+        {"name": "name", "type": "string", "description": "环境名称（必填），同一项目下必须唯一"},
+        {"name": "env_type", "type": "string", "description": "环境类型（必填），枚举值: test/gray/production"},
+        {"name": "host", "type": "string", "description": "目标服务器地址（必填），IP或域名"},
+        {"name": "port", "type": "int", "description": "SSH端口（必填），默认22"},
+        {"name": "username", "type": "string", "description": "登录用户名（必填），远程服务器SSH登录用户名"},
+        {"name": "key_id", "type": "string", "description": "关联密钥ID（可选），关联已存储的SSH密钥或密码"}
+      ],
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string",
+          "name": "string",
+          "env_type": "string",
+          "host": "string",
+          "status": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数校验失败，如 env_type 不在合法枚举值范围内"},
+        {"code": 409, "message": "同一项目下已存在同名环境"},
+        {"code": 404, "message": "关联的项目不存在"},
+        {"code": 422, "message": "关联的 key_id 在密钥存储服务中不存在"}
+      ]
+    },
+    {
+      "name": "更新环境",
+      "method": "PUT",
+      "endpoint": "/api/v1/environments/{id}",
+      "description": "更新指定环境的连接参数、类型或关联密钥，支持部分字段更新",
+      "parameters": [
+        {"name": "id", "type": "string", "description": "环境ID（路径参数）"},
+        {"name": "name", "type": "string", "description": "环境名称（可选），更新时需保持项目内唯一"},
+        {"name": "env_type", "type": "string", "description": "环境类型（可选），枚举值: test/gray/production"},
+        {"name": "host", "type": "string", "description": "目标服务器地址（可选）"},
+        {"name": "port", "type": "int", "description": "SSH端口（可选）"},
+        {"name": "username", "type": "string", "description": "登录用户名（可选）"},
+        {"name": "key_id", "type": "string", "description": "关联密钥ID（可选），置空表示解除密钥关联"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string",
+          "name": "string",
+          "env_type": "string",
+          "host": "string",
+          "status": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数校验失败"},
+        {"code": 404, "message": "环境不存在或已被删除"},
+        {"code": 409, "message": "修改后的环境名称与项目中已有环境冲突"}
+      ]
+    },
+    {
+      "name": "删除环境",
+      "method": "DELETE",
+      "endpoint": "/api/v1/environments/{id}",
+      "description": "逻辑删除指定环境（软删除），仅标记 deleted_at 时间戳，非物理删除",
+      "parameters": [
+        {"name": "id", "type": "string", "description": "环境ID（路径参数）"}
+      ],
+      "response": {
+        "status": 204,
+        "body": {}
+      },
+      "error_codes": [
+        {"code": 404, "message": "环境不存在或已被删除"},
+        {"code": 409, "message": "该环境下存在关联的部署任务，无法删除"}
+      ]
+    },
+    {
+      "name": "连通性验证",
+      "method": "POST",
+      "endpoint": "/api/v1/environments/{id}/verify",
+      "description": "验证远程服务器的SSH连通性，通过密钥存储服务获取解密凭证建立SSH连接，更新环境连通状态并返回验证结果",
+      "parameters": [
+        {"name": "id", "type": "string", "description": "环境ID（路径参数），用于查找目标服务器信息和关联密钥"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "reachable": "bool",
+          "latency_ms": "int",
+          "error": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "环境未关联密钥，无法验证连通性"},
+        {"code": 404, "message": "环境不存在或已被删除"},
+        {"code": 502, "message": "从密钥存储服务获取解密凭证失败"},
+        {"code": 504, "message": "SSH连接超时，目标服务器无响应"}
+      ]
+    },
+    {
+      "name": "查询密钥信息（消费方）",
+      "method": "GET",
+      "endpoint": "/api/v1/keys/{id}",
+      "description": "消费密钥存储服务提供的查询接口，获取解密后的SSH凭证用于连通性验证。本接口由密钥存储服务提供，环境配置服务作为消费者调用。",
+      "parameters": [
+        {"name": "id", "type": "string", "description": "密钥ID"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string",
+          "name": "string",
+          "type": "string",
+          "fingerprint": "string",
+          "created_at": "string"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "密钥不存在或已被删除"}
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "采用分层错误处理：API 层负责参数校验和 HTTP 状态码映射，服务层抛出业务语义异常，数据访问层将数据库错误转换为持久化异常。SSH 连接错误由连接池捕获并转换为结构化响应，超时和网络错误区分对待。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": 400,
+        "name": "请求参数错误",
+        "description": "必填字段缺失、env_type 不在合法枚举值范围内、端口号超出有效范围(1-65535)等输入校验失败，响应 detail 中给出具体字段错误信息"
+      },
+      {
+        "code": 404,
+        "name": "资源不存在",
+        "description": "指定的 environment_id 或 project_id 在数据库中不存在或已被软删除，由服务层 NotFoundError 映射"
+      },
+      {
+        "code": 409,
+        "name": "资源冲突",
+        "description": "同一项目下环境名称重复、环境存在关联部署记录无法删除等业务约束冲突，由服务层业务异常映射"
+      },
+      {
+        "code": 502,
+        "name": "外部服务调用失败",
+        "description": "调用密钥存储服务获取解密凭证时连接失败、超时或返回异常响应，使用指数退避重试1次，仍失败则向上层抛出"
+      },
+      {
+        "code": 504,
+        "name": "SSH连接超时",
+        "description": "环境连通性验证时 SSH 连接超时，超时阈值 15s，超时后记录日志并将环境 status 更新为 unreachable"
+      }
+    ]
+  },
+  "domain_objects": [
+    {
+      "name": "Environment",
+      "object_type": "entity",
+      "description": "部署环境实体，代表一套具体的远程部署目标，包含连接参数、关联密钥和连通状态",
+      "attributes": [
+        {"name": "id", "type": "String", "required": true, "source": "db", "description": "环境唯一标识，UUID字符串"},
+        {"name": "project_id", "type": "String", "required": true, "source": "db", "description": "所属项目ID，UUID字符串"},
+        {"name": "name", "type": "String", "required": true, "source": "db", "description": "环境名称，同一项目内唯一"},
+        {"name": "env_type", "type": "EnvironmentType", "required": true, "source": "db", "description": "环境类型枚举值: test/gray/production"},
+        {"name": "host", "type": "String", "required": true, "source": "db", "description": "目标服务器 IP 或域名"},
+        {"name": "port", "type": "Integer", "required": true, "source": "db", "description": "SSH连接端口号"},
+        {"name": "username", "type": "String", "required": true, "source": "db", "description": "远程服务器登录用户名"},
+        {"name": "key_id", "type": "String", "required": false, "source": "db", "description": "关联的部署密钥ID，可为空"},
+        {"name": "status", "type": "EnvironmentStatus", "required": true, "source": "db", "description": "连通性状态，默认 unknown，连通性验证后更新"},
+        {"name": "created_at", "type": "DateTime", "required": true, "source": "db", "description": "创建时间"},
+        {"name": "updated_at", "type": "DateTime", "required": true, "source": "db", "description": "更新时间"},
+        {"name": "deleted_at", "type": "DateTime", "required": false, "source": "db", "description": "软删除时间，非空表示已删除"}
+      ]
+    },
+    {
+      "name": "EnvironmentType",
+      "object_type": "enum",
+      "description": "环境类型枚举，标识部署环境的用途阶段",
+      "values": ["test", "gray", "production"]
+    },
+    {
+      "name": "EnvironmentStatus",
+      "object_type": "enum",
+      "description": "环境连通性状态枚举，标识远程服务器的 SSH 可达状态",
+      "values": ["unknown", "reachable", "unreachable"]
+    },
+    {
+      "name": "CreateEnvironmentRequest",
+      "object_type": "dto",
+      "description": "创建环境的请求 DTO，包含必填的服务器连接参数和可选密钥关联",
+      "maps_to_entity": "Environment",
+      "attributes": [
+        {"name": "name", "type": "String", "required": true, "source": "input", "description": "环境名称"},
+        {"name": "env_type", "type": "String", "required": true, "source": "input", "description": "环境类型，必须为 test/gray/production 之一"},
+        {"name": "host", "type": "String", "required": true, "source": "input", "description": "目标服务器 IP 或域名"},
+        {"name": "port", "type": "Integer", "required": true, "source": "input", "description": "SSH端口，范围 1-65535"},
+        {"name": "username", "type": "String", "required": true, "source": "input", "description": "远程服务器登录用户名"},
+        {"name": "key_id", "type": "String", "required": false, "source": "input", "description": "关联的部署密钥ID"},
+        {"name": "project_id", "type": "String", "required": true, "source": "input", "description": "所属项目ID"}
+      ]
+    },
+    {
+      "name": "UpdateEnvironmentRequest",
+      "object_type": "dto",
+      "description": "更新环境的请求 DTO，所有字段均为可选，只更新传入的非空字段",
+      "maps_to_entity": "Environment",
+      "attributes": [
+        {"name": "name", "type": "String", "required": false, "source": "input", "description": "环境名称"},
+        {"name": "env_type", "type": "String", "required": false, "source": "input", "description": "环境类型，必须为 test/gray/production 之一"},
+        {"name": "host", "type": "String", "required": false, "source": "input", "description": "目标服务器 IP 或域名"},
+        {"name": "port", "type": "Integer", "required": false, "source": "input", "description": "SSH端口，范围 1-65535"},
+        {"name": "username", "type": "String", "required": false, "source": "input", "description": "远程服务器登录用户名"},
+        {"name": "key_id", "type": "String", "required": false, "source": "input", "description": "关联的部署密钥ID，空字符串表示解除关联"}
+      ]
+    },
+    {
+      "name": "EnvironmentResponse",
+      "object_type": "dto",
+      "description": "环境信息的标准响应 DTO，对外暴露的字段子集，不包含敏感连接参数（port/username/key_id）",
+      "maps_to_entity": "Environment",
+      "attributes": [
+        {"name": "id", "type": "String", "required": true, "source": "db", "description": "环境ID"},
+        {"name": "name", "type": "String", "required": true, "source": "db", "description": "环境名称"},
+        {"name": "env_type", "type": "String", "required": true, "source": "db", "description": "环境类型"},
+        {"name": "host", "type": "String", "required": true, "source": "db", "description": "目标服务器地址"},
+        {"name": "status", "type": "String", "required": true, "source": "db", "description": "连通状态"}
+      ]
+    },
+    {
+      "name": "VerifyConnectionResult",
+      "object_type": "dto",
+      "description": "连通性验证的结果 DTO，包含可达性、延迟和可能的错误信息",
+      "attributes": [
+        {"name": "reachable", "type": "Boolean", "required": true, "source": "computed", "description": "SSH连接是否成功建立"},
+        {"name": "latency_ms", "type": "Integer", "required": true, "source": "computed", "description": "SSH握手往返延迟，单位毫秒"},
+        {"name": "error", "type": "String", "required": false, "source": "computed", "description": "连接失败时的错误描述，成功时为空"}
+      ]
+    },
+    {
+      "name": "HostConnectionInfo",
+      "object_type": "value_object",
+      "description": "不可变值对象，封装目标服务器的SSH连接信息，用于连通性验证",
+      "attributes": [
+        {"name": "host", "type": "String", "required": true, "source": "derived", "description": "目标服务器地址，派生自 Environment.host"},
+        {"name": "port", "type": "Integer", "required": true, "source": "derived", "description": "SSH端口，派生自 Environment.port"},
+        {"name": "username", "type": "String", "required": true, "source": "derived", "description": "SSH登录用户名，派生自 Environment.username"},
+        {"name": "privateKey", "type": "String", "required": true, "source": "derived", "description": "SSH私钥内容，从密钥存储服务获取的解密值"}
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "name": "EnvironmentService",
+      "description": "环境配置的核心服务，处理部署环境的增删改查和连通性验证业务逻辑",
+      "methods": [
+        {
+          "name": "ListEnvironments",
+          "signature": "(projectID: String, page: int, pageSize: int) -> (environments: []EnvironmentResponse, total: int)",
+          "precondition": "projectID 非空且为有效的 UUID 格式",
+          "postcondition": "返回指定项目下所有未软删除的环境列表，按 created_at 降序排列；total 返回符合条件的总数；当无数据时返回空数组和 total=0",
+          "description": "分页查询指定项目的环境列表，自动过滤已软删除的记录",
+          "exceptions": [
+            {"name": "ValidationError", "trigger": "projectID 为空或格式无效", "http_status": 400}
+          ]
+        },
+        {
+          "name": "GetEnvironment",
+          "signature": "(id: String) -> EnvironmentResponse",
+          "precondition": "id 非空且为有效的 UUID 格式",
+          "postcondition": "返回 id 匹配且未软删除的环境信息；匹配失败时返回 NotFoundError",
+          "description": "根据环境ID查询单个环境的详细信息",
+          "exceptions": [
+            {"name": "ValidationError", "trigger": "id 为空或格式无效", "http_status": 400},
+            {"name": "NotFoundError", "trigger": "id 对应的环境不存在或已软删除", "http_status": 404}
+          ]
+        },
+        {
+          "name": "CreateEnvironment",
+          "signature": "(req: CreateEnvironmentRequest) -> EnvironmentResponse",
+          "precondition": "req 所有必填字段均非空；req.env_type 为 EnvironmentType 枚举值之一；req.port 在 1-65535 范围内",
+          "postcondition": "创建一条环境记录，初始 status 为 unknown；同一 project_id 下 name 必须唯一；如果 req.key_id 非空则调用密钥存储服务验证密钥存在性；返回新创建的环境信息",
+          "description": "创建新的部署环境并持久化到数据库",
+          "exceptions": [
+            {"name": "ValidationError", "trigger": "必填字段缺失或 env_type/port 格式无效", "http_status": 400},
+            {"name": "DuplicateNameError", "trigger": "同一项目下已存在同名环境", "http_status": 409},
+            {"name": "ReferencedKeyNotFoundError", "trigger": "key_id 在密钥存储服务中不存在", "http_status": 422}
+          ]
+        },
+        {
+          "name": "UpdateEnvironment",
+          "signature": "(id: String, req: UpdateEnvironmentRequest) -> EnvironmentResponse",
+          "precondition": "id 非空且有效；req 中至少含有一个非空待更新字段",
+          "postcondition": "更新环境指定字段，仅更新 req 中非 nil 的字段；如果更新 name，需校验项目内唯一性；如果更新 key_id，需验证新密钥存在；返回更新后的环境信息",
+          "description": "部分更新指定环境的配置字段",
+          "exceptions": [
+            {"name": "ValidationError", "trigger": "id 无效或更新字段格式错误", "http_status": 400},
+            {"name": "NotFoundError", "trigger": "id 对应的环境不存在或已软删除", "http_status": 404},
+            {"name": "DuplicateNameError", "trigger": "更新后的 name 与项目中已有环境冲突", "http_status": 409},
+            {"name": "ReferencedKeyNotFoundError", "trigger": "新的 key_id 在密钥存储服务中不存在", "http_status": 422}
+          ]
+        },
+        {
+          "name": "DeleteEnvironment",
+          "signature": "(id: String) -> void",
+          "precondition": "id 非空且有效",
+          "postcondition": "执行软删除，设置 deleted_at 为当前时间；删除前检查是否存在关联的部署记录，存在则拒绝删除；不可重复删除已软删除的环境",
+          "description": "逻辑删除指定环境，标记 deleted_at 而非物理删除",
+          "exceptions": [
+            {"name": "NotFoundError", "trigger": "id 对应的环境不存在或已软删除", "http_status": 404},
+            {"name": "HasActiveDeploymentsError", "trigger": "该环境下存在关联的部署记录，拒绝删除", "http_status": 409}
+          ]
+        },
+        {
+          "name": "VerifyConnection",
+          "signature": "(id: String) -> VerifyConnectionResult",
+          "precondition": "id 非空且有效；环境必须关联 key_id（即 key_id 非空）",
+          "postcondition": "通过密钥存储服务获取解密后的 SSH 凭证，建立 SSH 连接并测量延迟；连接成功则将 status 更新为 reachable，失败则更新为 unreachable；返回连接结果（可达性、延迟和错误信息）",
+          "description": "测试远程服务器的 SSH 连通性，更新环境状态并返回详细验证结果",
+          "exceptions": [
+            {"name": "NotFoundError", "trigger": "id 对应的环境不存在或已软删除", "http_status": 404},
+            {"name": "MissingKeyError", "trigger": "环境未关联密钥（key_id 为空）", "http_status": 400},
+            {"name": "KeyServiceError", "trigger": "调用密钥存储服务获取解密凭证失败", "http_status": 502},
+            {"name": "SSHConnectionTimeoutError", "trigger": "SSH 连接超时（超时阈值 15s）", "http_status": 504},
+            {"name": "SSHAuthError", "trigger": "SSH 认证失败（用户名/密钥不匹配）", "http_status": 502}
+          ]
+        }
+      ],
+      "repository_dependencies": [
+        "FindByProjectID(projectID: String, page: int, pageSize: int) -> (environments: []Environment, total: int)",
+        "FindByID(id: String) -> (env: Environment?, err: error)",
+        "FindByNameAndProject(name: String, projectID: String) -> (env: Environment?, err: error)",
+        "Create(env: *Environment) -> error",
+        "Update(env: *Environment) -> error",
+        "SoftDelete(id: String, deletedAt: DateTime) -> error",
+        "CountDeploymentsByEnvironmentID(envID: String) -> (count: int, err: error)"
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "同一项目下环境名称必须唯一（逻辑唯一：不包含已软删除的记录）",
+      "环境类型 env_type 必须为预定义的枚举值之一: test（测试）、gray（灰度）、production（正式）",
+      "SSH 端口号必须在 1-65535 有效范围内，默认值为 22",
+      "环境连通性 status 必须为 EnvironmentStatus 枚举值之一: unknown、reachable、unreachable",
+      "软删除的环境不可被查询、更新和连通性验证操作访问",
+      "环境必须关联有效的 project_id，外键约束由数据库保证"
+    ],
+    "state_machines": [
+      {
+        "entity": "Environment.status",
+        "states": ["unknown", "reachable", "unreachable"],
+        "transitions": [
+          {"from": "unknown", "to": "reachable", "trigger": "连通性验证成功", "actor": "系统（SSH连接测试）"},
+          {"from": "unknown", "to": "unreachable", "trigger": "连通性验证失败", "actor": "系统（SSH连接测试）"},
+          {"from": "reachable", "to": "unreachable", "trigger": "连通性重验证失败", "actor": "系统（SSH连接测试）"},
+          {"from": "unreachable", "to": "reachable", "trigger": "连通性重验证成功", "actor": "系统（SSH连接测试）"}
+        ],
+        "irreversible_rules": [
+          "所有状态转换均为可逆的：reachable 和 unreachable 之间可互相转换，unknown 可转换为任一方。不存在不可逆的状态转换。"
+        ],
+        "concurrency": "同一环境同一时刻只允许执行一个连通性验证任务。通过分布式锁（Redis SETNX）实现，锁超时 60s，防止并发 SSH 连接导致服务器压力过大。"
+      }
+    ],
+    "cross_service_rules": [
+      "删除环境前需通过部署编排服务查询该环境是否存在关联的部署记录，存在关联时拒绝删除并返回 409",
+      "创建/更新环境时如果指定了 key_id，必须调用密钥存储服务（GET /api/v1/keys/{id}）校验该密钥存在且有效",
+      "连通性验证时，必须调用密钥存储服务获取解密后的 SSH 私钥内容，不得在本服务中存储或缓存明文凭证",
+      "环境配置的创建、更新、删除操作完成后，应向审计日志服务发送操作记录事件（通过消息队列异步投递）",
+      "连通性验证结果（reachable/unreachable）需回写数据库，状态变更可被部署编排服务读取用于部署前的环境健康检查"
+    ]
+  }
+}
