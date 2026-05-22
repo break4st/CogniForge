@@ -1,0 +1,586 @@
+{
+  "meta": {
+    "doc_id": "lld-远程命令执行器-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "远程命令执行器",
+    "title": "远程命令执行器详细设计",
+    "author": "design_agent",
+    "created": "2026-05-22"
+  },
+  "overview": {
+    "description": "通过SSH在远程服务器上执行命令，完成目录操作和脚本执行。作为执行层核心组件，接收部署编排服务下发的执行指令，在已建立的SSH会话上完成创建部署目录、解压文件、设置权限、执行启动脚本和进程监控等操作，并收集命令执行结果和错误输出返回给上层调用方。自身不管理数据库表，所有状态由上层服务负责持久化。",
+    "dependencies": ["SSH连接池"],
+    "tech_stack": ["Go", "Gin", "golang.org/x/crypto/ssh"]
+  },
+  "data_models": [],
+  "interfaces": [
+    {
+      "name": "CreateDirectory",
+      "method": "INTERNAL",
+      "endpoint": "RemoteCommandExecutor.CreateDirectory",
+      "description": "在远程服务器上创建版本化部署目录。自动创建父目录（类似 mkdir -p），设置指定的权限模式。",
+      "parameters": [
+        {"name": "session_id", "type": "string", "description": "SSH连接池分配的会话标识"},
+        {"name": "path", "type": "string", "description": "目标目录完整路径，如 /app/releases/v1.2.3"},
+        {"name": "mode", "type": "string", "description": "目录权限模式，如 0755"},
+        {"name": "timeout_seconds", "type": "integer", "description": "命令执行超时秒数，默认30"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "path": "string（实际创建的目录路径）",
+          "exists": "boolean（创建后目录是否存在）",
+          "duration_ms": "integer（操作耗时毫秒）"
+        }
+      },
+      "error_codes": [
+        {"code": "EC100", "message": "SSH会话不可用或已关闭"},
+        {"code": "EC101", "message": "目录创建失败，磁盘空间不足或权限拒绝"},
+        {"code": "EC102", "message": "目录创建命令执行超时"}
+      ]
+    },
+    {
+      "name": "ExtractArchive",
+      "method": "INTERNAL",
+      "endpoint": "RemoteCommandExecutor.ExtractArchive",
+      "description": "在远程服务器上解压部署包（tar.gz/zip）到指定目录，解压完成后自动校验文件完整性。",
+      "parameters": [
+        {"name": "session_id", "type": "string", "description": "SSH会话标识"},
+        {"name": "archive_path", "type": "string", "description": "远程服务器上的归档文件完整路径"},
+        {"name": "dest_dir", "type": "string", "description": "解压目标目录"},
+        {"name": "archive_type", "type": "string", "description": "归档类型：tar.gz 或 zip，为空时根据扩展名自动推断"},
+        {"name": "strip_components", "type": "integer", "description": "解压时剥离的前导目录层级，默认0"},
+        {"name": "timeout_seconds", "type": "integer", "description": "解压超时秒数，默认120"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "stdout": "string（解压过程标准输出）",
+          "stderr": "string（解压过程错误输出）",
+          "exit_code": "integer（退出码，0表示成功）",
+          "file_count": "integer（解压出的文件数量）",
+          "duration_ms": "integer（操作耗时毫秒）"
+        }
+      },
+      "error_codes": [
+        {"code": "EC200", "message": "SSH会话不可用"},
+        {"code": "EC201", "message": "归档文件不存在或无法读取"},
+        {"code": "EC202", "message": "归档文件格式损坏或无法识别"},
+        {"code": "EC203", "message": "解压操作超时"},
+        {"code": "EC204", "message": "目标目录不可写或磁盘空间不足"}
+      ]
+    },
+    {
+      "name": "SetPermissions",
+      "method": "INTERNAL",
+      "endpoint": "RemoteCommandExecutor.SetPermissions",
+      "description": "设置远程服务器上文件或目录的权限模式（chmod）和所有者（chown/chgrp）。",
+      "parameters": [
+        {"name": "session_id", "type": "string", "description": "SSH会话标识"},
+        {"name": "path", "type": "string", "description": "目标文件或目录路径"},
+        {"name": "mode", "type": "string", "description": "权限模式，如 0755"},
+        {"name": "recursive", "type": "boolean", "description": "是否递归设置子文件/目录"},
+        {"name": "owner", "type": "string", "description": "可选，目标所有者用户名"},
+        {"name": "group", "type": "string", "description": "可选，目标所属组名"},
+        {"name": "timeout_seconds", "type": "integer", "description": "执行超时秒数，默认30"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "stdout": "string（命令标准输出）",
+          "stderr": "string（命令错误输出）",
+          "exit_code": "integer（退出码，0表示成功）",
+          "duration_ms": "integer（操作耗时毫秒）"
+        }
+      },
+      "error_codes": [
+        {"code": "EC300", "message": "SSH会话不可用"},
+        {"code": "EC301", "message": "目标路径不存在"},
+        {"code": "EC302", "message": "权限修改被拒绝（Permission denied）"},
+        {"code": "EC303", "message": "递归权限设置超时"}
+      ]
+    },
+    {
+      "name": "ExecuteScript",
+      "method": "INTERNAL",
+      "endpoint": "RemoteCommandExecutor.ExecuteScript",
+      "description": "在远程服务器上执行部署启动脚本，捕获 stdout/stderr 并监控脚本退出码。支持注入环境变量和传递命令行参数。",
+      "parameters": [
+        {"name": "session_id", "type": "string", "description": "SSH会话标识"},
+        {"name": "script_path", "type": "string", "description": "远程服务器上的脚本文件完整路径"},
+        {"name": "args", "type": "array", "description": "脚本命令行参数列表"},
+        {"name": "env_vars", "type": "object", "description": "注入的环境变量键值对"},
+        {"name": "timeout_seconds", "type": "integer", "description": "脚本执行超时秒数，默认300"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "stdout": "string（脚本标准输出）",
+          "stderr": "string（脚本错误输出）",
+          "exit_code": "integer（退出码，0表示成功）",
+          "duration_ms": "integer（执行耗时毫秒）",
+          "pid": "integer（如果脚本启动了后台进程，记录其PID）"
+        }
+      },
+      "error_codes": [
+        {"code": "EC400", "message": "SSH会话不可用"},
+        {"code": "EC401", "message": "脚本文件不存在或无执行权限"},
+        {"code": "EC402", "message": "脚本执行超时，进程已被终止"},
+        {"code": "EC403", "message": "脚本退出码非0，执行失败"}
+      ]
+    },
+    {
+      "name": "RunCommand",
+      "method": "INTERNAL",
+      "endpoint": "RemoteCommandExecutor.RunCommand",
+      "description": "在远程服务器上执行通用Shell命令，捕获完整的标准输出、标准错误和退出码。是所有专门操作的基础方法。",
+      "parameters": [
+        {"name": "session_id", "type": "string", "description": "SSH会话标识"},
+        {"name": "command", "type": "string", "description": "待执行的Shell命令字符串"},
+        {"name": "env_vars", "type": "object", "description": "可选，注入的环境变量键值对"},
+        {"name": "timeout_seconds", "type": "integer", "description": "命令执行超时秒数，默认30"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "stdout": "string（命令标准输出）",
+          "stderr": "string（命令错误输出）",
+          "exit_code": "integer（退出码，0表示成功）",
+          "duration_ms": "integer（执行耗时毫秒）",
+          "timed_out": "boolean（是否因超时被终止）"
+        }
+      },
+      "error_codes": [
+        {"code": "EC500", "message": "SSH会话不可用"},
+        {"code": "EC501", "message": "命令执行超时"},
+        {"code": "EC502", "message": "命令包含非法字符或注入风险"}
+      ]
+    },
+    {
+      "name": "CheckProcessStatus",
+      "method": "INTERNAL",
+      "endpoint": "RemoteCommandExecutor.CheckProcessStatus",
+      "description": "检查远程服务器上指定名称的进程是否在运行中，返回进程详信息。",
+      "parameters": [
+        {"name": "session_id", "type": "string", "description": "SSH会话标识"},
+        {"name": "process_name", "type": "string", "description": "进程名称关键字（如 java、nginx）"},
+        {"name": "timeout_seconds", "type": "integer", "description": "查询超时秒数，默认15"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "process_name": "string（进程名称）",
+          "pid": "integer（进程PID，未运行时为0）",
+          "running": "boolean（进程是否在运行）",
+          "cpu_percent": "float（CPU使用率，未运行时为空）",
+          "memory_mb": "float（内存使用量MB，未运行时为空）"
+        }
+      },
+      "error_codes": [
+        {"code": "EC600", "message": "SSH会话不可用"},
+        {"code": "EC601", "message": "进程查询命令执行超时"}
+      ]
+    },
+    {
+      "name": "BackupDirectory",
+      "method": "INTERNAL",
+      "endpoint": "RemoteCommandExecutor.BackupDirectory",
+      "description": "在远程服务器上备份当前部署目录（用于回滚场景），通过 mv 命令重命名目录。",
+      "parameters": [
+        {"name": "session_id", "type": "string", "description": "SSH会话标识"},
+        {"name": "source_path", "type": "string", "description": "当前部署目录路径"},
+        {"name": "backup_path", "type": "string", "description": "备份目标路径"},
+        {"name": "timeout_seconds", "type": "integer", "description": "执行超时秒数，默认60"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "stdout": "string（命令标准输出）",
+          "stderr": "string（命令错误输出）",
+          "exit_code": "integer（退出码，0表示成功）",
+          "source_exists_after": "boolean（源目录移除后是否还存在，应为false）",
+          "duration_ms": "integer（操作耗时毫秒）"
+        }
+      },
+      "error_codes": [
+        {"code": "EC700", "message": "SSH会话不可用"},
+        {"code": "EC701", "message": "源目录不存在"},
+        {"code": "EC702", "message": "备份目标路径不可用或跨文件系统移动失败"},
+        {"code": "EC703", "message": "备份操作超时"}
+      ]
+    },
+    {
+      "name": "CreateSymlink",
+      "method": "INTERNAL",
+      "endpoint": "RemoteCommandExecutor.CreateSymlink",
+      "description": "在远程服务器上创建符号链接（ln -sf），用于版本目录切换。",
+      "parameters": [
+        {"name": "session_id", "type": "string", "description": "SSH会话标识"},
+        {"name": "target", "type": "string", "description": "符号链接指向的目标路径"},
+        {"name": "link_path", "type": "string", "description": "符号链接创建路径"},
+        {"name": "timeout_seconds", "type": "integer", "description": "执行超时秒数，默认15"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "stdout": "string（命令标准输出）",
+          "stderr": "string（命令错误输出）",
+          "exit_code": "integer（退出码，0表示成功）",
+          "link_created": "boolean（链接是否成功创建）",
+          "duration_ms": "integer（操作耗时毫秒）"
+        }
+      },
+      "error_codes": [
+        {"code": "EC800", "message": "SSH会话不可用"},
+        {"code": "EC801", "message": "目标路径不存在"},
+        {"code": "EC802", "message": "链接创建失败，权限拒绝或路径冲突"}
+      ]
+    },
+    {
+      "name": "HealthCheck",
+      "method": "INTERNAL",
+      "endpoint": "RemoteCommandExecutor.HealthCheck",
+      "description": "通过远程服务器执行HTTP健康检查（curl），验证部署后的服务是否正常对外提供服务。",
+      "parameters": [
+        {"name": "session_id", "type": "string", "description": "SSH会话标识"},
+        {"name": "url", "type": "string", "description": "健康检查URL（HTTP/HTTPS）"},
+        {"name": "expected_status", "type": "integer", "description": "期望的HTTP响应状态码，默认200"},
+        {"name": "timeout_seconds", "type": "integer", "description": "请求超时秒数，默认30"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "healthy": "boolean（服务是否健康）",
+          "status_code": "integer（实际HTTP响应状态码）",
+          "response_time_ms": "integer（响应耗时毫秒）",
+          "body_preview": "string（响应体前512字符）"
+        }
+      },
+      "error_codes": [
+        {"code": "EC900", "message": "SSH会话不可用"},
+        {"code": "EC901", "message": "健康检查HTTP请求超时"},
+        {"code": "EC902", "message": "实际响应状态码与期望状态码不匹配"},
+        {"code": "EC903", "message": "DNS解析失败或无法连接到目标地址"}
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "所有远程命令执行统一采用超时控制机制，防止命令长时间挂起导致SSH会话泄漏。命令执行结果始终包含退出码和完整的 stdout/stderr，由上层调用方（部署编排服务）根据业务语义判断成败。SSH会话异常（连接断开、会话关闭）统一转换为 SessionInvalid 错误，触发上层重试获取新会话。命令超时后主动终止远程进程（SIGTERM/SIGKILL），释放会话资源。",
+    "response_format": {
+      "body": {
+        "code": "string（错误码，如 EC500）",
+        "error": "string（错误分类标识，如 SESSION_INVALID）",
+        "detail": "string（详细错误描述，包含命令退出码和stderr内容）"
+      }
+    },
+    "categories": [
+      {
+        "code": "EC-SESSION_INVALID",
+        "name": "SSH会话异常",
+        "description": "SSH连接不可用、会话已关闭或认证失败。触发条件：会话超时断开、连接被远程服务器关闭、会话标识不存在。处理方式：上报部署编排服务，编排服务调用SSH连接池重新建立连接后重试。"
+      },
+      {
+        "code": "EC-TIMEOUT",
+        "name": "命令执行超时",
+        "description": "命令在指定的超时时间内未完成执行。触发条件：启动脚本卡死、远程服务器负载过高、命令陷入无限循环、健康检查服务器无响应。处理方式：向远程进程发送 SIGTERM（等待5s），若仍未退出则发送 SIGKILL；返回已捕获的部分输出和超时标识。"
+      },
+      {
+        "code": "EC-NON_ZERO_EXIT",
+        "name": "命令退出码非零",
+        "description": "命令执行完毕但退出码不为0。触发条件：目录创建失败（路径无效）、权限设置错误（chmod 非法模式）、脚本执行异常、解压失败（格式不支持）。处理方式：返回完整的 stderr 输出和退出码，由部署编排服务根据步骤类型决定是否中止部署流程。"
+      },
+      {
+        "code": "EC-REMOTE_IO",
+        "name": "远程文件系统错误",
+        "description": "远程服务器上发生文件系统相关错误。触发条件：磁盘空间不足（df -h 显示使用率100%）、目标路径存在文件冲突、权限拒绝（Permission denied）、文件不存在（No such file or directory）。处理方式：捕获系统错误消息，格式化后返回给调用方，编排服务据此判断是否需要中止部署。"
+      },
+      {
+        "code": "EC-INVALID_PARAM",
+        "name": "参数校验失败",
+        "description": "调用参数不合法。触发条件：路径为空字符串、超时值 <= 0、命令为空白字符串、包含潜在注入字符（如 ;、&&、| 在非预期位置）。处理方式：拒绝执行并返回参数校验错误，不上报SSH操作，避免资源浪费。"
+      }
+    ]
+  },
+  "domain_objects": [
+    {
+      "name": "CommandStatus",
+      "object_type": "enum",
+      "description": "命令执行状态枚举，标识一条远程命令的当前生命周期阶段",
+      "values": ["PENDING", "RUNNING", "SUCCESS", "FAILED", "TIMEOUT"]
+    },
+    {
+      "name": "CommandResult",
+      "object_type": "value_object",
+      "description": "远程命令执行结果，包含完整的输出内容和退出信息，不可变",
+      "attributes": [
+        {"name": "stdout", "type": "String", "required": false, "source": "computed", "description": "命令的标准输出内容，可能为空"},
+        {"name": "stderr", "type": "String", "required": false, "source": "computed", "description": "命令的错误输出内容，可能为空"},
+        {"name": "exit_code", "type": "Integer", "required": true, "source": "computed", "description": "命令退出码，0表示成功，非0表示异常"},
+        {"name": "status", "type": "CommandStatus", "required": true, "source": "computed", "description": "命令执行最终状态"},
+        {"name": "duration_ms", "type": "Long", "required": true, "source": "computed", "description": "命令从开始到返回的耗时（毫秒）"},
+        {"name": "command", "type": "String", "required": true, "source": "input", "description": "实际执行的Shell命令原文"},
+        {"name": "timed_out", "type": "Boolean", "required": false, "source": "computed", "description": "是否因超时被终止执行"}
+      ]
+    },
+    {
+      "name": "ProcessStatus",
+      "object_type": "value_object",
+      "description": "远程服务器上指定进程的运行状态快照，不可变",
+      "attributes": [
+        {"name": "process_name", "type": "String", "required": true, "source": "input", "description": "被查询的进程名称或关键字"},
+        {"name": "pid", "type": "Integer", "required": false, "source": "computed", "description": "进程PID，进程不存在时为0"},
+        {"name": "running", "type": "Boolean", "required": true, "source": "computed", "description": "进程是否正在运行中"},
+        {"name": "cpu_percent", "type": "Float", "required": false, "source": "computed", "description": "CPU使用率（百分比），未运行时为空"},
+        {"name": "memory_mb", "type": "Float", "required": false, "source": "computed", "description": "内存使用量（MB），未运行时为空"}
+      ]
+    },
+    {
+      "name": "HealthCheckResult",
+      "object_type": "value_object",
+      "description": "HTTP健康检查结果快照，展示部署后的服务可达性和响应质量",
+      "attributes": [
+        {"name": "healthy", "type": "Boolean", "required": true, "source": "computed", "description": "服务是否健康（状态码匹配且在超时内响应）"},
+        {"name": "status_code", "type": "Integer", "required": true, "source": "computed", "description": "实际HTTP响应状态码"},
+        {"name": "response_time_ms", "type": "Long", "required": true, "source": "computed", "description": "从发出请求到收到响应的耗时（毫秒）"},
+        {"name": "body_preview", "type": "String", "required": false, "source": "computed", "description": "响应体内容的前512个字符，用于快速确认响应内容"}
+      ]
+    },
+    {
+      "name": "DirectoryInfo",
+      "object_type": "value_object",
+      "description": "远程服务器上目录的基本信息，用于确认目录创建结果",
+      "attributes": [
+        {"name": "path", "type": "String", "required": true, "source": "input", "description": "目录路径"},
+        {"name": "exists", "type": "Boolean", "required": true, "source": "computed", "description": "目录是否存在"},
+        {"name": "permissions", "type": "String", "required": false, "source": "computed", "description": "权限模式字符串，如 drwxr-xr-x"},
+        {"name": "owner", "type": "String", "required": false, "source": "computed", "description": "目录所有者用户名"},
+        {"name": "group", "type": "String", "required": false, "source": "computed", "description": "目录所属组名"},
+        {"name": "size_bytes", "type": "Long", "required": false, "source": "computed", "description": "目录占用磁盘空间大小（字节）"}
+      ]
+    },
+    {
+      "name": "ExecCommandRequest",
+      "object_type": "dto",
+      "description": "通用命令执行请求参数DTO，包裹RunCommand方法的所有输入参数",
+      "attributes": [
+        {"name": "session_id", "type": "String", "required": true, "source": "input", "description": "SSH连接池分配的会话标识"},
+        {"name": "command", "type": "String", "required": true, "source": "input", "description": "待执行的Shell命令，必须为非空字符串"},
+        {"name": "env_vars", "type": "Map<String,String>", "required": false, "source": "input", "description": "注入的环境变量键值对，可选"},
+        {"name": "timeout_seconds", "type": "Integer", "required": true, "source": "input", "description": "命令执行超时秒数，必须大于0"}
+      ]
+    },
+    {
+      "name": "CreateDirectoryRequest",
+      "object_type": "dto",
+      "description": "创建目录请求参数DTO",
+      "attributes": [
+        {"name": "session_id", "type": "String", "required": true, "source": "input", "description": "SSH会话标识"},
+        {"name": "path", "type": "String", "required": true, "source": "input", "description": "目标目录路径，必须为绝对路径"},
+        {"name": "mode", "type": "String", "required": true, "source": "input", "description": "目录权限模式，如 0755"},
+        {"name": "create_parents", "type": "Boolean", "required": false, "source": "input", "description": "是否自动创建父目录，默认true"},
+        {"name": "timeout_seconds", "type": "Integer", "required": true, "source": "input", "description": "执行超时秒数，必须大于0"}
+      ]
+    },
+    {
+      "name": "ExtractArchiveRequest",
+      "object_type": "dto",
+      "description": "解压文件请求参数DTO",
+      "attributes": [
+        {"name": "session_id", "type": "String", "required": true, "source": "input", "description": "SSH会话标识"},
+        {"name": "archive_path", "type": "String", "required": true, "source": "input", "description": "远程服务器上的归档文件完整路径"},
+        {"name": "dest_dir", "type": "String", "required": true, "source": "input", "description": "解压目标目录"},
+        {"name": "archive_type", "type": "String", "required": false, "source": "input", "description": "归档类型：tar.gz 或 zip，为空时根据文件扩展名自动推断"},
+        {"name": "strip_components", "type": "Integer", "required": false, "source": "input", "description": "解压时剥离的前导目录层级（tar --strip-components），默认0"},
+        {"name": "timeout_seconds", "type": "Integer", "required": true, "source": "input", "description": "解压超时秒数，必须大于0"}
+      ]
+    },
+    {
+      "name": "SetPermissionsRequest",
+      "object_type": "dto",
+      "description": "设置文件权限请求参数DTO",
+      "attributes": [
+        {"name": "session_id", "type": "String", "required": true, "source": "input", "description": "SSH会话标识"},
+        {"name": "path", "type": "String", "required": true, "source": "input", "description": "目标文件或目录路径"},
+        {"name": "mode", "type": "String", "required": true, "source": "input", "description": "权限模式，如 0755"},
+        {"name": "recursive", "type": "Boolean", "required": true, "source": "input", "description": "是否递归设置子文件/目录"},
+        {"name": "owner", "type": "String", "required": false, "source": "input", "description": "可选，文件所有者"},
+        {"name": "group", "type": "String", "required": false, "source": "input", "description": "可选，文件所属组"},
+        {"name": "timeout_seconds", "type": "Integer", "required": true, "source": "input", "description": "执行超时秒数，必须大于0"}
+      ]
+    },
+    {
+      "name": "ExecuteScriptRequest",
+      "object_type": "dto",
+      "description": "执行启动脚本请求参数DTO",
+      "attributes": [
+        {"name": "session_id", "type": "String", "required": true, "source": "input", "description": "SSH会话标识"},
+        {"name": "script_path", "type": "String", "required": true, "source": "input", "description": "远程服务器上的脚本文件完整路径"},
+        {"name": "args", "type": "List<String>", "required": false, "source": "input", "description": "脚本命令行参数列表"},
+        {"name": "env_vars", "type": "Map<String,String>", "required": false, "source": "input", "description": "注入的环境变量键值对"},
+        {"name": "timeout_seconds", "type": "Integer", "required": true, "source": "input", "description": "脚本执行超时秒数，必须大于0"}
+      ]
+    },
+    {
+      "name": "BackupDirectoryRequest",
+      "object_type": "dto",
+      "description": "备份目录请求参数DTO，用于回滚场景",
+      "attributes": [
+        {"name": "session_id", "type": "String", "required": true, "source": "input", "description": "SSH会话标识"},
+        {"name": "source_path", "type": "String", "required": true, "source": "input", "description": "待备份的源目录路径"},
+        {"name": "backup_path", "type": "String", "required": true, "source": "input", "description": "备份目标路径"},
+        {"name": "timeout_seconds", "type": "Integer", "required": true, "source": "input", "description": "执行超时秒数，必须大于0"}
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "name": "RemoteCommandExecutor",
+      "description": "远程命令执行服务，通过SSH在远程服务器上执行各类Shell命令和运维操作",
+      "methods": [
+        {
+          "name": "CreateDirectory",
+          "signature": "(req CreateDirectoryRequest) -> (DirectoryInfo, error)",
+          "precondition": "req.path 非空且为绝对路径；req.timeout_seconds > 0；req.session_id 对应的SSH会话处于活跃状态",
+          "postcondition": "req.path 指定的目录已在远程服务器上创建成功（含父目录）；目录权限已按 req.mode 设置",
+          "description": "在远程服务器上创建版本化部署目录，含父目录创建和权限设置",
+          "exceptions": [
+            {"name": "SessionInvalidError", "trigger": "SSH会话已关闭或session_id不存在", "http_status": 500},
+            {"name": "CommandTimeoutError", "trigger": "mkdir命令在timeout_seconds内未返回", "http_status": 504},
+            {"name": "RemoteIOError", "trigger": "磁盘空间不足、父目录无权写入、路径冲突", "http_status": 500}
+          ]
+        },
+        {
+          "name": "ExtractArchive",
+          "signature": "(req ExtractArchiveRequest) -> (CommandResult, error)",
+          "precondition": "req.archive_path 在远程服务器上存在且为有效的归档文件；req.dest_dir 已存在",
+          "postcondition": "归档文件内容已解压到 dest_dir 目录下；原归档文件保留不变；文件数量已被记录",
+          "description": "在远程服务器上解压部署包到指定目录",
+          "exceptions": [
+            {"name": "SessionInvalidError", "trigger": "SSH会话不可用", "http_status": 500},
+            {"name": "CommandTimeoutError", "trigger": "解压操作超过timeout_seconds", "http_status": 504},
+            {"name": "ArchiveCorruptedError", "trigger": "归档文件损坏、格式无法识别或路径不存在", "http_status": 500},
+            {"name": "RemoteIOError", "trigger": "解压目标目录不可写或磁盘空间不足", "http_status": 500}
+          ]
+        },
+        {
+          "name": "SetPermissions",
+          "signature": "(req SetPermissionsRequest) -> (CommandResult, error)",
+          "precondition": "req.path 在远程服务器上已存在；req.mode 为合法的权限模式字符串（如 0755）",
+          "postcondition": "目标文件/目录的权限已按 req.mode 设置；若 recursive=true 则全部子项已递归设置；若指定了 owner/group 则已成功变更",
+          "description": "设置远程服务器上文件或目录的权限模式和所有者",
+          "exceptions": [
+            {"name": "SessionInvalidError", "trigger": "SSH会话不可用", "http_status": 500},
+            {"name": "CommandTimeoutError", "trigger": "chmod/chown递归操作超过timeout_seconds", "http_status": 504},
+            {"name": "RemoteIOError", "trigger": "目标路径不存在或无权修改权限/所有者", "http_status": 500}
+          ]
+        },
+        {
+          "name": "ExecuteScript",
+          "signature": "(req ExecuteScriptRequest) -> (CommandResult, error)",
+          "precondition": "req.script_path 在远程服务器上存在且具有可执行权限；req.timeout_seconds > 0",
+          "postcondition": "脚本已在远程服务器上执行；stdout/stderr 已被完整捕获；若脚本启动后台进程，其PID已记录在返回结果中",
+          "description": "在远程服务器上执行启动脚本，监控执行结果",
+          "exceptions": [
+            {"name": "SessionInvalidError", "trigger": "SSH会话不可用", "http_status": 500},
+            {"name": "CommandTimeoutError", "trigger": "脚本执行超过timeout_seconds", "http_status": 504},
+            {"name": "NonZeroExitError", "trigger": "脚本退出码非0", "http_status": 500}
+          ]
+        },
+        {
+          "name": "RunCommand",
+          "signature": "(req ExecCommandRequest) -> (CommandResult, error)",
+          "precondition": "req.command 为非空字符串；req.timeout_seconds > 0；req.session_id 对应活跃SSH会话",
+          "postcondition": "命令已在远程服务器上执行完毕；stdout/stderr/exit_code 已被完整捕获和记录",
+          "description": "在远程服务器上执行通用Shell命令，是所有专有操作的基础方法",
+          "exceptions": [
+            {"name": "SessionInvalidError", "trigger": "SSH会话不可用", "http_status": 500},
+            {"name": "CommandTimeoutError", "trigger": "命令执行超过timeout_seconds", "http_status": 504},
+            {"name": "InvalidArgumentError", "trigger": "command为空字符串或包含非法字符", "http_status": 400}
+          ]
+        },
+        {
+          "name": "CheckProcessStatus",
+          "signature": "(sessionId String, processName String) -> (ProcessStatus, error)",
+          "precondition": "sessionId 对应的SSH会话处于活跃状态；processName 非空",
+          "postcondition": "返回的 ProcessStatus 包含目标进程的当前运行状态信息；若进程不存在则 running=false 且 pid=0",
+          "description": "检查远程服务器上指定进程是否在运行中",
+          "exceptions": [
+            {"name": "SessionInvalidError", "trigger": "SSH会话不可用", "http_status": 500},
+            {"name": "CommandTimeoutError", "trigger": "ps/grep命令在15s内未返回", "http_status": 504}
+          ]
+        },
+        {
+          "name": "BackupDirectory",
+          "signature": "(req BackupDirectoryRequest) -> (CommandResult, error)",
+          "precondition": "req.source_path 在远程服务器上存在且为目录；req.backup_path 路径合法且与 source_path 不同",
+          "postcondition": "源目录已被移动到备份路径；若 backup_path 已存在则被覆盖",
+          "description": "备份远程部署目录（回滚场景），通过mv命令重命名目录",
+          "exceptions": [
+            {"name": "SessionInvalidError", "trigger": "SSH会话不可用", "http_status": 500},
+            {"name": "CommandTimeoutError", "trigger": "mv操作超过timeout_seconds（大目录场景）", "http_status": 504},
+            {"name": "RemoteIOError", "trigger": "源目录不存在或跨文件系统移动失败", "http_status": 500}
+          ]
+        },
+        {
+          "name": "CreateSymlink",
+          "signature": "(sessionId String, target String, linkPath String) -> (CommandResult, error)",
+          "precondition": "target 在远程服务器上存在；linkPath 的父目录已存在",
+          "postcondition": "符号链接已在 linkPath 处创建，指向 target；若 linkPath 已存在则被覆盖（ln -sf）",
+          "description": "在远程服务器上创建符号链接，用于版本目录切换",
+          "exceptions": [
+            {"name": "SessionInvalidError", "trigger": "SSH会话不可用", "http_status": 500},
+            {"name": "RemoteIOError", "trigger": "target不存在或linkPath父目录不可写", "http_status": 500}
+          ]
+        },
+        {
+          "name": "HealthCheck",
+          "signature": "(sessionId String, url String, expectedStatus Integer, timeoutSeconds Integer) -> (HealthCheckResult, error)",
+          "precondition": "url 为合法的 HTTP/HTTPS URL；timeoutSeconds > 0",
+          "postcondition": "已通过远程服务器使用curl对目标URL发起HTTP请求；响应状态码、耗时和响应体前512字符已被记录",
+          "description": "通过远程服务器执行HTTP健康检查，验证部署后服务可用性",
+          "exceptions": [
+            {"name": "SessionInvalidError", "trigger": "SSH会话不可用", "http_status": 500},
+            {"name": "CommandTimeoutError", "trigger": "curl请求超过timeoutSeconds", "http_status": 504},
+            {"name": "HealthCheckFailedError", "trigger": "实际HTTP状态码与expectedStatus不匹配", "http_status": 500},
+            {"name": "DNSError", "trigger": "远程服务器无法解析目标URL域名", "http_status": 500}
+          ]
+        }
+      ],
+      "repository_dependencies": []
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "所有远程命令执行必须设置大于0的超时时间，禁止无超时执行以防止命令永久挂起导致SSH会话泄漏",
+      "命令执行结果必须包含退出码（exit code），上层基于退出码0/非0判断命令成败",
+      "部署目录路径必须按版本号隔离（如 /app/releases/v1.2.3/），禁止多个版本共享同一物理目录",
+      "关键操作（目录创建、文件解压、权限设置、脚本执行）失败时必须返回完整的stderr和退出码供上游决策",
+      "同一SSH会话同一时间只能执行一条命令，禁止并发复用以防止输出交叉污染",
+      "所有命令输出必须限制捕获大小（每通道最多10MB），防止OOM"
+    ],
+    "state_machines": [
+      {
+        "entity": "CommandExecution",
+        "states": ["PENDING", "RUNNING", "SUCCESS", "FAILED", "TIMEOUT"],
+        "transitions": [
+          {"from": "PENDING", "to": "RUNNING", "trigger": "SSH会话分配完毕，命令开始执行", "actor": "RemoteCommandExecutor"},
+          {"from": "RUNNING", "to": "SUCCESS", "trigger": "命令执行完毕，退出码为0", "actor": "SSH远程Shell"},
+          {"from": "RUNNING", "to": "FAILED", "trigger": "命令执行完毕，退出码非0", "actor": "SSH远程Shell"},
+          {"from": "RUNNING", "to": "TIMEOUT", "trigger": "命令执行时间超过timeout_seconds，进程被终止", "actor": "RemoteCommandExecutor"}
+        ],
+        "irreversible_rules": [
+          "命令从 RUNNING 转换为 SUCCESS/FAILED/TIMEOUT 后不可逆转回 RUNNING 或 PENDING"
+        ],
+        "concurrency": "同一SSH会话不支持并发命令执行，每个会话一次只能执行一条命令。多命令并发需通过SSH连接池分配多个独立会话。命令执行内部不涉及共享内存状态，无需加锁。"
+      }
+    ],
+    "cross_service_rules": [
+      "依赖SSH连接池提供活跃的SSH会话对象，远程命令执行器不负责连接的生命周期管理（创建、维护、关闭）",
+      "执行结果的 stdout/stderr 必须完整返回给部署编排服务，编排服务根据退出码和输出内容决定下一步动作（继续部署/中止/回滚）",
+      "部署目录路径命名规范由部署编排服务传递，远程命令执行器不自行生成版本目录名或版本号",
+      "脚本执行后启动的后台守护进程由部署编排服务通过定时调用 CheckProcessStatus 确认进程存活，远程命令执行器不自行发起重试或告警",
+      "文件传输由文件传输引擎独立完成，远程命令执行器不参与SCP/SFTP传输过程，仅操作已传输到远程服务器的文件"
+    ]
+  }
+}
