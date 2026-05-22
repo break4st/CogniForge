@@ -15,9 +15,184 @@
   "updated_at": "2026-05-22T15:03:05.463947",
   "result": null,
   "error": null,
-  "lld_refs": [],
+  "lld_refs": [
+    {
+      "module": "",
+      "doc_id": "",
+      "section": "component_tree",
+      "item_name": "DeployPage",
+      "artifact_type": "component",
+      "sub_item": null
+    }
+  ],
   "acceptance_criteria": [],
-  "context": null,
+  "context": {
+    "module_type": "frontend",
+    "lld_path": ".cogniforge/wiki/lld/Web管理控制台/lld-Web管理控制台-001.json",
+    "module_overview": "用户交互界面，提供项目管理、环境配置、部署操作的可视化操作面板，采用 Vue 3 SPA 架构。用户通过浏览器访问，所有请求通过 API 网关转发至后端业务服务。实时日志通过 WebSocket 从部署引擎服务推送至前端。",
+    "scope": {
+      "data_models": [],
+      "domain_objects": [],
+      "interfaces": [],
+      "service_contracts": [],
+      "business_rules": {},
+      "error_handling": {},
+      "extra_sections": {
+        "component_tree": [
+          {
+            "name": "DeployPage",
+            "path": "pages/DeployPage.vue",
+            "description": "一键部署页面，包含部署表单和实时日志展示",
+            "props": [],
+            "events": [],
+            "state": [
+              {
+                "name": "deployResult",
+                "type": "DeployResult",
+                "description": "部署创建结果"
+              },
+              {
+                "name": "deploying",
+                "type": "boolean",
+                "description": "部署执行中状态"
+              }
+            ],
+            "behavior": [
+              "mount 时预加载项目列表和环境列表供表单选择",
+              "部署触发后展示 DeployLogViewer 并建立 WebSocket 连接",
+              "部署完成（成功/失败）后更新状态展示"
+            ],
+            "edge_cases": [
+              "未选择项目和环境时部署按钮置灰禁用"
+            ],
+            "children": [
+              {
+                "name": "DeployForm",
+                "path": "components/DeployForm.vue",
+                "description": "部署表单，选择项目和环境，填写部署参数",
+                "props": [],
+                "events": [
+                  {
+                    "name": "deploy",
+                    "payload_type": "DeployRequest"
+                  }
+                ],
+                "state": [
+                  {
+                    "name": "projectOptions",
+                    "type": "object[]",
+                    "description": "项目下拉选项"
+                  },
+                  {
+                    "name": "environmentOptions",
+                    "type": "object[]",
+                    "description": "环境下拉选项（根据所选项目过滤）"
+                  },
+                  {
+                    "name": "form",
+                    "type": "object",
+                    "description": "表单数据 { project_id, environment_id, file_url, deploy_script }"
+                  },
+                  {
+                    "name": "rules",
+                    "type": "object",
+                    "description": "表单校验规则"
+                  },
+                  {
+                    "name": "submitting",
+                    "type": "boolean",
+                    "description": "提交中状态"
+                  }
+                ],
+                "behavior": [
+                  "mount 时从项目列表 API 和环境列表 API 加载下拉选项",
+                  "选择项目后自动过滤可用的环境选项（从项目详情中获取已绑定环境）",
+                  "字段校验：项目必选、环境必选、文件 URL 必填且为合法 URL、部署脚本必填",
+                  "提交时调用 POST /api/deployments",
+                  "部署触发后触发 deploy 事件传递 DeployRequest 数据",
+                  "部署成功后禁用表单字段防止二次提交"
+                ],
+                "edge_cases": [
+                  "所选项目无绑定环境时展示提示「该项目暂无绑定环境，请先配置环境」",
+                  "部署成功后若再次部署，先重置表单状态再启用字段编辑",
+                  "文件 URL 格式校验：必须以 http:// 或 https:// 开头"
+                ],
+                "children": []
+              },
+              {
+                "name": "DeployLogViewer",
+                "path": "components/DeployLogViewer.vue",
+                "description": "实时日志查看器，通过 WebSocket 接收并展示部署日志",
+                "props": [
+                  {
+                    "name": "deploymentId",
+                    "type": "uuid",
+                    "required": true,
+                    "description": "部署任务 ID，用于建立 WebSocket 连接"
+                  }
+                ],
+                "events": [],
+                "state": [
+                  {
+                    "name": "logs",
+                    "type": "string[]",
+                    "description": "日志行数组"
+                  },
+                  {
+                    "name": "connected",
+                    "type": "boolean",
+                    "description": "WebSocket 连接状态"
+                  },
+                  {
+                    "name": "autoScroll",
+                    "type": "boolean",
+                    "description": "是否自动滚到底部"
+                  },
+                  {
+                    "name": "reconnectTimes",
+                    "type": "int",
+                    "description": "已重连次数"
+                  },
+                  {
+                    "name": "deployFinished",
+                    "type": "boolean",
+                    "description": "部署是否已结束"
+                  }
+                ],
+                "behavior": [
+                  "prop deploymentId 变化时关闭旧连接并建立新 WebSocket 连接：WS /ws/deployments/{id}/logs",
+                  "连接成功后设置 connected=true 并在顶部展示绿色「已连接」状态徽标",
+                  "收到消息时追加到 logs 数组，autoScroll=true 时自动滚动到底部",
+                  "autoScroll 默认为 true，用户手动向上滚动时暂停自动滚动",
+                  "用户点击「回到底部」按钮恢复自动滚动",
+                  "连接断开时自动重连，指数退避 1s/2s/4s/8s，最大 30s",
+                  "部署结束时（收到特定消息标识）关闭 WebSocket 连接并标记 deployFinished=true"
+                ],
+                "edge_cases": [
+                  "日志缓冲区上限 5000 行，超出时丢弃最旧的行并提示「日志过长，已截断」",
+                  "WebSocket 连接异常关闭（非正常关闭码 1000）时立即尝试重连",
+                  "重连超过 5 次后停止自动重连，展示「连接已断开，请手动刷新」按钮",
+                  "组件卸载（unmount）时主动关闭 WebSocket 连接防止内存泄漏",
+                  "用户关闭页面/路由跳转时未完成的部署仍继续执行，但前端不再接收日志"
+                ],
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "external_contracts": [],
+    "cross_module_deps": [],
+    "tech_stack": [
+      "Vue 3",
+      "Element Plus",
+      "REST",
+      "WebSocket",
+      "JWT"
+    ],
+    "upstream_artifacts": []
+  },
   "expected_output_files": [],
   "layer": 0
 }
