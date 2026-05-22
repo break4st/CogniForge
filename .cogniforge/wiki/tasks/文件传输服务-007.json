@@ -15,9 +15,115 @@
   "updated_at": "2026-05-22T15:03:40.942054",
   "result": null,
   "error": null,
-  "lld_refs": [],
+  "lld_refs": [
+    {
+      "module": "",
+      "doc_id": "",
+      "section": "service_contracts",
+      "item_name": "FileTransferService",
+      "artifact_type": "service_contract",
+      "sub_item": null
+    }
+  ],
   "acceptance_criteria": [],
-  "context": null,
-  "expected_output_files": [],
-  "layer": 0
+  "context": {
+    "module_type": "service",
+    "lld_path": ".cogniforge/wiki/lld/文件传输服务/lld-文件传输服务-001.json",
+    "module_overview": "负责将待部署的可执行文件通过SCP安全传输到远程服务器的指定部署目录，提供文件上传接收、完整性校验及远程传输能力。接收部署引擎服务下发的传输请求（含目标服务器连接参数和SSH密钥标识），内部通过Paramiko建立SCP连接完成文件推送，并返回传输结果",
+    "scope": {
+      "data_models": [],
+      "domain_objects": [],
+      "interfaces": [],
+      "service_contracts": [
+        {
+          "name": "FileTransferService",
+          "description": "文件传输核心服务，管理SCP传输的全生命周期：请求校验、SSH密钥解析、SCP连接建立、文件传输、完整性校验及结果返回",
+          "methods": [
+            {
+              "name": "transferFile",
+              "signature": "(request: TransferRequest) -> TransferResult",
+              "precondition": "request 已通过参数校验（host/port/login_user/key_id/local_path/remote_path均非空合法）；local_path 指向的文件在本地文件系统真实存在且可读",
+              "postcondition": "返回 TransferResult；success=true 时 remote_path 指向的文件在远程服务器上存在且字节数与 local_path 源文件一致；success=false 时已自动重试（最多 maxRetries 次），remote_path 不保证存在",
+              "description": "执行一次文件SCP传输：解析SSH密钥->建立SCP连接->传输文件->校验完整性->返回结果",
+              "exceptions": [
+                {
+                  "name": "ParameterValidationException",
+                  "trigger": "request中必填字段缺失或格式不合法（如port<1或port>65535、local_path非绝对路径）",
+                  "http_status": 400
+                },
+                {
+                  "name": "KeyResolutionException",
+                  "trigger": "调用密钥管理服务获取SSH私钥失败（key_id不存在或密钥状态不可用）",
+                  "http_status": 502
+                },
+                {
+                  "name": "AuthenticationException",
+                  "trigger": "SSH密钥认证被目标服务器拒绝（密钥不匹配或login_user无权访问）",
+                  "http_status": 401
+                },
+                {
+                  "name": "ConnectionException",
+                  "trigger": "无法连接到远程服务器（主机不可达、端口未开放、DNS解析失败）",
+                  "http_status": 503
+                },
+                {
+                  "name": "TransferTimeoutException",
+                  "trigger": "SCP传输超过scp_timeout_seconds配置的超时时间",
+                  "http_status": 408
+                },
+                {
+                  "name": "FileNotFoundException",
+                  "trigger": "local_path在本地文件系统中不存在或无权读取",
+                  "http_status": 404
+                },
+                {
+                  "name": "IntegrityCheckException",
+                  "trigger": "传输完成后文件SHA256校验和不匹配，已自动重试但仍失败",
+                  "http_status": 500
+                }
+              ]
+            },
+            {
+              "name": "verifyFileIntegrity",
+              "signature": "(localPath: String, remoteHost: String, remotePath: String, sshConfig: ScpConnectionConfig) -> Boolean",
+              "precondition": "localPath 指向的本地文件存在；remoteHost:remotePath 指向的远程文件存在且 sshConfig 认证信息有效",
+              "postcondition": "返回 true 时本地文件与远程文件的 SHA256 校验和一致；返回 false 时不一致或校验过程中发生错误",
+              "description": "通过SSH连接远程服务器对已传输文件执行远程SHA256校验，与本地文件校验和对比，确认文件完整性",
+              "exceptions": [
+                {
+                  "name": "ConnectionException",
+                  "trigger": "校验过程中与远程服务器的SSH连接中断",
+                  "http_status": 503
+                },
+                {
+                  "name": "RemoteCommandException",
+                  "trigger": "远程服务器上执行 sha256sum 命令失败或命令不存在",
+                  "http_status": 500
+                }
+              ]
+            }
+          ],
+          "repository_dependencies": [
+            "findDecryptedKeyById(keyId: UUID) -> String  通过密钥管理服务内部接口获取解密后的SSH私钥明文"
+          ]
+        }
+      ],
+      "business_rules": {},
+      "error_handling": {},
+      "extra_sections": {}
+    },
+    "external_contracts": [],
+    "cross_module_deps": [],
+    "tech_stack": [
+      "Python",
+      "FastAPI",
+      "Paramiko",
+      "REST + SSH/SCP"
+    ],
+    "upstream_artifacts": []
+  },
+  "expected_output_files": [
+    "src/文件传输服务/service/filetransferservice.go"
+  ],
+  "layer": 1
 }
