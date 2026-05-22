@@ -4,159 +4,136 @@
     "type": "lld",
     "module_type": "infrastructure",
     "module": "Redis缓存",
-    "title": "Redis缓存详细设计 - 高性能缓存与发布订阅中间件",
+    "title": "Redis缓存 — 详细设计文档",
     "author": "design_agent",
-    "created": "2026-05-21T00:00:00Z"
+    "created": "2026-05-22"
   },
   "overview": {
-    "description": "提供高性能缓存服务，用于部署状态实时推送、会话管理、数据缓存等场景。支持Redis Pub/Sub实现部署任务状态的实时推送，分布式锁确保关键资源的互斥访问，数据缓存加速频繁查询的响应速度。",
-    "dependencies": ["部署编排服务", "项目管理服务", "环境管理服务"],
-    "tech_stack": ["Redis 7", "Python"]
+    "description": "基于Redis 7+的缓存与消息队列基础设施，为业务服务层提供热数据缓存、部署任务实时状态存储、用户会话与Token缓存，以及基于Redis Stream的异步部署任务队列。业务服务通过Go客户端库调用Redis模块封装的服务接口，不直接操作Redis命令。",
+    "dependencies": [],
+    "tech_stack": ["Redis 7+"]
   },
   "data_models": [
     {
-      "name": "deployment_status",
+      "name": "ProjectCacheEntry",
       "type": "store",
       "ownership": "owned",
-      "description": "部署任务实时状态缓存，支持WebSocket实时推送部署进度。使用String类型存储JSON序列化的状态对象。",
+      "description": "项目热数据缓存，存储项目列表和单个项目详情，减少PostgreSQL查询压力，TTL到期自动失效",
       "fields": [
-        {"name": "task_id", "type": "string", "required": true, "description": "部署任务ID，作为key的一部分"},
-        {"name": "status", "type": "string", "required": true, "description": "部署状态：pending/running/success/failed"},
-        {"name": "progress", "type": "integer", "required": true, "description": "部署进度百分比 0-100"},
-        {"name": "log_summary", "type": "string", "required": false, "description": "实时日志摘要"},
-        {"name": "started_at", "type": "string", "required": false, "description": "部署开始时间 ISO8601"},
-        {"name": "finished_at", "type": "string", "required": false, "description": "部署完成时间 ISO8601"},
-        {"name": "error_message", "type": "string", "required": false, "description": "失败时的错误信息"}
+        {"name": "project_id", "type": "string (UUID)", "required": true, "description": "项目唯一标识"},
+        {"name": "name", "type": "string", "required": true, "description": "项目名称"},
+        {"name": "description", "type": "string", "required": false, "description": "项目描述"},
+        {"name": "environments", "type": "string (JSON array)", "required": false, "description": "关联环境列表的JSON序列化"},
+        {"name": "created_at", "type": "string (ISO8601)", "required": true, "description": "创建时间"},
+        {"name": "updated_at", "type": "string (ISO8601)", "required": true, "description": "更新时间"}
       ]
     },
     {
-      "name": "session_cache",
+      "name": "EnvironmentCacheEntry",
       "type": "store",
       "ownership": "owned",
-      "description": "用户会话信息缓存，使用Hash类型存储，支持滑动TTL续期。",
+      "description": "环境配置热数据缓存，缓存部署环境连接信息和健康状态",
       "fields": [
-        {"name": "session_id", "type": "string", "required": true, "description": "会话ID，作为key"},
-        {"name": "user_id", "type": "string", "required": true, "description": "用户ID"},
-        {"name": "username", "type": "string", "required": true, "description": "用户名"},
-        {"name": "role", "type": "string", "required": true, "description": "用户角色"},
-        {"name": "token", "type": "string", "required": true, "description": "JWT token"},
-        {"name": "expires_at", "type": "string", "required": true, "description": "会话过期时间 ISO8601"},
-        {"name": "ip_address", "type": "string", "required": false, "description": "客户端IP地址"}
+        {"name": "env_id", "type": "string (UUID)", "required": true, "description": "环境唯一标识"},
+        {"name": "project_id", "type": "string (UUID)", "required": true, "description": "所属项目ID"},
+        {"name": "name", "type": "string", "required": true, "description": "环境名称"},
+        {"name": "host", "type": "string", "required": true, "description": "服务器地址"},
+        {"name": "port", "type": "integer", "required": true, "description": "SSH端口"},
+        {"name": "status", "type": "string", "required": true, "description": "健康状态: online/offline/unknown"}
       ]
     },
     {
-      "name": "data_cache",
+      "name": "DeployTaskState",
       "type": "store",
       "ownership": "owned",
-      "description": "通用数据缓存，用于缓存频繁查询的业务数据。使用String类型存储JSON序列化的业务数据。",
+      "description": "部署任务实时状态数据，支持部署进度查询和WebSocket实时推送",
       "fields": [
-        {"name": "cache_key", "type": "string", "required": true, "description": "缓存键，格式 cache:{module}:{业务标识}"},
-        {"name": "cache_value", "type": "string", "required": true, "description": "缓存值，JSON序列化的业务数据"},
-        {"name": "ttl_seconds", "type": "integer", "required": true, "description": "缓存过期时间（秒），默认300"},
-        {"name": "cached_at", "type": "string", "required": false, "description": "缓存创建时间 ISO8601"}
+        {"name": "task_id", "type": "string (UUID)", "required": true, "description": "部署任务ID"},
+        {"name": "status", "type": "string", "required": true, "description": "任务状态: pending/running/success/failed"},
+        {"name": "progress", "type": "integer", "required": true, "description": "进度百分比 0-100"},
+        {"name": "current_step", "type": "string", "required": false, "description": "当前执行步骤描述"},
+        {"name": "logs", "type": "string (JSON array)", "required": false, "description": "部署日志行数组的JSON序列化"},
+        {"name": "error", "type": "string", "required": false, "description": "错误信息"},
+        {"name": "version", "type": "string", "required": false, "description": "部署版本号"},
+        {"name": "started_at", "type": "string (ISO8601)", "required": true, "description": "开始时间"},
+        {"name": "completed_at", "type": "string (ISO8601)", "required": false, "description": "完成时间"}
       ]
     },
     {
-      "name": "distributed_lock",
+      "name": "UserSessionEntry",
       "type": "store",
       "ownership": "owned",
-      "description": "基于Redis SET NX PX实现的分布式锁，确保分布式环境下关键资源的互斥访问。",
+      "description": "用户会话和JWT Token缓存，维护登录状态和当前项目上下文",
       "fields": [
-        {"name": "lock_key", "type": "string", "required": true, "description": "锁键，格式 lock:{resource_type}:{resource_id}"},
-        {"name": "lock_token", "type": "string", "required": true, "description": "唯一标识锁持有者的随机token（UUID），用于安全释放锁"},
-        {"name": "ttl_milliseconds", "type": "integer", "required": true, "description": "锁自动释放时间（毫秒），默认30000"},
-        {"name": "acquired_at", "type": "string", "required": false, "description": "锁获取时间 ISO8601"}
+        {"name": "token_hash", "type": "string", "required": true, "description": "JWT Token的SHA256哈希值，用作key"},
+        {"name": "user_id", "type": "string (UUID)", "required": true, "description": "用户标识"},
+        {"name": "current_project_id", "type": "string (UUID)", "required": false, "description": "当前选中的项目ID"},
+        {"name": "current_project", "type": "string (JSON)", "required": false, "description": "当前项目详情JSON"},
+        {"name": "expires_at", "type": "string (ISO8601)", "required": true, "description": "会话过期时间"}
+      ]
+    },
+    {
+      "name": "TokenBlacklistEntry",
+      "type": "store",
+      "ownership": "owned",
+      "description": "登出JWT Token黑名单，确保登出的Token在过期前无法继续使用",
+      "fields": [
+        {"name": "jti", "type": "string", "required": true, "description": "JWT Token的JTI声明"},
+        {"name": "blacklisted_at", "type": "string (ISO8601)", "required": true, "description": "加入黑名单时间"},
+        {"name": "original_exp", "type": "string (ISO8601)", "required": true, "description": "Token原始过期时间"}
+      ]
+    },
+    {
+      "name": "DeployTaskMessage",
+      "type": "store",
+      "ownership": "owned",
+      "description": "部署任务队列消息体，通过Redis Stream异步传递部署请求",
+      "fields": [
+        {"name": "task_id", "type": "string (UUID)", "required": true, "description": "部署任务ID"},
+        {"name": "project_id", "type": "string (UUID)", "required": true, "description": "项目标识"},
+        {"name": "environment_id", "type": "string (UUID)", "required": true, "description": "目标环境标识"},
+        {"name": "file_path", "type": "string", "required": true, "description": "上传文件路径或文件标识"},
+        {"name": "version", "type": "string", "required": false, "description": "指定版本号"},
+        {"name": "description", "type": "string", "required": false, "description": "部署说明"},
+        {"name": "created_at", "type": "string (ISO8601)", "required": true, "description": "消息创建时间"}
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "设置缓存",
+      "name": "GetProjectCache",
       "method": "INTERNAL",
-      "endpoint": "SET key value [EX seconds] [NX|XX]",
-      "description": "设置缓存键值，支持TTL和条件写入。对应Redis SET命令。",
+      "endpoint": "Cache:GetProject(projectId)",
+      "description": "根据项目ID从缓存获取项目详情，缓存未命中时返回空",
       "parameters": [
-        {"name": "key", "type": "string", "description": "缓存键"},
-        {"name": "value", "type": "string", "description": "缓存值（JSON序列化）"},
-        {"name": "ttl_seconds", "type": "integer", "description": "过期时间（秒），0表示永不过期"},
-        {"name": "condition", "type": "string", "description": "写入条件：NX（键不存在时）/XX（键存在时）/不传（始终写入）"}
+        {"name": "projectId", "type": "string (UUID)", "description": "项目ID"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "success": "boolean",
-          "message": "string"
+          "project_id": "string (UUID)",
+          "name": "string",
+          "description": "string",
+          "environments": "string (JSON array)",
+          "created_at": "string (ISO8601)",
+          "updated_at": "string (ISO8601)"
         }
       },
       "error_codes": [
-        {"code": 5001, "message": "Redis连接超时，操作失败"},
-        {"code": 5002, "message": "Redis命令执行异常，如OOM或LOADING状态"}
+        {"code": 404, "message": "缓存未命中"},
+        {"code": 5001, "message": "Redis连接失败"},
+        {"code": 5002, "message": "操作超时"}
       ]
     },
     {
-      "name": "获取缓存",
+      "name": "SetProjectCache",
       "method": "INTERNAL",
-      "endpoint": "GET key",
-      "description": "根据键获取缓存值。对应Redis GET命令。",
+      "endpoint": "Cache:SetProject(projectId, data, ttl)",
+      "description": "将项目详情写入缓存，覆盖已有缓存项，TTL由调用方指定",
       "parameters": [
-        {"name": "key", "type": "string", "description": "缓存键"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "value": "string",
-          "exists": "boolean"
-        }
-      },
-      "error_codes": [
-        {"code": 5001, "message": "Redis连接超时，操作失败"},
-        {"code": 5004, "message": "缓存键不存在，返回空值"}
-      ]
-    },
-    {
-      "name": "删除缓存",
-      "method": "INTERNAL",
-      "endpoint": "DEL key [key ...]",
-      "description": "删除一个或多个缓存键。对应Redis DEL命令。",
-      "parameters": [
-        {"name": "keys", "type": "array<string>", "description": "要删除的缓存键列表"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "deleted_count": "integer"
-        }
-      },
-      "error_codes": [
-        {"code": 5001, "message": "Redis连接超时，操作失败"}
-      ]
-    },
-    {
-      "name": "缓存键是否存在",
-      "method": "INTERNAL",
-      "endpoint": "EXISTS key [key ...]",
-      "description": "检查缓存键是否存在。对应Redis EXISTS命令。",
-      "parameters": [
-        {"name": "key", "type": "string", "description": "缓存键"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "exists": "boolean"
-        }
-      },
-      "error_codes": [
-        {"code": 5001, "message": "Redis连接超时，操作失败"}
-      ]
-    },
-    {
-      "name": "设置键过期时间",
-      "method": "INTERNAL",
-      "endpoint": "EXPIRE key seconds",
-      "description": "为已有缓存键设置过期时间。对应Redis EXPIRE命令。",
-      "parameters": [
-        {"name": "key", "type": "string", "description": "缓存键"},
-        {"name": "ttl_seconds", "type": "integer", "description": "过期时间（秒）"}
+        {"name": "projectId", "type": "string (UUID)", "description": "项目ID"},
+        {"name": "data", "type": "ProjectCacheEntry", "description": "项目缓存数据"},
+        {"name": "ttl", "type": "integer", "description": "缓存有效时长（秒）"}
       ],
       "response": {
         "status": 200,
@@ -165,97 +142,327 @@
         }
       },
       "error_codes": [
-        {"code": 5004, "message": "指定的缓存键不存在"},
-        {"code": 5001, "message": "Redis连接超时，操作失败"}
+        {"code": 5001, "message": "Redis连接失败"},
+        {"code": 5002, "message": "操作超时"},
+        {"code": 5003, "message": "数据序列化错误"}
       ]
     },
     {
-      "name": "发布消息",
+      "name": "DeleteProjectCache",
       "method": "INTERNAL",
-      "endpoint": "PUBLISH channel message",
-      "description": "向指定Redis频道发布消息，订阅该频道的所有客户端将收到消息。对应Redis PUBLISH命令。",
+      "endpoint": "Cache:DeleteProject(projectId)",
+      "description": "删除指定项目的缓存，用于项目数据变更后同步失效",
       "parameters": [
-        {"name": "channel", "type": "string", "description": "频道名称"},
-        {"name": "message", "type": "string", "description": "消息内容（JSON序列化）"}
+        {"name": "projectId", "type": "string (UUID)", "description": "项目ID"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "subscriber_count": "integer"
+          "success": "boolean"
         }
       },
       "error_codes": [
-        {"code": 5001, "message": "Redis连接超时，发布失败"}
+        {"code": 5001, "message": "Redis连接失败"},
+        {"code": 5002, "message": "操作超时"}
       ]
     },
     {
-      "name": "订阅频道（WebSocket桥接）",
-      "method": "WS",
-      "endpoint": "/ws/cache/subscribe",
-      "description": "通过WebSocket桥接订阅Redis Pub/Sub频道，前端可通过此接口接收实时部署状态推送。",
-      "parameters": [
-        {"name": "channel", "type": "string", "description": "要订阅的Redis频道名称"}
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "channel": "string",
-          "message": "string",
-          "published_at": "string"
-        }
-      },
-      "error_codes": [
-        {"code": 4001, "message": "频道名称无效，包含非法字符"},
-        {"code": 5001, "message": "WebSocket连接建立失败或Redis订阅异常"}
-      ]
-    },
-    {
-      "name": "获取分布式锁",
+      "name": "GetEnvironmentCache",
       "method": "INTERNAL",
-      "endpoint": "SET lock_key token NX PX ttl_ms",
-      "description": "基于SET NX PX指令实现分布式锁获取，确保同一时间只有一个服务实例能持有锁。",
+      "endpoint": "Cache:GetEnvironment(envId)",
+      "description": "根据环境ID从缓存获取环境配置，加速部署流程中的环境信息获取",
       "parameters": [
-        {"name": "lock_key", "type": "string", "description": "锁键"},
-        {"name": "token", "type": "string", "description": "唯一标识锁持有者的随机token（UUID）"},
-        {"name": "ttl_milliseconds", "type": "integer", "description": "锁超时时间（毫秒），默认30000"}
+        {"name": "envId", "type": "string (UUID)", "description": "环境ID"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "acquired": "boolean",
-          "token": "string",
-          "ttl_ms": "integer"
+          "env_id": "string (UUID)",
+          "project_id": "string (UUID)",
+          "name": "string",
+          "host": "string",
+          "port": "integer",
+          "status": "string"
         }
       },
       "error_codes": [
-        {"code": 5003, "message": "锁已被其他实例持有，获取失败"},
-        {"code": 5001, "message": "Redis连接超时，锁操作结果不确定"}
+        {"code": 404, "message": "缓存未命中"},
+        {"code": 5001, "message": "Redis连接失败"},
+        {"code": 5002, "message": "操作超时"}
       ]
     },
     {
-      "name": "释放分布式锁",
+      "name": "SetEnvironmentCache",
       "method": "INTERNAL",
-      "endpoint": "EVAL release_script 1 lock_key token",
-      "description": "使用Lua脚本安全释放分布式锁，确保只有锁的持有者才能释放锁。对应Redis EVAL命令执行原子性释放脚本。",
+      "endpoint": "Cache:SetEnvironment(envId, data, ttl)",
+      "description": "将环境配置写入缓存",
       "parameters": [
-        {"name": "lock_key", "type": "string", "description": "锁键"},
-        {"name": "token", "type": "string", "description": "锁持有者token，用于验证持有者身份"}
+        {"name": "envId", "type": "string (UUID)", "description": "环境ID"},
+        {"name": "data", "type": "EnvironmentCacheEntry", "description": "环境缓存数据"},
+        {"name": "ttl", "type": "integer", "description": "缓存有效时长（秒）"}
       ],
       "response": {
         "status": 200,
         "body": {
-          "released": "boolean"
+          "success": "boolean"
         }
       },
       "error_codes": [
-        {"code": 5003, "message": "token不匹配，当前实例不是锁的持有者"},
-        {"code": 5004, "message": "锁已自动释放或不存在"},
-        {"code": 5001, "message": "Redis连接超时，释放结果不确定"}
+        {"code": 5001, "message": "Redis连接失败"},
+        {"code": 5002, "message": "操作超时"},
+        {"code": 5003, "message": "数据序列化错误"}
+      ]
+    },
+    {
+      "name": "DeleteEnvironmentCache",
+      "method": "INTERNAL",
+      "endpoint": "Cache:DeleteEnvironment(envId)",
+      "description": "删除指定环境的缓存，环境配置变更后同步失效",
+      "parameters": [
+        {"name": "envId", "type": "string (UUID)", "description": "环境ID"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 5001, "message": "Redis连接失败"},
+        {"code": 5002, "message": "操作超时"}
+      ]
+    },
+    {
+      "name": "GetDeployTaskState",
+      "method": "INTERNAL",
+      "endpoint": "Cache:GetDeployTaskState(taskId)",
+      "description": "查询部署任务实时状态，供DeployStatusAPI和WebSocket推送使用",
+      "parameters": [
+        {"name": "taskId", "type": "string (UUID)", "description": "部署任务ID"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "task_id": "string (UUID)",
+          "status": "string",
+          "progress": "integer",
+          "current_step": "string",
+          "logs": "string (JSON array)",
+          "error": "string",
+          "version": "string",
+          "started_at": "string (ISO8601)",
+          "completed_at": "string (ISO8601)"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "任务状态未找到"},
+        {"code": 5001, "message": "Redis连接失败"},
+        {"code": 5002, "message": "操作超时"}
+      ]
+    },
+    {
+      "name": "SetDeployTaskState",
+      "method": "INTERNAL",
+      "endpoint": "Cache:SetDeployTaskState(taskId, state, ttl)",
+      "description": "更新部署任务实时状态，同时通过Pub/Sub频道发布进度变更事件",
+      "parameters": [
+        {"name": "taskId", "type": "string (UUID)", "description": "部署任务ID"},
+        {"name": "state", "type": "DeployTaskState", "description": "任务状态数据"},
+        {"name": "ttl", "type": "integer", "description": "数据保留时长（秒）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 5001, "message": "Redis连接失败"},
+        {"code": 5002, "message": "操作超时"},
+        {"code": 5003, "message": "数据序列化错误"}
+      ]
+    },
+    {
+      "name": "AppendDeployTaskLog",
+      "method": "INTERNAL",
+      "endpoint": "Cache:AppendDeployTaskLog(taskId, logLine)",
+      "description": "向部署任务日志追加一行日志",
+      "parameters": [
+        {"name": "taskId", "type": "string (UUID)", "description": "部署任务ID"},
+        {"name": "logLine", "type": "string", "description": "日志行内容"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "log_length": "integer"
+        }
+      },
+      "error_codes": [
+        {"code": 5001, "message": "Redis连接失败"},
+        {"code": 5004, "message": "队列操作失败"}
+      ]
+    },
+    {
+      "name": "SetSession",
+      "method": "INTERNAL",
+      "endpoint": "Cache:SetSession(token, sessionData, ttl)",
+      "description": "缓存用户会话和JWT Token，登录成功后调用",
+      "parameters": [
+        {"name": "token", "type": "string", "description": "JWT Token原文"},
+        {"name": "sessionData", "type": "UserSessionEntry", "description": "会话数据"},
+        {"name": "ttl", "type": "integer", "description": "会话有效时长（秒）"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 5001, "message": "Redis连接失败"},
+        {"code": 5003, "message": "数据序列化错误"}
+      ]
+    },
+    {
+      "name": "GetSession",
+      "method": "INTERNAL",
+      "endpoint": "Cache:GetSession(token)",
+      "description": "根据Token获取用户会话信息，认证中间件调用以校验Token有效性",
+      "parameters": [
+        {"name": "token", "type": "string", "description": "JWT Token原文"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "token_hash": "string",
+          "user_id": "string (UUID)",
+          "current_project_id": "string (UUID)",
+          "current_project": "string (JSON)",
+          "expires_at": "string (ISO8601)"
+        }
+      },
+      "error_codes": [
+        {"code": 404, "message": "会话未找到或已过期"},
+        {"code": 5001, "message": "Redis连接失败"}
+      ]
+    },
+    {
+      "name": "DeleteSession",
+      "method": "INTERNAL",
+      "endpoint": "Cache:DeleteSession(token)",
+      "description": "删除用户会话缓存，用户登出时调用",
+      "parameters": [
+        {"name": "token", "type": "string", "description": "JWT Token原文"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 5001, "message": "Redis连接失败"}
+      ]
+    },
+    {
+      "name": "BlacklistToken",
+      "method": "INTERNAL",
+      "endpoint": "Cache:BlacklistToken(jti, originalExp)",
+      "description": "将登出的JWT Token加入黑名单，确保登出的Token在过期前无法使用",
+      "parameters": [
+        {"name": "jti", "type": "string", "description": "JWT Token的JTI声明"},
+        {"name": "originalExp", "type": "string (ISO8601)", "description": "Token原始过期时间"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 5001, "message": "Redis连接失败"}
+      ]
+    },
+    {
+      "name": "IsTokenBlacklisted",
+      "method": "INTERNAL",
+      "endpoint": "Cache:IsTokenBlacklisted(jti)",
+      "description": "检查JWT Token是否在黑名单中，认证中间件每次请求时调用",
+      "parameters": [
+        {"name": "jti", "type": "string", "description": "JWT Token的JTI声明"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "blacklisted": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 5001, "message": "Redis连接失败"}
+      ]
+    },
+    {
+      "name": "EnqueueDeployTask",
+      "method": "INTERNAL",
+      "endpoint": "Queue:EnqueueDeployTask(message)",
+      "description": "将部署任务消息写入Redis Stream任务队列，返回Redis消息ID",
+      "parameters": [
+        {"name": "message", "type": "DeployTaskMessage", "description": "部署任务消息体"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "message_id": "string (Redis Stream 消息ID)",
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 5004, "message": "队列写入失败"},
+        {"code": 5003, "message": "数据序列化错误"}
+      ]
+    },
+    {
+      "name": "DequeueDeployTasks",
+      "method": "INTERNAL",
+      "endpoint": "Queue:DequeueDeployTasks(consumerName, batchSize)",
+      "description": "从Redis Stream消费者组拉取待处理的部署任务消息",
+      "parameters": [
+        {"name": "consumerName", "type": "string", "description": "消费者名称"},
+        {"name": "batchSize", "type": "integer", "description": "批量拉取数量"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "messages": "array (DeployTaskMessage[] + message_id)"
+        }
+      },
+      "error_codes": [
+        {"code": 5004, "message": "队列读取失败"}
+      ]
+    },
+    {
+      "name": "AckDeployTask",
+      "method": "INTERNAL",
+      "endpoint": "Queue:AckDeployTask(consumerName, messageId)",
+      "description": "确认消费部署任务消息，从消费者组Pending列表移除",
+      "parameters": [
+        {"name": "consumerName", "type": "string", "description": "消费者名称"},
+        {"name": "messageId", "type": "string", "description": "Redis Stream消息ID"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {"code": 5004, "message": "ACK确认失败"}
       ]
     }
   ],
   "error_handling": {
-    "strategy": "Redis操作失败时先进行自动重试（指数退避），重试耗尽后向上层服务返回结构化错误码，由调用方决定降级策略。连接异常时触发哨兵模式自动切换或集群重连，期间对调用方透明。",
+    "strategy": "Redis操作采用统一错误处理：连接错误时客户端自动重试并重新建立连接池；操作超时返回明确的错误码和详情，业务层根据错误码区分缓存未命中（非异常）与系统故障（需告警）；数据序列化错误记录详细日志并返回格式错误码",
     "response_format": {
       "body": {
         "code": "integer",
@@ -266,96 +473,129 @@
     "categories": [
       {
         "code": 5001,
-        "name": "连接超时",
-        "description": "Redis连接超时（超时阈值5s），自动重试3次（指数退避1s→2s→4s），重试耗尽后返回错误"
+        "name": "连接失败",
+        "description": "Redis服务器不可达或网络异常，客户端内置自动重连机制，连续失败3次后返回错误"
       },
       {
         "code": 5002,
-        "name": "命令执行异常",
-        "description": "Redis服务端返回异常（如OOM、LOADING、READONLY等），记录详细错误信息后返回调用方"
+        "name": "操作超时",
+        "description": "Redis命令执行超时，超过配置的读写超时阈值（读3s/写3s），业务层可选择降级查数据库"
       },
       {
         "code": 5003,
-        "name": "锁竞争",
-        "description": "分布式锁获取失败，锁已被其他实例持有，返回锁剩余TTL信息供调用方决定等待策略"
+        "name": "数据序列化错误",
+        "description": "缓存数据的JSON序列化或反序列化失败，通常由数据格式变更引起，记录告警日志"
       },
       {
         "code": 5004,
-        "name": "数据不存在",
-        "description": "缓存键不存在或已过期，返回空结果供调用方触发回源加载"
-      },
-      {
-        "code": 5005,
-        "name": "集群不可用",
-        "description": "Redis哨兵检测到主节点故障，触发故障转移，期间操作返回服务不可用错误"
+        "name": "队列操作失败",
+        "description": "Redis Stream队列的XADD/XREADGROUP/XACK操作失败，可能由内存超限或连接异常引起"
       }
     ]
   },
   "topology": {
     "namespaces": [
       {
-        "name": "deploy:status",
-        "description": "部署任务实时状态，String类型存储JSON序列化的部署进度和状态",
-        "key_pattern": "deploy:status:{task_id}"
+        "name": "cache:project",
+        "description": "项目热数据缓存，以项目ID为key存储项目详情JSON",
+        "ttl_seconds": 300,
+        "eviction_policy": "volatile-lfu"
       },
       {
-        "name": "session",
-        "description": "用户会话信息，Hash类型存储用户认证数据和角色信息",
-        "key_pattern": "session:{session_id}"
+        "name": "cache:environment",
+        "description": "环境配置缓存，以环境ID为key存储环境连接信息",
+        "ttl_seconds": 300,
+        "eviction_policy": "volatile-lfu"
       },
       {
-        "name": "cache",
-        "description": "通用业务数据缓存，String类型存储JSON序列化的业务查询结果",
-        "key_pattern": "cache:{module}:{business_key}"
+        "name": "cache:session",
+        "description": "用户会话和Token缓存，以Token哈希为key存储会话数据",
+        "ttl_seconds": 3600,
+        "eviction_policy": "volatile-ttl"
       },
       {
-        "name": "lock",
-        "description": "分布式锁，基于SET NX PX实现的互斥锁",
-        "key_pattern": "lock:{resource_type}:{resource_id}"
+        "name": "cache:token:blacklist",
+        "description": "登出JWT Token黑名单，以JTI为key，TTL与Token原始过期时间一致",
+        "ttl_seconds": 86400,
+        "eviction_policy": "volatile-ttl"
+      },
+      {
+        "name": "task:deploy:state",
+        "description": "部署任务实时状态，以task_id为key存储状态JSON",
+        "ttl_seconds": 86400,
+        "eviction_policy": "volatile-ttl"
       }
     ],
     "key_patterns": [
-      "deploy:status:{task_id} — 部署状态键，String类型，TTL=3600s，部署完成后自动过期",
-      "session:{session_id} — 会话键，Hash类型，TTL=1800s，每次访问触发滑动续期",
-      "cache:{module}:{business_key} — 缓存键，String类型，TTL按业务配置（默认300s）",
-      "lock:{resource_type}:{resource_id} — 锁键，String类型，TTL=30s，防死锁自动释放"
+      {"pattern": "cache:project:{project_id}", "type": "string", "description": "单个项目详情缓存"},
+      {"pattern": "cache:project:list", "type": "string", "description": "项目列表JSON缓存"},
+      {"pattern": "cache:environment:{env_id}", "type": "string", "description": "环境配置JSON缓存"},
+      {"pattern": "cache:session:{sha256(token)}", "type": "string", "description": "用户会话JSON缓存"},
+      {"pattern": "cache:token:blacklist:{jti}", "type": "string", "description": "Token黑名单标记"},
+      {"pattern": "task:deploy:{task_id}", "type": "string", "description": "部署任务状态JSON"},
+      {"pattern": "task:deploy:queue", "type": "stream", "description": "部署任务Redis Stream队列"},
+      {"pattern": "task:deploy:consumer-group", "type": "stream", "description": "部署任务消费者组"},
+      {"pattern": "task:deploy:deadletter", "type": "stream", "description": "部署任务死信队列"}
     ],
-    "expiry_strategy": "部署状态缓存TTL=3600s（部署完成后清理），会话缓存TTL=1800s并支持滑动续期（每次访问重置TTL），数据缓存默认TTL=300s可配置（各模块按业务特点自定义），分布式锁TTL=30s防止死锁。采用惰性删除+定期淘汰策略，内存接近maxmemory时按allkeys-lru策略淘汰。",
-    "pub_sub_channels": [
-      {
-        "name": "deploy:status:{task_id}",
-        "description": "部署任务状态推送频道，部署编排服务推送进度，WebSocket桥接后推送到前端"
-      },
-      {
-        "name": "system:notifications",
-        "description": "系统级通知广播频道，用于全局消息推送"
-      },
-      {
-        "name": "session:invalidate",
-        "description": "会话失效通知频道，强制指定会话下线"
-      }
-    ]
+    "expiry_strategy": "缓存数据（project/environment）使用volatile-lfu驱逐策略，TTL 300秒到期自动淘汰不活跃项；会话Token使用volatile-ttl按剩余TTL驱逐，默认1小时；Token黑名单保留至Token原始过期时间（max 86400秒）；任务状态数据完成后保留24小时后自动过期；队列数据使用noeviction防止消息丢失，消费后通过XACK确认并从Stream中trim删除"
   },
   "connection_contracts": {
     "connection_pool": {
-      "min_connections": 5,
-      "max_connections": 50,
-      "max_idle_connections": 10,
+      "max_idle": 10,
+      "max_active": 50,
       "idle_timeout_seconds": 300,
-      "health_check_interval_seconds": 60
+      "wait_timeout_seconds": 10,
+      "max_retries": 3
     },
     "timeout": {
       "connect_timeout_seconds": 5,
       "read_timeout_seconds": 3,
       "write_timeout_seconds": 3,
-      "retry_strategy": "指数退避，最多重试3次（1s→2s→4s），所有重试耗尽后返回错误"
+      "pool_timeout_seconds": 5
     },
-    "high_availability": {
-      "mode": "sentinel",
-      "description": "采用Redis Sentinel实现高可用，主节点故障时自动完成故障转移",
-      "sentinel_hosts": ["sentinel:26379"],
-      "master_name": "mymaster",
-      "min_sentinel_required": 2
+    "ha": {
+      "mode": "standalone",
+      "description": "当前使用单机部署模式，生产环境建议启用Redis Sentinel或Redis Cluster实现高可用",
+      "sentinel": {
+        "enabled": false,
+        "master_name": ""
+      }
+    },
+    "authentication": {
+      "require_password": true,
+      "description": "通过Redis AUTH命令鉴权，连接密码由环境变量 REDIS_PASSWORD 配置，禁止硬编码"
     }
+  },
+  "message_contracts": [
+    {
+      "name": "DeployTaskMessage",
+      "stream": "task:deploy:queue",
+      "consumer_group": "deploy-orchestrator-group",
+      "schema": {
+        "task_id": "string (UUID)",
+        "project_id": "string (UUID)",
+        "environment_id": "string (UUID)",
+        "file_path": "string",
+        "version": "string",
+        "description": "string",
+        "created_at": "string (ISO8601)"
+      },
+      "required_fields": ["task_id", "project_id", "environment_id"],
+      "max_size_bytes": 4096
+    }
+  ],
+  "reliability_strategy": {
+    "ack_mode": "manual",
+    "description": "使用Redis消费者组（XREADGROUP）消费消息，业务处理完成后必须显式调用XACK确认，未ACK的消息在Pending列表中等待重新投递",
+    "retry": {
+      "max_retries": 3,
+      "backoff": "exponential",
+      "description": "消费失败后消息保留在Pending列表，通过XPENDING检测并XCLAIM重新投递，重试间隔递增：1s → 2s → 4s"
+    },
+    "dead_letter": "task:deploy:deadletter",
+    "description_dlq": "重试耗尽3次仍失败的消息，由监控脚本从源Stream读取并写入死信队列，同时在任务状态中标记为failed",
+    "idempotency": "通过task_id幂等键去重，消费者在处理前检查task_id是否已被处理（SET NX + Lua脚本实现），避免重复执行部署",
+    "pending_check_interval_seconds": 30,
+    "max_pending_messages": 1000
   }
 }
