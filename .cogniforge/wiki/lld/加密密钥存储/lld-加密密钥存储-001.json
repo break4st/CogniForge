@@ -6,938 +6,575 @@
     "module": "加密密钥存储",
     "title": "LLD - 加密密钥存储",
     "author": "design_agent",
-    "created": "2026-05-21"
+    "created": "2026-05-22 15:00"
   },
   "overview": {
-    "description": "专门用于安全存储SSH私钥等敏感凭证的加密存储模块，采用AES-256加密算法，密钥与数据分离存储。此模块为系统数据层组件，由SSH连接管理服务调用，所有敏感密钥数据在写入时使用AES-256-GCM加密，密文与加密密钥分别存储于不同表中。密钥访问需通过权限校验，所有操作记录审计日志。",
-    "dependencies": [
-      "PostgreSQL主数据库"
-    ],
+    "description": "专用于SSH私钥的安全存储模块，数据经AES-256加密后落盘，与主数据库隔离，仅允许密钥管理服务通过内部网络访问",
+    "dependencies": [],
     "tech_stack": [
-      "PostgreSQL 15",
-      "pgcrypto"
+      "PostgreSQL 15"
     ]
   },
   "data_models": [
     {
-      "name": "encrypted_ssh_keys",
+      "name": "encrypted_keys",
       "type": "table",
       "ownership": "canonical",
-      "description": "加密SSH私钥主表。存储经过AES-256-GCM加密的SSH私钥数据，密钥指纹用于快速检索和去重。每条记录代表一个已注册的SSH密钥对（私钥加密存储，公钥明文保存）。支持密钥版本管理，轮换后新版本插入新行。",
+      "description": "加密SSH私钥主表，存储经AES-256-GCM加密后的私钥密文及元数据，支持密钥生命周期管理（active/revoked/compromised）",
       "fields": [
         {
           "name": "id",
-          "type": "BIGSERIAL",
+          "type": "uuid",
           "required": true,
-          "description": "主键ID"
+          "description": "主键，UUID v4自动生成"
         },
         {
-          "name": "key_alias",
-          "type": "VARCHAR(255)",
+          "name": "name",
+          "type": "varchar(128)",
           "required": true,
-          "description": "密钥唯一别名，格式：{project}-{env}-{name}，用于业务层引用"
-        },
-        {
-          "name": "key_type",
-          "type": "VARCHAR(50)",
-          "required": true,
-          "description": "密钥类型：SSH-RSA / SSH-ECDSA / SSH-ED25519 / RSA / ECDSA"
-        },
-        {
-          "name": "key_version",
-          "type": "INTEGER",
-          "required": true,
-          "description": "密钥版本号，从1开始递增，用于密钥轮换追踪"
+          "description": "密钥名称/标签，用于人工辨识"
         },
         {
           "name": "encrypted_private_key",
-          "type": "TEXT",
+          "type": "text",
           "required": true,
-          "description": "AES-256-GCM加密后的私钥数据（Base64编码），包含nonce+ciphertext+tag"
+          "description": "AES-256-GCM加密后的SSH私钥密文（Base64编码）"
         },
         {
           "name": "public_key",
-          "type": "TEXT",
+          "type": "text",
           "required": false,
-          "description": "公钥明文（OpenSSH格式），非敏感数据直接存储"
+          "description": "公钥内容（OpenSSH格式），用于指纹校验和身份确认"
         },
         {
-          "name": "key_fingerprint",
-          "type": "VARCHAR(255)",
+          "name": "fingerprint",
+          "type": "varchar(64)",
           "required": true,
-          "description": "密钥SHA256指纹（公钥哈希），用于唯一标识和快速查找"
+          "description": "SSH密钥指纹（MD5格式），用于密钥唯一标识和快速检索"
         },
         {
-          "name": "encryption_key_id",
-          "type": "VARCHAR(255)",
+          "name": "algorithm",
+          "type": "varchar(32)",
           "required": true,
-          "description": "用于加密此私钥的数据密钥ID（关联master_key_registry.key_id），密钥与密文分离存储"
+          "description": "密钥算法，如 RSA、Ed25519、ECDSA 等"
         },
         {
-          "name": "key_status",
-          "type": "VARCHAR(20)",
+          "name": "encryption_key_version",
+          "type": "varchar(32)",
           "required": true,
-          "description": "密钥状态：active（使用中）/ expired（已过期）/ revoked（已吊销）/ rotated（已轮换）"
+          "description": "加密时使用的主密钥版本号，用于密钥轮转时识别解密密钥"
+        },
+        {
+          "name": "key_checksum",
+          "type": "varchar(128)",
+          "required": false,
+          "description": "原始私钥的SHA256校验和，解密后用于完整性验证"
+        },
+        {
+          "name": "status",
+          "type": "varchar(20)",
+          "required": true,
+          "description": "密钥状态：active=可用，revoked=已吊销，compromised=已泄露"
         },
         {
           "name": "description",
-          "type": "TEXT",
+          "type": "text",
           "required": false,
-          "description": "密钥描述信息，如用途说明、关联服务器等"
+          "description": "密钥备注说明"
         },
         {
-          "name": "expires_at",
-          "type": "TIMESTAMPTZ",
+          "name": "metadata",
+          "type": "jsonb",
           "required": false,
-          "description": "密钥过期时间，过期后自动标记为expired"
-        },
-        {
-          "name": "created_by",
-          "type": "VARCHAR(255)",
-          "required": true,
-          "description": "创建者用户名"
+          "description": "扩展属性，如密钥来源、标签、自定义字段等"
         },
         {
           "name": "created_at",
-          "type": "TIMESTAMPTZ",
+          "type": "timestamptz",
           "required": true,
-          "description": "创建时间"
+          "description": "记录创建时间"
         },
         {
           "name": "updated_at",
-          "type": "TIMESTAMPTZ",
+          "type": "timestamptz",
           "required": true,
-          "description": "最后更新时间"
+          "description": "记录最后更新时间"
+        },
+        {
+          "name": "deleted_at",
+          "type": "timestamptz",
+          "required": false,
+          "description": "软删除时间戳，非NULL表示已删除"
         }
       ],
       "indexes": [
         {
-          "name": "idx_encrypted_keys_alias",
-          "unique": false,
-          "columns": ["key_alias"]
+          "name": "pk_encrypted_keys",
+          "unique": true,
+          "columns": ["id"]
         },
         {
           "name": "idx_encrypted_keys_fingerprint",
           "unique": true,
-          "columns": ["key_fingerprint"]
+          "columns": ["fingerprint"]
         },
         {
           "name": "idx_encrypted_keys_status",
           "unique": false,
-          "columns": ["key_status"]
+          "columns": ["status"]
         },
         {
-          "name": "idx_encrypted_keys_alias_version",
-          "unique": true,
-          "columns": ["key_alias", "key_version"]
+          "name": "idx_encrypted_keys_created_at",
+          "unique": false,
+          "columns": ["created_at"]
+        },
+        {
+          "name": "idx_encrypted_keys_name",
+          "unique": false,
+          "columns": ["name"]
         }
       ]
     },
     {
-      "name": "master_key_registry",
+      "name": "key_access_audit",
       "type": "table",
       "ownership": "canonical",
-      "description": "主密钥注册表。存储用于加密数据密钥的主密钥版本信息，实现密钥与数据分离。主密钥由系统管理员定期轮换，每次轮换生成新版本。数据解密时通过encryption_key_id定位对应的主密钥版本。主密钥本身使用HSM保护或由环境变量注入，表中仅存储密钥引用标识。",
+      "description": "密钥访问审计表，记录所有密钥解密、读取、删除等敏感操作的审计轨迹，满足安全合规要求",
       "fields": [
         {
           "name": "id",
-          "type": "BIGSERIAL",
+          "type": "bigserial",
           "required": true,
-          "description": "主键ID"
+          "description": "自增主键"
         },
         {
           "name": "key_id",
-          "type": "VARCHAR(255)",
+          "type": "uuid",
           "required": true,
-          "description": "主密钥唯一标识符（UUID），在encrypted_ssh_keys.encryption_key_id中引用"
+          "description": "被访问的密钥ID，关联encrypted_keys.id"
         },
         {
-          "name": "key_alias",
-          "type": "VARCHAR(255)",
+          "name": "requester_service",
+          "type": "varchar(64)",
           "required": true,
-          "description": "主密钥别名，用于运维识别"
+          "description": "请求方服务名称，如 key_management_service、ssh_connection_pool"
         },
         {
-          "name": "key_version",
-          "type": "INTEGER",
-          "required": true,
-          "description": "主密钥版本号，轮换时递增"
-        },
-        {
-          "name": "key_algorithm",
-          "type": "VARCHAR(50)",
-          "required": true,
-          "description": "加密算法：AES-256-GCM"
-        },
-        {
-          "name": "key_source",
-          "type": "VARCHAR(50)",
-          "required": true,
-          "description": "密钥来源：env（环境变量注入）/ hsm（HSM服务）/ vault（第三方密钥管理）"
-        },
-        {
-          "name": "key_status",
-          "type": "VARCHAR(20)",
-          "required": true,
-          "description": "主密钥状态：active（当前使用）/ retired（已退役）/ compromised（已泄露）"
-        },
-        {
-          "name": "checksum",
-          "type": "VARCHAR(128)",
-          "required": true,
-          "description": "主密钥SHA-256校验和，用于验证密钥完整性"
-        },
-        {
-          "name": "activated_at",
-          "type": "TIMESTAMPTZ",
-          "required": true,
-          "description": "密钥激活时间"
-        },
-        {
-          "name": "rotated_at",
-          "type": "TIMESTAMPTZ",
+          "name": "requester_identity",
+          "type": "varchar(128)",
           "required": false,
-          "description": "密钥轮换时间（退役时间）"
-        },
-        {
-          "name": "created_by",
-          "type": "VARCHAR(255)",
-          "required": true,
-          "description": "创建者用户名"
-        },
-        {
-          "name": "created_at",
-          "type": "TIMESTAMPTZ",
-          "required": true,
-          "description": "创建时间"
-        }
-      ],
-      "indexes": [
-        {
-          "name": "idx_master_key_registry_key_id",
-          "unique": true,
-          "columns": ["key_id"]
-        },
-        {
-          "name": "idx_master_key_registry_alias_version",
-          "unique": true,
-          "columns": ["key_alias", "key_version"]
-        },
-        {
-          "name": "idx_master_key_registry_status",
-          "unique": false,
-          "columns": ["key_status"]
-        }
-      ]
-    },
-    {
-      "name": "key_access_policies",
-      "type": "table",
-      "ownership": "canonical",
-      "description": "密钥访问策略表。定义哪些服务或用户有权访问哪些密钥。支持细粒度的权限控制，包括读元数据、解密、管理三种权限级别。策略可设置过期时间，到期后自动失效。",
-      "fields": [
-        {
-          "name": "id",
-          "type": "BIGSERIAL",
-          "required": true,
-          "description": "主键ID"
-        },
-        {
-          "name": "key_id",
-          "type": "BIGINT",
-          "required": true,
-          "description": "关联密钥ID（encrypted_ssh_keys.id）"
-        },
-        {
-          "name": "principal_type",
-          "type": "VARCHAR(20)",
-          "required": true,
-          "description": "主体类型：service（微服务）/ user（用户）"
-        },
-        {
-          "name": "principal_name",
-          "type": "VARCHAR(255)",
-          "required": true,
-          "description": "主体名称：服务名（如ssh-connection-service）或用户名"
-        },
-        {
-          "name": "access_level",
-          "type": "VARCHAR(20)",
-          "required": true,
-          "description": "访问级别：read（仅读元数据）/ decrypt（可解密私钥）/ admin（可管理权限和轮换）"
-        },
-        {
-          "name": "allowed_operations",
-          "type": "JSONB",
-          "required": false,
-          "description": "允许的细粒度操作列表，如[\"view_metadata\", \"decrypt\", \"rotate\", \"revoke\"]，为null时按access_level默认"
-        },
-        {
-          "name": "granted_by",
-          "type": "VARCHAR(255)",
-          "required": true,
-          "description": "授权者用户名"
-        },
-        {
-          "name": "granted_at",
-          "type": "TIMESTAMPTZ",
-          "required": true,
-          "description": "授权时间"
-        },
-        {
-          "name": "expires_at",
-          "type": "TIMESTAMPTZ",
-          "required": false,
-          "description": "策略过期时间，到期后自动失效"
-        },
-        {
-          "name": "revoked_at",
-          "type": "TIMESTAMPTZ",
-          "required": false,
-          "description": "吊销时间，非空表示策略已吊销"
-        },
-        {
-          "name": "created_at",
-          "type": "TIMESTAMPTZ",
-          "required": true,
-          "description": "创建时间"
-        }
-      ],
-      "indexes": [
-        {
-          "name": "idx_key_access_policies_key_id",
-          "unique": false,
-          "columns": ["key_id"]
-        },
-        {
-          "name": "idx_key_access_policies_principal",
-          "unique": false,
-          "columns": ["principal_type", "principal_name"]
-        },
-        {
-          "name": "uk_key_access_policies_key_principal",
-          "unique": true,
-          "columns": ["key_id", "principal_type", "principal_name"]
-        }
-      ]
-    },
-    {
-      "name": "key_audit_log",
-      "type": "table",
-      "ownership": "canonical",
-      "description": "密钥操作审计日志表。记录所有密钥相关的操作行为，包括密钥创建、解密、轮换、吊销、访问等。所有记录为追加写入，不允许修改和删除，满足安全合规要求。",
-      "fields": [
-        {
-          "name": "id",
-          "type": "BIGSERIAL",
-          "required": true,
-          "description": "主键ID"
-        },
-        {
-          "name": "key_id",
-          "type": "BIGINT",
-          "required": true,
-          "description": "关联密钥ID（encrypted_ssh_keys.id）"
-        },
-        {
-          "name": "key_alias",
-          "type": "VARCHAR(255)",
-          "required": true,
-          "description": "密钥别名（冗余存储，便于日志独立查询）"
+          "description": "请求方内部身份标识，如用户ID或实例ID"
         },
         {
           "name": "action",
-          "type": "VARCHAR(50)",
+          "type": "varchar(32)",
           "required": true,
-          "description": "操作类型：key_create / key_decrypt / key_rotate / key_revoke / key_expire / access_denied / policy_change"
-        },
-        {
-          "name": "principal_type",
-          "type": "VARCHAR(20)",
-          "required": true,
-          "description": "操作主体类型：service / user"
-        },
-        {
-          "name": "principal_name",
-          "type": "VARCHAR(255)",
-          "required": true,
-          "description": "操作主体名称"
-        },
-        {
-          "name": "ip_address",
-          "type": "INET",
-          "required": false,
-          "description": "请求来源IP地址"
+          "description": "操作类型：decrypt=解密，read=读取密文，delete=删除，list=列举"
         },
         {
           "name": "result",
-          "type": "VARCHAR(20)",
+          "type": "varchar(16)",
           "required": true,
-          "description": "操作结果：success / failure / denied"
+          "description": "操作结果：success=成功，failure=失败，denied=拒绝"
+        },
+        {
+          "name": "failure_reason",
+          "type": "varchar(256)",
+          "required": false,
+          "description": "失败或拒绝原因描述"
+        },
+        {
+          "name": "client_ip",
+          "type": "varchar(45)",
+          "required": false,
+          "description": "请求来源IP地址（支持IPv4/IPv6）"
         },
         {
           "name": "detail",
-          "type": "TEXT",
+          "type": "text",
           "required": false,
-          "description": "详细信息，如失败原因、解密上下文等"
+          "description": "操作详情附加信息"
         },
         {
-          "name": "created_at",
-          "type": "TIMESTAMPTZ",
+          "name": "accessed_at",
+          "type": "timestamptz",
           "required": true,
-          "description": "操作时间"
+          "description": "操作发生时间"
         }
       ],
       "indexes": [
         {
-          "name": "idx_key_audit_log_key_id",
+          "name": "pk_key_access_audit",
+          "unique": true,
+          "columns": ["id"]
+        },
+        {
+          "name": "idx_key_access_audit_key_id",
           "unique": false,
           "columns": ["key_id"]
         },
         {
-          "name": "idx_key_audit_log_action",
+          "name": "idx_key_access_audit_accessed_at",
+          "unique": false,
+          "columns": ["accessed_at"]
+        },
+        {
+          "name": "idx_key_access_audit_result",
+          "unique": false,
+          "columns": ["result"]
+        },
+        {
+          "name": "idx_key_access_audit_action",
           "unique": false,
           "columns": ["action"]
-        },
-        {
-          "name": "idx_key_audit_log_principal",
-          "unique": false,
-          "columns": ["principal_name"]
-        },
-        {
-          "name": "idx_key_audit_log_created_at",
-          "unique": false,
-          "columns": ["created_at"]
         }
       ]
     },
     {
-      "name": "key_rotation_records",
+      "name": "master_encryption_keys",
       "type": "table",
       "ownership": "canonical",
-      "description": "密钥轮换记录表。记录每次密钥轮换操作的前后版本对照信息，用于密钥轮换历史追溯和审计。当某密钥的key_version增加时，在此表记录轮换事件。",
+      "description": "主加密密钥版本管理表，存储用于加密SSH私钥的AES-256主密钥材料（自身加密存储），支持密钥轮转",
       "fields": [
         {
           "name": "id",
-          "type": "BIGSERIAL",
+          "type": "uuid",
           "required": true,
-          "description": "主键ID"
+          "description": "主键，UUID v4自动生成"
         },
         {
-          "name": "key_id",
-          "type": "BIGINT",
+          "name": "key_version",
+          "type": "varchar(32)",
           "required": true,
-          "description": "关联密钥ID（encrypted_ssh_keys.id），指向轮换前的密钥记录"
+          "description": "密钥版本标识符，如 v1、v2、v20260501，全局唯一"
         },
         {
-          "name": "new_key_id",
-          "type": "BIGINT",
+          "name": "encrypted_key_data",
+          "type": "text",
           "required": true,
-          "description": "新版本密钥ID，指向轮换后新插入的密钥记录"
+          "description": "经KMS或passphrase加密后的主密钥材料（Base64编码）"
         },
         {
-          "name": "old_key_alias",
-          "type": "VARCHAR(255)",
+          "name": "algorithm",
+          "type": "varchar(32)",
           "required": true,
-          "description": "轮换前密钥别名"
+          "description": "加密算法，默认 AES-256-GCM"
         },
         {
-          "name": "old_key_version",
-          "type": "INTEGER",
+          "name": "is_active",
+          "type": "boolean",
           "required": true,
-          "description": "轮换前密钥版本号"
+          "description": "是否为当前激活的主密钥（只有一条记录为true），新增密钥使用此版本加密"
         },
         {
-          "name": "new_key_version",
-          "type": "INTEGER",
-          "required": true,
-          "description": "轮换后密钥版本号"
-        },
-        {
-          "name": "old_fingerprint",
-          "type": "VARCHAR(255)",
-          "required": true,
-          "description": "轮换前密钥指纹"
-        },
-        {
-          "name": "new_fingerprint",
-          "type": "VARCHAR(255)",
-          "required": true,
-          "description": "轮换后密钥指纹"
-        },
-        {
-          "name": "reason",
-          "type": "TEXT",
+          "name": "activated_at",
+          "type": "timestamptz",
           "required": false,
-          "description": "轮换原因：scheduled（计划轮换）/ compromised（疑似泄露）/ expires（即将过期）"
+          "description": "密钥激活时间"
         },
         {
-          "name": "rotated_by",
-          "type": "VARCHAR(255)",
-          "required": true,
-          "description": "轮换操作执行者"
+          "name": "deactivated_at",
+          "type": "timestamptz",
+          "required": false,
+          "description": "密钥停用时间（轮转时记录）"
         },
         {
           "name": "created_at",
-          "type": "TIMESTAMPTZ",
+          "type": "timestamptz",
           "required": true,
-          "description": "轮换时间"
+          "description": "记录创建时间"
+        },
+        {
+          "name": "notes",
+          "type": "text",
+          "required": false,
+          "description": "密钥轮转备注，如轮转原因、旧版本兼容说明等"
         }
       ],
       "indexes": [
         {
-          "name": "idx_key_rotation_records_key_id",
-          "unique": false,
-          "columns": ["key_id"]
-        },
-        {
-          "name": "idx_key_rotation_records_new_key_id",
+          "name": "pk_master_encryption_keys",
           "unique": true,
-          "columns": ["new_key_id"]
+          "columns": ["id"]
         },
         {
-          "name": "idx_key_rotation_records_fingerprint",
-          "unique": false,
-          "columns": ["new_fingerprint"]
+          "name": "uq_master_encryption_keys_version",
+          "unique": true,
+          "columns": ["key_version"]
+        },
+        {
+          "name": "uq_master_encryption_keys_active",
+          "unique": true,
+          "columns": ["is_active"],
+          "condition": "WHERE is_active = true"
         }
       ]
     }
   ],
   "interfaces": [
     {
-      "name": "加密密钥存储",
-      "method": "POST",
-      "endpoint": "/internal/keys",
-      "description": "存储加密密钥。接收SSH私钥明文，在服务端使用当前主密钥进行AES-256-GCM加密后持久化存储。返回密钥元数据和指纹，不返回私钥明文。由SSH连接管理服务在配置环境时调用。",
+      "name": "写入加密密钥",
+      "method": "INTERNAL",
+      "endpoint": "/internal/keys/store",
+      "description": "密钥管理服务经内部网络调用，将AES-256加密后的SSH私钥密文写入encrypted_keys表，返回新记录的唯一标识",
       "parameters": [
         {
-          "name": "key_alias",
-          "type": "string",
-          "description": "密钥别名，格式：{project}-{env}-{name}"
+          "name": "name",
+          "type": "varchar(128)",
+          "description": "密钥名称"
         },
         {
-          "name": "key_type",
-          "type": "string",
-          "description": "密钥类型：SSH-RSA / SSH-ECDSA / SSH-ED25519"
-        },
-        {
-          "name": "private_key",
-          "type": "string",
-          "description": "SSH私钥明文（PEM格式），传输必须使用HTTPS加密通道"
+          "name": "encrypted_private_key",
+          "type": "text",
+          "description": "AES-256-GCM加密后的私钥密文"
         },
         {
           "name": "public_key",
-          "type": "string",
-          "description": "公钥明文（OpenSSH格式），可选"
+          "type": "text",
+          "description": "公钥内容（可选）"
+        },
+        {
+          "name": "fingerprint",
+          "type": "varchar(64)",
+          "description": "密钥指纹"
+        },
+        {
+          "name": "algorithm",
+          "type": "varchar(32)",
+          "description": "密钥算法"
+        },
+        {
+          "name": "encryption_key_version",
+          "type": "varchar(32)",
+          "description": "主密钥版本"
+        },
+        {
+          "name": "key_checksum",
+          "type": "varchar(128)",
+          "description": "原始私钥SHA256校验和（可选）"
         },
         {
           "name": "description",
-          "type": "string",
-          "description": "密钥描述，可选"
-        },
-        {
-          "name": "expires_in_days",
-          "type": "integer",
-          "description": "密钥有效期（天），默认365，可选"
-        },
-        {
-          "name": "created_by",
-          "type": "string",
-          "description": "创建者用户名"
+          "type": "text",
+          "description": "备注（可选）"
         }
       ],
       "response": {
-        "status": 201,
+        "status": 200,
         "body": {
-          "key_id": "integer",
-          "key_alias": "string",
-          "key_fingerprint": "string",
-          "key_version": "integer",
-          "key_status": "string",
-          "expires_at": "string"
+          "id": "uuid",
+          "created_at": "timestamptz"
         }
       },
       "error_codes": [
         {
           "code": 400,
-          "message": "请求参数校验失败"
-        },
-        {
-          "code": 409,
-          "message": "密钥别名已存在，如需更新请使用轮换接口"
+          "message": "参数校验失败，如fingerprint重复或缺少必填字段"
         },
         {
           "code": 500,
-          "message": "加密或持久化失败"
+          "message": "数据库写入失败，请联系管理员"
         }
       ]
     },
     {
-      "name": "密钥列表查询",
-      "method": "GET",
-      "endpoint": "/internal/keys",
-      "description": "分页查询已注册的密钥列表。返回密钥元数据（指纹、类型、版本、状态等），不包含加密密钥数据和解密能力。",
+      "name": "读取密钥密文",
+      "method": "INTERNAL",
+      "endpoint": "/internal/keys/{id}/ciphertext",
+      "description": "密钥管理服务通过密钥ID查询加密私钥密文及加密元数据，用于后续解密操作",
       "parameters": [
         {
-          "name": "key_alias",
-          "type": "string",
-          "description": "按别名模糊搜索，可选"
-        },
-        {
-          "name": "key_type",
-          "type": "string",
-          "description": "按密钥类型过滤，可选"
-        },
-        {
-          "name": "key_status",
-          "type": "string",
-          "description": "按密钥状态过滤：active/expired/revoked，可选"
-        },
-        {
-          "name": "page",
-          "type": "integer",
-          "description": "页码，默认1，可选"
-        },
-        {
-          "name": "page_size",
-          "type": "integer",
-          "description": "每页数量，默认20，可选"
+          "name": "id",
+          "type": "uuid",
+          "description": "密钥唯一标识"
         }
       ],
       "response": {
         "status": 200,
         "body": {
-          "total": "integer",
-          "items": "array"
-        }
-      },
-      "error_codes": [
-        {
-          "code": 400,
-          "message": "查询参数校验失败"
-        }
-      ]
-    },
-    {
-      "name": "密钥详情查询",
-      "method": "GET",
-      "endpoint": "/internal/keys/{key_id}",
-      "description": "查询指定密钥的详细信息，包括元数据和状态。不返回加密私钥数据。",
-      "parameters": [
-        {
-          "name": "key_id",
-          "type": "integer",
-          "description": "密钥ID（路径参数）"
-        }
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "key_id": "integer",
-          "key_alias": "string",
-          "key_type": "string",
-          "key_version": "integer",
-          "key_fingerprint": "string",
-          "key_status": "string",
-          "description": "string",
-          "expires_at": "string",
-          "created_by": "string",
-          "created_at": "string",
-          "updated_at": "string"
+          "id": "uuid",
+          "name": "string",
+          "encrypted_private_key": "text",
+          "encryption_key_version": "varchar(32)",
+          "algorithm": "varchar(32)",
+          "key_checksum": "varchar(128)",
+          "status": "varchar(20)",
+          "created_at": "timestamptz"
         }
       },
       "error_codes": [
         {
           "code": 404,
-          "message": "密钥不存在"
-        }
-      ]
-    },
-    {
-      "name": "密钥解密",
-      "method": "POST",
-      "endpoint": "/internal/keys/{key_id}/decrypt",
-      "description": "解密指定密钥的私钥数据。需要进行访问权限校验，仅具有decrypt权限的服务可调用。返回解密后的私钥明文，用于SSH连接建立。所有解密操作记录审计日志。",
-      "parameters": [
-        {
-          "name": "key_id",
-          "type": "integer",
-          "description": "密钥ID（路径参数）"
-        },
-        {
-          "name": "requesting_service",
-          "type": "string",
-          "description": "请求服务名称，用于权限校验"
-        },
-        {
-          "name": "purpose",
-          "type": "string",
-          "description": "解密用途说明，记录审计日志"
-        }
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "private_key": "string",
-          "key_fingerprint": "string",
-          "key_type": "string"
-        }
-      },
-      "error_codes": [
-        {
-          "code": 401,
-          "message": "请求服务未授权，无权解密此密钥"
+          "message": "密钥ID不存在或已被删除"
         },
         {
           "code": 403,
-          "message": "密钥已过期或已吊销"
-        },
-        {
-          "code": 404,
-          "message": "密钥不存在"
-        },
-        {
-          "code": 500,
-          "message": "解密失败或主密钥不可用"
+          "message": "密钥状态为 revoked 或 compromised，拒绝访问"
         }
       ]
     },
     {
-      "name": "密钥轮换",
-      "method": "POST",
-      "endpoint": "/internal/keys/{key_id}/rotate",
-      "description": "触发密钥轮换。将当前密钥标记为rotated，生成新版本密钥重新加密存储。需要admin级别权限。轮换后旧版本密钥保留用于历史解密追溯。",
+      "name": "列举密钥列表",
+      "method": "INTERNAL",
+      "endpoint": "/internal/keys",
+      "description": "列举所有密钥的元数据信息（不含私钥密文），支持按状态筛选和分页",
       "parameters": [
         {
-          "name": "key_id",
-          "type": "integer",
-          "description": "当前密钥ID（路径参数）"
-        },
-        {
-          "name": "new_private_key",
-          "type": "string",
-          "description": "新的SSH私钥明文"
-        },
-        {
-          "name": "new_public_key",
-          "type": "string",
-          "description": "新的公钥明文，可选"
-        },
-        {
-          "name": "reason",
-          "type": "string",
-          "description": "轮换原因：scheduled/compromised/expires"
-        },
-        {
-          "name": "rotated_by",
-          "type": "string",
-          "description": "轮换操作执行者"
-        }
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "old_key_id": "integer",
-          "new_key_id": "integer",
-          "new_key_version": "integer",
-          "new_key_fingerprint": "string"
-        }
-      },
-      "error_codes": [
-        {
-          "code": 401,
-          "message": "无权执行密钥轮换"
-        },
-        {
-          "code": 404,
-          "message": "密钥不存在"
-        },
-        {
-          "code": 409,
-          "message": "密钥已处于rotated状态，无法再次轮换"
-        },
-        {
-          "code": 500,
-          "message": "轮换过程加密失败"
-        }
-      ]
-    },
-    {
-      "name": "密钥吊销",
-      "method": "POST",
-      "endpoint": "/internal/keys/{key_id}/revoke",
-      "description": "吊销指定密钥。吊销后的密钥不可再用于解密操作，但审计日志保留历史记录。需要admin级别权限。",
-      "parameters": [
-        {
-          "name": "key_id",
-          "type": "integer",
-          "description": "密钥ID（路径参数）"
-        },
-        {
-          "name": "reason",
-          "type": "string",
-          "description": "吊销原因"
-        },
-        {
-          "name": "revoked_by",
-          "type": "string",
-          "description": "吊销操作执行者"
-        }
-      ],
-      "response": {
-        "status": 200,
-        "body": {
-          "key_id": "integer",
-          "key_alias": "string",
-          "key_status": "string",
-          "revoked_at": "string"
-        }
-      },
-      "error_codes": [
-        {
-          "code": 401,
-          "message": "无权执行密钥吊销"
-        },
-        {
-          "code": 404,
-          "message": "密钥不存在"
-        },
-        {
-          "code": 409,
-          "message": "密钥已处于revoked状态"
-        }
-      ]
-    },
-    {
-      "name": "密钥操作审计查询",
-      "method": "GET",
-      "endpoint": "/internal/audit",
-      "description": "查询密钥操作审计日志。支持按密钥、操作类型、主体、时间范围等多维度过滤。",
-      "parameters": [
-        {
-          "name": "key_id",
-          "type": "integer",
-          "description": "按密钥ID过滤，可选"
-        },
-        {
-          "name": "action",
-          "type": "string",
-          "description": "按操作类型过滤：key_create/key_decrypt/key_rotate/key_revoke/access_denied，可选"
-        },
-        {
-          "name": "principal_name",
-          "type": "string",
-          "description": "按操作主体名称过滤，可选"
-        },
-        {
-          "name": "result",
-          "type": "string",
-          "description": "按操作结果过滤：success/failure/denied，可选"
-        },
-        {
-          "name": "start_time",
-          "type": "string",
-          "description": "开始时间，可选"
-        },
-        {
-          "name": "end_time",
-          "type": "string",
-          "description": "结束时间，可选"
+          "name": "status",
+          "type": "varchar(20)",
+          "description": "按状态筛选（可选）"
         },
         {
           "name": "page",
-          "type": "integer",
-          "description": "页码，默认1，可选"
+          "type": "int",
+          "description": "页码，默认1"
         },
         {
           "name": "page_size",
-          "type": "integer",
-          "description": "每页数量，默认20，可选"
+          "type": "int",
+          "description": "每页条数，默认20"
         }
       ],
       "response": {
         "status": 200,
         "body": {
-          "total": "integer",
-          "items": "array"
+          "total": "int",
+          "items": [
+            {
+              "id": "uuid",
+              "name": "string",
+              "fingerprint": "string",
+              "algorithm": "string",
+              "status": "string",
+              "created_at": "timestamptz"
+            }
+          ]
         }
       },
       "error_codes": [
         {
           "code": 400,
-          "message": "查询参数校验失败"
+          "message": "分页参数不合法"
         }
       ]
     },
     {
-      "name": "密钥访问策略配置",
-      "method": "POST",
-      "endpoint": "/internal/keys/{key_id}/policies",
-      "description": "为指定密钥配置访问策略。设置哪些服务或用户具有何种访问权限。需要admin级别权限。",
+      "name": "删除密钥",
+      "method": "INTERNAL",
+      "endpoint": "/internal/keys/{id}/delete",
+      "description": "将指定密钥标记为删除（软删除），设置deleted_at时间戳并更新status为revoked",
       "parameters": [
         {
-          "name": "key_id",
-          "type": "integer",
-          "description": "密钥ID（路径参数）"
-        },
-        {
-          "name": "principal_type",
-          "type": "string",
-          "description": "主体类型：service/user"
-        },
-        {
-          "name": "principal_name",
-          "type": "string",
-          "description": "主体名称"
-        },
-        {
-          "name": "access_level",
-          "type": "string",
-          "description": "访问级别：read/decrypt/admin"
-        },
-        {
-          "name": "expires_in_days",
-          "type": "integer",
-          "description": "策略有效期（天），可选，不填则永不过期"
-        },
-        {
-          "name": "granted_by",
-          "type": "string",
-          "description": "授权者用户名"
+          "name": "id",
+          "type": "uuid",
+          "description": "密钥唯一标识"
         }
       ],
       "response": {
-        "status": 201,
+        "status": 200,
         "body": {
-          "policy_id": "integer",
-          "key_id": "integer",
-          "principal_name": "string",
-          "access_level": "string",
-          "granted_at": "string"
+          "id": "uuid",
+          "deleted_at": "timestamptz"
+        }
+      },
+      "error_codes": [
+        {
+          "code": 404,
+          "message": "密钥ID不存在"
+        }
+      ]
+    },
+    {
+      "name": "记录密钥访问审计",
+      "method": "INTERNAL",
+      "endpoint": "/internal/audit/access",
+      "description": "记录密钥解密/读取等敏感操作到key_access_audit表，用于安全审计和异常检测",
+      "parameters": [
+        {
+          "name": "key_id",
+          "type": "uuid",
+          "description": "被访问的密钥ID"
+        },
+        {
+          "name": "requester_service",
+          "type": "varchar(64)",
+          "description": "请求方服务名称"
+        },
+        {
+          "name": "action",
+          "type": "varchar(32)",
+          "description": "操作类型"
+        },
+        {
+          "name": "result",
+          "type": "varchar(16)",
+          "description": "操作结果"
+        },
+        {
+          "name": "client_ip",
+          "type": "varchar(45)",
+          "description": "请求来源IP（可选）"
+        },
+        {
+          "name": "detail",
+          "type": "text",
+          "description": "附加详情（可选）"
+        }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "bigint",
+          "accessed_at": "timestamptz"
         }
       },
       "error_codes": [
         {
           "code": 400,
-          "message": "请求参数校验失败"
+          "message": "审计记录参数不完整"
+        }
+      ]
+    },
+    {
+      "name": "轮转主加密密钥",
+      "method": "INTERNAL",
+      "endpoint": "/internal/master-key/rotate",
+      "description": "生成新的主加密密钥版本，更新活跃标记，旧密钥保留用于解密已有数据",
+      "parameters": [
+        {
+          "name": "encrypted_key_data",
+          "type": "text",
+          "description": "新主密钥的加密材料"
         },
         {
-          "code": 401,
-          "message": "无权配置访问策略"
+          "name": "algorithm",
+          "type": "varchar(32)",
+          "description": "加密算法"
         },
         {
-          "code": 404,
-          "message": "密钥不存在"
-        },
+          "name": "notes",
+          "type": "text",
+          "description": "轮转备注（可选）"
+        }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "uuid",
+          "key_version": "string",
+          "is_active": "boolean"
+        }
+      },
+      "error_codes": [
         {
-          "code": 409,
-          "message": "该主体已配置访问策略，请使用更新接口"
+          "code": 500,
+          "message": "主密钥轮转事务失败"
         }
       ]
     }
   ],
   "error_handling": {
-    "strategy": "加密密钥存储模块的错误处理遵循分层策略：参数校验错误直接返回4xx；权限校验失败返回401/403并记录审计日志；加密/解密/数据库等基础设施错误返回500并包含错误追踪ID供运维排查。所有操作失败均记录到key_audit_log表。",
+    "strategy": "数据库层采用事务保障一致性，所有写操作在事务内完成；密钥访问审计记录独立于业务事务，采用异步写入确保不阻塞主流程；加密/解密异常由上层密钥管理服务捕获并记录，数据库层不处理加解密逻辑",
     "response_format": {
       "body": {
         "code": "integer",
@@ -948,183 +585,130 @@
     "categories": [
       {
         "code": "400",
-        "name": "参数校验错误",
-        "description": "请求参数缺失、格式不合法或字段约束违反时触发。调用端需根据detail修正请求后重试。"
-      },
-      {
-        "code": "401",
-        "name": "访问未授权",
-        "description": "请求服务未配置对应的密钥访问策略时触发。需由admin在key_access_policies中为该服务授予权限。此错误同时写入key_audit_log（action=access_denied）。"
+        "name": "参数错误",
+        "description": "请求参数校验失败，如字段类型不匹配、必填项缺失、指纹重复等，需调用方修正后重试"
       },
       {
         "code": "403",
-        "name": "操作被禁止",
-        "description": "密钥状态不允许执行请求操作时触发，如对已吊销密钥执行解密、对已轮换密钥执行轮换等。"
+        "name": "访问拒绝",
+        "description": "密钥状态异常（revoked/compromised）或无权访问，记录审计日志后拒绝操作"
       },
       {
         "code": "404",
-        "name": "密钥不存在",
-        "description": "指定的key_id在encrypted_ssh_keys表中不存在时触发。"
-      },
-      {
-        "code": "409",
-        "name": "状态冲突",
-        "description": "操作与密钥当前状态冲突时触发，如创建重复别名、重复吊销等。调用端需检查当前状态后调整操作。"
+        "name": "记录不存在",
+        "description": "查询的密钥ID在主表中不存在，或已被软删除不可见"
       },
       {
         "code": "500",
-        "name": "加密/解密失败",
-        "description": "AES-256-GCM加密或解密过程出错时触发，可能原因包括主密钥不可用、密钥校验和不匹配、密文损坏等。需人工介入排查主密钥状态和数据库完整性。"
-      },
-      {
-        "code": "500",
-        "name": "数据库错误",
-        "description": "数据库连接异常、写入超时或约束违反等基础设施错误。系统自动重试机制会在可恢复错误时进行最多3次重试。"
+        "name": "数据库异常",
+        "description": "数据库连接中断、写入超时、约束冲突等内部错误，由连接池重试机制处理，重试3次后上报告警"
       }
     ]
   },
   "index_strategy": [
     {
-      "table": "encrypted_ssh_keys",
+      "table": "encrypted_keys",
       "indexes": [
         {
-          "name": "idx_encrypted_keys_alias",
-          "columns": ["key_alias"],
-          "unique": false,
+          "name": "pk_encrypted_keys",
+          "columns": ["id"],
+          "unique": true,
           "type": "B-tree",
-          "purpose": "加速按密钥别名的查询和模糊搜索"
+          "purpose": "主键索引，支持按ID的O(1)级别单行查询"
         },
         {
           "name": "idx_encrypted_keys_fingerprint",
-          "columns": ["key_fingerprint"],
+          "columns": ["fingerprint"],
           "unique": true,
           "type": "B-tree",
-          "purpose": "密钥指纹唯一约束和快速查找，防止重复注册同一密钥"
+          "purpose": "指纹唯一索引，确保密钥指纹不重复，支持密钥查重和快速检索"
         },
         {
           "name": "idx_encrypted_keys_status",
-          "columns": ["key_status"],
+          "columns": ["status"],
           "unique": false,
           "type": "B-tree",
-          "purpose": "按密钥状态过滤查询，如列出所有active密钥"
+          "purpose": "状态索引，支持按状态筛选活跃/吊销密钥列表"
         },
         {
-          "name": "idx_encrypted_keys_alias_version",
-          "columns": ["key_alias", "key_version"],
-          "unique": true,
-          "type": "B-tree",
-          "purpose": "同一别名下的版本唯一性约束，保证版本号递增"
-        }
-      ]
-    },
-    {
-      "table": "master_key_registry",
-      "indexes": [
-        {
-          "name": "idx_master_key_registry_key_id",
-          "columns": ["key_id"],
-          "unique": true,
-          "type": "B-tree",
-          "purpose": "主密钥标识符唯一约束，被encrypted_ssh_keys.encryption_key_id引用"
-        },
-        {
-          "name": "idx_master_key_registry_alias_version",
-          "columns": ["key_alias", "key_version"],
-          "unique": true,
-          "type": "B-tree",
-          "purpose": "同一主密钥别名下的版本唯一性"
-        },
-        {
-          "name": "idx_master_key_registry_status",
-          "columns": ["key_status"],
-          "unique": false,
-          "type": "B-tree",
-          "purpose": "按主密钥状态查询当前可用密钥"
-        }
-      ]
-    },
-    {
-      "table": "key_access_policies",
-      "indexes": [
-        {
-          "name": "idx_key_access_policies_key_id",
-          "columns": ["key_id"],
-          "unique": false,
-          "type": "B-tree",
-          "purpose": "按密钥查询所有关联的访问策略"
-        },
-        {
-          "name": "idx_key_access_policies_principal",
-          "columns": ["principal_type", "principal_name"],
-          "unique": false,
-          "type": "B-tree",
-          "purpose": "按主体查询其拥有的密钥访问权限，用于权限校验"
-        },
-        {
-          "name": "uk_key_access_policies_key_principal",
-          "columns": ["key_id", "principal_type", "principal_name"],
-          "unique": true,
-          "type": "B-tree",
-          "purpose": "同一密钥下对同一主体只允许一条生效策略"
-        }
-      ]
-    },
-    {
-      "table": "key_audit_log",
-      "indexes": [
-        {
-          "name": "idx_key_audit_log_key_id",
-          "columns": ["key_id"],
-          "unique": false,
-          "type": "B-tree",
-          "purpose": "按密钥查询操作历史审计日志"
-        },
-        {
-          "name": "idx_key_audit_log_action",
-          "columns": ["action"],
-          "unique": false,
-          "type": "B-tree",
-          "purpose": "按操作类型过滤审计记录，如统计解密次数"
-        },
-        {
-          "name": "idx_key_audit_log_principal",
-          "columns": ["principal_name"],
-          "unique": false,
-          "type": "B-tree",
-          "purpose": "按操作主体查询审计记录，用于安全追溯"
-        },
-        {
-          "name": "idx_key_audit_log_created_at",
+          "name": "idx_encrypted_keys_created_at",
           "columns": ["created_at"],
           "unique": false,
           "type": "B-tree",
-          "purpose": "按时间范围查询审计日志，支持审计导出和定期归档"
+          "purpose": "创建时间索引，支持按时间范围查询和排序"
+        },
+        {
+          "name": "idx_encrypted_keys_name",
+          "columns": ["name"],
+          "unique": false,
+          "type": "B-tree",
+          "purpose": "名称索引，支持按名称模糊搜索"
         }
       ]
     },
     {
-      "table": "key_rotation_records",
+      "table": "key_access_audit",
       "indexes": [
         {
-          "name": "idx_key_rotation_records_key_id",
+          "name": "pk_key_access_audit",
+          "columns": ["id"],
+          "unique": true,
+          "type": "B-tree",
+          "purpose": "主键索引"
+        },
+        {
+          "name": "idx_key_access_audit_key_id",
           "columns": ["key_id"],
           "unique": false,
           "type": "B-tree",
-          "purpose": "按原始密钥ID查询轮换历史链"
+          "purpose": "密钥ID索引，支持查询指定密钥的所有访问记录"
         },
         {
-          "name": "idx_key_rotation_records_new_key_id",
-          "columns": ["new_key_id"],
-          "unique": true,
-          "type": "B-tree",
-          "purpose": "新密钥ID唯一约束，保证一条轮换记录对应一个新密钥"
-        },
-        {
-          "name": "idx_key_rotation_records_fingerprint",
-          "columns": ["new_fingerprint"],
+          "name": "idx_key_access_audit_accessed_at",
+          "columns": ["accessed_at"],
           "unique": false,
           "type": "B-tree",
-          "purpose": "按新密钥指纹查询轮换来源"
+          "purpose": "时间索引，支持按时间范围查询审计记录，配合分区表使用"
+        },
+        {
+          "name": "idx_key_access_audit_result",
+          "columns": ["result"],
+          "unique": false,
+          "type": "B-tree",
+          "purpose": "结果索引，支持按成功/失败状态筛选异常访问"
+        },
+        {
+          "name": "idx_key_access_audit_action",
+          "columns": ["action"],
+          "unique": false,
+          "type": "B-tree",
+          "purpose": "操作类型索引，支持按decrypt/delete等操作分类查询"
+        }
+      ]
+    },
+    {
+      "table": "master_encryption_keys",
+      "indexes": [
+        {
+          "name": "pk_master_encryption_keys",
+          "columns": ["id"],
+          "unique": true,
+          "type": "B-tree",
+          "purpose": "主键索引"
+        },
+        {
+          "name": "uq_master_encryption_keys_version",
+          "columns": ["key_version"],
+          "unique": true,
+          "type": "B-tree",
+          "purpose": "版本号唯一索引，确保每个主密钥版本号全局唯一"
+        },
+        {
+          "name": "uq_master_encryption_keys_active",
+          "columns": ["is_active"],
+          "unique": true,
+          "type": "B-tree",
+          "purpose": "活跃密钥唯一索引（条件索引WHERE is_active=true），确保同时最多只有一个活跃主密钥"
         }
       ]
     }
@@ -1132,40 +716,30 @@
   "migration_strategy": {
     "tool": "Alembic",
     "naming": "V{序号}__{描述}.sql",
-    "rollback": "每个迁移版本必须包含downgrade脚本。正常回滚按版本逆序执行downgrade。数据回滚策略：对于表结构变更（DROP COLUMN等）先备份数据再执行；对于新增表只需DROP即可。密钥数据表（encrypted_ssh_keys、master_key_registry）的迁移需在维护窗口执行，执行前必须创建数据库快照备份。"
+    "rollback": "每个迁移版本必须提供对应的降级脚本（downgrade），支持版本回退至任意历史版本；生产环境回滚前需在预发环境完整验证"
   },
   "capacity_estimation": {
-    "estimated_rows_1y": "encrypted_ssh_keys: 5,000行（含历史轮换版本）；key_audit_log: 100,000行（按每日约270次操作）；key_access_policies: 1,000行；key_rotation_records: 500行；master_key_registry: 10行",
-    "estimated_rows_3y": "encrypted_ssh_keys: 15,000行；key_audit_log: 300,000行；key_access_policies: 1,500行；key_rotation_records: 1,500行；master_key_registry: 30行",
+    "estimated_rows_1y": "encrypted_keys: ~500行（按100个环境、每环境平均5次密钥轮转估算）；key_access_audit: ~50万行（每次部署触发1-2次解密，预估年部署量25万次）；master_encryption_keys: ~5行（年度密钥轮转2-4次）",
+    "estimated_rows_3y": "encrypted_keys: ~1,500行；key_access_audit: ~150万行；master_encryption_keys: ~15行",
     "hot_tables": [
-      "encrypted_ssh_keys",
-      "key_audit_log"
+      "encrypted_keys（高频读取：部署流程每次均需读取密钥密文）",
+      "key_access_audit（高频写入：每次密钥操作均需写入审计记录）"
     ],
-    "partition_strategy": "key_audit_log表按季度进行范围分区（PARTITION BY RANGE (created_at)），每个分区独立存储，便于历史数据归档和清理。其他表数据量较小，暂不需要分区。"
+    "partition_strategy": "key_access_audit表按月分区（RANGE分区 on accessed_at），支持自动创建新分区，提升清理旧数据和查询性能；encrypted_keys和master_encryption_keys数据量小，无需分区"
   },
   "connection_contracts": {
-    "pool_size": "10",
-    "timeout": "5000",
+    "pool_size": "最小5，最大20（加密密钥存储仅密钥管理服务访问，并发量低）",
+    "timeout": "连接超时5秒，读超时10秒，写超时10秒",
     "service_accounts": [
       {
-        "service": "SSH连接管理服务",
-        "db_user": "ssh_conn_service",
-        "privileges": ["SELECT", "INSERT", "UPDATE", "DELETE"]
-      },
-      {
-        "service": "审计日志服务",
-        "db_user": "audit_service",
-        "privileges": ["SELECT", "INSERT"]
-      },
-      {
-        "service": "环境管理服务",
-        "db_user": "env_service",
-        "privileges": ["SELECT"]
-      },
-      {
-        "service": "系统管理-密钥操作",
-        "db_user": "key_admin",
-        "privileges": ["SELECT", "INSERT", "UPDATE", "DELETE"]
+        "service": "密钥管理服务",
+        "db_user": "key_mgr_user",
+        "privileges": [
+          "SELECT（读取密钥密文、查询元数据、审计记录）",
+          "INSERT（写入密钥密文、写入审计记录、新增主密钥版本）",
+          "UPDATE（更新密钥状态、更新活跃主密钥标记）",
+          "DELETE（仅软删除，设置deleted_at字段）"
+        ]
       }
     ]
   }
