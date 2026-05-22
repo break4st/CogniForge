@@ -1,0 +1,287 @@
+{
+  "meta": {
+    "doc_id": "lld-文件传输模块-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "文件传输模块",
+    "title": "文件传输模块详细设计",
+    "author": "design_agent",
+    "created": "2026-05-22"
+  },
+  "overview": {
+    "description": "通过SCP/SFTP协议将可执行文件和配置传输到远程服务器，支持大文件分片传输和传输完整性校验",
+    "dependencies": ["SSH连接池", "密钥管理服务", "审计日志服务"],
+    "tech_stack": ["Python", "FastAPI", "REST/HTTPS", "SSH/SCP/SFTP"]
+  },
+  "data_models": [
+    {
+      "name": "file_transfer_config",
+      "type": "config",
+      "ownership": "owned",
+      "description": "文件传输模块全局配置参数",
+      "fields": [
+        {"name": "chunk_size", "type": "Integer", "required": true, "description": "分片传输的默认分片大小（字节），默认8388608（8MB）"},
+        {"name": "max_retries", "type": "Integer", "required": true, "description": "传输失败最大重试次数，默认3"},
+        {"name": "checksum_algorithm", "type": "String", "required": true, "description": "校验和算法，默认sha256"},
+        {"name": "transfer_timeout", "type": "Integer", "required": true, "description": "单次传输超时时间（秒），默认300"},
+        {"name": "temp_dir", "type": "String", "required": false, "description": "本地临时文件存放目录，默认系统临时目录"}
+      ]
+    },
+    {
+      "name": "transfer_session_cache",
+      "type": "store",
+      "ownership": "owned",
+      "description": "传输会话状态缓存（存储在Redis中，非持久化），用于跟踪活跃传输的生命周期",
+      "fields": [
+        {"name": "session_id", "type": "String", "required": true, "description": "传输会话唯一标识（UUID）"},
+        {"name": "ssh_session_id", "type": "String", "required": true, "description": "关联的SSH连接池会话ID"},
+        {"name": "status", "type": "String", "required": true, "description": "传输状态：uploading/completed/failed"},
+        {"name": "remote_path", "type": "String", "required": true, "description": "远程服务器上的目标目录路径"},
+        {"name": "file_name", "type": "String", "required": true, "description": "文件名"},
+        {"name": "checksum", "type": "String", "required": false, "description": "文件校验和（传输完成后计算填入）"},
+        {"name": "chunk_index", "type": "Integer", "required": false, "description": "当前已接收的分片序号（分片传输时使用）"},
+        {"name": "total_chunks", "type": "Integer", "required": false, "description": "总分片数（分片传输时使用）"},
+        {"name": "retry_count", "type": "Integer", "required": false, "description": "已重试次数"},
+        {"name": "created_at", "type": "DateTime", "required": true, "description": "会话创建时间"},
+        {"name": "updated_at", "type": "DateTime", "required": true, "description": "会话最后更新时间"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "文件上传",
+      "method": "POST",
+      "endpoint": "/internal/file/upload",
+      "description": "内部接口，通过SCP/SFTP将文件传输到远程服务器，部署执行服务调用此接口完成文件上传",
+      "parameters": [
+        {"name": "session_id", "type": "String", "description": "SSH会话ID，从SSH连接池获取"},
+        {"name": "remote_path", "type": "String", "description": "远程目标路径，即远程服务器上的目标目录"},
+        {"name": "file_data", "type": "Binary", "description": "文件内容，Base64编码字符串或分片数据"},
+        {"name": "file_name", "type": "String", "description": "文件名，传输后在远程服务器上以此名称保存"}
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "session_id": "String",
+          "status": "String",
+          "checksum": "String"
+        }
+      },
+      "error_codes": [
+        {"code": 400, "message": "请求参数缺失或格式错误，如session_id为空、file_data格式不正确"},
+        {"code": 401, "message": "未授权调用，内部服务认证不通过"},
+        {"code": 502, "message": "远程SCP/SFTP传输失败，如网络中断、权限拒绝、磁盘空间不足"},
+        {"code": 504, "message": "传输超时，超过配置的transfer_timeout阈值"}
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "文件传输模块采用分级错误处理策略：参数校验错误直接返回4xx；SCP/SFTP传输底层错误统一封装为502并记录详细错误日志；超时错误返回504并将传输会话标记为failed状态；所有传输错误支持重试机制，最多重试max_retries次",
+    "response_format": {
+      "body": {"code": "integer", "error": "string", "detail": "string"}
+    },
+    "categories": [
+      {"code": "400", "name": "参数校验错误", "description": "请求缺少必要参数或参数格式不正确时触发，传输会话不会创建"},
+      {"code": "401", "name": "认证失败", "description": "内部服务调用认证不通过时触发"},
+      {"code": "502", "name": "远程传输失败", "description": "SCP/SFTP传输过程中发生网络错误、权限拒绝、远程路径不存在或磁盘空间不足时触发，传输会话标记为failed状态，可配置重试"},
+      {"code": "504", "name": "传输超时", "description": "单次传输超过配置的transfer_timeout阈值时触发，传输会话标记为failed状态"}
+    ]
+  },
+  "domain_objects": [
+    {
+      "name": "FileTransferSession",
+      "object_type": "entity",
+      "description": "文件传输会话实体，跟踪单次文件传输从创建到完成的完整生命周期，状态存储在Redis缓存中",
+      "attributes": [
+        {"name": "session_id", "type": "String", "required": true, "source": "computed", "description": "传输会话唯一标识，系统自动生成UUID"},
+        {"name": "ssh_session_id", "type": "String", "required": true, "source": "input", "description": "关联的SSH会话ID，从SSH连接池获取"},
+        {"name": "status", "type": "TransferStatus", "required": true, "source": "db", "description": "当前传输状态"},
+        {"name": "remote_path", "type": "String", "required": true, "source": "input", "description": "远程服务器上的目标目录路径"},
+        {"name": "file_name", "type": "String", "required": true, "source": "input", "description": "待传输文件名"},
+        {"name": "checksum", "type": "String", "required": false, "source": "computed", "description": "传输完成后计算的文件校验和"},
+        {"name": "chunk_index", "type": "Integer", "required": false, "source": "db", "description": "当前已接收的分片序号（分片传输时使用）"},
+        {"name": "total_chunks", "type": "Integer", "required": false, "source": "input", "description": "总分片数（分片传输时使用）"},
+        {"name": "retry_count", "type": "Integer", "required": false, "source": "db", "description": "当前已重试的次数"},
+        {"name": "created_at", "type": "DateTime", "required": true, "source": "db", "description": "会话创建时间"},
+        {"name": "updated_at", "type": "DateTime", "required": true, "source": "db", "description": "会话最后更新时间"}
+      ]
+    },
+    {
+      "name": "TransferStatus",
+      "object_type": "enum",
+      "description": "文件传输状态枚举，定义传输会话的允许状态值",
+      "values": ["uploading", "completed", "failed"]
+    },
+    {
+      "name": "FileUploadRequest",
+      "object_type": "dto",
+      "description": "文件上传请求DTO，映射POST /internal/file/upload的请求体",
+      "attributes": [
+        {"name": "session_id", "type": "String", "required": true, "source": "input", "description": "SSH会话ID"},
+        {"name": "remote_path", "type": "String", "required": true, "source": "input", "description": "远程目标路径"},
+        {"name": "file_data", "type": "String", "required": true, "source": "input", "description": "文件内容，Base64编码字符串"},
+        {"name": "file_name", "type": "String", "required": true, "source": "input", "description": "文件名"}
+      ],
+      "maps_to_entity": "FileTransferSession"
+    },
+    {
+      "name": "FileUploadResponse",
+      "object_type": "dto",
+      "description": "文件上传响应DTO，映射POST /internal/file/upload的响应体",
+      "attributes": [
+        {"name": "session_id", "type": "String", "required": true, "source": "derived", "description": "传输会话ID"},
+        {"name": "status", "type": "TransferStatus", "required": true, "source": "derived", "description": "当前传输状态"},
+        {"name": "checksum", "type": "String", "required": false, "source": "derived", "description": "文件校验和，传输完成时返回"}
+      ]
+    },
+    {
+      "name": "FileChecksum",
+      "object_type": "value_object",
+      "description": "文件校验和值对象，用于验证传输完整性的不可变值",
+      "attributes": [
+        {"name": "algorithm", "type": "String", "required": true, "source": "input", "description": "校验和算法：sha256/sha512/md5"},
+        {"name": "value", "type": "String", "required": true, "source": "computed", "description": "校验和十六进制字符串"}
+      ]
+    },
+    {
+      "name": "TransferConfig",
+      "object_type": "value_object",
+      "description": "文件传输配置值对象，封装单次传输的运行时参数",
+      "attributes": [
+        {"name": "chunk_size", "type": "Integer", "required": true, "source": "input", "description": "分片大小（字节），默认8388608（8MB）"},
+        {"name": "max_retries", "type": "Integer", "required": true, "source": "input", "description": "最大重试次数，默认3"},
+        {"name": "transfer_timeout", "type": "Integer", "required": true, "source": "input", "description": "传输超时时间（秒），默认300"},
+        {"name": "checksum_algorithm", "type": "String", "required": true, "source": "input", "description": "校验和算法，默认sha256"}
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "name": "FileTransferService",
+      "description": "文件传输核心服务，负责通过SCP/SFTP协议将文件传输到远程服务器，支持分片传输和完整性校验",
+      "methods": [
+        {
+          "name": "uploadFile",
+          "signature": "(request: FileUploadRequest, config: TransferConfig) -> FileUploadResponse",
+          "precondition": "SSH会话session_id对应的连接在SSH连接池中已建立且可用；remote_path在远程服务器上存在且有写权限",
+          "postcondition": "文件已通过SCP/SFTP成功传输到远程服务器的remote_path/file_name路径；传输会话状态为completed或failed",
+          "description": "将文件通过SCP/SFTP协议传输到远程服务器，传输完成后计算文件校验和",
+          "exceptions": [
+            {"name": "InvalidSessionError", "trigger": "session_id不存在或对应的SSH连接已中断", "http_status": 400},
+            {"name": "RemotePathError", "trigger": "remote_path在远程服务器上不存在或当前用户无写权限", "http_status": 502},
+            {"name": "TransferTimeoutError", "trigger": "文件传输超过transfer_timeout未完成", "http_status": 504},
+            {"name": "TransferFailedError", "trigger": "SCP/SFTP底层传输失败（网络中断、磁盘空间不足等）", "http_status": 502}
+          ]
+        },
+        {
+          "name": "uploadFileChunk",
+          "signature": "(sessionId: String, chunkIndex: Integer, chunkData: String, totalChunks: Integer, config: TransferConfig) -> FileUploadResponse",
+          "precondition": "传输会话已存在且当前状态为uploading；chunkIndex在[0, totalChunks)范围内；chunkData非空",
+          "postcondition": "当前分片已通过SFTP写入远程临时文件；当chunkIndex等于totalChunks-1时自动组合所有分片并计算最终校验和",
+          "description": "分片上传文件的一个分片，全部分片收集完成后自动在远程服务器上组合完整文件",
+          "exceptions": [
+            {"name": "InvalidSessionError", "trigger": "传输会话ID不存在或状态不为uploading", "http_status": 400},
+            {"name": "InvalidChunkError", "trigger": "分片序号重复、不连续或超出范围", "http_status": 400},
+            {"name": "TransferFailedError", "trigger": "分片传输过程中发生SCP/SFTP错误", "http_status": 502}
+          ]
+        },
+        {
+          "name": "retryTransfer",
+          "signature": "(sessionId: String, config: TransferConfig) -> FileUploadResponse",
+          "precondition": "传输会话存在且状态为failed；retry_count小于config.max_retries",
+          "postcondition": "retry_count加1；文件被重新传输；会话状态根据传输结果转换为uploading或仍为failed",
+          "description": "重试失败的传输任务，重新建立传输并执行完整的文件传输流程",
+          "exceptions": [
+            {"name": "InvalidSessionError", "trigger": "传输会话ID不存在", "http_status": 400},
+            {"name": "MaxRetriesExceededError", "trigger": "重试次数已达到config.max_retries上限", "http_status": 409},
+            {"name": "TransferFailedError", "trigger": "重试传输过程中仍然失败", "http_status": 502}
+          ]
+        },
+        {
+          "name": "verifyFileIntegrity",
+          "signature": "(sessionId: String) -> FileChecksum",
+          "precondition": "传输会话存在且状态为completed",
+          "postcondition": "返回远程服务器上文件的当前校验和；可在返回外部与期望值比对以验证完整性",
+          "description": "重新计算远程服务器上已传输文件的校验和，用于验证传输完整性",
+          "exceptions": [
+            {"name": "InvalidSessionError", "trigger": "传输会话ID不存在", "http_status": 400},
+            {"name": "FileNotFoundError", "trigger": "远程服务器上目标文件不存在或已被删除", "http_status": 502}
+          ]
+        }
+      ],
+      "repository_dependencies": [
+        "findBySessionId(sessionId: String) -> FileTransferSession?",
+        "save(session: FileTransferSession) -> void",
+        "updateStatus(sessionId: String, status: TransferStatus) -> void",
+        "incrementRetryCount(sessionId: String) -> Integer"
+      ]
+    },
+    {
+      "name": "SshFileTransferAdapter",
+      "description": "SSH文件传输适配器，封装SCP和SFTP协议的底层操作，提供统一的文件传输接口给FileTransferService调用",
+      "methods": [
+        {
+          "name": "transferViaScp",
+          "signature": "(sessionId: String, localFilePath: String, remoteDir: String, fileName: String) -> Boolean",
+          "precondition": "SSH连接池中存在sessionId对应的活跃连接；localFilePath指向的本地文件存在且可读",
+          "postcondition": "本地文件通过SCP协议已传输到远程服务器的remoteDir/fileName；返回布尔值表示传输成功与否",
+          "description": "通过SCP协议将本地文件传输到远程服务器的指定目录",
+          "exceptions": [
+            {"name": "ScpTransferException", "trigger": "SCP传输过程中发生网络错误或权限问题", "http_status": 502}
+          ]
+        },
+        {
+          "name": "transferViaSftp",
+          "signature": "(sessionId: String, localFilePath: String, remoteDir: String, fileName: String) -> Boolean",
+          "precondition": "SSH连接池中存在sessionId对应的活跃连接；localFilePath指向的本地文件存在且可读",
+          "postcondition": "本地文件通过SFTP协议已传输到远程服务器的remoteDir/fileName；返回布尔值表示传输成功与否",
+          "description": "通过SFTP协议将本地文件传输到远程服务器，支持断点续传",
+          "exceptions": [
+            {"name": "SftpTransferException", "trigger": "SFTP传输过程中发生网络错误或权限问题", "http_status": 502}
+          ]
+        },
+        {
+          "name": "computeRemoteChecksum",
+          "signature": "(sessionId: String, remoteFilePath: String, algorithm: String) -> FileChecksum",
+          "precondition": "SSH连接池中存在sessionId对应的活跃连接；remoteFilePath在远程服务器上存在且可读",
+          "postcondition": "在远程服务器上执行校验和计算命令并返回计算结果，返回值中包含算法名称和校验和值",
+          "description": "在远程服务器上执行校验和计算命令，返回文件的校验和值",
+          "exceptions": [
+            {"name": "SftpTransferException", "trigger": "远程命令执行失败或文件不可读", "http_status": 502}
+          ]
+        }
+      ],
+      "repository_dependencies": []
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "单个传输会话在同一时刻只能处于一种状态：uploading、completed、failed三者之一",
+      "传输会话的retry_count必须始终小于等于config.max_retries",
+      "completed为传输终态，不可再执行任何传输操作",
+      "分片传输时所有分片的chunkIndex必须连续覆盖0到totalChunks-1的完整范围",
+      "同一session_id的传输操作具有互斥性，不可并发执行"
+    ],
+    "state_machines": [
+      {
+        "entity": "FileTransferSession",
+        "states": ["uploading", "completed", "failed"],
+        "transitions": [
+          {"from": "uploading", "to": "completed", "trigger": "文件或全部分片传输成功且校验和验证通过", "actor": "FileTransferService.uploadFile / uploadFileChunk"},
+          {"from": "uploading", "to": "failed", "trigger": "传输过程中发生不可恢复错误（网络中断、磁盘空间不足、权限拒绝）", "actor": "FileTransferService.uploadFile / uploadFileChunk"},
+          {"from": "failed", "to": "uploading", "trigger": "调用retryTransfer方法重新传输", "actor": "FileTransferService.retryTransfer"}
+        ],
+        "irreversible_rules": [
+          "completed为终态，一旦到达不可转换为任何其他状态",
+          "failed状态只能通过retryTransfer转换为uploading，不可直接跳转为completed"
+        ],
+        "concurrency": "同一session_id的传输操作使用Redis分布式锁防重入，锁超时时间为config.transfer_timeout + 30秒；不同session_id的传输互不影响，可并行执行"
+      }
+    ],
+    "cross_service_rules": [
+      "文件传输前须确认SSH连接池中的session_id对应一个有效的、已建立连接的SSH会话",
+      "传输完成后须向审计日志服务发送审计事件，包含session_id、file_name、remote_path、status、checksum等信息",
+      "大文件（超过config.chunk_size）自动触发分片传输模式，分片状态的协调由部署执行服务在调用层面管理"
+    ]
+  }
+}
