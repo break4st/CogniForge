@@ -1324,13 +1324,14 @@ class Repl:
                 f"工作目录: {repo_path}"
             )
 
+        # ── Purple box: entering interactive session ──────────────────────
         click.echo()
+        artifact_info = str(artifact_path.relative_to(repo_path)) if artifact_path else "(未找到)"
         click.echo(_draw_box(
-            top_line="交互式修改模式",
+            top_line="交互式修改模式 — 已启动",
             lines=[
-                "正在启动 Claude Code 交互会话……",
-                "你可以像平时使用 Claude Code 一样与 Agent 对话修改文档。",
-                "输入 /exit 退出并返回审批菜单。",
+                f"产物: {artifact_info}",
+                "与 Agent 对话修改文档，输入 /exit 返回审批菜单。",
             ],
         ))
 
@@ -1342,7 +1343,7 @@ class Repl:
         ]
         if artifact_path:
             rel = str(artifact_path.relative_to(repo_path))
-            prd_dir = str(Path(rel).parent)  # e.g. .cogniforge/wiki/prd
+            prd_dir = str(Path(rel).parent)
             cmd.extend([
                 "--allowedTools",
                 f"Read({prd_dir}/**),Edit({prd_dir}/**),Write({prd_dir}/**)",
@@ -1353,6 +1354,13 @@ class Repl:
         except FileNotFoundError:
             click.echo(f"  {C_RED}✗{C_RESET} 未找到 Claude Code CLI，请确认已安装")
             return
+
+        # ── Purple box: returned from interactive session ─────────────────
+        click.echo()
+        click.echo(_draw_box(
+            top_line="交互式修改模式 — 已退出",
+            lines=["已返回 CogniForge 审批流程。"],
+        ))
 
         # Track mtime for re-render check
         if artifact_path and artifact_path.exists():
