@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -47,22 +48,28 @@ class WBSAssembler:
         self.llm = llm_adapter
 
     def assemble(self, module: str, lld_path: Path,
-                 max_llm_rounds: int = 2) -> WBSResult:
+                 max_llm_rounds: int = 2,
+                 progress_callback: Callable[[str], None] | None = None) -> WBSResult:
         """Run the full structured WBS pipeline.
 
         Args:
             module: Module name.
             lld_path: Path to the LLD JSON file.
             max_llm_rounds: Max coverage-correction rounds.
+            progress_callback: Optional callback(phase: str) for progress display.
 
         Returns:
             WBSResult with task dicts and coverage report.
         """
         # 1. Parse LLD
+        if progress_callback:
+            progress_callback("解析 LLD")
         registry = LLDArtifactRegistry.from_lld(lld_path)
         lld_data = _load_lld_json(lld_path)
 
         # 2. Mechanical stub generation
+        if progress_callback:
+            progress_callback("机械任务生成")
         stubs = generate(registry)
         summary = generate_summary(stubs)
 
@@ -70,9 +77,14 @@ class WBSAssembler:
         enriched = stubs
         report = None
         for round_idx in range(max_llm_rounds + 1):
-            enriched = self._llm_enrich(module, enriched, lld_path, lld_data, round_idx)
+            if progress_callback:
+                progress_callback(f"LLM 丰富第 {round_idx + 1} 轮")
+            enriched = self._llm_enrich(module, enriched, lld_path, lld_data, round_idx,
+                                         progress_callback=progress_callback)
 
             # 4. Coverage check
+            if progress_callback:
+                progress_callback("验证覆盖率")
             task_refs = [[ref for ref in s.lld_refs] for s in enriched if s.category != "test"]
             report = validate_coverage(lld_data, task_refs, registry.module_type)
 
@@ -80,6 +92,8 @@ class WBSAssembler:
                 break
 
         # 5. Build TaskContext and assemble final task dicts
+        if progress_callback:
+            progress_callback("构建任务上下文")
         all_module_llds = _load_all_module_llds(self.wiki, module)
         tasks = self._build_task_dicts(enriched, registry, lld_data, all_module_llds, module)
 
@@ -251,7 +265,8 @@ class WBSAssembler:
 
     def _llm_enrich(self, module: str, stubs: list[TaskStub],
                     lld_path: Path, lld_data: dict,
-                    round_idx: int) -> list[TaskStub]:
+                    round_idx: int,
+                    progress_callback: Callable[[str], None] | None = None) -> list[TaskStub]:
         """Send stubs to LLM for enrichment. Returns enriched stubs."""
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -293,7 +308,8 @@ class WBSAssembler:
             f"要求: 只输出 JSON 数组，不输出其他内容。完成后不需要确认。"
         )
 
-        response = self.llm.generate_agentic(prompt, role="techlead")
+        response = self.llm.generate_agentic(prompt, role="techlead",
+                                              progress_callback=progress_callback)
 
         # Try to parse LLM output
         enriched_dicts = _parse_llm_json_array(response.content)

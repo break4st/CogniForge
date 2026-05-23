@@ -157,16 +157,18 @@ def _display_width(text: str) -> int:
     return w
 
 
-def _draw_box(top_line: str, lines: list[str], bottom_close: bool = True) -> str:
+def _draw_box(top_line: str, lines: list[str], bottom_close: bool = True,
+              min_width: int = 0) -> str:
     """Draw a CJK-aware aligned box.
 
     top_line: title in the top border
     lines: body lines
+    min_width: minimum content width (used when body lines will expand dynamically)
     """
     all_lines = [top_line] + lines
     content_w = max(_display_width(ln) for ln in all_lines)
     # Ensure room for ─ padding around title in top border (needs ≥2 extra cols)
-    max_w = max(content_w, _display_width(top_line) + 2)
+    max_w = max(content_w, _display_width(top_line) + 2, min_width)
 
     def _pad(ln: str) -> str:
         return ln + " " * (max_w - _display_width(ln))
@@ -378,17 +380,25 @@ class Spinner:
 class ParallelProgress:
     """Multi-line live status panel for parallel agent tasks.
 
-    Renders one line per active task on stderr, refreshed in-place via ANSI
-    escape codes.  Caller is responsible for calling :meth:`stop` before
-    printing anything to stdout (e.g. a result line) and :meth:`start`
-    afterwards so the panel and regular output don't interleave.
+    Renders one line per task on stderr, refreshed in-place via ANSI
+    escape codes.  Each line shows a spinner (running), checkmark (done),
+    or cross (failed), plus the current phase and elapsed seconds.
+
+    Caller should:
+      1. register() all tasks
+      2. start() the panel
+      3. call mark_done() as each task finishes (no stop/start needed)
+      4. call stop() once after ALL tasks finish
+      5. print results to stdout AFTER stop()
     """
 
     _SPINNER_CHARS = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._tasks: dict[str, str] = {}  # name -> phase
+        self._tasks: dict[str, str] = {}          # name -> phase
+        self._statuses: dict[str, str] = {}       # name -> "running"|"success"|"failed"
+        self._start_times: dict[str, float] = {}  # name -> time.time()
         self._frame = 0
         self._running = False
         self._thread: threading.Thread | None = None
@@ -399,15 +409,25 @@ class ParallelProgress:
     def register(self, name: str) -> None:
         with self._lock:
             self._tasks[name] = "准备中"
+            self._statuses[name] = "running"
+            self._start_times[name] = time.time()
 
     def update(self, name: str, phase: str) -> None:
         with self._lock:
             if name in self._tasks:
                 self._tasks[name] = phase
 
+    def mark_done(self, name: str, success: bool) -> None:
+        """Mark a task as finished (✓ or ✗) without removing it from the panel."""
+        with self._lock:
+            if name in self._statuses:
+                self._statuses[name] = "success" if success else "failed"
+
     def remove(self, name: str) -> None:
         with self._lock:
             self._tasks.pop(name, None)
+            self._statuses.pop(name, None)
+            self._start_times.pop(name, None)
 
     @property
     def active(self) -> bool:
@@ -448,21 +468,31 @@ class ParallelProgress:
 
             self._frame += 1
             frame = self._frame
+            now = time.time()
 
-            # Collect task name → phase lines
-            entries = list(self._tasks.items())
-            # Sort for stable display order
-            entries.sort(key=lambda x: x[0])
+            entries = sorted(self._tasks.items(), key=lambda x: x[0])
 
             lines: list[str] = []
             for name, phase in entries:
-                char = self._SPINNER_CHARS[
-                    (frame + hash(name)) % len(self._SPINNER_CHARS)
-                ]
-                # Ensure phase fits so lines stay properly aligned
-                lines.append(
-                    f"  {C_AMBER}{char}{C_RESET} {name}  [{phase}]"
-                )
+                elapsed = int(now - self._start_times.get(name, now))
+                elapsed_str = f" ({elapsed}s)" if elapsed >= 1 else ""
+                status = self._statuses.get(name, "running")
+
+                if status == "success":
+                    lines.append(
+                        f"  {C_GREEN}✓{C_RESET} {name}  [{phase}]{elapsed_str}"
+                    )
+                elif status == "failed":
+                    lines.append(
+                        f"  {C_RED}✗{C_RESET} {name}  [{phase}]{elapsed_str}"
+                    )
+                else:
+                    char = self._SPINNER_CHARS[
+                        (frame + hash(name)) % len(self._SPINNER_CHARS)
+                    ]
+                    lines.append(
+                        f"  {C_AMBER}{char}{C_RESET} {name}  [{phase}]{elapsed_str}"
+                    )
 
             # Move cursor back up to overwrite previous render
             if self._lines > 0:
@@ -647,6 +677,7 @@ class Repl:
                 )
 
                 progress = ParallelProgress()
+                result_map: dict[str, dict] = {}
 
                 with ThreadPoolExecutor(max_workers=max_w) as executor:
                     future_map: dict = {}
@@ -658,7 +689,6 @@ class Repl:
                             "title": f"LLD - {mod_name}",
                             "overview": comp.get("description", ""),
                         }
-                        # Closure captures current mod_name for progress callback
                         def _cb(phase: str, _name: str = mod_name) -> None:
                             progress.update(_name, phase)
                         future = executor.submit(agent.run, input_data, _cb)
@@ -668,18 +698,23 @@ class Repl:
                     try:
                         for future in as_completed(future_map):
                             mod_name = future_map[future]
-                            progress.stop()
                             try:
                                 result = future.result()
+                                success = result.get("status") == "success"
                             except Exception as e:
                                 result = {"status": "failed", "message": str(e)}
-                            progress.remove(mod_name)
-                            self._print_lld_result(mod_name, result)
+                                success = False
+                            progress.mark_done(mod_name, success)
+                            result_map[mod_name] = result
                             results.append(result)
-                            if progress.active:
-                                progress.start()
                     finally:
                         progress.stop()
+
+                # Print results in group submission order
+                for comp in group:
+                    mod_name = comp.get("name", "unknown")
+                    if mod_name in result_map:
+                        self._print_lld_result(mod_name, result_map[mod_name])
 
         # Summary
         success_count = sum(1 for r in results if r.get("status") == "success")
@@ -737,13 +772,15 @@ class Repl:
         )
 
         # ── Per-module worker (runs in thread) ──
-        def _assemble_one(mod_name: str, lld_path: Path):
+        def _assemble_one(mod_name: str, lld_path: Path,
+                          progress_cb=None):
             """Run full assemble pipeline for one module.  Each thread gets
             its own WBSAssembler so there is no shared mutable state."""
             assembler = WBSAssembler(
                 agent.wiki_system, agent.task_engine, agent.agent,
             )
-            return assembler.assemble(mod_name, lld_path)
+            return assembler.assemble(mod_name, lld_path,
+                                       progress_callback=progress_cb)
 
         # ── Parallel phase: LLM enrichment per module ──
         progress = ParallelProgress()
@@ -751,7 +788,9 @@ class Repl:
         with ThreadPoolExecutor(max_workers=max_w) as executor:
             for mod_name, lld_path in specs:
                 progress.register(mod_name)
-                future = executor.submit(_assemble_one, mod_name, lld_path)
+                def _wbs_cb(phase: str, _name: str = mod_name) -> None:
+                    progress.update(_name, phase)
+                future = executor.submit(_assemble_one, mod_name, lld_path, _wbs_cb)
                 future_map[future] = mod_name
 
             progress.start()
@@ -759,68 +798,72 @@ class Repl:
             try:
                 for future in as_completed(future_map):
                     mod_name = future_map[future]
-                    progress.stop()
                     try:
                         per_module[mod_name] = future.result()
+                        success = True
                     except Exception as exc:
                         per_module[mod_name] = exc
-                    progress.remove(mod_name)
-                    if progress.active:
-                        progress.start()
+                        success = False
+                    progress.mark_done(mod_name, success)
             finally:
                 progress.stop()
 
         # ── Sequential phase: register tasks & print (git I/O serialised) ──
+        sequential_spinner = Spinner("注册 WBS 任务到知识库")
+        sequential_spinner.start()
         final_results: list[dict] = []
-        for mod_name, _ in specs:
-            raw = per_module.get(mod_name)
-            if raw is None:
-                err = {"status": "failed", "message": "no result (unexpected)"}
-                self._print_lld_result(mod_name, err)
-                final_results.append(err)
-                continue
+        try:
+            for mod_name, _ in specs:
+                raw = per_module.get(mod_name)
+                if raw is None:
+                    err = {"status": "failed", "message": "no result (unexpected)"}
+                    self._print_lld_result(mod_name, err)
+                    final_results.append(err)
+                    continue
 
-            if isinstance(raw, Exception):
-                err = {"status": "failed", "message": str(raw)}
-                self._print_lld_result(mod_name, err)
-                final_results.append(err)
-                continue
+                if isinstance(raw, Exception):
+                    err = {"status": "failed", "message": str(raw)}
+                    self._print_lld_result(mod_name, err)
+                    final_results.append(err)
+                    continue
 
-            # raw is WBSResult
-            try:
-                count = agent._register_wbs_tasks(raw.tasks, mod_name)
+                # raw is WBSResult
+                try:
+                    count = agent._register_wbs_tasks(raw.tasks, mod_name)
 
-                # Render combined WBS HTML for this module
-                now = datetime.now().strftime("%Y-%m-%d %H:%M")
-                task_dicts = [
-                    t if isinstance(t, dict) else (
-                        t.to_json() if hasattr(t, "to_json") else {}
+                    # Render combined WBS HTML for this module
+                    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    task_dicts = [
+                        t if isinstance(t, dict) else (
+                            t.to_json() if hasattr(t, "to_json") else {}
+                        )
+                        for t in raw.tasks
+                    ]
+                    html_path = render_wbs_module_html(
+                        mod_name, task_dicts,
+                        created=now, repo_path=Path.cwd(),
                     )
-                    for t in raw.tasks
-                ]
-                html_path = render_wbs_module_html(
-                    mod_name, task_dicts,
-                    created=now, repo_path=Path.cwd(),
-                )
-                if html_path:
-                    rel_html = html_path.relative_to(Path.cwd()).as_posix()
-                    self.wiki_system.git_storage.repo.index.add([rel_html])
+                    if html_path:
+                        rel_html = html_path.relative_to(Path.cwd()).as_posix()
+                        self.wiki_system.git_storage.repo.index.add([rel_html])
 
-                report = raw.coverage
-                coverage_msg = (
-                    f", coverage={report.coverage_pct:.0f}%" if report else ""
-                )
-                res = agent.format_result(
-                    status="success",
-                    message=f"WBS: {count} tasks for {mod_name}{coverage_msg}",
-                    data={"task_count": count},
-                )
-                self._print_lld_result(mod_name, res)
-                final_results.append(res)
-            except Exception as exc:
-                err = {"status": "failed", "message": str(exc)}
-                self._print_lld_result(mod_name, err)
-                final_results.append(err)
+                    report = raw.coverage
+                    coverage_msg = (
+                        f", coverage={report.coverage_pct:.0f}%" if report else ""
+                    )
+                    res = agent.format_result(
+                        status="success",
+                        message=f"WBS: {count} tasks for {mod_name}{coverage_msg}",
+                        data={"task_count": count},
+                    )
+                    self._print_lld_result(mod_name, res)
+                    final_results.append(res)
+                except Exception as exc:
+                    err = {"status": "failed", "message": str(exc)}
+                    self._print_lld_result(mod_name, err)
+                    final_results.append(err)
+        finally:
+            sequential_spinner.stop()
 
         success_count = sum(1 for r in final_results if r.get("status") == "success")
         click.echo(
@@ -1383,6 +1426,19 @@ class Repl:
             link = f"\033]8;;file://{abs_path}\033\\{a}\033]8;;\033\\"
             lines.append(f"       {link}")
 
+        # Show phase timings if available
+        timings = result.get("data", {}).get("timings", [])
+        if timings:
+            parts = []
+            for t in timings:
+                label = t.get("phase", "")
+                dur = t.get("duration_s", 0)
+                if label == "总计":
+                    parts.append(f"  {C_DIM}⏱ {label} {dur}s{C_RESET}")
+                else:
+                    parts.append(f"{C_DIM}{label} {dur}s{C_RESET}")
+            lines.append("  " + "  |  ".join(parts))
+
         # Print artifacts immediately so the user can preview before approving
         click.echo("\n".join(lines))
 
@@ -1464,13 +1520,14 @@ class Repl:
             f"产物: {artifact_path.relative_to(repo_path)}",
             "输入修改意见，Agent 逐轮修改文档。输入 /done 完成。",
         ]
-        # Pre-compute box width so the closing border matches
+        # Box width: start from header, auto-expand when content is wider
         _all = [box_title] + box_lines
         _box_w = max(_display_width(ln) for ln in _all)
         _box_w = max(_box_w, _display_width(box_title) + 2)
         click.echo()
         click.echo(_draw_box(
             top_line=box_title, lines=box_lines, bottom_close=False,
+            min_width=_box_w,
         ))
 
         # ── Helper: re-render and commit ──────────────────────────────────
@@ -1506,11 +1563,14 @@ class Repl:
             return re.sub(r"\033\[[0-9;]*m", "", text)
 
         def _box_print(text: str) -> None:
-            """Print a line inside the open purple box with left/right borders."""
+            """Print lines inside the open purple box; expand _box_w if needed."""
+            nonlocal _box_w
             P, R = C_PURPLE, C_RESET
             for line in str(text).split("\n"):
                 dw = _display_width(_strip_ansi(line))
-                pad = " " * max(0, _box_w - dw)
+                if dw > _box_w:
+                    _box_w = dw
+                pad = " " * (_box_w - dw)
                 click.echo(f"  {P}│{R} {line}{pad} {P}│{R}")
 
         def _box_empty() -> None:
@@ -1519,7 +1579,7 @@ class Repl:
             click.echo(f"  {P}│{R}{' ' * (_box_w + 2)} {P}│{R}")
 
         def _box_input(prompt_text: str) -> str:
-            """Read user input with left border, inside the box."""
+            """Read user input with left border (right border not drawn during typing)."""
             P, R = C_PURPLE, C_RESET
             try:
                 return input(f"  {P}│{R} {prompt_text}").strip()
@@ -1643,7 +1703,8 @@ class Repl:
             _box_empty()
 
         # ── Close purple box ───────────────────────────────────────────
-        click.echo(f"  {C_PURPLE}╰{'─' * (_box_w + 2)}╯{C_RESET}")
+        # Match _draw_box bottom: ╰─{'─' * content_w}─╯  →  content_w + 1 dashes
+        click.echo(f"  {C_PURPLE}╰─{'─' * _box_w}─╯{C_RESET}")
         click.echo(f"  {C_DIM}已返回 CogniForge 审批流程。{C_RESET}")
 
     @staticmethod

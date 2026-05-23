@@ -248,12 +248,15 @@ class DeepSeekAdapter(BaseLLMAdapter):
         prompt: str,
         *,
         role: str | None = None,
+        progress_callback: callable | None = None,
         **kwargs,
     ) -> LLMResponse:
         model = kwargs.pop("model", self.model)
         max_toks = kwargs.pop("max_tokens", self.max_tokens)
 
         # Step 1: build messages with thinking instruction
+        if progress_callback:
+            progress_callback("LLM 分析中")
         think_prompt = prompt + "\n\n请先深入分析思考，输出详细的设计方案。用自然语言描述，不要输出 JSON。"
         messages = self._build_agentic_messages(think_prompt, role)
 
@@ -267,6 +270,8 @@ class DeepSeekAdapter(BaseLLMAdapter):
         content1 = resp1.choices[0].message.content or ""
 
         # Step 2: append thinking result + JSON formatting instruction
+        if progress_callback:
+            progress_callback("LLM 生成 JSON")
         messages.append({"role": "assistant", "content": content1})
         messages.append({
             "role": "user",

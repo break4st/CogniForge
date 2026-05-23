@@ -482,6 +482,7 @@ class DesignAgent(BaseAgent):
             _progress("LLM 生成中")
             response = self.agent.generate_think_then_json(
                 prompt, role="design", max_tokens=8192,
+                progress_callback=_progress,
             )
             json_text = _extract_json(response.content)
 

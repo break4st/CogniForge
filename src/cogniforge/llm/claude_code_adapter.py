@@ -307,11 +307,14 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
         prompt: str,
         *,
         role: str | None = None,
+        progress_callback: callable | None = None,
         **kwargs,
     ) -> LLMResponse:
         model = kwargs.pop("model", self.model)
 
         # Step 1: ask Claude to think deeply, produce free-form analysis
+        if progress_callback:
+            progress_callback("LLM 分析中")
         think_prompt = prompt + "\n\n请先深入分析思考，输出详细的设计方案。用自然语言描述，不要输出 JSON。"
         cmd1 = [self.claude_cli_path, "-p", "-",
                  "--output-format", "json", "--model", model]
@@ -319,6 +322,8 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
         content1 = resp1.content.strip()
 
         # Step 2: feed the analysis back + JSON formatting instruction
+        if progress_callback:
+            progress_callback("LLM 生成 JSON")
         json_prompt = (
             f"原始任务:\n{prompt}\n\n"
             f"分析结果:\n{content1}\n\n"
