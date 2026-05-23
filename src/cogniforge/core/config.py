@@ -270,6 +270,7 @@ class Config(BaseModel):
         for name, cfg in config.agent.items():
             cli_path = (cfg.get("cli_path", name) if isinstance(cfg, dict) else name)
             if name == "claude_code":
+                cli_path = cfg.get("cli_path", "claude") if isinstance(cfg, dict) else "claude"
                 import shutil
                 if not shutil.which(cli_path):
                     ref = f"agent.{name}"
