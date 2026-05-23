@@ -1514,7 +1514,7 @@ class Repl:
                 result = subprocess.run(
                     cmd, cwd=str(repo_path), check=False,
                     capture_output=True, text=True, timeout=600,
-                    input=prompt,
+                    input=prompt, encoding="utf-8",
                 )
             except subprocess.TimeoutExpired:
                 spinner.stop()

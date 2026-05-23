@@ -86,17 +86,17 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
     def generate(
         self, prompt: str, context: dict = None, **kwargs
     ) -> LLMResponse:
-        """Pure text generation via ``claude -p`` (no tools)."""
+        """Pure text generation via ``claude -p`` (no tools).
+
+        Always passes the prompt via stdin (``-p -``) to avoid
+        command-line argument corruption on Windows, where multi-line
+        prompts with embedded JSON quotes would be mangled by cmd.exe.
+        """
         full_prompt = self._build_prompt(prompt, context)
         model = kwargs.get("model", self.model)
-        # Use stdin for large prompts to avoid ARG_MAX
-        if len(full_prompt) > 100000:
-            command = [self.claude_cli_path, "-p", "-",
-                        "--output-format", "json", "--model", model]
-            return self._invoke_cli_stdin(command, full_prompt)
-        command = [self.claude_cli_path, "-p", full_prompt,
+        command = [self.claude_cli_path, "-p", "-",
                     "--output-format", "json", "--model", model]
-        return self._invoke_cli(command)
+        return self._invoke_cli_stdin(command, full_prompt)
 
     def generate_messages(
         self, messages: list[LLMMessage], **kwargs
