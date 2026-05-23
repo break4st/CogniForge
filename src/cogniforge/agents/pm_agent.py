@@ -263,7 +263,8 @@ class PMAgent(BaseAgent):
                 "1. 不要直接输出完整文档，只输出包含 patches 数组的变更结果 JSON。\n"
                 "2. 保留所有已有的 REQ-ID 和 US-ID 不变。\n"
                 "3. 新增需求时分配新的 ID（下一个可用的 REQ-NNN / US-NNN）。\n"
-                "4. 每条被修改的 requirement 需在 patches 中更新其 version 和 change_history。\n"
+                "4. 直接修改需求内容（描述、验收条件、优先级等），不要更新 per-requirement 的 version 和 change_history。\n"
+                "   change_history 只在需求首次创建时记录，修改轮次不追加变更历史。\n"
                 "5. 在 priorities 中使用需求 ID（不是需求名称）。\n"
                 "6. 如果检测到冲突，在 conflicts 数组中记录。\n"
                 "7. patches 使用 RFC 6902 JSON Pointer 格式路径。\n"
@@ -345,10 +346,8 @@ class PMAgent(BaseAgent):
 
             updated_prd = self._apply_patches(current_prd, patches)
 
-            # Bump version in meta
+            # Update meta timestamp only — version stays put during editing rounds
             updated_prd.setdefault("meta", {})
-            old_version = updated_prd["meta"].get("version", 0)
-            updated_prd["meta"]["version"] = old_version + 1
             updated_prd["meta"]["last_modified"] = datetime.now().strftime("%Y-%m-%d %H:%M")
             updated_prd["meta"]["last_author"] = "pm_agent"
 
@@ -379,7 +378,7 @@ class PMAgent(BaseAgent):
 
             operation = turn_data.get("operation", "modify")
             self.wiki_system.git_storage.commit(
-                f"docs: update PRD (v{updated_prd['meta']['version']}) - {operation}",
+                f"docs: update PRD - {operation}",
                 "pm_agent",
             )
 
