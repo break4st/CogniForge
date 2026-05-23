@@ -313,17 +313,34 @@ def _select(options: list[tuple[str, str]], default: int = 0,
 
 
 class Spinner:
-    """Braille spinner that runs in a background thread."""
+    """Braille spinner that runs in a background thread.
+
+    When ``message`` is updated externally (e.g. by a progress callback),
+    the next spin cycle picks it up and clears any leftover characters.
+    Automatically appends an elapsed-time indicator for long-running steps.
+    """
 
     _chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
     def __init__(self, message: str = "处理中") -> None:
-        self.message = message
+        self._base_message = message
         self._running = False
         self._thread: threading.Thread | None = None
+        self._max_len = 0
+        self._start_time = 0.0
+
+    @property
+    def message(self) -> str:
+        return self._base_message
+
+    @message.setter
+    def message(self, value: str) -> None:
+        self._base_message = value
+        self._start_time = time.time()  # reset elapsed timer on each new status
 
     def start(self) -> None:
         self._running = True
+        self._start_time = time.time()
         self._thread = threading.Thread(target=self._spin, daemon=True)
         self._thread.start()
 
@@ -331,16 +348,24 @@ class Spinner:
         self._running = False
         if self._thread is not None:
             self._thread.join(timeout=0.5)
-        sys.stderr.write("\r" + " " * (len(self.message) + 6) + "\r")
+        sys.stderr.write("\r" + " " * max(self._max_len + 10, 40) + "\r")
         sys.stderr.flush()
 
     def _spin(self) -> None:
         for char in itertools.cycle(self._chars):
             if not self._running:
                 break
-            sys.stderr.write(f"\r  {C_AMBER}{char}{C_RESET} {self.message}...")
+            elapsed = int(time.time() - self._start_time)
+            if elapsed >= 2:
+                display = f"{self._base_message} ({elapsed}s)"
+            else:
+                display = self._base_message
+            text = f"  {C_AMBER}{char}{C_RESET} {display}"
+            self._max_len = max(self._max_len, _display_width(display))
+            pad = max(0, self._max_len - _display_width(display))
+            sys.stderr.write(f"\r{text}{' ' * pad}")
             sys.stderr.flush()
-            time.sleep(0.08)
+            time.sleep(0.1)
 
 
 class ParallelProgress:
@@ -1318,7 +1343,7 @@ class Repl:
         if agent_role == "dev" and "task" not in input_data:
             input_data["task"] = self._pick_or_create_task(input_data)
 
-        spinner = Spinner(SPINNER_RUNNING.format(agent=agent_role))
+        spinner = Spinner(f"[{agent_role}] {SPINNER_RUNNING.format(agent=agent_role)}")
         spinner.start()
         # Progress callback: update spinner text with tool-level detail
         def _on_progress(status: str):
