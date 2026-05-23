@@ -298,6 +298,38 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
         return ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"]
 
     # ------------------------------------------------------------------
+    # Two-step generation: think first → format JSON
+    # Step 1: free-form analysis, Step 2: structured JSON output
+    # ------------------------------------------------------------------
+
+    def generate_think_then_json(
+        self,
+        prompt: str,
+        *,
+        role: str | None = None,
+        **kwargs,
+    ) -> LLMResponse:
+        model = kwargs.pop("model", self.model)
+
+        # Step 1: ask Claude to think deeply, produce free-form analysis
+        think_prompt = prompt + "\n\n请先深入分析思考，输出详细的设计方案。用自然语言描述，不要输出 JSON。"
+        cmd1 = [self.claude_cli_path, "-p", "-",
+                 "--output-format", "json", "--model", model]
+        resp1 = self._invoke_cli_stdin(cmd1, think_prompt)
+        content1 = resp1.content.strip()
+
+        # Step 2: feed the analysis back + JSON formatting instruction
+        json_prompt = (
+            f"原始任务:\n{prompt}\n\n"
+            f"分析结果:\n{content1}\n\n"
+            f"请将上述分析结果整理为指定的 JSON 结构输出。\n"
+            f"只返回纯 JSON 对象，不要 markdown 代码块包裹，不要任何解释文字。"
+        )
+        cmd2 = [self.claude_cli_path, "-p", "-",
+                 "--output-format", "json", "--model", model]
+        return self._invoke_cli_stdin(cmd2, json_prompt)
+
+    # ------------------------------------------------------------------
     # Interactive modification (via claude -p --session-id)
     # ------------------------------------------------------------------
 
