@@ -73,11 +73,11 @@ class PMAgent(BaseAgent):
         if json_abs.exists():
             # Render user-facing HTML from the JSON
             self.wiki_system.git_storage.repo.index.add(
-                [str(json_path.relative_to(self.config.repo_path))]
+                [json_path.relative_to(self.config.repo_path).as_posix()]
             )
             from cogniforge.wiki.wiki_renderer import render_file
             html_path = render_file(json_abs)
-            html_rel = str(html_path.relative_to(self.config.repo_path)) if html_path else ""
+            html_rel = html_path.relative_to(self.config.repo_path).as_posix() if html_path else ""
             if html_rel:
                 self.wiki_system.git_storage.repo.index.add([html_rel])
 
@@ -85,7 +85,7 @@ class PMAgent(BaseAgent):
                 f"feat: add PRD - {title}", "pm_agent"
             )
 
-            artifacts = [str(json_path.relative_to(self.config.repo_path))]
+            artifacts = [json_path.relative_to(self.config.repo_path).as_posix()]
             if html_rel:
                 artifacts.append(html_rel)
 

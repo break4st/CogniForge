@@ -99,7 +99,7 @@ class ContextLoader:
         full_pattern = str(self.repo_path / pattern)
 
         for file_path in glob.glob(full_pattern, recursive=True):
-            rel_path = str(Path(file_path).relative_to(self.repo_path))
+            rel_path = Path(file_path).relative_to(self.repo_path).as_posix()
             try:
                 content = Path(file_path).read_text(encoding="utf-8")
                 context[rel_path] = content

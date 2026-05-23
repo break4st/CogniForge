@@ -811,7 +811,7 @@ def wiki_push(ctx: Context, message: str, author: str):
     files = []
     for f in wiki_dir.rglob("*"):
         if f.is_file():
-            rel = str(f.relative_to(ctx.config.repo_path))
+            rel = f.relative_to(ctx.config.repo_path).as_posix()
             files.append(rel)
 
     if not files:

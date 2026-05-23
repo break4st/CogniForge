@@ -147,12 +147,12 @@ class ArchitectAgent(BaseAgent):
         except Exception:
             pass  # Don't block on normalization failure
 
-        rel_json = str(json_path.relative_to(self.config.repo_path))
+        rel_json = json_path.relative_to(self.config.repo_path).as_posix()
         self.wiki_system.git_storage.repo.index.add([rel_json])
 
         from cogniforge.wiki.wiki_renderer import render_file
         html_path = render_file(json_abs)
-        rel_html = str(html_path.relative_to(self.config.repo_path)) if html_path else ""
+        rel_html = html_path.relative_to(self.config.repo_path).as_posix() if html_path else ""
         if rel_html:
             self.wiki_system.git_storage.repo.index.add([rel_html])
 

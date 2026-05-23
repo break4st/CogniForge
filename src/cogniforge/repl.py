@@ -773,7 +773,7 @@ class Repl:
                     created=now, repo_path=Path.cwd(),
                 )
                 if html_path:
-                    rel_html = str(html_path.relative_to(Path.cwd()))
+                    rel_html = html_path.relative_to(Path.cwd()).as_posix()
                     self.wiki_system.git_storage.repo.index.add([rel_html])
 
                 report = raw.coverage
@@ -1426,16 +1426,16 @@ class Repl:
                 html_path = render_file(artifact_path)
                 _box_print(f"{C_GREEN}✓{C_RESET} 文档已更新")
                 if html_path:
-                    rel_link = str(html_path.relative_to(repo_path))
+                    rel_link = html_path.relative_to(repo_path).as_posix()
                     _box_print(f"{C_DIM}{rel_link}{C_RESET}")
                 if self.wiki_system:
                     try:
                         self.wiki_system.git_storage.repo.index.add([
-                            str(artifact_path.relative_to(repo_path)),
+                            artifact_path.relative_to(repo_path).as_posix(),
                         ])
                         if html_path:
                             self.wiki_system.git_storage.repo.index.add([
-                                str(html_path.relative_to(repo_path)),
+                                html_path.relative_to(repo_path).as_posix(),
                             ])
                         self.wiki_system.git_storage.commit(
                             "docs: update after interactive refinement", "pm_agent"

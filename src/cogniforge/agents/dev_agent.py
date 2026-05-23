@@ -48,7 +48,7 @@ class DevAgent(BaseAgent):
 
         code_dir = Path(self.config.repo_path) / "src" / module
         artifacts = [
-            str(p.relative_to(self.config.repo_path))
+            p.relative_to(self.config.repo_path).as_posix()
             for p in code_dir.rglob("*.py")
         ] if code_dir.exists() else []
 

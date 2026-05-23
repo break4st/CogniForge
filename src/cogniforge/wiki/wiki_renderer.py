@@ -1054,7 +1054,8 @@ def render_file(json_path: Path, wiki_root: Path | None = None) -> Optional[Path
         return None
 
     # Map .cogniforge/wiki/{type}[/{module}]/file.json → .cogniforge/html/{type}[/{module}]/file.html
-    path_str = str(json_path)
+    # Use as_posix() so the string match works on Windows (where str() gives backslashes)
+    path_str = json_path.as_posix()
     marker = ".cogniforge/wiki/"
     idx = path_str.find(marker)
     if idx != -1:

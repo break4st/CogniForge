@@ -3,7 +3,7 @@
 Agent Format:  ``.cogniforge/wiki/{type}/{id}.json`` — structured JSON,
     the source of truth.  Agents read from and write to this format.
 
-User Format:   ``.cogniforge/wiki/{type}/{id}.html`` — self-contained HTML,
+User Format:   ``.cogniforge/html/{type}/{id}.html`` — self-contained HTML,
     auto-rendered from the JSON by WikiRenderer.  Humans read this.
 """
 
@@ -86,7 +86,7 @@ class WikiSystem:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        rel = str(path.relative_to(self.repo_path))
+        rel = path.relative_to(self.repo_path).as_posix()
         self.git_storage.repo.index.add([rel])
 
         html_rel = None
@@ -94,7 +94,7 @@ class WikiSystem:
             from cogniforge.wiki.wiki_renderer import render_file
             html_path = render_file(path)
             if html_path is not None:
-                html_rel = str(html_path.relative_to(self.repo_path))
+                html_rel = html_path.relative_to(self.repo_path).as_posix()
                 self.git_storage.repo.index.add([html_rel])
 
         if commit_message:
@@ -151,7 +151,7 @@ class WikiSystem:
             doc_type=doc_type,
             title=doc_id or path.stem,
             content=content,
-            path=str(path.relative_to(self.repo_path)),
+            path=path.relative_to(self.repo_path).as_posix(),
             author="agent",
         )
 
@@ -189,7 +189,7 @@ class WikiSystem:
             try:
                 data = json.loads(Path(file_path).read_text(encoding="utf-8"))
                 meta = data.get("meta", {})
-                rel = str(Path(file_path).relative_to(self.repo_path))
+                rel = Path(file_path).relative_to(self.repo_path).as_posix()
                 documents.append(Document(
                     doc_id=meta.get("doc_id", Path(file_path).stem),
                     doc_type=doc_type,
