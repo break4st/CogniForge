@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -12,18 +13,20 @@ from cogniforge.core.exceptions import AgentError
 
 
 class ArchitectAgent(BaseAgent):
-    """Architect Agent — delegates to Claude Code to generate SAD JSON."""
+    """Architect Agent — uses LLM text mode to generate SAD JSON."""
 
     def run(self, input_data: dict) -> dict:
         try:
             if self.agent is None:
-                raise AgentError("ArchitectAgent requires a Claude Code agent")
+                raise AgentError("ArchitectAgent requires an LLM agent")
 
             title = input_data.get("title", "System Architecture")
             system_overview = input_data.get("system_overview", "")
             architecture = input_data.get("architecture", "")
             components = input_data.get("components", [])
             data_flow = input_data.get("data_flow", "")
+
+            prd_context = self._load_latest_prd()
 
             existing = self.wiki_system.list_documents(DocumentType.SAD)
             seq = len(existing) + 1
@@ -32,8 +35,7 @@ class ArchitectAgent(BaseAgent):
             json_path = self.wiki_system.agent_path(DocumentType.SAD, doc_id=doc_id)
 
             prompt = (
-                f"根据以下数据创建一份系统架构文档 (SAD)，以 JSON 格式输出并写入:\n\n"
-                f"输出路径: {json_path}\n"
+                f"根据以下数据创建一份系统架构文档 (SAD)，返回合法 JSON 对象:\n\n"
                 f"JSON 结构如下（system_overview/architecture 为对象，data_flow 为数组）:\n\n"
                 f"{{\n"
                 f"  \"meta\": {{\"doc_id\": \"{doc_id}\", \"type\": \"sad\",\n"
@@ -97,11 +99,23 @@ class ArchitectAgent(BaseAgent):
                 f"system_overview: {system_overview}\n"
                 f"architecture: {architecture}\n"
                 f"components: {json.dumps(components, ensure_ascii=False)}\n"
-                f"data_flow: {data_flow}\n\n"
-                f"要求: 先阅读 PRD、使用中文、只写 JSON 不写 HTML、完成后回复确认"
+                f"data_flow: {data_flow}\n"
+                f"已批准的 PRD 文档:\n{prd_context}\n\n"
+                f"要求: 基于 PRD 内容设计架构、使用中文"
             )
 
-            response = self.agent.generate_agentic(prompt, role="architect")
+            response = self.agent.generate_think_then_json(
+                prompt, role="architect", max_tokens=8192,
+            )
+
+            # Strip markdown fences if present
+            json_text = _extract_json(response.content)
+
+            # Write JSON file
+            json_abs = Path(self.config.repo_path) / json_path
+            json_abs.parent.mkdir(parents=True, exist_ok=True)
+            json_abs.write_text(json_text, encoding="utf-8")
+
             return self._commit_and_result(json_path, title, response.content)
 
         except Exception as e:
@@ -124,11 +138,23 @@ class ArchitectAgent(BaseAgent):
     def _normalize_component_type(cls, raw: str) -> str:
         return cls._COMPONENT_TYPE_CANONICAL.get(raw, "service")
 
+    def _load_latest_prd(self) -> str:
+        """Read the latest PRD JSON and return it as a string for LLM context."""
+        import glob
+        pattern = str(Path(self.config.repo_path) / ".cogniforge/wiki/prd/*.json")
+        files = sorted(glob.glob(pattern))
+        if not files:
+            return "(无 PRD 文档)"
+        try:
+            return Path(files[-1]).read_text(encoding="utf-8")
+        except Exception:
+            return "(无法读取 PRD 文档)"
+
     def _commit_and_result(self, json_path: Path, title: str, reasoning: str = "") -> dict:
         json_abs = Path(self.config.repo_path) / json_path
         if not json_abs.exists():
             return self.format_result(status="failed",
-                                       message=f"Claude Code did not produce {json_path}")
+                                       message=f"LLM did not produce {json_path}")
 
         # Normalize component types before commit
         try:
@@ -168,3 +194,16 @@ class ArchitectAgent(BaseAgent):
             artifacts=artifacts,
             reasoning=reasoning,
         )
+
+
+def _extract_json(text: str) -> str:
+    """Strip markdown code fences, return bare JSON."""
+    text = text.strip()
+    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start:end + 1]
+    return text

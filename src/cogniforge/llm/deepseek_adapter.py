@@ -201,17 +201,24 @@ class DeepSeekAdapter(BaseLLMAdapter):
     # Text mode
     # ------------------------------------------------------------------
 
+    # DeepSeek JSON mode requires non-thinking for reliable structured output
+    # See: https://api-docs.deepseek.com/zh-cn/guides/json_mode
+    _JSON_KWARGS = {
+        "response_format": {"type": "json_object"},
+        "extra_body": {"thinking": {"type": "disabled"}},
+    }
+
     def generate(
         self, prompt: str, context: dict = None, **kwargs
     ) -> LLMResponse:
         full_prompt = self._build_prompt(prompt, context)
-        model = kwargs.get("model", self.model)
+        model = kwargs.pop("model", self.model)
         response = self._client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": full_prompt}],
-            response_format={"type": "json_object"},
-            max_tokens=kwargs.get("max_tokens", self.max_tokens),
+            max_tokens=kwargs.pop("max_tokens", self.max_tokens),
             timeout=self.timeout,
+            **self._JSON_KWARGS,
         )
         return self._to_llm_response(response)
 
@@ -219,15 +226,64 @@ class DeepSeekAdapter(BaseLLMAdapter):
         self, messages: list[LLMMessage], **kwargs
     ) -> LLMResponse:
         api_messages = [{"role": m.role, "content": m.content} for m in messages]
-        model = kwargs.get("model", self.model)
+        model = kwargs.pop("model", self.model)
         response = self._client.chat.completions.create(
             model=model,
             messages=api_messages,
-            response_format={"type": "json_object"},
-            max_tokens=kwargs.get("max_tokens", self.max_tokens),
+            max_tokens=kwargs.pop("max_tokens", self.max_tokens),
             timeout=self.timeout,
+            **self._JSON_KWARGS,
         )
         return self._to_llm_response(response)
+
+    # ------------------------------------------------------------------
+    # Two-step generation: think first → format JSON
+    # Step 1: thinking enabled, free-form analysis
+    # Step 2: thinking disabled + JSON mode, structured output
+    # See: https://api-docs.deepseek.com/zh-cn/guides/multi_round_chat
+    # ------------------------------------------------------------------
+
+    def generate_think_then_json(
+        self,
+        prompt: str,
+        *,
+        role: str | None = None,
+        **kwargs,
+    ) -> LLMResponse:
+        model = kwargs.pop("model", self.model)
+        max_toks = kwargs.pop("max_tokens", self.max_tokens)
+
+        # Step 1: build messages with thinking instruction
+        think_prompt = prompt + "\n\n请先深入分析思考，输出详细的设计方案。用自然语言描述，不要输出 JSON。"
+        messages = self._build_agentic_messages(think_prompt, role)
+
+        resp1 = self._client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_toks,
+            timeout=self.timeout,
+            extra_body={"thinking": {"type": "enabled"}},
+        )
+        content1 = resp1.choices[0].message.content or ""
+
+        # Step 2: append thinking result + JSON formatting instruction
+        messages.append({"role": "assistant", "content": content1})
+        messages.append({
+            "role": "user",
+            "content": (
+                "请将上述分析结果整理为指定的 JSON 结构输出。\n"
+                "只返回纯 JSON 对象，不要 markdown 代码块包裹，不要任何解释文字。"
+            ),
+        })
+
+        resp2 = self._client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_toks,
+            timeout=self.timeout,
+            **self._JSON_KWARGS,
+        )
+        return self._to_llm_response(resp2)
 
     # ------------------------------------------------------------------
     # Agent mode — tool-calling loop
@@ -373,13 +429,13 @@ class DeepSeekAdapter(BaseLLMAdapter):
                 f"只返回纯 JSON，不要 markdown 代码块包裹，不要多余解释文字。"
             ),
         })
-        model = kwargs.get("model", self.model)
+        model = kwargs.pop("model", self.model)
         response = self._client.chat.completions.create(
             model=model,
             messages=messages,
-            response_format={"type": "json_object"},
-            max_tokens=kwargs.get("max_tokens", self.max_tokens),
+            max_tokens=kwargs.pop("max_tokens", self.max_tokens),
             timeout=self.timeout,
+            **self._JSON_KWARGS,
         )
         return self._to_llm_response(response)
 

@@ -1559,8 +1559,29 @@ class Repl:
             try:
                 json.loads(json_output)
             except json.JSONDecodeError as e:
-                _box_print(f"{C_RED}✗{C_RESET} 输出不是合法 JSON: {e}")
-                continue
+                # Auto-retry: ask LLM to fix the JSON syntax error
+                _box_print(
+                    f"{C_AMBER}⚠ JSON 解析失败: {e}，正在自动修复...{C_RESET}"
+                )
+                try:
+                    fix_prompt = (
+                        f"以下 JSON 有语法错误，请直接修复并返回正确的 JSON:\n\n"
+                        f"错误: {e}\n\n"
+                        f"原始输出:\n{json_output[:8000]}\n\n"
+                        f"只返回修复后的纯 JSON，不要任何解释。"
+                    )
+                    if hasattr(agent_adapter, "generate"):
+                        fix_response = agent_adapter.generate(fix_prompt)
+                        json_output = _extract_json(
+                            fix_response.content if hasattr(fix_response, "content")
+                            else str(fix_response)
+                        )
+                        json.loads(json_output)  # Validate fix
+                    else:
+                        raise e
+                except Exception:
+                    _box_print(f"{C_RED}✗{C_RESET} 自动修复失败，请重试")
+                    continue
 
             # Save and re-render
             _save_and_render(json_output)

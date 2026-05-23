@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -409,7 +410,7 @@ _OWNERSHIP_RULES: dict[str, str] = {
 
 
 class DesignAgent(BaseAgent):
-    """Design Agent (MDE) — delegates to Claude Code to generate LLD JSON."""
+    """Design Agent (MDE) — two-step thinking→JSON to generate LLD."""
 
     def run(self, input_data: dict, progress_callback: Callable[[str], None] | None = None) -> dict:
         try:
@@ -441,8 +442,7 @@ class DesignAgent(BaseAgent):
             conditional_schema = _build_conditional_schema(module_type)
 
             prompt = (
-                f"根据以下数据创建一份详细设计文档 (LLD)，以 JSON 格式输出并写入:\n\n"
-                f"输出路径: {json_path}\n"
+                f"根据以下数据创建一份详细设计文档 (LLD):\n\n"
                 f"JSON 结构:\n"
                 f"{_SCHEMA_BASE}\n"
                 f"{_SCHEMA_DATA_MODELS}\n"
@@ -466,18 +466,23 @@ class DesignAgent(BaseAgent):
                 f"error_handling: {error_handling}\n\n"
                 f"{contract_context}\n"
                 f"要求:\n"
-                f"1. 以上 prompt 已包含本模块 SAD 定义、接口契约、邻模块接口签名，无需额外读取\n"
-                f"2. 如需更完整背景（PRD 全文、其他模块完整 LLD），可选择性 Read 相关文件\n"
-                f"3. 接口契约约束:\n"
+                f"1. 以上 prompt 已包含本模块 SAD 定义、接口契约、邻模块接口签名\n"
+                f"2. 接口契约约束:\n"
                 f"   - provider 契约: 你必须实现这些接口，response body 字段名与类型不可修改\n"
                 f"   - consumer 契约: 引用这些接口的确切 endpoint 与字段，不要自造变体\n"
-                f"4. 各模块类型要求的章节必须完整填写，不可省略\n"
+                f"3. 各模块类型要求的章节必须完整填写，不可省略\n"
                 + _type_specific_hints(module_type)
-                + f"使用中文、只写 JSON 不写 HTML、完成后回复确认"
+                + f"使用中文"
             )
 
             _progress("LLM 生成中")
-            response = self.agent.generate_agentic(prompt, role="design")
+            response = self.agent.generate_think_then_json(
+                prompt, role="design", max_tokens=8192,
+            )
+            json_text = _extract_json(response.content)
+            json_abs = Path(self.config.repo_path) / json_path
+            json_abs.parent.mkdir(parents=True, exist_ok=True)
+            json_abs.write_text(json_text, encoding="utf-8")
 
             # ── Validation loop (max 2 retries) ──
             correction_attempts = 0
@@ -485,7 +490,6 @@ class DesignAgent(BaseAgent):
             validation_report = ""
 
             while correction_attempts <= max_corrections:
-                json_abs = Path(self.config.repo_path) / json_path
                 if not json_abs.exists():
                     return self.format_result(
                         status="failed",
@@ -503,13 +507,21 @@ class DesignAgent(BaseAgent):
                 if correction_attempts < max_corrections:
                     correction_attempts += 1
                     _progress("LLM 修正中")
+                    current_json = json_abs.read_text(encoding="utf-8")
                     fix_prompt = (
                         f"你刚才生成的 LLD JSON 校验未通过：\n\n"
                         f"{validation_report}\n\n"
-                        f"请修正以上所有问题，重新输出完整的 JSON 到路径: {json_path}\n"
-                        f"只输出修正后的完整 JSON，保留所有章节，不要省略。"
+                        f"当前 JSON:\n{current_json[:6000]}\n\n"
+                        f"请修正以上所有问题，返回完整的修正后 JSON。"
+                        f"只返回纯 JSON 对象，不要 markdown 代码块包裹。"
                     )
-                    response = self.agent.generate_agentic(fix_prompt, role="design")
+                    from cogniforge.llm.base import LLMMessage
+                    fix_response = self.agent.generate_messages([
+                        LLMMessage(role="system", content="你是 CogniForge 系统的 Design Agent。职责: 生成 LLD JSON。"),
+                        LLMMessage(role="user", content=fix_prompt),
+                    ], max_tokens=8192)
+                    json_text = _extract_json(fix_response.content)
+                    json_abs.write_text(json_text, encoding="utf-8")
                 else:
                     break
 
@@ -730,6 +742,19 @@ class DesignAgent(BaseAgent):
             reasoning=f"{reasoning}\n{validation}" if validation else reasoning,
             decisions=decisions,
         )
+
+
+def _extract_json(text: str) -> str:
+    """Strip markdown code fences, return bare JSON."""
+    text = text.strip()
+    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start:end + 1]
+    return text
 
 
 # ---------------------------------------------------------------------------
