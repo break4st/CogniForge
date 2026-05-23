@@ -6,14 +6,29 @@ import itertools
 import json
 import os
 import re
-import readline
 import select
 import subprocess
 import sys
-import termios
 import threading
 import time
-import tty
+from pathlib import Path
+from typing import Optional
+
+# Windows line-editing support
+try:
+    import readline  # Unix
+except ImportError:
+    try:
+        import pyreadline3 as readline  # Windows
+    except ImportError:
+        readline = None
+
+# Windows raw-terminal support
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import termios
+    import tty
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -175,13 +190,44 @@ def _draw_box(top_line: str, lines: list[str], bottom_close: bool = True) -> str
 
 def _read_key() -> str:
     """Read a single keypress from stdin in raw mode. Returns 'up'/'down'/'enter'/esc/char."""
+    if sys.platform == "win32":
+        return _read_key_win()
+    else:
+        return _read_key_unix()
+
+
+def _read_key_win() -> str:
+    """Windows implementation using msvcrt."""
+    ch = msvcrt.getwch()
+    if ch == "\r" or ch == "\n":
+        return "enter"
+    if ch == "\x1b":
+        # Arrow keys: \x1b [ A / B / C / D — but on Windows, msvcrt.getwch
+        # returns \xe0 or \x00 as first byte for special keys
+        return "esc"
+    if ch == "\x00" or ch == "\xe0":
+        # Extended key prefix — second call gives the actual key
+        ch2 = msvcrt.getwch()
+        if ch2 == "H":
+            return "up"
+        elif ch2 == "P":
+            return "down"
+        elif ch2 == "K":
+            return "left"
+        elif ch2 == "M":
+            return "right"
+        return ""
+    return ch
+
+
+def _read_key_unix() -> str:
+    """Unix implementation using termios/tty."""
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
         b = os.read(fd, 1)
         if b == b"\x1b":
-            # Check if more bytes follow (escape sequence)
             r, _, _ = select.select([sys.stdin], [], [], 0.05)
             if r:
                 more = os.read(fd, 2)

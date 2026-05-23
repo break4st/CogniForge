@@ -165,7 +165,7 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
             result = subprocess.run(
                 command, capture_output=True, text=True,
                 cwd=str(self.repo_path), timeout=self.timeout,
-                env=env, check=False,
+                env=env, check=False, encoding="utf-8",
             )
         except FileNotFoundError:
             raise RuntimeError("Claude Code CLI not found.")
@@ -197,7 +197,7 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
             result = subprocess.run(
                 command, capture_output=True, text=True,
                 cwd=str(self.repo_path), timeout=self.timeout,
-                env=env, check=False, input=stdin_text,
+                env=env, check=False, input=stdin_text, encoding="utf-8",
             )
         except FileNotFoundError:
             raise RuntimeError("Claude Code CLI not found.")

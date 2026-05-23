@@ -285,12 +285,12 @@ def approve(ctx: Context, comment: str, approver: str):
         return
 
     # 检查是否已经审批过
-    if current in ctx.workflow._approval_records:
-        approval = ctx.workflow._approval_records[current]
-        if approval.status == ApprovalStatus.APPROVED:
+    if current.value in ctx.workflow._state.approval_records:
+        approval = ctx.workflow._state.approval_records[current.value]
+        if approval.get("status") == ApprovalStatus.APPROVED.value:
             click.echo(f"步骤 [{current.value}] 已经审批通过")
             return
-        elif approval.status == ApprovalStatus.REJECTED:
+        elif approval.get("status") == ApprovalStatus.REJECTED.value:
             click.echo(f"步骤 [{current.value}] 之前被拒绝，需要重新审批")
             # 允许重新审批
 
