@@ -211,7 +211,7 @@ def init_context(ctx: Context) -> None:
     }
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @pass_context
 def cli(ctx: Context):
     """CogniForge - 文档驱动的多Agent软件工厂
@@ -219,6 +219,8 @@ def cli(ctx: Context):
     每个步骤都需要人工审批，系统不会自动连续执行。
     """
     init_context(ctx)
+    if click.get_current_context().invoked_subcommand is None:
+        _run_repl(ctx)
 
 
 @cli.command()
@@ -819,6 +821,22 @@ def pending_reviews(ctx: Context, agent_role: str):
         click.echo()
 
 
+def _run_repl(ctx: Context):
+    """Start the REPL session with the given context."""
+    from cogniforge.repl import Repl
+
+    llm_adapter = _resolve_llm_adapter(ctx.config, ctx._providers)
+
+    repl_runner = Repl(
+        workflow=ctx.workflow,
+        agents=ctx.agents,
+        task_engine=ctx.task_engine,
+        agent=llm_adapter,
+        wiki_system=ctx.wiki_system,
+    )
+    repl_runner.run()
+
+
 @cli.command()
 @pass_context
 def repl(ctx: Context):
@@ -834,19 +852,7 @@ def repl(ctx: Context):
       /help     Show help
       /quit     Exit REPL
     """
-    from cogniforge.repl import Repl
-
-    # REPL text mode (NL→JSON) uses an LLM provider
-    llm_adapter = _resolve_llm_adapter(ctx.config, ctx._providers)
-
-    repl_runner = Repl(
-        workflow=ctx.workflow,
-        agents=ctx.agents,
-        task_engine=ctx.task_engine,
-        agent=llm_adapter,
-        wiki_system=ctx.wiki_system,
-    )
-    repl_runner.run()
+    _run_repl(ctx)
 
 
 @cli.group()
