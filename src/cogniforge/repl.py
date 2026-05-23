@@ -1061,7 +1061,8 @@ class Repl:
                     click.echo(AGENT_EXEC_ERROR.format(error=exc))
 
         except (KeyboardInterrupt, EOFError):
-            click.echo(PAUSE_MESSAGE.format(step_label=_step_label(self.workflow.current_step)))
+            click.echo(f"\n  {C_DIM}已退出。运行 'cogniforge repl' 可随时恢复。{C_RESET}")
+            return
 
     # ---- card-based PRD wizard -------------------------------------------
 
