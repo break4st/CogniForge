@@ -439,6 +439,69 @@ class DeepSeekAdapter(BaseLLMAdapter):
         )
         return self._to_llm_response(response)
 
+    def generate_interactive_patch(
+        self,
+        current_document: str,
+        user_request: str,
+        system_prompt: str = "",
+        turn_schema: dict | None = None,
+        **kwargs,
+    ) -> LLMResponse:
+        """Two-step interactive modification producing a structured turn result.
+
+        Step 1 (thinking enabled): analyzes the current document and user request.
+        Step 2 (thinking disabled, JSON mode): outputs the pm-turn-result structure
+        with patches array.
+        """
+        model = kwargs.pop("model", self.model)
+        max_toks = kwargs.pop("max_tokens", self.max_tokens)
+
+        schema_desc = json.dumps(turn_schema, ensure_ascii=False, indent=2) if turn_schema else ""
+
+        think_prompt = (
+            f"当前 PRD JSON:\n{current_document}\n\n"
+            f"用户修改要求: {user_request}\n\n"
+            f"请先分析当前的 PRD 结构，确认需要修改的需求条目、变更类型。\n"
+            f"思考需要应用哪些 JSON Patch 操作（add/replace/remove）。\n"
+            f"注意路径格式为 JSON Pointer（如 /requirements/0/name）。\n"
+            f"输出你的分析，不要输出 JSON。"
+        )
+
+        messages = self._build_agentic_messages(think_prompt, role="pm")
+
+        # Step 1: thinking
+        resp1 = self._client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_toks,
+            timeout=self.timeout,
+            extra_body={"thinking": {"type": "enabled"}},
+        )
+        content1 = resp1.choices[0].message.content or ""
+
+        # Step 2: structured output
+        messages.append({"role": "assistant", "content": content1})
+        schema_block = (
+            f"\n\n输出 JSON Schema:\n{schema_desc}\n\n" if schema_desc else ""
+        )
+        messages.append({
+            "role": "user",
+            "content": (
+                f"请将上述分析结果整理为以下结构的 JSON 输出。\n"
+                f"{schema_block}"
+                f"只返回纯 JSON 对象，不要 markdown 代码块，不要任何解释文字。"
+            ),
+        })
+
+        resp2 = self._client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_toks,
+            timeout=self.timeout,
+            **self._JSON_KWARGS,
+        )
+        return self._to_llm_response(resp2)
+
     # ------------------------------------------------------------------
     # Tool implementations
     # ------------------------------------------------------------------

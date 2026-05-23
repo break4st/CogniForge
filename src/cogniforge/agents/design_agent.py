@@ -33,6 +33,7 @@ _SCHEMA_BASE = """\
 _SCHEMA_DATA_MODELS = """\
   "data_models": [
     {{
+      "id": "DM-001",
       "name": "模型名",
       "type": "table|reference|struct|store|config",
       "ownership": "canonical|derived|owned",
@@ -52,6 +53,7 @@ _SCHEMA_DATA_MODELS = """\
 _SCHEMA_INTERFACES = """\
   "interfaces": [
     {{
+      "id": "IF-001",
       "name": "接口名称",
       "method": "GET|POST|PUT|DELETE|INTERNAL|MQ|WS|frontend",
       "endpoint": "/api/...（不含 HTTP 方法前缀，method 与 endpoint 必须分别填写）",
@@ -450,6 +452,8 @@ class DesignAgent(BaseAgent):
                 f"{_SCHEMA_ERROR}\n"
                 + (f"{conditional_schema}\n" if conditional_schema else "")
                 + f"\n重要:\n"
+                f"- data_models 中每个模型必须分配唯一 id（DM-001, DM-002...）\n"
+                f"- interfaces 中每个接口必须分配唯一 id（IF-001, IF-002...）\n"
                 f"- interfaces[].method 与 endpoint 分开填写，method 为 HTTP 方法或 INTERNAL/MQ/WS/frontend\n"
                 f"- interfaces[].response.body 的字段名与类型与 SAD 契约严格一致，不可修改\n"
                 f"- 前端模块的 interfaces 使用 frontend 作为 method 值，endpoint 填写路由路径\n"
@@ -480,6 +484,16 @@ class DesignAgent(BaseAgent):
                 prompt, role="design", max_tokens=8192,
             )
             json_text = _extract_json(response.content)
+
+            # Assign stable IDs to data_models and interfaces
+            try:
+                data = json.loads(json_text)
+                data["data_models"] = self._assign_ids(data.get("data_models", []), "DM")
+                data["interfaces"] = self._assign_ids(data.get("interfaces", []), "IF")
+                json_text = json.dumps(data, ensure_ascii=False, indent=2)
+            except json.JSONDecodeError:
+                pass
+
             json_abs = Path(self.config.repo_path) / json_path
             json_abs.parent.mkdir(parents=True, exist_ok=True)
             json_abs.write_text(json_text, encoding="utf-8")
@@ -544,6 +558,29 @@ class DesignAgent(BaseAgent):
         "gateway": ModuleType.GATEWAY,
         "frontend": ModuleType.FRONTEND,
     }
+
+    @staticmethod
+    def _assign_ids(items: list[dict], prefix: str) -> list[dict]:
+        """Assign stable serial IDs (DM-001, IF-001, etc.) to items lacking them."""
+        max_num = 0
+        for item in items:
+            item_id = item.get("id", "")
+            if item_id.startswith(f"{prefix}-"):
+                try:
+                    num = int(item_id.split("-", 1)[1])
+                    if num > max_num:
+                        max_num = num
+                except ValueError:
+                    pass
+        next_num = max_num + 1
+        assigned = []
+        for item in items:
+            item_id = item.get("id", "")
+            if not item_id or not item_id.startswith(f"{prefix}-"):
+                item["id"] = f"{prefix}-{next_num:03d}"
+                next_num += 1
+            assigned.append(item)
+        return assigned
 
     def _resolve_module_type(self, module: str) -> str:
         sad_docs = self.wiki_system.list_documents(DocumentType.SAD)

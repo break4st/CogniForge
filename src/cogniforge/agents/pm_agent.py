@@ -1,4 +1,9 @@
-"""PM Agent - Product Manager Agent for PRD creation"""
+"""PM Agent - Product Manager Agent for PRD creation and iterative management
+
+Dual-JSON architecture:
+- ``docs/prd.json`` — long-term PRD state (stable IDs, versioning, change history)
+- ``pm-turn-result.schema.json`` — per-turn structured change output (JSON Patch)
+"""
 
 from __future__ import annotations
 
@@ -13,23 +18,35 @@ from cogniforge.core.exceptions import AgentError
 
 
 class PMAgent(BaseAgent):
-    """PM Agent — uses two-step thinking→JSON to generate PRD."""
+    """PM Agent — two-step thinking→JSON for PRD creation, patch-based iteration."""
+
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
 
     def run(self, input_data: dict) -> dict:
         try:
             if self.agent is None:
                 raise AgentError("PMAgent requires an LLM agent")
 
-            existing = self.wiki_system.list_documents(DocumentType.PRD)
-            seq = len(existing) + 1
-            doc_id = f"prd-{seq:03d}"
             cb = input_data.pop("_progress_callback", None)
 
+            # ── Interactive modification mode ──
+            modify_request = input_data.get("modify_request")
+            if modify_request:
+                if cb:
+                    cb("PM 正在分析修改请求...")
+                return self.modify_interactive(
+                    user_request=modify_request,
+                    progress_callback=cb,
+                )
+
+            # ── Initial creation mode ──
             raw_text = input_data.get("raw_text", "")
             if raw_text:
                 if cb:
                     cb("PM 正在分析需求，提取项目信息...")
-                return self._run_raw(raw_text, doc_id)
+                return self._run_raw(raw_text)
 
             title = input_data.get("title", "未命名PRD")
             overview = input_data.get("overview", "")
@@ -38,15 +55,19 @@ class PMAgent(BaseAgent):
             priorities = input_data.get("priorities", {})
 
             return self._run_structured(
-                title, overview, requirements, user_stories, priorities, doc_id,
+                title, overview, requirements, user_stories, priorities,
             )
 
         except Exception as e:
             return self.format_result(status="failed", message=str(e))
 
-    def _run_raw(self, raw_text: str, doc_id: str) -> dict:
+    # ------------------------------------------------------------------
+    # Initial creation — raw text
+    # ------------------------------------------------------------------
+
+    def _run_raw(self, raw_text: str) -> dict:
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        json_path = self.wiki_system.agent_path(DocumentType.PRD, doc_id=doc_id)
+        prd_path = self.config.repo_path / "docs" / "prd.json"
 
         prompt = (
             f"根据以下用户描述，创建一份完整的产品需求文档 (PRD)。\n"
@@ -54,28 +75,41 @@ class PMAgent(BaseAgent):
             f"梳理功能需求（含验收条件）、推导用户故事、标注优先级。\n\n"
             f"用户描述:\n{raw_text}\n\n"
             f"预期输出 JSON 结构参考:\n"
-            f'{{"meta": {{"doc_id": "{doc_id}", "type": "prd", '
+            f'{{"meta": {{"doc_id": "prd-current", "type": "prd", '
             f'"title": "...", "author": "pm_agent", "created": "{now}", '
-            f'"version": 1}},\n'
+            f'"version": 1, "last_modified": "{now}", "last_author": "pm_agent"}},\n'
             f' "overview": "项目概述文本（3-5句）",\n'
-            f' "requirements": [{{"name": "需求名", "description": "描述", '
-            f'"acceptance_criteria": ["条件1", "条件2"]}}],\n'
-            f' "user_stories": [{{"role": "角色", "action": "动作", "goal": "目标"}}],\n'
-            f' "priorities": {{"需求名": "高/中/低"}}\n'
+            f' "requirements": [{{"id": "REQ-001", "name": "需求名", '
+            f'"description": "描述", "status": "draft", "version": 1, '
+            f'"acceptance_criteria": ["条件1", "条件2"], '
+            f'"priority": "高/中/低", '
+            f'"depends_on": [], "supersedes": [], '
+            f'"related_user_stories": [], "change_history": '
+            f'[{{"version": 1, "change_type": "created", '
+            f'"summary": "初始创建", "reason": "首次生成 PRD"}}]}}],\n'
+            f' "user_stories": [{{"id": "US-001", "role": "角色", '
+            f'"action": "动作", "goal": "目标", '
+            f'"related_requirements": []}}],\n'
+            f' "priorities": {{"REQ-001": "高"}}\n'
             f"}}\n\n"
-            f"要求: 所有文字使用中文"
+            f"要求: 所有文字使用中文。requirements 和 user_stories 的 id 使用稳定编号"
+            f"（REQ-001, REQ-002... 和 US-001, US-002...）。"
         )
 
         response = self.agent.generate_think_then_json(
             prompt, role="pm", max_tokens=8192,
         )
-        return self._write_and_commit(json_path, doc_id, response.content)
+        return self._write_prd(prd_path, response.content)
+
+    # ------------------------------------------------------------------
+    # Initial creation — structured fields
+    # ------------------------------------------------------------------
 
     def _run_structured(
-        self, title, overview, requirements, user_stories, priorities, doc_id: str,
+        self, title, overview, requirements, user_stories, priorities,
     ) -> dict:
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        json_path = self.wiki_system.agent_path(DocumentType.PRD, doc_id=doc_id)
+        prd_path = self.config.repo_path / "docs" / "prd.json"
 
         prompt = (
             f"根据以下数据创建一份产品需求文档 (PRD)。\n\n"
@@ -85,58 +119,382 @@ class PMAgent(BaseAgent):
             f"用户故事: {json.dumps(user_stories, ensure_ascii=False)}\n"
             f"优先级: {json.dumps(priorities, ensure_ascii=False)}\n\n"
             f"预期输出 JSON 结构参考:\n"
-            f'{{"meta": {{"doc_id": "{doc_id}", "type": "prd", '
+            f'{{"meta": {{"doc_id": "prd-current", "type": "prd", '
             f'"title": "{title}", "author": "pm_agent", "created": "{now}", '
-            f'"version": 1}},\n'
+            f'"version": 1, "last_modified": "{now}", "last_author": "pm_agent"}},\n'
             f' "overview": "项目概述文本",\n'
-            f' "requirements": [{{"name": "需求名", "description": "描述", '
-            f'"acceptance_criteria": ["条件1", "条件2"]}}],\n'
-            f' "user_stories": [{{"role": "角色", "action": "动作", "goal": "目标"}}],\n'
-            f' "priorities": {{"需求名": "高/中/低"}}\n'
+            f' "requirements": [{{"id": "REQ-001", "name": "需求名", '
+            f'"description": "描述", "status": "draft", "version": 1, '
+            f'"acceptance_criteria": ["条件1"], '
+            f'"priority": "高/中/低", '
+            f'"depends_on": [], "supersedes": [], '
+            f'"related_user_stories": [], "change_history": '
+            f'[{{"version": 1, "change_type": "created", '
+            f'"summary": "初始创建", "reason": "首次生成 PRD"}}]}}],\n'
+            f' "user_stories": [{{"id": "US-001", "role": "角色", '
+            f'"action": "动作", "goal": "目标", '
+            f'"related_requirements": []}}],\n'
+            f' "priorities": {{"REQ-001": "高"}}\n'
             f"}}\n\n"
-            f"要求: 所有文字使用中文"
+            f"要求: 所有文字使用中文。requirements 和 user_stories 的 id 使用稳定编号。"
         )
 
         response = self.agent.generate_think_then_json(
             prompt, role="pm", max_tokens=8192,
         )
-        return self._write_and_commit(json_path, doc_id, response.content)
+        return self._write_prd(prd_path, response.content)
 
-    def _write_and_commit(self, json_path: str, doc_id: str, raw_content: str) -> dict:
-        """Extract JSON from LLM response, write file, commit to git."""
+    # ------------------------------------------------------------------
+    # Write PRD (creation)
+    # ------------------------------------------------------------------
+
+    def _write_prd(self, prd_path: Path, raw_content: str) -> dict:
+        """Extract JSON, assign stable IDs, validate, write, render, commit."""
         json_text = _extract_json(raw_content)
-        json_abs = Path(self.config.repo_path) / json_path
-        json_abs.parent.mkdir(parents=True, exist_ok=True)
-        json_abs.write_text(json_text, encoding="utf-8")
-
-        rel_json = json_abs.relative_to(self.config.repo_path).as_posix()
-        self.wiki_system.git_storage.repo.index.add([rel_json])
-
-        from cogniforge.wiki.wiki_renderer import render_file
-        html_path = render_file(json_abs)
-        rel_html = html_path.relative_to(self.config.repo_path).as_posix() if html_path else ""
-        if rel_html:
-            self.wiki_system.git_storage.repo.index.add([rel_html])
+        prd_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
             data = json.loads(json_text)
-            title = data.get("meta", {}).get("title", "未命名PRD")
-        except Exception:
-            title = "未命名PRD"
+        except json.JSONDecodeError as e:
+            return self.format_result(
+                status="failed",
+                message=f"LLM 输出的 JSON 无法解析: {e}",
+                reasoning=raw_content,
+            )
 
-        self.wiki_system.git_storage.commit(f"feat: add PRD - {title}", "pm_agent")
+        # Assign stable IDs if missing
+        requirements = data.get("requirements", [])
+        data["requirements"] = self._assign_ids(requirements, "REQ")
+        user_stories = data.get("user_stories", [])
+        data["user_stories"] = self._assign_ids(user_stories, "US")
 
-        artifacts = [rel_json]
-        if rel_html:
-            artifacts.append(rel_html)
+        # Ensure change_history exists for each requirement
+        for req in data["requirements"]:
+            if not req.get("change_history"):
+                req["change_history"] = [{
+                    "version": req.get("version", 1),
+                    "change_type": "created",
+                    "summary": "初始创建",
+                    "reason": "首次生成 PRD",
+                }]
+
+        # Link user_stories to requirements
+        self._link_stories_to_reqs(data)
+
+        # Validate against prd-schema
+        schema_path = self.config.repo_path / "schemas" / "prd-schema.json"
+        errors = self._validate_with_schema(data, schema_path)
+        if errors:
+            return self.format_result(
+                status="failed",
+                message=f"PRD schema validation failed: {'; '.join(errors[:3])}",
+                reasoning=raw_content,
+            )
+
+        prd_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        rel_prd = prd_path.relative_to(self.config.repo_path).as_posix()
+        self.wiki_system.git_storage.repo.index.add([rel_prd])
+
+        # Render HTML
+        from cogniforge.wiki.wiki_renderer import render_file
+        html_path = render_file(prd_path)
+        if html_path:
+            rel_html = html_path.relative_to(self.config.repo_path).as_posix()
+            self.wiki_system.git_storage.repo.index.add([rel_html])
+
+        title = data.get("meta", {}).get("title", "未命名PRD")
+        self.wiki_system.git_storage.commit(
+            f"feat: add PRD - {title}", "pm_agent")
+
+        artifacts = [rel_prd]
+        if html_path:
+            artifacts.append(
+                html_path.relative_to(self.config.repo_path).as_posix())
 
         return self.format_result(
             status="success",
-            message=f"PRD created: {doc_id}",
+            message=f"PRD created at docs/prd.json",
             artifacts=artifacts,
             reasoning=raw_content,
         )
 
+    # ------------------------------------------------------------------
+    # Interactive modification — patch-based iteration
+    # ------------------------------------------------------------------
+
+    def modify_interactive(
+        self,
+        user_request: str,
+        progress_callback: callable = None,
+    ) -> dict:
+        """Execute a single interactive modification turn using patch-based approach.
+
+        1. Read current prd.json
+        2. Call adapter to produce pm-turn-result with patches
+        3. Validate turn result against pm-turn-result schema
+        4. Apply patches to prd.json
+        5. Validate updated prd.json against prd-schema
+        6. Save, re-render, commit
+        """
+        try:
+            prd_path = self.config.repo_path / "docs" / "prd.json"
+            current_prd = self._load_current_prd()
+            if current_prd is None:
+                return self.format_result(
+                    status="failed",
+                    message="docs/prd.json 不存在。请先创建 PRD。",
+                )
+
+            current_json = json.dumps(current_prd, ensure_ascii=False, indent=2)
+
+            # Load turn schema
+            turn_schema_path = self.config.repo_path / "schemas" / "pm-turn-result-schema.json"
+            turn_schema = None
+            if turn_schema_path.exists():
+                turn_schema = json.loads(turn_schema_path.read_text(encoding="utf-8"))
+
+            # System prompt for PM modification
+            system_prompt = (
+                "你是 CogniForge 系统的 PM (Product Manager) Agent。\n"
+                "职责: 根据用户要求修改产品需求文档 (PRD)。\n"
+                "规则:\n"
+                "1. 不要直接输出完整文档，只输出包含 patches 数组的变更结果 JSON。\n"
+                "2. 保留所有已有的 REQ-ID 和 US-ID 不变。\n"
+                "3. 新增需求时分配新的 ID（下一个可用的 REQ-NNN / US-NNN）。\n"
+                "4. 每条被修改的 requirement 需在 patches 中更新其 version 和 change_history。\n"
+                "5. 在 priorities 中使用需求 ID（不是需求名称）。\n"
+                "6. 如果检测到冲突，在 conflicts 数组中记录。\n"
+                "7. patches 使用 RFC 6902 JSON Pointer 格式路径。\n"
+                "所有文字使用中文。"
+            )
+
+            # Call LLM
+            if progress_callback:
+                progress_callback("PM 正在分析修改请求...")
+
+            if hasattr(self.agent, "generate_interactive_patch"):
+                response = self.agent.generate_interactive_patch(
+                    current_document=current_json,
+                    user_request=user_request,
+                    system_prompt=system_prompt,
+                    turn_schema=turn_schema,
+                )
+            else:
+                response = self.agent.generate_interactive(
+                    current_document=current_json,
+                    user_request=user_request,
+                    system_prompt=system_prompt,
+                )
+
+            raw_content = response.content if hasattr(response, "content") else str(response)
+            json_text = _extract_json(raw_content)
+
+            try:
+                turn_data = json.loads(json_text)
+            except json.JSONDecodeError as e:
+                return self.format_result(
+                    status="failed",
+                    message=f"LLM 输出的 JSON 无法解析: {e}",
+                    reasoning=raw_content,
+                )
+
+            # Validate turn result against schema
+            if turn_schema:
+                turn_errors = self._validate_with_schema(turn_data, turn_schema_path)
+                if turn_errors:
+                    return self.format_result(
+                        status="failed",
+                        message=f"Turn result schema error: {'; '.join(turn_errors[:3])}",
+                        reasoning=raw_content,
+                    )
+
+            # Handle non-update statuses
+            status = turn_data.get("status", "updated")
+            if status == "no_change":
+                return self.format_result(
+                    status="success",
+                    message=turn_data.get("message", "无需修改。"),
+                    reasoning=raw_content,
+                )
+            if status == "need_clarification":
+                return self.format_result(
+                    status="success",
+                    message=turn_data.get("message", "需要更多信息。"),
+                    data={
+                        "open_questions": turn_data.get("open_questions", []),
+                    },
+                    reasoning=raw_content,
+                )
+            if status == "rejected":
+                return self.format_result(
+                    status="failed",
+                    message=turn_data.get("message", "修改请求被拒绝。"),
+                    reasoning=raw_content,
+                )
+
+            # Apply patches
+            patches = turn_data.get("patches", [])
+            if not patches:
+                return self.format_result(
+                    status="failed",
+                    message="Turn returned 'updated' status but no patches.",
+                    reasoning=raw_content,
+                )
+
+            updated_prd = self._apply_patches(current_prd, patches)
+
+            # Bump version in meta
+            updated_prd.setdefault("meta", {})
+            old_version = updated_prd["meta"].get("version", 0)
+            updated_prd["meta"]["version"] = old_version + 1
+            updated_prd["meta"]["last_modified"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            updated_prd["meta"]["last_author"] = "pm_agent"
+
+            # Validate updated PRD against prd-schema
+            prd_schema_path = self.config.repo_path / "schemas" / "prd-schema.json"
+            schema_errors = self._validate_with_schema(updated_prd, prd_schema_path)
+            if schema_errors:
+                return self.format_result(
+                    status="failed",
+                    message=f"Updated PRD schema error: {'; '.join(schema_errors[:3])}",
+                    reasoning=raw_content,
+                )
+
+            # Write updated PRD
+            prd_path.write_text(
+                json.dumps(updated_prd, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            rel_prd = prd_path.relative_to(self.config.repo_path).as_posix()
+            self.wiki_system.git_storage.repo.index.add([rel_prd])
+
+            # Render HTML
+            from cogniforge.wiki.wiki_renderer import render_file
+            html_path = render_file(prd_path)
+            if html_path:
+                rel_html = html_path.relative_to(self.config.repo_path).as_posix()
+                self.wiki_system.git_storage.repo.index.add([rel_html])
+
+            operation = turn_data.get("operation", "modify")
+            self.wiki_system.git_storage.commit(
+                f"docs: update PRD (v{updated_prd['meta']['version']}) - {operation}",
+                "pm_agent",
+            )
+
+            artifacts = [rel_prd]
+            if html_path:
+                artifacts.append(
+                    html_path.relative_to(self.config.repo_path).as_posix())
+
+            return self.format_result(
+                status="success",
+                message=turn_data.get("message", "PRD updated."),
+                artifacts=artifacts,
+                data={
+                    "open_questions": turn_data.get("open_questions", []),
+                    "affected_requirements": turn_data.get("affected_requirements", []),
+                    "new_version": updated_prd["meta"]["version"],
+                },
+                reasoning=raw_content,
+            )
+
+        except Exception as e:
+            return self.format_result(status="failed", message=str(e))
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _load_current_prd(self) -> dict | None:
+        """Load current PRD from docs/prd.json, fall back to old wiki format."""
+        prd_path = self.config.repo_path / "docs" / "prd.json"
+        if prd_path.exists():
+            try:
+                return json.loads(prd_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, ValueError):
+                pass
+        # Fallback: try old wiki format
+        old_dir = self.config.repo_path / ".cogniforge" / "wiki" / "prd"
+        if old_dir.exists():
+            old_files = sorted(old_dir.glob("*.json"))
+            if old_files:
+                try:
+                    return json.loads(old_files[-1].read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, ValueError):
+                    pass
+        return None
+
+    @staticmethod
+    def _assign_ids(items: list[dict], prefix: str = "REQ") -> list[dict]:
+        """Assign stable serial IDs (REQ-001, US-001, etc.) to items lacking them."""
+        existing_nums: set[int] = set()
+        max_num = 0
+        for item in items:
+            item_id = item.get("id", "")
+            if item_id.startswith(f"{prefix}-"):
+                try:
+                    num = int(item_id.split("-", 1)[1])
+                    existing_nums.add(num)
+                    if num > max_num:
+                        max_num = num
+                except ValueError:
+                    pass
+
+        next_num = max_num + 1
+        assigned = []
+        for item in items:
+            item_id = item.get("id", "")
+            if not item_id or not item_id.startswith(f"{prefix}-"):
+                item["id"] = f"{prefix}-{next_num:03d}"
+                next_num += 1
+            else:
+                try:
+                    int(item_id.split("-", 1)[1])
+                except ValueError:
+                    item["id"] = f"{prefix}-{next_num:03d}"
+                    next_num += 1
+            assigned.append(item)
+        return assigned
+
+    @staticmethod
+    def _apply_patches(prd: dict, patches: list[dict]) -> dict:
+        """Apply RFC 6902 JSON Patch operations to prd dict."""
+        from jsonpatch import JsonPatch
+        patch = JsonPatch(patches)
+        return patch.apply(prd)
+
+    @staticmethod
+    def _validate_with_schema(data: dict, schema_path: Path) -> list[str]:
+        """Validate dict against JSON schema. Returns list of error messages (empty=valid)."""
+        if not schema_path.exists():
+            return []
+        try:
+            import jsonschema
+            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            validator = jsonschema.Draft7Validator(schema)
+            errors = list(validator.iter_errors(data))
+            return [e.message for e in errors]
+        except ImportError:
+            return []
+        except Exception as e:
+            return [f"Schema validation error: {e}"]
+
+    @staticmethod
+    def _link_stories_to_reqs(data: dict) -> None:
+        """Auto-link user stories to requirements when related_requirements is empty."""
+        req_ids = [r.get("id") for r in data.get("requirements", []) if r.get("id")]
+        for i, story in enumerate(data.get("user_stories", [])):
+            if not story.get("related_requirements") and req_ids:
+                # Link each story to the requirement at the same index, or the first
+                idx = min(i, len(req_ids) - 1)
+                story["related_requirements"] = [req_ids[idx]]
+
+
+# ------------------------------------------------------------------
+# JSON extraction
+# ------------------------------------------------------------------
 
 def _extract_json(text: str) -> str:
     """Strip markdown code fences, return bare JSON."""

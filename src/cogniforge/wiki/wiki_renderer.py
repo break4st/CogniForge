@@ -958,9 +958,37 @@ def _render_requirements(reqs: list) -> str:
         return "<p>暂无需求定义</p>"
     items = []
     for i, r in enumerate(reqs, 1):
+        req_id = _esc(r.get("id", f"REQ-{i:03d}"))
         name = _esc(r.get("name", f"需求 {i}"))
         desc = _esc(r.get("description", ""))
+        status = r.get("status", "draft")
+        priority = r.get("priority", "")
+        version = r.get("version", 1)
         ac = r.get("acceptance_criteria", [])
+
+        # Status badge
+        status_colors = {
+            "draft": ("rgba(107,115,148,0.15)", "#9ca3af"),
+            "active": ("rgba(52,211,153,0.15)", "#6ee7b7"),
+            "changed": ("rgba(251,191,36,0.12)", "#fcd34d"),
+            "deprecated": ("rgba(248,113,113,0.12)", "#fca5a5"),
+            "removed": ("rgba(248,113,113,0.08)", "#6b7394"),
+        }
+        sc, st = status_colors.get(status, status_colors["draft"])
+        status_badge = (
+            f'<span style="font-size:0.75em;padding:2px 10px;border-radius:10px;'
+            f'background:{sc};color:{st};margin-left:8px;">{_esc(status)}</span>'
+        )
+
+        # Priority tag
+        pri_html = ""
+        if priority:
+            css = "high" if "高" in priority else ("medium" if "中" in priority else "low")
+            pri_html = (
+                f'<span class="priority-tag {css}" style="margin-left:6px;font-size:0.75em;">'
+                f'{_esc(priority)}</span>'
+            )
+
         ac_html = ""
         if ac:
             ac_items = "\n".join(f"<li>{_esc(a)}</li>" for a in ac)
@@ -968,11 +996,61 @@ def _render_requirements(reqs: list) -> str:
                 '<span class="ac-label">验收条件</span>\n'
                 f'<ul class="ac-list">\n{ac_items}\n</ul>'
             )
+
+        # Change history
+        ch_html = ""
+        ch = r.get("change_history", [])
+        if ch:
+            ch_rows = []
+            for h in ch[-3:]:  # Show last 3 entries
+                h_ver = h.get("version", "?")
+                h_type = _esc(h.get("change_type", ""))
+                h_summary = _esc(h.get("summary", ""))
+                ch_rows.append(
+                    f'<tr>'
+                    f'<td style="color:var(--c-muted);white-space:nowrap;">v{h_ver}</td>'
+                    f'<td style="color:var(--c-dim);white-space:nowrap;">{h_type}</td>'
+                    f'<td>{h_summary}</td>'
+                    f'</tr>'
+                )
+            ch_html = (
+                '<details style="margin-top:8px;">\n'
+                '<summary style="color:var(--c-muted);cursor:pointer;font-size:0.85em;">'
+                '变更历史</summary>\n'
+                '<table style="width:100%;font-size:0.82em;margin-top:4px;">\n'
+                + "\n".join(ch_rows) +
+                '\n</table>\n</details>'
+            )
+
+        # Dependencies
+        deps = r.get("depends_on", [])
+        supersedes = r.get("supersedes", [])
+        meta_parts = []
+        if deps:
+            meta_parts.append(f'依赖: {", ".join(_esc(d) for d in deps)}')
+        if supersedes:
+            meta_parts.append(f'替代: {", ".join(_esc(s) for s in supersedes)}')
+
+        dep_html = ""
+        if meta_parts:
+            dep_html = (
+                f'<div style="font-size:0.8em;color:var(--c-muted);margin-top:6px;">'
+                f'{"; ".join(meta_parts)}</div>'
+            )
+
         items.append(
             f'<div class="req-item">\n'
-            f'  <h3>{i}. {name}</h3>\n'
+            f'  <h3>'
+            f'    <span style="font-family:monospace;font-size:0.85em;'
+            f'color:var(--c-muted);margin-right:6px;">{req_id}</span>'
+            f'    {name}{status_badge}{pri_html}'
+            f'    <span style="font-size:0.75em;color:var(--c-muted);float:right;">'
+            f'v{version}</span>'
+            f'  </h3>\n'
             f'  <div class="req-desc">{desc}</div>\n'
+            f'  {dep_html}\n'
             f'  {ac_html}\n'
+            f'  {ch_html}\n'
             f'</div>'
         )
     return "\n".join(items)
@@ -983,11 +1061,14 @@ def _render_stories(stories: list) -> str:
         return "<p>暂无用户故事</p>"
     items = []
     for s in stories:
+        sid = s.get("id", "")
         role = _esc(s.get("role", "用户"))
         action = _esc(s.get("action", "做某事"))
         goal = _esc(s.get("goal", ""))
+        sid_html = f'<span style="font-family:monospace;font-size:0.8em;color:var(--c-muted);margin-right:6px;">{_esc(sid)}</span>' if sid else ""
         items.append(
             f'<div class="story-item">\n'
+            f'  {sid_html}'
             f'  <span class="story-role">{role}</span>\n'
             f'  <div class="story-text">\n'
             f'    作为 <strong>{role}</strong>，我想要 <strong>{action}</strong>\n'
@@ -998,14 +1079,23 @@ def _render_stories(stories: list) -> str:
     return "\n".join(items)
 
 
-def _render_priorities(priorities: dict) -> str:
+def _render_priorities(priorities: dict, reqs: list = None) -> str:
     if not priorities:
         return "<p>暂无优先级定义</p>"
+    # Build ID → name lookup from requirements
+    id_to_name = {}
+    if reqs:
+        for r in reqs:
+            rid = r.get("id", "")
+            rname = r.get("name", "")
+            if rid and rname:
+                id_to_name[rid] = rname
     tags = []
-    for name, pri in priorities.items():
+    for key, pri in priorities.items():
+        display = id_to_name.get(key, key)
         css = "high" if "高" in pri else ("medium" if "中" in pri else "low")
         tags.append(
-            f'<span class="priority-tag {css}">{_esc(name)} &middot; {_esc(pri)}</span>'
+            f'<span class="priority-tag {css}">{_esc(display)} &middot; {_esc(pri)}</span>'
         )
     return f'<div class="priority-grid">\n' + "".join(tags) + "\n</div>"
 
@@ -1054,7 +1144,7 @@ def render_file(json_path: Path, wiki_root: Path | None = None) -> Optional[Path
         return None
 
     # Map .cogniforge/wiki/{type}[/{module}]/file.json → .cogniforge/html/{type}[/{module}]/file.html
-    # Use as_posix() so the string match works on Windows (where str() gives backslashes)
+    # Also handle docs/prd.json → .cogniforge/html/prd/prd.html
     path_str = json_path.as_posix()
     marker = ".cogniforge/wiki/"
     idx = path_str.find(marker)
@@ -1062,6 +1152,9 @@ def render_file(json_path: Path, wiki_root: Path | None = None) -> Optional[Path
         cogniforge_root = Path(path_str[:idx + len(".cogniforge/")])
         rel = Path(path_str[idx + len(marker):])
         html_dir = cogniforge_root / "html" / rel.parent
+    elif path_str.endswith("docs/prd.json"):
+        # docs/prd.json lives outside .cogniforge/wiki/ — render into .cogniforge/html/prd/
+        html_dir = json_path.parent.parent / ".cogniforge" / "html" / "prd"
     else:
         html_dir = json_path.parent.parent / "html"
     html_dir.mkdir(parents=True, exist_ok=True)
@@ -1076,10 +1169,21 @@ def render_file(json_path: Path, wiki_root: Path | None = None) -> Optional[Path
 
 def _render_prd(d: dict) -> str:
     m = d.get("meta", {})
+    version = m.get("version", 1)
+    last_modified = m.get("last_modified", m.get("created", ""))
+    last_author = m.get("last_author", m.get("author", "pm_agent"))
     parts = [_page_start(
         m.get("title", "PRD"), m.get("doc_id", ""), "产品需求文档",
         m.get("created", ""), m.get("author", "pm_agent"),
     )]
+    # Version info
+    parts.append(
+        f'<div class="meta">'
+        f'版本 v{version} &middot; '
+        f'最后修改: {_esc(last_modified)} &middot; '
+        f'修改者: {_esc(last_author)}'
+        f'</div>'
+    )
     # Overview
     parts.append(_section_header("📋", "概述", "rgba(124,111,247,0.12)"))
     parts.append(f"<p>{_esc(d.get('overview', ''))}</p>")
@@ -1096,7 +1200,7 @@ def _render_prd(d: dict) -> str:
     parts.append(_SECTION_FOOT)
     # Priorities
     parts.append(_section_header("🎯", "优先级", "rgba(251,191,36,0.12)"))
-    parts.append(_render_priorities(d.get("priorities", {})))
+    parts.append(_render_priorities(d.get("priorities", {}), d.get("requirements", [])))
     parts.append(_SECTION_FOOT)
     parts.append(_PAGE_END)
     return "\n".join(parts)

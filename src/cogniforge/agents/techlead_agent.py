@@ -121,7 +121,10 @@ class TechLeadAgent(BaseAgent):
     def _agentic_evaluate_quality(self, input_data: dict) -> dict:
         module = input_data.get("module", "unknown")
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        doc_id = f"quality-{module}"
+        existing = self.wiki_system.list_documents(DocumentType.REPORT)
+        ql_count = sum(1 for d in existing if d.doc_id.startswith(f"quality-{module}-"))
+        seq = ql_count + 1
+        doc_id = f"quality-{module}-{seq:03d}"
         json_path = self.wiki_system.agent_path(DocumentType.REPORT, doc_id=doc_id)
 
         prompt = (

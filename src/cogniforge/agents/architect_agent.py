@@ -39,7 +39,7 @@ class ArchitectAgent(BaseAgent):
                 f"JSON 结构如下（system_overview/architecture 为对象，data_flow 为数组）:\n\n"
                 f"{{\n"
                 f"  \"meta\": {{\"doc_id\": \"{doc_id}\", \"type\": \"sad\",\n"
-                f"    \"title\": \"{title}\", \"author\": \"architect_agent\", \"created\": \"{now}\"}},\n"
+                f"    \"title\": \"{title}\", \"author\": \"architect_agent\", \"created\": \"{now}\", \"version\": 1}},\n"
                 f"  \"system_overview\": {{\n"
                 f"    \"description\": \"系统整体描述（string）\",\n"
                 f"    \"roles\": [\n"
@@ -52,7 +52,7 @@ class ArchitectAgent(BaseAgent):
                 f"    \"description\": \"架构设计描述（string）\",\n"
                 f"    \"layers\": [\n"
                 f"      {{\"name\": \"层名（如 接入层/网关层/服务层/数据层）\",\n"
-                f"        \"components\": [\"该层包含的组件名（与 components[].name 一致）\", ...]}}\n"
+                f"        \"components\": [\"该层包含的组件名称\", ...]}}\n"
                 f"    ],\n"
                 f"    \"connections\": [\n"
                 f"      {{\"protocol\": \"层间通信协议（如 HTTPS / REST / SQL / AMQP）\"}}\n"
@@ -68,12 +68,12 @@ class ArchitectAgent(BaseAgent):
                 f"    \"...\": \"按需增删字段\"\n"
                 f"  }},\n"
                 f"  \"components\": [\n"
-                f"    {{\"name\": \"组件名\", \"type\": \"frontend|gateway|service|database|infrastructure\",\n"
+                f"    {{\"id\": \"CMP-001\", \"name\": \"组件名\", \"type\": \"frontend|gateway|service|database|infrastructure\",\n"
                 f"      \"description\": \"组件描述\", \"responsibilities\": [\"职责1\", ...]}}\n"
                 f"  ],\n"
                 f"  \"contracts\": [\n"
-                f"    {{\"interface\": \"接口名称\", \"provider\": \"提供者（必须与 components[].name 一致）\",\n"
-                f"      \"consumers\": [\"消费者1\", ...], \"type\": \"REST|gRPC|MQ\",\n"
+                f"    {{\"id\": \"CTR-001\", \"interface\": \"接口名称\", \"provider\": \"提供者组件名\",\n"
+                f"      \"consumers\": [\"消费者组件名\", ...], \"type\": \"REST|gRPC|MQ\",\n"
                 f"      \"endpoint\": \"GET/POST /api/...\",\n"
                 f"      \"request\": {{\"path_params\": [], \"query_params\": [], \"body\": {{}}}},\n"
                 f"      \"response\": {{\"status\": 200, \"body\": {{}}}},\n"
@@ -86,12 +86,14 @@ class ArchitectAgent(BaseAgent):
                 f"  ]\n"
                 f"}}\n\n"
                 f"重要说明:\n"
+                f"- 每个 component 必须分配唯一 id（CMP-001, CMP-002...）\n"
+                f"- 每个 contract 必须分配唯一 id（CTR-001, CTR-002...）\n"
                 f"- system_overview.roles: 从 PRD 中提取用户角色及其权限\n"
                 f"- architecture.layers: 按系统分层列出每层包含的组件（组件名与 components[].name 一致）\n"
                 f"- architecture.connections: 相邻层之间的通信协议，数组长度 = layers 数量 - 1\n"
                 f"- architecture.features: 列出架构的关键技术特征，每项一个短语\n"
                 f"- tech_stack: 根据架构设计明确定义技术选型（语言/框架/数据库/缓存/消息队列等），字段按需增删\n"
-                f"- components: 每个组件需要 name/type/description/responsibilities\n"
+                f"- components: 每个组件需要 id/name/type/description/responsibilities\n"
                 f"- data_flow: 每条数据流用 steps 数组描述从起点到终点的步骤序列\n"
                 f"- contracts: 每个需要跨模块调用的接口必须定义，是 MDE 生成 LLD 的强制约束\n"
                 f"- request/response: 精确的字段名、类型，MDE 将以此为准\n\n"
@@ -110,6 +112,15 @@ class ArchitectAgent(BaseAgent):
 
             # Strip markdown fences if present
             json_text = _extract_json(response.content)
+
+            # Parse and assign stable IDs
+            try:
+                data = json.loads(json_text)
+                data["components"] = self._assign_ids(data.get("components", []), "CMP")
+                data["contracts"] = self._assign_ids(data.get("contracts", []), "CTR")
+                json_text = json.dumps(data, ensure_ascii=False, indent=2)
+            except json.JSONDecodeError:
+                pass  # Write raw text; _commit_and_result will handle
 
             # Write JSON file
             json_abs = Path(self.config.repo_path) / json_path
@@ -138,8 +149,38 @@ class ArchitectAgent(BaseAgent):
     def _normalize_component_type(cls, raw: str) -> str:
         return cls._COMPONENT_TYPE_CANONICAL.get(raw, "service")
 
+    @staticmethod
+    def _assign_ids(items: list[dict], prefix: str) -> list[dict]:
+        """Assign stable serial IDs (CMP-001, CTR-001, etc.) to items lacking them."""
+        max_num = 0
+        for item in items:
+            item_id = item.get("id", "")
+            if item_id.startswith(f"{prefix}-"):
+                try:
+                    num = int(item_id.split("-", 1)[1])
+                    if num > max_num:
+                        max_num = num
+                except ValueError:
+                    pass
+        next_num = max_num + 1
+        assigned = []
+        for item in items:
+            item_id = item.get("id", "")
+            if not item_id or not item_id.startswith(f"{prefix}-"):
+                item["id"] = f"{prefix}-{next_num:03d}"
+                next_num += 1
+            assigned.append(item)
+        return assigned
+
     def _load_latest_prd(self) -> str:
-        """Read the latest PRD JSON and return it as a string for LLM context."""
+        """Read the current PRD JSON from docs/prd.json, fall back to old wiki path."""
+        prd_path = Path(self.config.repo_path) / "docs" / "prd.json"
+        if prd_path.exists():
+            try:
+                return prd_path.read_text(encoding="utf-8")
+            except Exception:
+                pass
+        # Fallback: old wiki format
         import glob
         pattern = str(Path(self.config.repo_path) / ".cogniforge/wiki/prd/*.json")
         files = sorted(glob.glob(pattern))

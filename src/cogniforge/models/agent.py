@@ -36,7 +36,7 @@ AGENT_DEFINITIONS: dict[AgentRole, AgentDefinition] = {
         ],
         input_docs=[],
         output_docs=["prd"],
-        allowed_modify=[".cogniforge/wiki/prd/"],
+        allowed_modify=[".cogniforge/wiki/prd/", "docs/"],
     ),
     AgentRole.ARCHITECT: AgentDefinition(
         role=AgentRole.ARCHITECT,

@@ -43,7 +43,10 @@ class DevOpsAgent(BaseAgent):
         environment = input_data.get("environment", "dev")
         version = input_data.get("version", "latest")
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        doc_id = f"deploy-{module}-{environment}"
+        existing = self.wiki_system.list_documents(DocumentType.DEPLOY)
+        dep_count = sum(1 for d in existing if d.doc_id.startswith(f"deploy-{module}-{environment}-"))
+        seq = dep_count + 1
+        doc_id = f"deploy-{module}-{environment}-{seq:03d}"
         json_path = self.wiki_system.agent_path(DocumentType.DEPLOY, doc_id=doc_id)
 
         prompt = (

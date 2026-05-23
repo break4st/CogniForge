@@ -169,6 +169,60 @@ class BaseLLMAdapter(ABC):
         ))
         return self.generate_messages(messages, **kwargs)
 
+    def generate_interactive_patch(
+        self,
+        current_document: str,
+        user_request: str,
+        system_prompt: str = "",
+        turn_schema: dict | None = None,
+        **kwargs,
+    ) -> LLMResponse:
+        """Produce a structured turn result with patches instead of full replacement.
+
+        Default implementation falls back to generate_interactive and wraps the
+        result into a minimal turn structure.  Adapters with native two-step
+        support (e.g. DeepSeekAdapter) should override this.
+
+        Args:
+            current_document: The current document JSON text.
+            user_request: The user's modification request.
+            system_prompt: Optional system prompt for the modification.
+            turn_schema: The pm-turn-result JSON schema dict for structured output.
+            **kwargs: Provider-specific options.
+
+        Returns:
+            LLMResponse whose content is the pm-turn-result JSON string.
+        """
+        import json as _json
+        full_result = self.generate_interactive(
+            current_document=current_document,
+            user_request=user_request,
+            system_prompt=system_prompt,
+            **kwargs,
+        )
+        try:
+            parsed = _json.loads(full_result.content)
+            patches = [{"op": "replace", "path": "", "value": parsed}]
+            turn_result = {
+                "status": "updated",
+                "operation": "modify",
+                "doc_changed": "prd",
+                "changed_file": "docs/prd.json",
+                "affected_requirements": [],
+                "conflicts": [],
+                "message": "Document updated via fallback (full replace).",
+                "open_questions": [],
+                "patches": patches,
+            }
+            return LLMResponse(
+                content=_json.dumps(turn_result, ensure_ascii=False),
+                model=full_result.model,
+                provider=full_result.provider,
+                usage=full_result.usage,
+            )
+        except (_json.JSONDecodeError, Exception):
+            return full_result
+
 
 def create_llm_adapter(
     provider: LLMProvider,

@@ -292,7 +292,10 @@ def _select(options: list[tuple[str, str]], default: int = 0,
     _redraw()
 
     while True:
-        key = _read_key()
+        try:
+            key = _read_key()
+        except KeyboardInterrupt:
+            key = "\x03"
         if key == "enter":
             sys.stdout.write(f"\033[{n}B\n")
             sys.stdout.flush()
@@ -305,6 +308,10 @@ def _select(options: list[tuple[str, str]], default: int = 0,
             _redraw()
         elif key == "esc":
             return options[idx][0]
+        elif key == "\x03":  # Ctrl+C — cancel
+            sys.stdout.write(f"\033[J")
+            sys.stdout.flush()
+            return None
 
 
 # ---------------------------------------------------------------------------
@@ -921,7 +928,9 @@ class Repl:
                             ],
                             default=0,
                         )
-                        if choice == "auto_all":
+                        if choice is None:
+                            continue
+                        elif choice == "auto_all":
                             result_text = self._exec_lld_auto_all(modules)
                             click.echo(result_text)
                             continue
@@ -951,7 +960,9 @@ class Repl:
                             ],
                             default=0,
                         )
-                        if choice == "auto_all":
+                        if choice is None:
+                            continue
+                        elif choice == "auto_all":
                             result_text = self._exec_wbs_auto_all(modules)
                             click.echo(result_text)
                             continue
@@ -976,7 +987,9 @@ class Repl:
                                 ],
                                 default=0,
                             )
-                            if choice == "auto_all":
+                            if choice is None:
+                                continue
+                            elif choice == "auto_all":
                                 result_text = self._exec_wbs_auto_all(modules)
                                 click.echo(result_text)
                                 continue
@@ -993,7 +1006,9 @@ class Repl:
                                 ],
                                 default=0,
                             )
-                            if choice == "auto":
+                            if choice is None:
+                                continue
+                            elif choice == "auto":
                                 user_input = auto_prompt
                             else:
                                 click.echo()
@@ -1378,7 +1393,9 @@ class Repl:
         # Loop menu: user can modify repeatedly until satisfied, then approve
         while True:
             action_choice = self._post_agent_menu(step)
-            if action_choice == "approve":
+            if action_choice is None:
+                return f"\n  {C_DIM}已取消{C_RESET}"
+            elif action_choice == "approve":
                 return self._exec_approve({"comment": ""})
             elif action_choice == "reject":
                 reason = click.prompt(REJECT_PROMPT, default=REJECT_DEFAULT)
@@ -1412,7 +1429,12 @@ class Repl:
         }
         dir_path = role_dir_map.get(agent_role)
         artifact_path = None
-        if dir_path:
+        # PM uses docs/prd.json as the canonical source
+        if agent_role == "pm":
+            prd_candidate = repo_path / "docs" / "prd.json"
+            if prd_candidate.exists():
+                artifact_path = prd_candidate
+        if artifact_path is None and dir_path:
             files = sorted(_glob.glob(str(repo_path / dir_path / "*.json")))
             artifact_path = Path(files[-1]) if files else None
 
@@ -1527,7 +1549,39 @@ class Repl:
                 _box_print(f"{C_RED}✗{C_RESET} 无法读取产物文件")
                 continue
 
-            # Execute via adapter's generate_interactive
+            # ── PM role: use patch-based modify_interactive ──────────────
+            if agent_role == "pm" and role_agent and hasattr(role_agent, "modify_interactive"):
+                spinner = Spinner("PM 正在处理修改")
+                spinner.start()
+                try:
+                    result = role_agent.modify_interactive(user_request=user_input)
+                except Exception as e:
+                    spinner.stop()
+                    _box_print(f"{C_RED}✗{C_RESET} 请求失败: {e}")
+                    continue
+                finally:
+                    spinner.stop()
+
+                if result.get("status") == "success":
+                    _box_print(f"{C_GREEN}✓{C_RESET} {result.get('message', '已更新')}")
+                    open_qs = result.get("data", {}).get("open_questions", [])
+                    for q in open_qs:
+                        _box_print(f"{C_AMBER}?{C_RESET} {q}")
+                    # Re-render HTML
+                    try:
+                        from cogniforge.wiki.wiki_renderer import render_file
+                        html_path = render_file(Path(repo_path) / "docs" / "prd.json")
+                        if html_path:
+                            rel_link = html_path.relative_to(repo_path).as_posix()
+                            _box_print(f"{C_DIM}{rel_link}{C_RESET}")
+                    except Exception as exc:
+                        _box_print(f"{C_AMBER}⚠ HTML 渲染失败: {exc}{C_RESET}")
+                else:
+                    _box_print(f"{C_RED}✗{C_RESET} {result.get('message', '修改失败')}")
+                _box_empty()
+                continue
+
+            # ── Non-PM roles: full-replace via generate_interactive ──────
             spinner = Spinner("Agent 正在修改")
             spinner.start()
             try:

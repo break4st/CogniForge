@@ -149,9 +149,24 @@ MODIFY_SESSION_SYSTEM_PROMPT = (
     "只返回纯 JSON，不要 markdown 代码块包裹，不要多余解释文字。"
 )
 
+MODIFY_SESSION_SYSTEM_PROMPT_PM = (
+    "你是 CogniForge 系统的 PM (Product Manager) Agent。\n"
+    "用户会给你一份当前 PRD 的 JSON 内容和修改要求。\n"
+    "你的任务是根据用户要求分析需要修改的内容，输出包含 patches 数组的变更结果 JSON。\n"
+    "规则:\n"
+    "1. 不要直接输出完整文档，只输出包含 patches 数组的 pm-turn-result JSON。\n"
+    "2. 保留所有已有的 REQ-ID 和 US-ID 不变。\n"
+    "3. 新增需求时分配新的 ID（下一个可用的 REQ-NNN / US-NNN）。\n"
+    "4. 每条被修改的 requirement 需在 patches 中更新其 version 和 change_history。\n"
+    "5. 在 priorities 中使用需求 ID（不是需求名称）。\n"
+    "6. 如果检测到冲突，在 conflicts 数组中记录。\n"
+    "7. patches 使用 RFC 6902 JSON Pointer 格式路径。\n"
+    "所有文字使用中文。"
+)
+
 # Role → system prompt (used as --append-system-prompt)
 MODIFY_SESSION_SYSTEM_PROMPTS: dict[str, str] = {
-    "pm": MODIFY_SESSION_SYSTEM_PROMPT,
+    "pm": MODIFY_SESSION_SYSTEM_PROMPT_PM,
     "architect": MODIFY_SESSION_SYSTEM_PROMPT,
 }
 

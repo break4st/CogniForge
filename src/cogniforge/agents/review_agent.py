@@ -23,7 +23,10 @@ class ReviewAgent(BaseAgent):
             files = input_data.get("files", [])
 
             now = datetime.now().strftime("%Y-%m-%d %H:%M")
-            doc_id = f"cr-{module}"
+            existing = self.wiki_system.list_documents(DocumentType.REPORT)
+            cr_count = sum(1 for d in existing if d.doc_id.startswith(f"cr-{module}-"))
+            seq = cr_count + 1
+            doc_id = f"cr-{module}-{seq:03d}"
             json_path = self.wiki_system.agent_path(DocumentType.REPORT, doc_id=doc_id)
 
             prompt = (

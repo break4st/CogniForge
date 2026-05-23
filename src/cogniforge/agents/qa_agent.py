@@ -42,7 +42,10 @@ class QAAgent(BaseAgent):
         module = input_data.get("module", "unknown")
         test_cases = input_data.get("test_cases", [])
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        doc_id = f"test_cases_{module}"
+        existing = self.wiki_system.list_documents(DocumentType.TEST_CASE)
+        tc_count = sum(1 for d in existing if d.doc_id.startswith(f"test_case-{module}-"))
+        seq = tc_count + 1
+        doc_id = f"test_case-{module}-{seq:03d}"
         json_path = self.wiki_system.agent_path(DocumentType.TEST_CASE, doc_id=doc_id)
 
         prompt = (
@@ -73,7 +76,10 @@ class QAAgent(BaseAgent):
     def _agentic_report(self, input_data: dict) -> dict:
         module = input_data.get("module", "unknown")
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        doc_id = f"test-{module}"
+        existing = self.wiki_system.list_documents(DocumentType.REPORT)
+        tr_count = sum(1 for d in existing if d.doc_id.startswith(f"test-report-{module}-"))
+        seq = tr_count + 1
+        doc_id = f"test-report-{module}-{seq:03d}"
         json_path = self.wiki_system.agent_path(DocumentType.REPORT, doc_id=doc_id)
 
         prompt = (
