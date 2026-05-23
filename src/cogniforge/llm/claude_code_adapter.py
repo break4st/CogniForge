@@ -115,6 +115,7 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
         role: str | None = None,
         tools: list[dict] | None = None,
         max_turns: int = 20,
+        progress_callback: callable = None,
         **kwargs,
     ) -> LLMResponse:
         """Agent mode via ``claude -p`` with ``--tools``.
@@ -123,6 +124,8 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
         prompt, role, and tool configuration on the command line.  The final
         text response is parsed from the JSON output.
         """
+        if progress_callback:
+            progress_callback("通过 Claude CLI 执行中...")
         model = kwargs.get("model", self.model)
 
         cmd = [
@@ -293,3 +296,78 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
     @property
     def supported_models(self) -> list[str]:
         return ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"]
+
+    # ------------------------------------------------------------------
+    # Interactive modification (via claude -p --session-id)
+    # ------------------------------------------------------------------
+
+    def generate_interactive(
+        self,
+        current_document: str,
+        user_request: str,
+        system_prompt: str = "",
+        *,
+        session_id: str = "",
+        schema_path: str = "",
+        **kwargs,
+    ) -> LLMResponse:
+        """Single-turn document modification via claude -p --session-id.
+
+        Uses --json-schema for format enforcement and --session-id for
+        conversation continuity across turns.
+        """
+        import uuid
+
+        sid = session_id or str(uuid.uuid4())
+        model = kwargs.get("model", self.model)
+
+        prompt_text = (
+            f"当前文档 JSON:\n{current_document}\n\n"
+            f"用户修改要求: {user_request}\n\n"
+            f"请根据用户要求修改文档，返回完整的修改后 JSON。"
+        )
+
+        cmd = [
+            self.claude_cli_path, "-p", "-",
+            "--session-id", sid,
+            "--output-format", "json",
+            "--model", model,
+        ]
+
+        if system_prompt:
+            cmd.extend(["--append-system-prompt", system_prompt])
+
+        if schema_path:
+            cmd.extend(["--json-schema", schema_path])
+
+        env = os.environ.copy()
+        if self.api_key:
+            env["ANTHROPIC_API_KEY"] = self.api_key
+
+        try:
+            result = subprocess.run(
+                cmd, cwd=str(self.repo_path), check=False,
+                capture_output=True, text=True, timeout=self.timeout,
+                input=prompt_text, encoding="utf-8", env=env,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Claude Code CLI timeout during interactive modification")
+        except FileNotFoundError:
+            raise RuntimeError("Claude Code CLI not found.")
+
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"Claude CLI failed (exit {result.returncode}): {err[:200]}")
+
+        content, usage = self._parse_output(result.stdout)
+        if not content:
+            content = result.stderr or result.stdout or ""
+        if not content:
+            raise RuntimeError("Claude Code CLI returned empty response during modification")
+
+        # Store session_id so callers can reuse it
+        self._last_session_id = sid
+
+        return LLMResponse(
+            content=content, model=model, provider="claude_code", usage=usage,
+        )

@@ -74,9 +74,12 @@ class OpenCodeAdapter(BaseLLMAdapter):
         role: str | None = None,
         tools: list[dict] | None = None,
         max_turns: int = 20,
+        progress_callback: callable = None,
         **kwargs,
     ) -> LLMResponse:
         """Agent mode via ``codex exec --full-auto``."""
+        if progress_callback:
+            progress_callback("通过 Codex CLI 执行中...")
         full_prompt = prompt
         if role:
             full_prompt = f"# Role: {role}\n\n{full_prompt}"

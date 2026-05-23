@@ -22,6 +22,7 @@ class LLMProvider(str, Enum):
     CLAUDE_CODE = "claude_code"
     OPEN_CODE = "open_code"
     CODEX = "codex"  # Legacy alias, maps to open_code
+    DEEPSEEK = "deepseek"
 
 
 @dataclass
@@ -103,6 +104,7 @@ class BaseLLMAdapter(ABC):
         role: str | None = None,
         tools: list[dict] | None = None,
         max_turns: int = 20,
+        progress_callback: callable = None,
         **kwargs,
     ) -> LLMResponse:
         """Agent mode with tool use — the LLM reads/writes files and runs commands.
@@ -112,6 +114,7 @@ class BaseLLMAdapter(ABC):
             role: Optional role name for system-prompt injection.
             tools: Optional list of tool definitions (adapter defaults if None).
             max_turns: Maximum tool-use round-trips.
+            progress_callback: Optional callback(status: str) for progress display.
             **kwargs: Provider-specific options (model, max_tokens, etc.).
 
         Returns:
@@ -130,6 +133,41 @@ class BaseLLMAdapter(ABC):
     def supported_models(self) -> list[str]:
         """Return list of supported models"""
         pass
+
+    def generate_interactive(
+        self,
+        current_document: str,
+        user_request: str,
+        system_prompt: str = "",
+        **kwargs,
+    ) -> LLMResponse:
+        """Single-turn document modification.
+
+        Default implementation uses generate_messages.  Adapters may override
+        for provider-specific behaviour (e.g. Claude Code uses --session-id).
+
+        Args:
+            current_document: The current document JSON text.
+            user_request: The user's modification request.
+            system_prompt: Optional system prompt for the modification.
+            **kwargs: Provider-specific options.
+
+        Returns:
+            LLMResponse with the modified document content.
+        """
+        messages = []
+        if system_prompt:
+            messages.append(LLMMessage(role="system", content=system_prompt))
+        messages.append(LLMMessage(
+            role="user",
+            content=(
+                f"当前文档 JSON:\n{current_document}\n\n"
+                f"用户修改要求: {user_request}\n\n"
+                f"请根据用户要求修改文档，返回完整的修改后 JSON。\n"
+                f"只返回纯 JSON，不要 markdown 代码块包裹，不要多余解释文字。"
+            ),
+        ))
+        return self.generate_messages(messages, **kwargs)
 
 
 def create_llm_adapter(
@@ -156,5 +194,8 @@ def create_llm_adapter(
         # codex is a legacy provider name, map it to the Codex CLI adapter
         from cogniforge.llm.open_code_adapter import OpenCodeAdapter
         return OpenCodeAdapter(config)
+    elif provider == LLMProvider.DEEPSEEK:
+        from cogniforge.llm.deepseek_adapter import DeepSeekAdapter
+        return DeepSeekAdapter(config)
     else:
         raise ValueError(f"Unknown LLM provider: {provider}")

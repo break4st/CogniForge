@@ -7,7 +7,6 @@ import json
 import os
 import re
 import select
-import subprocess
 import sys
 import threading
 import time
@@ -59,7 +58,6 @@ from cogniforge.repl_text import (
     CHOICE_MODIFY,
     MODIFY_SESSION_SYSTEM_PROMPTS,
     INTERACTIVE_STEPS,
-    modify_turn_prompt,
     REJECT_PROMPT,
     REJECT_DEFAULT,
     APPROVE_OK,
@@ -987,6 +985,22 @@ class Repl:
                         break
                     continue
 
+                # PRD step shortcut: skip LLM interpretation, go direct to agent
+                if step and step.value == "prd":
+                    lower = user_input.lower()
+                    # Approve intent: direct approval without LLM
+                    if lower in ("approve", "yes", "ok", "y", "审批", "通过", "确认"):
+                        result_text = self._exec_approve({"comment": ""})
+                        click.echo(result_text)
+                        continue
+                    # NL → run PM agent directly with raw text
+                    result_text = self._exec_run_agent({
+                        "agent": "pm",
+                        "input": {"raw_text": user_input},
+                    })
+                    click.echo(result_text)
+                    continue
+
                 # Interpret via LLM (with spinner)
                 spinner = Spinner(SPINNER_INTERPRETING)
                 spinner.start()
@@ -1306,6 +1320,10 @@ class Repl:
 
         spinner = Spinner(SPINNER_RUNNING.format(agent=agent_role))
         spinner.start()
+        # Progress callback: update spinner text with tool-level detail
+        def _on_progress(status: str):
+            spinner.message = f"[{agent_role}] {status}"
+        input_data["_progress_callback"] = _on_progress
         try:
             result = agent.run(input_data)
         finally:
@@ -1347,10 +1365,10 @@ class Repl:
                 return ""
 
     def _exec_interactive_session(self, agent_role: str) -> None:
-        """REPL-managed multi-turn modification via claude -p --session-id.
+        """REPL-managed multi-turn modification via adapter.
 
-        Each turn calls claude -p with --json-schema for format enforcement
-        and --session-id for conversation continuity.  No interactive TUI.
+        Each turn calls adapter.generate_interactive() — for Claude Code this
+        uses --session-id; for DeepSeek this is stateless API calls.
         """
         import glob as _glob
 
@@ -1384,8 +1402,10 @@ class Repl:
         session_id = str(uuid.uuid4())
         schema_path = repo_path / f"schemas/{step_value}-schema.json"
 
-        model = getattr(self.agent, 'model', 'claude-sonnet-4-20250514')
-        cli_path = getattr(self.agent, 'claude_cli_path', 'claude')
+        # Get the adapter for this role (not the REPL's llm_adapter)
+        role_agent = self.agents.get(agent_role)
+        agent_adapter = getattr(role_agent, 'agent', self.agent) if role_agent else self.agent
+
         system_prompt = MODIFY_SESSION_SYSTEM_PROMPTS.get(
             agent_role, MODIFY_SESSION_SYSTEM_PROMPTS.get("pm", "")
         )
@@ -1404,19 +1424,6 @@ class Repl:
         click.echo(_draw_box(
             top_line=box_title, lines=box_lines, bottom_close=False,
         ))
-
-        # ── Helper: parse claude -p output ────────────────────────────────
-        def _parse_result(stdout: str) -> str | None:
-            """Extract the JSON document from claude -p --output-format json."""
-            if not stdout.strip():
-                return None
-            try:
-                outer = json.loads(stdout)
-                if isinstance(outer, dict) and "result" in outer:
-                    return outer["result"]
-                return stdout
-            except json.JSONDecodeError:
-                return stdout
 
         # ── Helper: re-render and commit ──────────────────────────────────
         def _save_and_render(json_text: str) -> None:
@@ -1494,49 +1501,31 @@ class Repl:
                 _box_print(f"{C_RED}✗{C_RESET} 无法读取产物文件")
                 continue
 
-            prompt = modify_turn_prompt(current_json, user_input)
-
-            # Build command — prompt goes via stdin to avoid ARG_MAX
-            cmd = [
-                cli_path, "-p", "-",
-                "--session-id", session_id,
-                "--output-format", "json",
-                "--model", model,
-                "--append-system-prompt", system_prompt,
-            ]
-            if schema_path.exists():
-                cmd.extend(["--json-schema", str(schema_path)])
-
-            # Execute
+            # Execute via adapter's generate_interactive
             spinner = Spinner("Agent 正在修改")
             spinner.start()
             try:
-                result = subprocess.run(
-                    cmd, cwd=str(repo_path), check=False,
-                    capture_output=True, text=True, timeout=600,
-                    input=prompt, encoding="utf-8",
+                kwargs = {"session_id": session_id}
+                if schema_path.exists():
+                    kwargs["schema_path"] = str(schema_path)
+                response = agent_adapter.generate_interactive(
+                    current_document=current_json,
+                    user_request=user_input,
+                    system_prompt=system_prompt,
+                    **kwargs,
                 )
-            except subprocess.TimeoutExpired:
+            except RuntimeError as e:
                 spinner.stop()
-                _box_print(f"{C_RED}✗{C_RESET} 请求超时，请重试")
+                _box_print(f"{C_RED}✗{C_RESET} {e}")
                 continue
-            except FileNotFoundError:
+            except Exception as e:
                 spinner.stop()
-                _box_print(f"{C_RED}✗{C_RESET} 未找到 Claude Code CLI")
-                return
+                _box_print(f"{C_RED}✗{C_RESET} 请求失败: {e}")
+                continue
             finally:
                 spinner.stop()
 
-            if result.returncode != 0:
-                err = (result.stderr or result.stdout or "").strip()
-                _box_print(f"{C_RED}✗{C_RESET} Claude Code 返回错误: {err[:100]}")
-                continue
-
-            # Parse output
-            json_output = _parse_result(result.stdout)
-            if json_output is None:
-                _box_print(f"{C_RED}✗{C_RESET} 未能解析 Claude Code 输出")
-                continue
+            json_output = response.content if hasattr(response, "content") else str(response)
 
             # Strip markdown code fences if present
             json_output = _extract_json(json_output)
