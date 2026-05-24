@@ -1807,6 +1807,73 @@ def _render_traceability_section(traces: list) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Requirement traceability section (LLD — different field names from SAD)
+# ---------------------------------------------------------------------------
+
+def _render_lld_traceability_section(traces: list) -> str:
+    """Render LLD requirement traceability matrix.
+
+    LLD uses ``sad_component_ids`` / ``sad_contract_ids`` / ``lld_objects``
+    instead of SAD's ``components`` / ``contracts`` / ``data_models``.
+    """
+    if not traces:
+        return "<p>暂无需求追溯</p>"
+    coverage_colors = {
+        "full": ("rgba(52,211,153,0.15)", "#6ee7b7"),
+        "partial": ("rgba(251,191,36,0.12)", "#fcd34d"),
+        "none": ("rgba(248,113,113,0.12)", "#fca5a5"),
+        "blocked": ("rgba(107,115,148,0.15)", "#9ca3af"),
+    }
+    rows = []
+    for t in traces:
+        rid = _esc(t.get("requirement_id", ""))
+        cov = t.get("coverage", "none")
+        cov_bg, cov_color = coverage_colors.get(cov, coverage_colors["none"])
+        cov_badge = (
+            f'<span style="font-size:0.8em;padding:2px 10px;border-radius:10px;'
+            f'background:{cov_bg};color:{cov_color};">{_esc(cov)}</span>'
+        )
+        sad_comps = " ".join(
+            f'<span class="cn-tag prop">{_esc(c)}</span>'
+            for c in t.get("sad_component_ids", [])
+        )
+        sad_ctrs = " ".join(
+            f'<span style="font-family:monospace;font-size:0.8em;color:var(--c-accent)">{_esc(ct)}</span>'
+            for ct in t.get("sad_contract_ids", [])
+        )
+        lld_obj = t.get("lld_objects", {}) if isinstance(t.get("lld_objects"), dict) else {}
+        dms = " ".join(
+            f'<span style="font-family:monospace;font-size:0.8em;color:var(--c-accent2)">{_esc(d)}</span>'
+            for d in lld_obj.get("data_models", [])
+        )
+        ifaces = " ".join(
+            f'<span style="font-family:monospace;font-size:0.8em;color:var(--c-cyan)">{_esc(ifc)}</span>'
+            for ifc in lld_obj.get("interfaces", [])
+        )
+        notes = _esc(t.get("notes", ""))
+        rows.append(
+            f'<tr>'
+            f'<td style="font-family:monospace;font-weight:600">{rid}</td>'
+            f'<td>{cov_badge}</td>'
+            f'<td>{sad_comps or "—"}</td>'
+            f'<td>{sad_ctrs or "—"}</td>'
+            f'<td>{dms or "—"}</td>'
+            f'<td>{ifaces or "—"}</td>'
+            f'<td style="font-size:0.85em;color:var(--c-muted)">{notes}</td>'
+            f'</tr>'
+        )
+    return (
+        '<table style="width:100%;border-collapse:collapse;font-size:0.88em">'
+        '<thead><tr>'
+        '<th>需求</th><th>覆盖</th><th>SAD组件</th><th>SAD契约</th>'
+        '<th>数据模型</th><th>接口</th><th>备注</th>'
+        '</tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody>'
+        '</table>'
+    )
+
+
+# ---------------------------------------------------------------------------
 # Architecture decisions section (SAD)
 # ---------------------------------------------------------------------------
 
@@ -3399,11 +3466,11 @@ def _render_lld(d: dict) -> str:
                 parts.append(cat_html)
         parts.append(_SECTION_FOOT)
 
-    # ── Traceability ──
+    # ── Traceability (LLD-specific field names) ──
     traces = d.get("traceability", [])
     if traces:
         parts.append(_section_header("🔍", f"需求追溯 ({len(traces)})", "rgba(124,111,247,0.12)", "traceability"))
-        parts.append(_render_traceability_section(traces))
+        parts.append(_render_lld_traceability_section(traces))
         parts.append(_SECTION_FOOT)
 
     parts.append(_PAGE_END_SIDEBAR)

@@ -131,6 +131,21 @@ _SCHEMA_ERROR = """\
     ]
   }}"""
 
+_SCHEMA_WORKFLOW = """\
+  "workflow": {{
+    "name": "编排流程名（如：部署执行主流程）",
+    "description": "流程说明",
+    "steps": [
+      {{"order": 1, "name": "步骤名", "action": "具体操作",
+        "timeout_seconds": 60, "on_failure": "失败时的处理方式"}}
+    ],
+    "retry_strategy": {{
+      "max_retries": 3, "retry_interval_seconds": 30,
+      "retryable_errors": ["NETWORK_ERROR", "TIMEOUT"],
+      "non_retryable_errors": ["AUTH_ERROR", "CONFIG_ERROR"]
+    }}
+  }}"""
+
 # ── Module-type-specific sections ──
 
 _SCHEMA_DOMAIN_OBJECTS = """\
@@ -510,6 +525,7 @@ class DesignAgent(BaseAgent):
                 f"{_SCHEMA_DATA_MODELS}\n"
                 f"{_SCHEMA_INTERFACES}\n"
                 f"{_SCHEMA_ERROR}\n"
+                f"{_SCHEMA_WORKFLOW}\n"
                 + (f"{conditional_schema}\n" if conditional_schema else "")
                 + f"\n重要:\n"
                 f"- data_models 中每个模型必须分配唯一 id（DM-001, DM-002...）\n"
