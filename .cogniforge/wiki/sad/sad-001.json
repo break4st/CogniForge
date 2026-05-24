@@ -2,84 +2,95 @@
   "meta": {
     "doc_id": "sad-001",
     "type": "sad",
-    "title": "DeployFlow 系统架构方案",
+    "title": "基于已批准的PRD文档的系统架构设计",
     "author": "architect_agent",
-    "created": "2026-05-24 08:39",
+    "created": "2026-05-24 13:49",
+    "version": 1
+  },
+  "title": "基于已批准的PRD文档的系统架构设计",
+  "source_prd": {
+    "doc_id": "prd-current",
     "version": 1
   },
   "system_overview": {
-    "description": "DeployFlow 是轻量级自动化部署平台，采用前后端分离架构。前端为 React SPA，后端基于 FastAPI 提供 RESTful API 与 WebSocket 实时日志。部署任务通过消息队列异步执行，Worker 负责 SSH 连接与文件传输。数据持久化使用 PostgreSQL，Redis 用于缓存与消息传递。私钥等敏感信息经 AES-256 加密存储，确保安全性。",
+    "description": "AutoShip 是一个多项目、多环境的自动化部署平台，采用分层单体架构，结合异步任务执行部署操作。系统包含前端SPA、API网关、Web API服务、部署Worker、数据库和文件存储。支持项目管理、环境配置、包管理、一键部署与回滚，并通过WebSocket实现实时日志推送。",
     "roles": [
       {
-        "name": "用户",
-        "permissions": [
-          "创建、编辑、删除项目",
-          "创建、编辑、删除环境",
-          "测试服务器连接",
-          "触发部署",
-          "查看实时部署日志",
-          "查看部署历史",
-          "执行版本回滚",
-          "切换项目查看隔离数据"
-        ]
+        "name": "运维工程师",
+        "permissions": ["创建/管理项目", "配置环境（含凭据）", "触发部署"]
+      },
+      {
+        "name": "开发人员",
+        "permissions": ["上传部署包", "执行测试环境部署"]
+      },
+      {
+        "name": "发布协调员",
+        "permissions": ["管理密钥", "执行安全部署"]
+      },
+      {
+        "name": "团队负责人",
+        "permissions": ["查看部署历史", "执行回滚操作"]
+      },
+      {
+        "name": "系统管理员",
+        "permissions": ["自定义启动脚本", "高级环境配置"]
       }
     ]
   },
   "architecture": {
-    "style": "前后端分离分层架构 + 异步任务队列",
-    "description": "系统分为接入层、服务层、任务执行层和数据层。前端通过 HTTPS 请求 API，WebSocket 接收日志；服务层按业务模块划分，异步任务由 Worker 处理；层间通过 REST、WebSocket、消息队列和 SQL 进行通信。",
+    "style": "分层单体 + 异步任务",
+    "description": "整体采用分层架构，前端通过网关访问后端API，API服务处理业务逻辑，通过消息队列将部署任务派发给独立的Worker进程执行。Worker完成SSH操作后将日志通过Redis Pub/Sub实时推送到前端。数据层使用关系数据库存储元数据，文件系统存储部署包。",
     "layers": [
       {
         "name": "接入层",
-        "components": [
-          "Frontend App",
-          "API Server"
-        ]
+        "components": ["AutoShip UI"]
+      },
+      {
+        "name": "网关层",
+        "components": ["Nginx 反向代理"]
       },
       {
         "name": "服务层",
-        "components": [
-          "Project Service",
-          "Environment Service",
-          "Deployment Service",
-          "Log Service",
-          "History Service"
-        ]
-      },
-      {
-        "name": "任务执行层",
-        "components": [
-          "Deployment Worker"
-        ]
+        "components": ["AutoShip API 服务", "部署执行 Worker"]
       },
       {
         "name": "数据层",
-        "components": [
-          "Database",
-          "Cache",
-          "File Storage"
-        ]
+        "components": ["PostgreSQL 数据库", "包文件存储"]
       }
     ],
     "connections": [
       {
-        "protocol": "HTTPS / REST / WebSocket"
+        "protocol": "HTTPS / REST",
+        "description": "前端与API服务之间通过HTTPS进行RESTful JSON通信"
       },
       {
-        "protocol": "AMQP (Redis Streams / Celery)"
+        "protocol": "WebSocket",
+        "description": "前端与API服务建立WebSocket连接，接收实时部署日志"
       },
       {
-        "protocol": "SQL / Redis Protocol / File I/O"
+        "protocol": "SQL",
+        "description": "API服务通过ORM（SQLAlchemy）与PostgreSQL数据库通信"
+      },
+      {
+        "protocol": "Redis 消息队列 (Celery)",
+        "description": "API服务将部署任务放入Redis队列，Worker从队列取任务"
+      },
+      {
+        "protocol": "Redis Pub/Sub",
+        "description": "Worker将部署日志发布到Redis频道，API服务订阅后通过WebSocket推向前端"
+      },
+      {
+        "protocol": "SSH / SFTP",
+        "description": "部署Worker通过SSH协议连接远程服务器，进行文件传输和命令执行"
       }
     ],
     "features": [
-      "前后端分离",
-      "RESTful API",
-      "实时 WebSocket 日志推送",
-      "异步任务队列部署",
-      "AES-256 加密存储密钥",
-      "项目级数据隔离",
-      "版本软链接秒级回滚"
+      "异步任务解耦部署操作，避免阻塞API服务",
+      "WebSocket实现实时日志推送，提升用户体验",
+      "凭据加密存储（AES），保障敏感信息安全",
+      "包文件独立存储，支持横向扩展（如切换到对象存储）",
+      "前端采用全局状态管理，实现项目切换数据即时刷新",
+      "Worker可独立扩展，提高部署并发能力"
     ]
   },
   "tech_stack": {
@@ -88,187 +99,276 @@
       "framework": "FastAPI"
     },
     "frontend": {
-      "framework": "React 18",
-      "ui_library": "Ant Design 5"
+      "framework": "Vue 3",
+      "ui_library": "Element Plus"
     },
     "database": "PostgreSQL 15",
-    "cache": "Redis 7",
-    "mq": "Redis Streams (Celery/ARQ)",
-    "file_storage": "本地文件系统",
-    "security": "AES-256-CBC (cryptography)"
+    "message_queue": "Redis (Celery broker)",
+    "file_storage": "本地文件系统 / MinIO 对象存储",
+    "ssh_library": "paramiko",
+    "reverse_proxy": "Nginx",
+    "real_time": "WebSocket (FastAPI) + Redis Pub/Sub"
   },
   "components": [
     {
       "id": "CMP-001",
-      "name": "Frontend App",
+      "name": "AutoShip UI",
       "type": "frontend",
-      "description": "基于 React 的单页应用，使用 Ant Design 构建界面，提供项目管理、环境配置、部署操作、实时日志展示和历史回滚等交互功能。",
+      "status": "active",
+      "version": 1,
+      "description": "基于Vue 3的单页应用，提供项目/环境/包管理、部署触发、历史查看、实时日志展示等界面。",
       "responsibilities": [
-        "渲染所有用户界面",
-        "发送 REST API 请求",
-        "建立 WebSocket 连接获取实时日志",
-        "上传文件"
+        "与API服务通过REST交互，获取和管理数据",
+        "通过WebSocket接收并渲染实时部署日志",
+        "全局项目选择器状态管理，切换后自动刷新关联数据",
+        "部署包上传进度显示",
+        "提供用户认证界面（登录/登出）"
+      ],
+      "source_requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
+        "REQ-005",
+        "REQ-006"
+      ],
+      "contracts": [
+        "CTR-001",
+        "CTR-003",
+        "CTR-005",
+        "CTR-007",
+        "CTR-008",
+        "CTR-010"
+      ],
+      "depends_on_components": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
       ]
     },
     {
       "id": "CMP-002",
-      "name": "API Server",
+      "name": "Nginx 反向代理",
       "type": "gateway",
-      "description": "FastAPI 后端入口，统一处理认证、路由转发和 WebSocket 协商，协调各个业务服务模块。",
+      "status": "active",
+      "version": 1,
+      "description": "统一入口，反向代理API请求到FastAPI服务，升级WebSocket连接，并托管前端静态资源。",
       "responsibilities": [
-        "接收前端 HTTP 请求并进行路由分发",
-        "管理 WebSocket 连接与认证",
-        "协调 Project/Environment/Deployment 等服务"
+        "路由 /api/* 到后端API服务",
+        "路由 /ws/* 到后端WebSocket服务",
+        "前端静态文件托管",
+        "SSL终结（可选）",
+        "基础限流和安全策略"
+      ],
+      "source_requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
+        "REQ-005",
+        "REQ-006"
+      ],
+      "contracts": [],
+      "depends_on_components": [
+        "CMP-003"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
       ]
     },
     {
       "id": "CMP-003",
-      "name": "Project Service",
+      "name": "AutoShip API 服务",
       "type": "service",
-      "description": "项目业务模块，负责项目的增删改查、名称唯一性校验以及删除时的级联操作。",
+      "status": "active",
+      "version": 1,
+      "description": "核心业务后端，基于FastAPI提供REST API和WebSocket端点，处理项目管理、环境配置、包管理、部署触发、历史查询等操作。",
       "responsibilities": [
-        "创建、查询、更新、删除项目",
-        "确保项目名称唯一",
-        "删除项目时级联删除所属环境与历史"
+        "用户认证与授权",
+        "项目、环境、包的CRUD操作",
+        "凭据加密存储（AES）",
+        "接收部署请求，创建部署记录并投递任务到Redis队列",
+        "回滚逻辑：验证历史并生成新回滚任务",
+        "WebSocket日志代理：订阅Redis Pub/Sub频道并转发给前端",
+        "文件上传处理"
+      ],
+      "source_requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
+        "REQ-005",
+        "REQ-006"
+      ],
+      "contracts": [
+        "CTR-001",
+        "CTR-002",
+        "CTR-003",
+        "CTR-004",
+        "CTR-005",
+        "CTR-006",
+        "CTR-007",
+        "CTR-008",
+        "CTR-009",
+        "CTR-010"
+      ],
+      "depends_on_components": [
+        "CMP-005",
+        "CMP-006"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
       ]
     },
     {
       "id": "CMP-004",
-      "name": "Environment Service",
+      "name": "部署执行 Worker",
       "type": "service",
-      "description": "环境配置模块，管理项目下的环境信息、SSH 认证凭据，提供连接测试功能。",
+      "status": "active",
+      "version": 1,
+      "description": "Celery Worker，从Redis队列获取部署任务，通过SSH执行远程部署操作，并将实时日志发布至Redis Pub/Sub。",
       "responsibilities": [
-        "添加、修改、删除环境",
-        "上传私钥并加密存储 (AES-256)",
-        "测试远程连接并返回详细结果",
-        "加密存储密码和 passphrase"
+        "消费部署/回滚任务",
+        "建立SSH连接（支持密码/私钥认证）",
+        "执行远程命令：创建目录、SFTP传输文件、解压、生成start.sh、更新软链接",
+        "执行环境自定义命令（部署前后）",
+        "将实时日志流发布到Redis Pub/Sub（任务ID频道）",
+        "更新数据库部署记录状态"
+      ],
+      "source_requirements": [
+        "REQ-004",
+        "REQ-005"
+      ],
+      "contracts": [],
+      "depends_on_components": [
+        "CMP-007"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
       ]
     },
     {
       "id": "CMP-005",
-      "name": "Deployment Service",
-      "type": "service",
-      "description": "部署核心服务，接收部署请求，创建部署记录，并将任务推送到消息队列；管理部署历史与回滚。",
+      "name": "PostgreSQL 数据库",
+      "type": "database",
+      "status": "active",
+      "version": 1,
+      "description": "关系数据库，存储项目、环境、部署包、部署记录等核心业务数据。",
       "responsibilities": [
-        "创建部署任务并保存到数据库",
-        "发布任务消息到队列",
-        "触发回滚流程",
-        "维护部署历史状态"
+        "持久化业务数据",
+        "支持事务与查询优化",
+        "提供数据完整性约束"
+      ],
+      "source_requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
+        "REQ-005",
+        "REQ-006"
+      ],
+      "contracts": [],
+      "depends_on_components": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
       ]
     },
     {
       "id": "CMP-006",
-      "name": "Log Service",
-      "type": "service",
-      "description": "实时日志服务，从消息队列消费 Worker 产生的日志事件，通过 WebSocket 推送给客户端。",
+      "name": "包文件存储",
+      "type": "infrastructure",
+      "status": "active",
+      "version": 1,
+      "description": "存储部署包文件，支持本地文件系统或对象存储（MinIO/S3），通过统一接口访问。",
       "responsibilities": [
-        "订阅日志 Topic",
-        "向关联的 WebSocket 连接推送日志",
-        "支持日志导出（可选）"
+        "保存上传的部署包",
+        "提供文件读取接口",
+        "文件删除",
+        "与数据库包记录关联"
+      ],
+      "source_requirements": [
+        "REQ-003",
+        "REQ-004"
+      ],
+      "contracts": [],
+      "depends_on_components": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
       ]
     },
     {
       "id": "CMP-007",
-      "name": "History Service",
-      "type": "service",
-      "description": "部署历史查询与回滚触发服务。",
-      "responsibilities": [
-        "按项目或环境查询部署历史列表",
-        "触发回滚（调用 Deployment Service）",
-        "清理旧版本（可选）"
-      ]
-    },
-    {
-      "id": "CMP-008",
-      "name": "Deployment Worker",
-      "type": "service",
-      "description": "独立的工作进程，消费部署任务，执行 SSH 连接、文件传输、脚本生成、软链接更新，并实时发送日志。",
-      "responsibilities": [
-        "从消息队列获取部署任务",
-        "通过 SFTP/SCP 上传文件",
-        "解压并放置到版本文件夹",
-        "生成 start.sh / stop.sh / restart.sh 并赋权",
-        "创建或更新 current 软链接",
-        "发送实时日志到 Log Service"
-      ]
-    },
-    {
-      "id": "CMP-009",
-      "name": "Database",
-      "type": "database",
-      "description": "PostgreSQL 数据库，存储项目、环境、部署历史、用户（未来）等数据。",
-      "responsibilities": [
-        "持久化所有业务数据",
-        "提供 ACID 事务支持",
-        "支持按项目隔离查询"
-      ]
-    },
-    {
-      "id": "CMP-010",
-      "name": "Cache",
+      "name": "SSH 连接模块",
       "type": "infrastructure",
-      "description": "Redis 实例，同时充当缓存、消息队列和日志广播通道。",
+      "status": "active",
+      "version": 1,
+      "description": "封装paramiko库，提供SSH连接管理、认证、SFTP传输和远程命令执行的实用工具层。",
       "responsibilities": [
-        "缓存会话或频繁查询数据",
-        "作为消息队列传输部署任务",
-        "作为 PUB/SUB 通道广播日志"
-      ]
-    },
-    {
-      "id": "CMP-011",
-      "name": "File Storage",
-      "type": "infrastructure",
-      "description": "本地文件系统目录，用于存储上传的部署包、私钥文件。",
-      "responsibilities": [
-        "保存用户上传的部署文件",
-        "保存加密后的私钥文件",
-        "提供文件读取给 Worker"
+        "管理SSH连接和连接池",
+        "支持密码和私钥认证",
+        "提供文件上传进度回调",
+        "远程命令执行并流式返回输出",
+        "连接测试"
+      ],
+      "source_requirements": [
+        "REQ-004",
+        "REQ-005"
+      ],
+      "contracts": [],
+      "depends_on_components": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
       ]
     }
   ],
   "contracts": [
     {
       "id": "CTR-001",
-      "interface": "创建项目",
-      "provider": "API Server",
-      "consumers": [
-        "Frontend App"
-      ],
-      "type": "REST",
-      "endpoint": "POST /api/projects",
-      "request": {
-        "path_params": [],
-        "query_params": [],
-        "body": {
-          "name": "string (required, unique)",
-          "description": "string"
-        }
-      },
-      "response": {
-        "status": 201,
-        "body": {
-          "id": "integer",
-          "name": "string",
-          "description": "string",
-          "created_at": "datetime"
-        }
-      },
-      "description": "创建一个新项目，项目名称必须唯一。"
-    },
-    {
-      "id": "CTR-002",
       "interface": "获取项目列表",
-      "provider": "API Server",
-      "consumers": [
-        "Frontend App"
-      ],
+      "provider_component_id": "CMP-003",
+      "provider": "AutoShip API 服务",
+      "consumers": ["AutoShip UI"],
       "type": "REST",
+      "status": "active",
+      "version": 1,
       "endpoint": "GET /api/projects",
       "request": {
         "path_params": [],
-        "query_params": [
-          "search (string, optional)"
-        ],
+        "query_params": [],
         "body": {}
       },
       "response": {
@@ -276,66 +376,144 @@
         "body": {
           "projects": [
             {
-              "id": "integer",
+              "id": "uuid",
               "name": "string",
               "description": "string",
-              "created_at": "datetime"
+              "created_at": "datetime",
+              "updated_at": "datetime"
             }
           ]
         }
       },
-      "description": "获取所有项目列表，支持按名称搜索。"
+      "errors": [
+        {
+          "status": 401,
+          "code": "UNAUTHORIZED",
+          "message": "未认证"
+        }
+      ],
+      "description": "返回当前用户有权访问的所有项目列表。",
+      "source_requirements": ["REQ-001", "REQ-006"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
     },
     {
-      "id": "CTR-003",
-      "interface": "创建环境",
-      "provider": "API Server",
-      "consumers": [
-        "Frontend App"
-      ],
+      "id": "CTR-002",
+      "interface": "创建项目",
+      "provider_component_id": "CMP-003",
+      "provider": "AutoShip API 服务",
+      "consumers": ["AutoShip UI"],
       "type": "REST",
-      "endpoint": "POST /api/projects/{project_id}/environments",
+      "status": "active",
+      "version": 1,
+      "endpoint": "POST /api/projects",
       "request": {
-        "path_params": [
-          "project_id (integer)"
-        ],
+        "path_params": [],
         "query_params": [],
         "body": {
-          "name": "string (required)",
-          "ip": "string",
-          "port": "integer",
-          "auth_type": "string enum['key', 'password']",
-          "username": "string",
-          "deploy_root": "string",
-          "passphrase": "string (optional)",
-          "password": "string (optional, sent as text, will be encrypted)",
-          "private_key": "file (optional, multipart/form-data)"
+          "name": "string (必填，唯一)",
+          "description": "string (可选)"
         }
       },
       "response": {
         "status": 201,
         "body": {
-          "id": "integer",
+          "id": "uuid",
           "name": "string",
-          "ip": "string",
-          "port": "integer"
+          "description": "string",
+          "created_at": "datetime",
+          "updated_at": "datetime"
         }
       },
-      "description": "在指定项目下创建新环境，私钥文件通过 multipart 上传，密码与 passphrase 加密存储。"
+      "errors": [
+        {
+          "status": 400,
+          "code": "VALIDATION_ERROR",
+          "message": "项目名称已存在或格式错误"
+        }
+      ],
+      "description": "创建一个新项目，名称全局唯一。",
+      "source_requirements": ["REQ-001"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-003",
+      "interface": "获取环境列表",
+      "provider_component_id": "CMP-003",
+      "provider": "AutoShip API 服务",
+      "consumers": ["AutoShip UI"],
+      "type": "REST",
+      "status": "active",
+      "version": 1,
+      "endpoint": "GET /api/projects/{project_id}/environments",
+      "request": {
+        "path_params": ["project_id (UUID)"],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "environments": [
+            {
+              "id": "uuid",
+              "name": "string",
+              "server_host": "string",
+              "server_port": "integer",
+              "auth_type": "password | private_key",
+              "auth_credential": "string (加密或占位符)",
+              "base_path": "string",
+              "auto_update_current": "boolean",
+              "custom_commands": "string (可选)",
+              "created_at": "datetime",
+              "updated_at": "datetime"
+            }
+          ]
+        }
+      },
+      "errors": [
+        {
+          "status": 404,
+          "code": "PROJECT_NOT_FOUND",
+          "message": "项目不存在"
+        }
+      ],
+      "description": "获取指定项目下的所有环境配置。",
+      "source_requirements": ["REQ-002"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
     },
     {
       "id": "CTR-004",
       "interface": "测试环境连接",
-      "provider": "API Server",
-      "consumers": [
-        "Frontend App"
-      ],
+      "provider_component_id": "CMP-003",
+      "provider": "AutoShip API 服务",
+      "consumers": ["AutoShip UI"],
       "type": "REST",
-      "endpoint": "POST /api/environments/{env_id}/test-connection",
+      "status": "active",
+      "version": 1,
+      "endpoint": "POST /api/environments/{id}/test",
       "request": {
-        "path_params": [
-          "env_id (integer)"
-        ],
+        "path_params": ["id (UUID)"],
         "query_params": [],
         "body": {}
       },
@@ -343,173 +521,448 @@
         "status": 200,
         "body": {
           "success": "boolean",
-          "message": "string (detailed log)"
+          "message": "string (成功或错误详情)"
         }
       },
-      "description": "使用环境中存储的凭据测试 SSH 连接是否可达。"
+      "errors": [
+        {
+          "status": 404,
+          "code": "ENVIRONMENT_NOT_FOUND",
+          "message": "环境不存在"
+        }
+      ],
+      "description": "使用已保存的凭据测试SSH连接，返回成功或具体错误信息。",
+      "source_requirements": ["REQ-002"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
     },
     {
       "id": "CTR-005",
-      "interface": "触发部署",
-      "provider": "API Server",
-      "consumers": [
-        "Frontend App"
-      ],
+      "interface": "上传部署包",
+      "provider_component_id": "CMP-003",
+      "provider": "AutoShip API 服务",
+      "consumers": ["AutoShip UI"],
       "type": "REST",
-      "endpoint": "POST /api/deploy",
+      "status": "active",
+      "version": 1,
+      "endpoint": "POST /api/projects/{project_id}/packages",
+      "request": {
+        "path_params": ["project_id (UUID)"],
+        "query_params": [],
+        "body": {
+          "file": "binary (multipart/form-data)",
+          "version": "string (必填，项目内唯一)",
+          "description": "string (可选)"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "uuid",
+          "project_id": "uuid",
+          "version": "string",
+          "description": "string",
+          "file_path": "string",
+          "file_size": "integer",
+          "uploaded_at": "datetime"
+        }
+      },
+      "errors": [
+        {
+          "status": 400,
+          "code": "VERSION_CONFLICT",
+          "message": "该项目下版本号已存在"
+        }
+      ],
+      "description": "上传部署包文件，并记录版本元数据。支持进度上报。",
+      "source_requirements": ["REQ-003"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-006",
+      "interface": "删除部署包",
+      "provider_component_id": "CMP-003",
+      "provider": "AutoShip API 服务",
+      "consumers": ["AutoShip UI"],
+      "type": "REST",
+      "status": "active",
+      "version": 1,
+      "endpoint": "DELETE /api/packages/{id}",
+      "request": {
+        "path_params": ["id (UUID)"],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 204,
+        "body": {}
+      },
+      "errors": [
+        {
+          "status": 404,
+          "code": "PACKAGE_NOT_FOUND",
+          "message": "部署包不存在"
+        }
+      ],
+      "description": "删除指定部署包及其文件，仅供管理员或包拥有者操作。",
+      "source_requirements": ["REQ-003"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-007",
+      "interface": "触发部署",
+      "provider_component_id": "CMP-003",
+      "provider": "AutoShip API 服务",
+      "consumers": ["AutoShip UI"],
+      "type": "REST",
+      "status": "active",
+      "version": 1,
+      "endpoint": "POST /api/deployments",
       "request": {
         "path_params": [],
         "query_params": [],
         "body": {
-          "project_id": "integer (form-data)",
-          "environment_id": "integer (form-data)",
-          "version_name": "string (optional, form-data)",
-          "file": "binary (multipart/form-data)"
+          "environment_id": "UUID (必填)",
+          "package_id": "UUID (必填)"
         }
       },
       "response": {
-        "status": 202,
+        "status": 201,
         "body": {
-          "task_id": "string (UUID)",
-          "status": "string 'pending'"
+          "id": "uuid",
+          "status": "pending",
+          "message": "部署任务已创建"
         }
       },
-      "description": "发起一次部署，上传部署文件并异步执行。"
+      "errors": [
+        {
+          "status": 404,
+          "code": "ENV_OR_PKG_NOT_FOUND",
+          "message": "环境或部署包不存在"
+        },
+        {
+          "status": 409,
+          "code": "DEPLOYMENT_IN_PROGRESS",
+          "message": "该环境已有正在执行的部署"
+        }
+      ],
+      "description": "创建部署任务并投递至队列，实时日志通过WebSocket获取。",
+      "source_requirements": ["REQ-004"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
     },
     {
-      "id": "CTR-006",
-      "interface": "部署日志 WebSocket",
-      "provider": "API Server",
-      "consumers": [
-        "Frontend App"
-      ],
-      "type": "WebSocket",
-      "endpoint": "ws://host/ws/logs/{task_id}?token=xxx",
+      "id": "CTR-008",
+      "interface": "获取部署历史",
+      "provider_component_id": "CMP-003",
+      "provider": "AutoShip API 服务",
+      "consumers": ["AutoShip UI"],
+      "type": "REST",
+      "status": "active",
+      "version": 1,
+      "endpoint": "GET /api/projects/{project_id}/deployments",
       "request": {
-        "path_params": [
-          "task_id (string)"
-        ],
-        "query_params": [
-          "token (JWT 认证令牌)"
-        ],
+        "path_params": ["project_id (UUID)"],
+        "query_params": ["environment_id (可选)", "status (可选)", "page (可选)", "size (可选)"],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "deployments": [
+            {
+              "id": "uuid",
+              "project_id": "uuid",
+              "environment_id": "uuid",
+              "package_id": "uuid",
+              "type": "deploy | rollback",
+              "status": "pending | running | success | failed",
+              "start_time": "datetime",
+              "end_time": "datetime (可选)",
+              "created_by": "uuid"
+            }
+          ],
+          "total": "integer"
+        }
+      },
+      "errors": [
+        {
+          "status": 404,
+          "code": "PROJECT_NOT_FOUND",
+          "message": "项目不存在"
+        }
+      ],
+      "description": "分页获取项目部署历史记录，支持按环境和状态筛选。",
+      "source_requirements": ["REQ-005"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-009",
+      "interface": "部署回滚",
+      "provider_component_id": "CMP-003",
+      "provider": "AutoShip API 服务",
+      "consumers": ["AutoShip UI"],
+      "type": "REST",
+      "status": "active",
+      "version": 1,
+      "endpoint": "POST /api/deployments/{id}/rollback",
+      "request": {
+        "path_params": ["id (UUID) 部署记录ID"],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "uuid (新回滚任务ID)",
+          "type": "rollback",
+          "status": "pending"
+        }
+      },
+      "errors": [
+        {
+          "status": 404,
+          "code": "DEPLOYMENT_NOT_FOUND",
+          "message": "部署记录不存在"
+        },
+        {
+          "status": 400,
+          "code": "ROLLBACK_FAILED",
+          "message": "仅成功的部署记录可回滚"
+        },
+        {
+          "status": 409,
+          "code": "REMOTE_DIR_MISSING",
+          "message": "远程版本目录不存在，无法回滚"
+        }
+      ],
+      "description": "基于历史成功部署发起回滚，生成新的回滚任务，仅切换软链接和执行重启命令。",
+      "source_requirements": ["REQ-005"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-010",
+      "interface": "部署日志 WebSocket",
+      "provider_component_id": "CMP-003",
+      "provider": "AutoShip API 服务",
+      "consumers": ["AutoShip UI"],
+      "type": "WebSocket",
+      "status": "active",
+      "version": 1,
+      "endpoint": "WS /ws/logs/{deployment_id}",
+      "request": {
+        "path_params": ["deployment_id (UUID)"],
+        "query_params": [],
         "body": {}
       },
       "response": {
         "status": 101,
-        "body": {
-          "message_stream": [
-            {
-              "timestamp": "string ISO8601",
-              "type": "string enum['stdout', 'stderr', 'system']",
-              "message": "string"
-            }
-          ]
-        }
+        "body": "文本帧流，每帧包含一行日志"
       },
-      "description": "前端通过 WebSocket 连接订阅指定任务的实时日志流。"
-    },
-    {
-      "id": "CTR-007",
-      "interface": "获取部署历史",
-      "provider": "API Server",
-      "consumers": [
-        "Frontend App"
+      "errors": [
+        {
+          "status": 404,
+          "code": "DEPLOYMENT_NOT_FOUND",
+          "message": "部署记录不存在"
+        },
+        {
+          "status": 403,
+          "code": "FORBIDDEN",
+          "message": "无权访问该部署日志"
+        }
       ],
-      "type": "REST",
-      "endpoint": "GET /api/deployments",
-      "request": {
-        "path_params": [],
-        "query_params": [
-          "project_id",
-          "environment_id",
-          "page",
-          "page_size"
-        ],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "items": [
-            {
-              "id": "integer",
-              "version": "string",
-              "environment_name": "string",
-              "status": "string",
-              "created_at": "datetime",
-              "is_active": "boolean"
-            }
-          ],
-          "page": "integer",
-          "total": "integer"
+      "description": "建立WebSocket连接，实时接收指定部署任务的日志输出。",
+      "source_requirements": ["REQ-004", "REQ-005"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
         }
-      },
-      "description": "分页查询部署历史记录。"
-    },
-    {
-      "id": "CTR-008",
-      "interface": "回滚版本",
-      "provider": "API Server",
-      "consumers": [
-        "Frontend App"
-      ],
-      "type": "REST",
-      "endpoint": "POST /api/deployments/{deploy_id}/rollback",
-      "request": {
-        "path_params": [
-          "deploy_id (integer)"
-        ],
-        "query_params": [],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "task_id": "string",
-          "message": "rollback initiated"
-        }
-      },
-      "description": "对指定的部署版本发起回滚操作，实际会创建新的回滚任务并由 Worker 执行。"
+      ]
     }
   ],
   "data_flow": [
     {
-      "name": "部署流程",
+      "name": "部署执行流程",
       "steps": [
-        "用户在前端选择项目、环境，上传部署文件，点击部署",
-        "前端调用 POST /api/deploy，API Server 接收请求",
-        "Deployment Service 创建部署记录（状态 pending），将任务消息（包含文件路径、环境配置）发布到 Redis 队列",
-        "Deployment Worker 从队列拉取任务，从 File Storage 读取部署文件",
-        "Worker 通过 SSH (SFTP/SCP) 连接到目标服务器，在 deploy_root 下创建版本文件夹并上传文件",
-        "Worker 解压文件（若为压缩包），生成 start.sh/stop.sh/restart.sh，并赋予可执行权限",
-        "Worker 更新或创建软链接 current 指向新版本文件夹",
-        "若配置了自动启动，Worker 执行 start.sh",
-        "Worker 实时发送日志（通过 Redis PUB/SUB 到 Log Service，再由 WebSocket 推送给前端）",
-        "部署完成后，Worker 更新部署记录状态为 success/failed",
-        "前端通过 WebSocket 收到完成通知，并刷新历史列表"
+        "用户在前端选择环境和包，点击部署",
+        "前端POST /api/deployments，携带environment_id和package_id",
+        "API服务验证数据，创建状态为pending的部署记录",
+        "API服务将部署任务消息（含环境配置、包路径等）投递至Redis队列",
+        "部署Worker从队列获取任务，更新部署记录为running",
+        "Worker通过Redis Pub/Sub发布初始日志，API服务WebSocket转发至前端",
+        "Worker建立SSH连接，在远程执行：创建versions/v{版本号}目录",
+        "Worker通过SFTP上传包文件，实时发布进度日志",
+        "Worker执行解压命令，在远程目录生成start.sh脚本",
+        "若环境配置启用auto_update_current，执行ln -sfn创建/更新软链接",
+        "若有自定义命令，执行部署前/后命令",
+        "Worker发布完成日志，更新部署记录状态为success/failed",
+        "前端通过WebSocket接收最终结果，界面更新"
       ]
     },
     {
       "name": "回滚流程",
       "steps": [
-        "用户在前端打开部署历史列表，选择一个历史版本，点击回滚",
-        "前端调用 POST /api/deployments/{id}/rollback",
-        "API Server 路由到 Deployment Service，后者创建回滚任务（类型标记为 rollback）并推送到消息队列",
-        "Deployment Worker 消费任务，通过 SSH 连接到目标服务器",
-        "Worker 修改 current 软链接指向目标版本文件夹",
-        "Worker 执行目标版本文件夹中的 restart.sh 或 start.sh 以重启服务",
-        "Worker 发送日志并更新部署历史记录，将当前活跃版本标记为目标版本",
-        "前端收到回滚完成通知，界面更新"
+        "用户查看部署历史，对某成功记录点击回滚",
+        "前端POST /api/deployments/{id}/rollback",
+        "API服务验证原部署记录存在且成功，创建新的回滚部署记录（状态pending）",
+        "API投递回滚任务到Redis队列，携带原部署远程路径信息",
+        "Worker获取任务，更新记录为running，开始日志推送",
+        "Worker SSH连接服务器，验证目标版本目录存在",
+        "Worker执行ln -sfn将current指向目标版本目录",
+        "若有重启命令，执行重启",
+        "Worker完成任务，更新状态并推送完成日志"
       ]
     },
     {
-      "name": "项目切换数据加载",
+      "name": "项目切换数据刷新",
       "steps": [
-        "用户在前端顶部切换到另一个项目",
-        "前端发送 GET /api/projects/{new_project_id}/environments 获取环境列表",
-        "同时发送 GET /api/deployments?project_id={new_project_id} 获取关联的部署历史",
-        "前端更新环境选择器和历史记录视图，无需刷新页面"
+        "用户点击顶部项目选择器，切换至另一项目",
+        "前端更新全局状态（当前项目ID）",
+        "前端自动发送请求：GET /api/projects/{new_id}/environments",
+        "前端自动发送请求：GET /api/projects/{new_id}/packages",
+        "前端自动发送请求：GET /api/projects/{new_id}/deployments",
+        "API服务根据项目ID过滤数据返回",
+        "各个组件接收响应并更新视图，无需整页刷新"
       ]
     }
-  ]
-}
+  ],
+  "data_models": [
+    {
+      "name": "Project",
+      "fields": [
+        {"name": "id", "type": "UUID", "constraints": "PRIMARY KEY"},
+        {"name": "name", "type": "string", "constraints": "UNIQUE, NOT NULL"},
+        {"name": "description", "type": "text", "constraints": "NULLABLE"},
+        {"name": "created_at", "type": "datetime", "constraints": "NOT NULL"},
+        {"name": "updated_at", "type": "datetime", "constraints": "NOT NULL"}
+      ],
+      "description": "项目信息表"
+    },
+    {
+      "name": "Environment",
+      "fields": [
+        {"name": "id", "type": "UUID", "constraints": "PRIMARY KEY"},
+        {"name": "project_id", "type": "UUID", "constraints": "FOREIGN KEY (Project.id) ON DELETE CASCADE"},
+        {"name": "name", "type": "string", "constraints": "NOT NULL, UNIQUE(project_id, name)"},
+        {"name": "server_host", "type": "string", "constraints": "NOT NULL"},
+        {"name": "server_port", "type": "integer", "constraints": "NOT NULL DEFAULT 22"},
+        {"name": "auth_type", "type": "enum('password','private_key')", "constraints": "NOT NULL"},
+        {"name": "auth_credential", "type": "text", "constraints": "NOT NULL (加密存储)"},
+        {"name": "base_path", "type": "string", "constraints": "NOT NULL"},
+        {"name": "auto_update_current", "type": "boolean", "constraints": "NOT NULL DEFAULT false"},
+        {"name": "custom_commands", "type": "text", "constraints": "NULLABLE"},
+        {"name": "created_at", "type": "datetime", "constraints": "NOT NULL"},
+        {"name": "updated_at", "type": "datetime", "constraints": "NOT NULL"}
+      ],
+      "description": "部署环境配置表"
+    },
+    {
+      "name": "Package",
+      "fields": [
+        {"name": "id", "type": "UUID", "constraints": "PRIMARY KEY"},
+        {"name": "project_id", "type": "UUID", "constraints": "FOREIGN KEY (Project.id) ON DELETE CASCADE"},
+        {"name": "version", "type": "string", "constraints": "NOT NULL, UNIQUE(project_id, version)"},
+        {"name": "description", "type": "text", "constraints": "NULLABLE"},
+        {"name": "file_path", "type": "string", "constraints": "NOT NULL"},
+        {"name": "file_size", "type": "bigint", "constraints": "NOT NULL"},
+        {"name": "uploaded_at", "type": "datetime", "constraints": "NOT NULL"}
+      ],
+      "description": "部署包元数据表"
+    },
+    {
+      "name": "Deployment",
+      "fields": [
+        {"name": "id", "type": "UUID", "constraints": "PRIMARY KEY"},
+        {"name": "project_id", "type": "UUID", "constraints": "FOREIGN KEY (Project.id) ON DELETE CASCADE"},
+        {"name": "environment_id", "type": "UUID", "constraints": "FOREIGN KEY (Environment.id) ON DELETE SET NULL"},
+        {"name": "package_id", "type": "UUID", "constraints": "FOREIGN KEY (Package.id) ON DELETE SET NULL"},
+        {"name": "type", "type": "enum('deploy','rollback')", "constraints": "NOT NULL"},
+        {"name": "status", "type": "enum('pending','running','success','failed')", "constraints": "NOT NULL"},
+        {"name": "log", "type": "text", "constraints": "NULLABLE (最终日志聚合)"},
+        {"name": "remote_path", "type": "string", "constraints": "NULLABLE"},
+        {"name": "start_time", "type": "datetime", "constraints": "NULLABLE"},
+        {"name": "end_time", "type": "datetime", "constraints": "NULLABLE"},
+        {"name": "created_by", "type": "UUID", "constraints": "FOREIGN KEY (User.id)"},
+        {"name": "created_at", "type": "datetime", "constraints": "NOT NULL"}
+      ],
+      "description": "部署记录表"
+    },
+    {
+      "name": "User",
+      "fields": [
+        {"name": "id", "type": "UUID", "constraints": "PRIMARY KEY"},
+        {"name": "username", "type": "string", "constraints": "UNIQUE, NOT NULL"},
+        {"name": "password_hash", "type": "string", "constraints": "NOT NULL"},
+        {"name": "role", "type": "string", "constraints": "DEFAULT 'developer'"}
+      ],
+      "description": "用户表（简化认证）"
+    }
+  ],
+  "requirement_traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "coverage": "full",
+      "components": ["CMP-001", "CMP-002", "CMP-003", "CMP-005"],
+      "contracts": ["CTR-001", "CTR-002"],
+      "data_models": ["Project"],
+      "notes": "项目管理CURD由API服务实现，前端界面配合。全局项目选择器状态管理满足多项目切换。"
+    },
+    {
+      "requirement_id": "REQ-002",
+      "coverage": "full",
+      "components": ["CMP-001", "CMP-002", "CMP-003", "CMP-005", "CMP-007"],
+      "contracts": ["CTR-003", "CTR-004"],
+      "data_models": ["Environment"],
+      "notes": "环境CRUD、测试连接均覆盖，凭据加密存储。私钥上传和粘贴功能在前端实现。"
+    },
+    {
+      "requirement_id": "REQ-003",
+      "coverage": "full",
+      "components": ["CMP-001", "CMP-002", "CMP-003", "CMP-005", "CMP-006"],
+      "contracts": ["CTR-005", "CTR-006"],
+      "data_models": ["Package"],
+      "notes": "包上传、列表、删除功能均已设计。上传进度由前端轮询或分块上报实现。"
+    }
