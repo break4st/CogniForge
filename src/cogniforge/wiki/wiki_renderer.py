@@ -1155,6 +1155,8 @@ def render_file(json_path: Path, wiki_root: Path | None = None) -> Optional[Path
     elif path_str.endswith("docs/prd.json"):
         # docs/prd.json lives outside .cogniforge/wiki/ — render into .cogniforge/html/prd/
         html_dir = json_path.parent.parent / ".cogniforge" / "html" / "prd"
+    elif path_str.endswith("docs/sad.json"):
+        html_dir = json_path.parent.parent / ".cogniforge" / "html" / "sad"
     else:
         html_dir = json_path.parent.parent / "html"
     html_dir.mkdir(parents=True, exist_ok=True)
@@ -1393,6 +1395,507 @@ def _render_dataflow_section(data) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Enhanced component card (SAD)
+# ---------------------------------------------------------------------------
+
+def _render_component_card(c: dict, type_icons: dict) -> str:
+    """Render a single enhanced component card with status/version/traceability/history."""
+    ctype = c.get("type", "")
+    icon = type_icons.get(ctype, "📦")
+    cid = _esc(c.get("id", ""))
+    name = _esc(c.get("name", ""))
+    desc = _esc(c.get("description", ""))
+    status = c.get("status", "active")
+    version = c.get("version", 1)
+
+    # Status badge
+    status_colors = {
+        "draft": ("rgba(107,115,148,0.15)", "#9ca3af"),
+        "active": ("rgba(52,211,153,0.15)", "#6ee7b7"),
+        "changed": ("rgba(251,191,36,0.12)", "#fcd34d"),
+        "deprecated": ("rgba(248,113,113,0.12)", "#fca5a5"),
+        "removed": ("rgba(248,113,113,0.08)", "#6b7394"),
+    }
+    sc, st = status_colors.get(status, status_colors["draft"])
+    status_badge = (
+        f'<span style="font-size:0.72em;padding:2px 10px;border-radius:10px;'
+        f'background:{sc};color:{st};margin-left:8px;">{_esc(status)}</span>'
+    )
+
+    items_html = "".join(f"<li>{_esc(r)}</li>" for r in c.get("responsibilities", []))
+
+    # Source requirements
+    src_reqs = c.get("source_requirements", [])
+    src_html = ""
+    if src_reqs:
+        tags = " ".join(
+            f'<span class="cn-tag prop">{_esc(r)}</span>' for r in src_reqs
+        )
+        src_html = (
+            f'<div style="margin-top:6px;font-size:0.82em;color:var(--c-muted)">'
+            f'关联需求: {tags}</div>'
+        )
+
+    # Depends on
+    deps = c.get("depends_on_components", [])
+    dep_html = ""
+    if deps:
+        tags = " ".join(
+            f'<span class="cc-consumer">{_esc(d)}</span>' for d in deps
+        )
+        dep_html = (
+            f'<div style="margin-top:4px;font-size:0.82em;color:var(--c-muted)">'
+            f'依赖组件: {tags}</div>'
+        )
+
+    # Contracts
+    comp_ctrs = c.get("contracts", [])
+    ctr_html = ""
+    if comp_ctrs:
+        tags = " ".join(
+            f'<span style="font-family:monospace;font-size:0.82em;color:var(--c-accent);'
+            f'background:rgba(91,141,239,0.08);padding:1px 6px;border-radius:4px;margin:1px">'
+            f'{_esc(ct)}</span>' for ct in comp_ctrs
+        )
+        ctr_html = (
+            f'<div style="margin-top:4px;font-size:0.82em;color:var(--c-muted)">'
+            f'提供契约: {tags}</div>'
+        )
+
+    # Change history
+    ch_html = ""
+    ch = c.get("change_history", [])
+    if ch:
+        ch_rows = []
+        for h in ch[-3:]:
+            h_ver = h.get("version", "?")
+            h_type = _esc(h.get("change_type", ""))
+            h_summary = _esc(h.get("summary", ""))
+            ch_rows.append(
+                f'<tr>'
+                f'<td style="color:var(--c-muted);white-space:nowrap;">v{h_ver}</td>'
+                f'<td style="color:var(--c-dim);white-space:nowrap;">{h_type}</td>'
+                f'<td>{h_summary}</td>'
+                f'</tr>'
+            )
+        ch_html = (
+            '<details style="margin-top:6px;">'
+            '<summary style="color:var(--c-muted);cursor:pointer;font-size:0.82em;">'
+            '变更历史</summary>'
+            '<table style="width:100%;font-size:0.8em;margin-top:4px;">'
+            + "".join(ch_rows) +
+            '</table></details>'
+        )
+
+    return (
+        f'<div class="comp-item">\n'
+        f'  <h3>{icon} {name}'
+        f'    <span style="font-family:monospace;font-size:0.8em;'
+        f'color:var(--c-muted);margin-left:6px;">{cid}</span>'
+        f'    {status_badge}'
+        f'    <span style="font-size:0.75em;color:var(--c-muted);float:right;">v{version}</span>'
+        f'  </h3>\n'
+        f'  <div class="comp-type">{_esc(ctype)}</div>\n'
+        f'  <p>{desc}</p>\n'
+        f'  {src_html}\n'
+        f'  {dep_html}\n'
+        f'  {ctr_html}\n'
+        f'  <ul class="comp-resp">{items_html}</ul>\n'
+        f'  {ch_html}\n'
+        f'</div>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Enhanced contracts section (SAD)
+# ---------------------------------------------------------------------------
+
+def _render_contracts_section_enhanced(contracts: list) -> str:
+    """Render contracts grouped by provider with enhanced fields."""
+    if not contracts:
+        return ""
+
+    from collections import OrderedDict
+    groups: dict[str, list] = OrderedDict()
+    for c in contracts:
+        provider = c.get("provider", "Other")
+        groups.setdefault(provider, []).append(c)
+
+    parts = []
+    for provider, items in groups.items():
+        cards = []
+        for c in items:
+            ctype = c.get("type", "REST")
+            endpoint = c.get("endpoint", "")
+            method = ""
+            ep_path = endpoint
+            parts_ep = endpoint.split(" ", 1)
+            if len(parts_ep) == 2 and parts_ep[0] in ("GET", "POST", "PUT", "DELETE", "PATCH"):
+                method = parts_ep[0]
+                ep_path = parts_ep[1]
+            elif ctype in ("MQ", "WebSocket", "SSE", "Event", "CLI", "InternalFunction"):
+                method = ctype
+
+            # Status badge
+            status = c.get("status", "active")
+            status_colors = {
+                "draft": ("rgba(107,115,148,0.15)", "#9ca3af"),
+                "active": ("rgba(52,211,153,0.15)", "#6ee7b7"),
+                "changed": ("rgba(251,191,36,0.12)", "#fcd34d"),
+                "deprecated": ("rgba(248,113,113,0.12)", "#fca5a5"),
+                "removed": ("rgba(248,113,113,0.08)", "#6b7394"),
+            }
+            sc, st = status_colors.get(status, status_colors["draft"])
+            status_badge = (
+                f'<span style="font-size:0.72em;padding:2px 10px;border-radius:10px;'
+                f'background:{sc};color:{st};margin-left:6px;">{_esc(status)}</span>'
+            )
+
+            # Provider component ID
+            pid = c.get("provider_component_id", "")
+            pid_html = ""
+            if pid:
+                pid_html = (
+                    f'<span style="font-family:monospace;font-size:0.78em;color:var(--c-muted);'
+                    f'margin-left:4px;">[{_esc(pid)}]</span>'
+                )
+
+            version = c.get("version", 1)
+            consumers = c.get("consumers", [])
+            consumers_html = " ".join(
+                f'<span class="cc-consumer">{_esc(x)}</span>' for x in consumers
+            )
+
+            # Request body table
+            req_body = c.get("request", {}).get("body", {})
+            req_html = ""
+            if isinstance(req_body, dict) and req_body:
+                rows = ""
+                for k, v in req_body.items():
+                    rows += (
+                        f'<tr><td>{_esc(k)}</td>'
+                        f'<td class="field-type">{_esc(v)}</td></tr>'
+                    )
+                req_html = (
+                    '<div class="body-label">Request</div>'
+                    '<table class="body-table"><thead><tr>'
+                    '<th>字段</th><th>类型</th></tr></thead>'
+                    f'<tbody>{rows}</tbody></table>'
+                )
+
+            # Response body table
+            resp_body = c.get("response", {}).get("body", {})
+            resp_html = ""
+            if isinstance(resp_body, dict) and resp_body:
+                rows = ""
+                for k, v in resp_body.items():
+                    rows += (
+                        f'<tr><td>{_esc(k)}</td>'
+                        f'<td class="field-type">{_esc(v)}</td></tr>'
+                    )
+                resp_html = (
+                    '<div class="body-label">Response</div>'
+                    '<table class="body-table"><thead><tr>'
+                    '<th>字段</th><th>类型</th></tr></thead>'
+                    f'<tbody>{rows}</tbody></table>'
+                )
+
+            # Errors table
+            errors = c.get("errors", [])
+            err_html = ""
+            if errors:
+                err_rows = ""
+                for e in errors:
+                    err_rows += (
+                        f'<tr><td style="font-family:monospace">{_esc(str(e.get("status","")))}</td>'
+                        f'<td style="font-family:monospace;color:var(--c-red)">{_esc(e.get("code",""))}</td>'
+                        f'<td style="font-size:0.85em">{_esc(e.get("message",""))}</td></tr>'
+                    )
+                err_html = (
+                    '<div class="body-label">错误码</div>'
+                    '<table class="body-table"><thead><tr><th>状态</th><th>Code</th><th>说明</th></tr></thead>'
+                    f'<tbody>{err_rows}</tbody></table>'
+                )
+
+            # Source requirements
+            src_reqs = c.get("source_requirements", [])
+            src_html = ""
+            if src_reqs:
+                tags = " ".join(
+                    f'<span class="cn-tag prop">{_esc(r)}</span>' for r in src_reqs
+                )
+                src_html = (
+                    f'<div style="margin-top:4px;font-size:0.8em;color:var(--c-muted)">'
+                    f'关联需求: {tags}</div>'
+                )
+
+            # Change history
+            ch_html = ""
+            ch = c.get("change_history", [])
+            if ch:
+                ch_rows = []
+                for h in ch[-3:]:
+                    h_ver = h.get("version", "?")
+                    h_type = _esc(h.get("change_type", ""))
+                    h_summary = _esc(h.get("summary", ""))
+                    ch_rows.append(
+                        f'<tr>'
+                        f'<td style="color:var(--c-muted);white-space:nowrap;">v{h_ver}</td>'
+                        f'<td style="color:var(--c-dim);white-space:nowrap;">{h_type}</td>'
+                        f'<td>{h_summary}</td>'
+                        f'</tr>'
+                    )
+                ch_html = (
+                    '<details style="margin-top:6px;">'
+                    '<summary style="color:var(--c-muted);cursor:pointer;font-size:0.82em;">'
+                    '变更历史</summary>'
+                    '<table style="width:100%;font-size:0.8em;margin-top:4px;">'
+                    + "".join(ch_rows) +
+                    '</table></details>'
+                )
+
+            method_cls = method.lower() if method else ""
+            cards.append(
+                '<div class="contract-card">'
+                '<div class="cc-head">'
+                + (f'<span class="method-badge {method_cls}">{_esc(method)}</span>' if method else "")
+                + f'<span class="cc-endpoint">{_esc(ep_path)}</span>'
+                + f'<span class="cc-type-tag">{_esc(ctype)}</span>'
+                + f'<span class="cc-name">{_esc(c.get("interface", ""))}</span>'
+                + f'{pid_html}{status_badge}'
+                + f'<span style="font-size:0.75em;color:var(--c-muted);margin-left:auto;">v{version}</span>'
+                '</div>'
+                f'<div class="cc-desc">{_esc(c.get("description", ""))}</div>'
+                + (f'<div class="cc-meta">→ {consumers_html}</div>' if consumers_html else "")
+                + req_html + resp_html + err_html + src_html + ch_html
+                + '</div>'
+            )
+
+        parts.append(
+            '<details class="contract-group" open>'
+            f'<summary>{_esc(provider)} <span class="cg-count">{len(items)}</span></summary>'
+            f'{"".join(cards)}'
+            '</details>'
+        )
+
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Data models section (SAD)
+# ---------------------------------------------------------------------------
+
+def _render_sad_data_models(models: list) -> str:
+    """Render SAD-level data models."""
+    if not models:
+        return "<p>暂无数据模型</p>"
+    cards = []
+    for dm in models:
+        rows = ""
+        for f in dm.get("fields", []):
+            required = f.get("required", False)
+            req_mark = ' <span style="color:var(--c-red);font-size:0.75em">*</span>' if required else ""
+            rows += (
+                f"<tr><td>{_esc(f.get('name',''))}{req_mark}</td>"
+                f"<td class=\"field-type\">{_esc(f.get('type',''))}</td>"
+                f"<td>{_esc(f.get('description',''))}</td></tr>"
+            )
+        src_reqs = dm.get("source_requirements", [])
+        src_html = ""
+        if src_reqs:
+            tags = " ".join(
+                f'<span class="cn-tag prop">{_esc(r)}</span>' for r in src_reqs
+            )
+            src_html = (
+                f'<div style="margin-top:4px;font-size:0.8em;color:var(--c-muted)">'
+                f'关联需求: {tags}</div>'
+            )
+        cards.append(
+            f'<div class="contract-card" style="border-top:none">'
+            f'<h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">'
+            f'🗄️ {_esc(dm.get("name",""))}'
+            f'<span style="font-family:monospace;font-size:0.8em;color:var(--c-muted);margin-left:6px">'
+            f'{_esc(dm.get("id",""))}</span></h3>'
+            f'<p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">{_esc(dm.get("description",""))}</p>'
+            f'{src_html}'
+            f'<div class="body-label">字段</div>'
+            f'<table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table>'
+            f'</div>'
+        )
+    return "\n".join(cards)
+
+
+# ---------------------------------------------------------------------------
+# Requirement traceability section (SAD)
+# ---------------------------------------------------------------------------
+
+def _render_traceability_section(traces: list) -> str:
+    """Render requirement traceability matrix."""
+    if not traces:
+        return "<p>暂无需求追溯</p>"
+    coverage_colors = {
+        "full": ("rgba(52,211,153,0.15)", "#6ee7b7"),
+        "partial": ("rgba(251,191,36,0.12)", "#fcd34d"),
+        "none": ("rgba(248,113,113,0.12)", "#fca5a5"),
+        "blocked": ("rgba(107,115,148,0.15)", "#9ca3af"),
+    }
+    rows = []
+    for t in traces:
+        rid = _esc(t.get("requirement_id", ""))
+        cov = t.get("coverage", "none")
+        cov_bg, cov_color = coverage_colors.get(cov, coverage_colors["none"])
+        cov_badge = (
+            f'<span style="font-size:0.8em;padding:2px 10px;border-radius:10px;'
+            f'background:{cov_bg};color:{cov_color};">{_esc(cov)}</span>'
+        )
+        comps = " ".join(
+            f'<span class="cn-tag prop">{_esc(c)}</span>'
+            for c in t.get("components", [])
+        )
+        ctrs = " ".join(
+            f'<span style="font-family:monospace;font-size:0.8em;color:var(--c-accent)">{_esc(ct)}</span>'
+            for ct in t.get("contracts", [])
+        )
+        dms = " ".join(
+            f'<span style="font-family:monospace;font-size:0.8em;color:var(--c-accent2)">{_esc(d)}</span>'
+            for d in t.get("data_models", [])
+        )
+        notes = _esc(t.get("notes", ""))
+        rows.append(
+            f'<tr>'
+            f'<td style="font-family:monospace;font-weight:600">{rid}</td>'
+            f'<td>{cov_badge}</td>'
+            f'<td>{comps or "—"}</td>'
+            f'<td>{ctrs or "—"}</td>'
+            f'<td>{dms or "—"}</td>'
+            f'<td style="font-size:0.85em;color:var(--c-muted)">{notes}</td>'
+            f'</tr>'
+        )
+    return (
+        '<table style="width:100%;border-collapse:collapse;font-size:0.88em">'
+        '<thead><tr>'
+        '<th>需求</th><th>覆盖</th><th>组件</th><th>接口</th><th>数据模型</th><th>备注</th>'
+        '</tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody>'
+        '</table>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Architecture decisions section (SAD)
+# ---------------------------------------------------------------------------
+
+def _render_adr_list(adrs: list) -> str:
+    """Render architecture decision records."""
+    if not adrs:
+        return "<p>暂无架构决策</p>"
+    schemes = [
+        ("rgba(52,211,153,0.15)", "var(--c-green)"),
+        ("rgba(91,141,239,0.15)", "var(--c-accent)"),
+        ("rgba(251,191,36,0.12)", "var(--c-amber)"),
+        ("rgba(124,111,247,0.15)", "var(--c-accent2)"),
+    ]
+    cards = []
+    for idx, adr in enumerate(adrs):
+        adr_id = _esc(adr.get("id", ""))
+        title = _esc(adr.get("title", ""))
+        decision = _esc(adr.get("decision", ""))
+        reason = _esc(adr.get("reason", ""))
+        impacts = adr.get("impacts", [])
+        bg, color = schemes[idx % len(schemes)]
+        imp_html = ""
+        if impacts:
+            tags = " ".join(
+                f'<span class="cn-tag prop">{_esc(imp)}</span>' for imp in impacts
+            )
+            imp_html = f'<div style="margin-top:8px"><strong style="font-size:0.82em;color:var(--c-muted)">影响范围: </strong>{tags}</div>'
+        cards.append(
+            '<div class="flow-card">'
+            '<div class="flow-card-header">'
+            f'<div class="flow-num" style="background:{bg};color:{color}">{idx + 1}</div>'
+            f'<div class="flow-name">{adr_id}: {title}</div>'
+            '</div>'
+            f'<p style="font-size:0.88em;color:var(--c-text);margin-bottom:6px"><strong>决策:</strong> {decision}</p>'
+            f'<p style="font-size:0.85em;color:var(--c-muted)"><strong>原因:</strong> {reason}</p>'
+            f'{imp_html}'
+            '</div>'
+        )
+    return f'<div class="flow-cards">{"".join(cards)}</div>'
+
+
+# ---------------------------------------------------------------------------
+# Risks section (SAD)
+# ---------------------------------------------------------------------------
+
+def _render_risks_section(risks: list) -> str:
+    """Render technical risks table."""
+    if not risks:
+        return "<p>暂无技术风险</p>"
+    level_colors = {
+        "高": ("rgba(248,113,113,0.15)", "#fca5a5"),
+        "中": ("rgba(251,191,36,0.12)", "#fcd34d"),
+        "低": ("rgba(107,115,148,0.15)", "#9ca3af"),
+    }
+    rows = []
+    for r in risks:
+        rid = _esc(r.get("id", ""))
+        desc = _esc(r.get("description", ""))
+        level = r.get("level", "中")
+        lv_bg, lv_color = level_colors.get(level, level_colors["中"])
+        level_badge = (
+            f'<span style="font-size:0.82em;padding:2px 10px;border-radius:10px;'
+            f'background:{lv_bg};color:{lv_color};font-weight:600;">{_esc(level)}</span>'
+        )
+        mitigation = _esc(r.get("mitigation", ""))
+        rows.append(
+            f'<tr>'
+            f'<td style="font-family:monospace">{rid}</td>'
+            f'<td>{desc}</td>'
+            f'<td>{level_badge}</td>'
+            f'<td style="font-size:0.88em">{mitigation}</td>'
+            f'</tr>'
+        )
+    return (
+        '<table style="width:100%;border-collapse:collapse;font-size:0.9em">'
+        '<thead><tr>'
+        '<th>ID</th><th>描述</th><th>等级</th><th>缓解措施</th>'
+        '</tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody>'
+        '</table>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Open questions section (SAD)
+# ---------------------------------------------------------------------------
+
+def _render_open_questions_section(questions: list) -> str:
+    """Render open architecture questions."""
+    if not questions:
+        return "<p>暂无待澄清问题</p>"
+    items = []
+    for q in questions:
+        qid = _esc(q.get("id", ""))
+        question = _esc(q.get("question", ""))
+        status = q.get("status", "open")
+        status_color = "var(--c-amber)" if status == "open" else "var(--c-green)"
+        status_bg = "rgba(251,191,36,0.1)" if status == "open" else "rgba(52,211,153,0.1)"
+        status_badge = (
+            f'<span style="font-size:0.75em;padding:2px 10px;border-radius:10px;'
+            f'background:{status_bg};color:{status_color};margin-left:8px;">{_esc(status)}</span>'
+        )
+        items.append(
+            f'<div class="req-item">'
+            f'<h3><span style="font-family:monospace;font-size:0.85em;color:var(--c-muted)">{qid}</span>'
+            f'{status_badge}</h3>'
+            f'<p>{question}</p>'
+            f'</div>'
+        )
+    return "\n".join(items)
+
+
+# ---------------------------------------------------------------------------
 # Sidebar-aware page wrappers
 # ---------------------------------------------------------------------------
 
@@ -1573,8 +2076,9 @@ def _render_sad(d: dict) -> str:
     doc_id = m.get("doc_id", "")
     comps = d.get("components", [])
     contracts = d.get("contracts", [])
+    arch_data = d.get("architecture", "")
 
-    # Build section list for sidebar (topology merged into architecture)
+    # Build section list for sidebar
     sections = [
         ("overview", "📄", "系统概述"),
         ("architecture", "🏗️", "架构设计"),
@@ -1586,19 +2090,42 @@ def _render_sad(d: dict) -> str:
         sections.append(("contracts", "🔗", f"接口契约 ({len(contracts)})"))
     if d.get("data_flow"):
         sections.append(("dataflow", "📊", "数据流"))
+    if d.get("data_models"):
+        sections.append(("models", "🗄️", f"数据模型 ({len(d['data_models'])})"))
+    if d.get("requirement_traceability"):
+        sections.append(("traceability", "🔍", "需求追溯"))
+    if d.get("architecture_decisions"):
+        sections.append(("decisions", "📋", f"架构决策 ({len(d['architecture_decisions'])})"))
+    if d.get("risks"):
+        sections.append(("risks", "⚠️", f"技术风险 ({len(d['risks'])})"))
+    if d.get("open_questions"):
+        sections.append(("questions", "❓", "待澄清问题"))
 
     parts = [_page_start_sidebar(
         title, doc_id, "系统架构文档",
         m.get("created", ""), m.get("author", "architect_agent"),
         sections,
     )]
+
+    # Version + source_prd info line
+    version = m.get("version", 1)
+    sp = d.get("source_prd", {})
+    meta_extra = f'版本 v{version}'
+    if sp:
+        prd_id = _esc(sp.get("doc_id", ""))
+        prd_ver = sp.get("version", "?")
+        pm_turn = _esc(sp.get("last_pm_turn_id", ""))
+        meta_extra += f' &middot; 源自 PRD: {prd_id} v{prd_ver}'
+        if pm_turn:
+            meta_extra += f' ({pm_turn})'
+    parts.append(f'<div class="meta">{meta_extra}</div>')
+
     overview_text = d.get("system_overview", "")
     parts.append(_section_header("📄", "系统概述", "rgba(124,111,247,0.12)", "overview"))
     parts.append(_render_overview_section(overview_text))
     parts.append(_SECTION_FOOT)
 
-    # Architecture → includes topology layers + protocols
-    arch_data = d.get("architecture", "")
+    # Architecture
     parts.append(_section_header("🏗️", "架构设计", "rgba(91,141,239,0.12)", "architecture"))
     parts.append(_render_architecture_section(arch_data, comps))
     parts.append(_SECTION_FOOT)
@@ -1609,17 +2136,15 @@ def _render_sad(d: dict) -> str:
         parts.append(_render_techstack_section(d["tech_stack"]))
         parts.append(_SECTION_FOOT)
 
-    # Components → grouped by architecture layers
+    # Components — enhanced with status/version/source_requirements/change_history
     parts.append(_section_header("🧩", f"组件设计 ({len(comps)})", "rgba(34,211,238,0.12)", "components"))
     if comps:
-        # Build layer lookup from architecture data
         layer_for: dict[str, str] = {}
         if isinstance(arch_data, dict):
             for layer in arch_data.get("layers", []):
                 for cname in layer.get("components", []):
                     layer_for[cname] = layer.get("name", "")
 
-        # Group components by layer
         grouped_comps: dict[str, list] = {}
         unlayered: list = []
         for c in comps:
@@ -1630,60 +2155,73 @@ def _render_sad(d: dict) -> str:
             else:
                 unlayered.append(c)
 
-        # Render groups (preserve layer order from architecture)
         type_icons = {
-            "frontend": "🖥️", "gateway": "🔀", "service": "⚙️",
-            "database": "🗄️", "infrastructure": "⚡",
+            "frontend": "🖥️", "backend": "⚙️", "gateway": "🔀", "service": "⚙️",
+            "database": "🗄️", "infrastructure": "⚡", "integration": "🔌", "security": "🔐",
         }
-        layer_order = list(dict.fromkeys(layer_for.values()))  # unique, insertion order
+        layer_order = list(dict.fromkeys(layer_for.values()))
         for lname in layer_order:
             items = grouped_comps.get(lname, [])
             if not items:
                 continue
-            cards = []
-            for c in items:
-                items_html = "".join(f"<li>{_esc(r)}</li>" for r in c.get("responsibilities", []))
-                ctype = c.get("type", "")
-                icon = type_icons.get(ctype, "📦")
-                cards.append(
-                    f'<div class="comp-item">\n'
-                    f'  <h3>{icon} {_esc(c.get("name", ""))}</h3>\n'
-                    f'  <div class="comp-type">{_esc(ctype)}</div>\n'
-                    f'  <p>{_esc(c.get("description", ""))}</p>\n'
-                    f'  <ul class="comp-resp">{items_html}</ul>\n'
-                    f'</div>'
-                )
-            if cards:
-                parts.append(
-                    '<details class="contract-group" open>'
-                    f'<summary>{_esc(lname)} <span class="cg-count">{len(cards)}</span></summary>'
-                    f'{"".join(cards)}'
-                    '</details>'
-                )
-
-        # Any components not in any layer
-        for c in unlayered:
-            items_html = "".join(f"<li>{_esc(r)}</li>" for r in c.get("responsibilities", []))
-            ctype = c.get("type", "")
-            icon = type_icons.get(ctype, "📦")
+            cards = [_render_component_card(c, type_icons) for c in items]
             parts.append(
-                f'<div class="comp-item">\n'
-                f'  <h3>{icon} {_esc(c.get("name", ""))}</h3>\n'
-                f'  <div class="comp-type">{_esc(ctype)}</div>\n'
-                f'  <p>{_esc(c.get("description", ""))}</p>\n'
-                f'  <ul class="comp-resp">{items_html}</ul>\n'
-                f'</div>'
+                '<details class="contract-group" open>'
+                f'<summary>{_esc(lname)} <span class="cg-count">{len(cards)}</span></summary>'
+                f'{"".join(cards)}'
+                '</details>'
             )
+        for c in unlayered:
+            parts.append(_render_component_card(c, type_icons))
     parts.append(_SECTION_FOOT)
 
+    # Contracts — enhanced with status/errors/source_requirements/change_history
     if contracts:
         parts.append(_section_header("🔗", f"接口契约 ({len(contracts)})", "rgba(52,211,153,0.12)", "contracts"))
-        parts.append(_render_contracts_section(contracts))
+        parts.append(_render_contracts_section_enhanced(contracts))
         parts.append(_SECTION_FOOT)
+
+    # Data Flow
     if d.get("data_flow"):
         parts.append(_section_header("📊", "数据流", "rgba(251,191,36,0.12)", "dataflow"))
         parts.append(_render_dataflow_section(d["data_flow"]))
         parts.append(_SECTION_FOOT)
+
+    # Data Models
+    if d.get("data_models"):
+        models = d["data_models"]
+        parts.append(_section_header("🗄️", f"数据模型 ({len(models)})", "rgba(91,141,239,0.12)", "models"))
+        parts.append(_render_sad_data_models(models))
+        parts.append(_SECTION_FOOT)
+
+    # Requirement Traceability
+    if d.get("requirement_traceability"):
+        traces = d["requirement_traceability"]
+        parts.append(_section_header("🔍", f"需求追溯 ({len(traces)})", "rgba(124,111,247,0.12)", "traceability"))
+        parts.append(_render_traceability_section(traces))
+        parts.append(_SECTION_FOOT)
+
+    # Architecture Decisions
+    if d.get("architecture_decisions"):
+        adrs = d["architecture_decisions"]
+        parts.append(_section_header("📋", f"架构决策 ({len(adrs)})", "rgba(251,191,36,0.12)", "decisions"))
+        parts.append(_render_adr_list(adrs))
+        parts.append(_SECTION_FOOT)
+
+    # Risks
+    if d.get("risks"):
+        risks = d["risks"]
+        parts.append(_section_header("⚠️", f"技术风险 ({len(risks)})", "rgba(248,113,113,0.12)", "risks"))
+        parts.append(_render_risks_section(risks))
+        parts.append(_SECTION_FOOT)
+
+    # Open Questions
+    if d.get("open_questions"):
+        questions = d["open_questions"]
+        parts.append(_section_header("❓", f"待澄清问题 ({len(questions)})", "rgba(107,115,148,0.12)", "questions"))
+        parts.append(_render_open_questions_section(questions))
+        parts.append(_SECTION_FOOT)
+
     parts.append(_PAGE_END_SIDEBAR)
     return "\n".join(parts)
 

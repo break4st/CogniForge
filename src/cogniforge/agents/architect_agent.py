@@ -1,9 +1,14 @@
-"""Architect Agent - System Architecture Agent"""
+"""Architect Agent — dual-JSON SAD creation and incremental architecture governance.
+
+Long-term state: ``docs/sad.json``
+Per-turn output: ``schemas/se-turn-result-schema.json``
+"""
 
 from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -13,130 +18,436 @@ from cogniforge.core.exceptions import AgentError
 
 
 class ArchitectAgent(BaseAgent):
-    """Architect Agent — uses LLM text mode to generate SAD JSON."""
+    """Architect Agent — initial SAD generation + patch-based incremental updates."""
+
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
 
     def run(self, input_data: dict) -> dict:
         try:
             if self.agent is None:
                 raise AgentError("ArchitectAgent requires an LLM agent")
 
+            cb = input_data.pop("_progress_callback", None)
+
+            # ── Interactive modification mode ──
+            pm_turn_result = input_data.get("pm_turn_result")
+            if pm_turn_result:
+                if cb:
+                    cb("Architect 正在分析 PM 变更...")
+                return self.modify_interactive(
+                    pm_turn_result=pm_turn_result,
+                    progress_callback=cb,
+                )
+
+            # ── Initial creation mode ──
             title = input_data.get("title", "System Architecture")
             system_overview = input_data.get("system_overview", "")
             architecture = input_data.get("architecture", "")
             components = input_data.get("components", [])
             data_flow = input_data.get("data_flow", "")
 
-            prd_context = self._load_latest_prd()
-
-            existing = self.wiki_system.list_documents(DocumentType.SAD)
-            seq = len(existing) + 1
-            doc_id = f"sad-{seq:03d}"
-            now = datetime.now().strftime("%Y-%m-%d %H:%M")
-            json_path = self.wiki_system.agent_path(DocumentType.SAD, doc_id=doc_id)
-
-            prompt = (
-                f"根据以下数据创建一份系统架构文档 (SAD)，返回合法 JSON 对象:\n\n"
-                f"JSON 结构如下（system_overview/architecture 为对象，data_flow 为数组）:\n\n"
-                f"{{\n"
-                f"  \"meta\": {{\"doc_id\": \"{doc_id}\", \"type\": \"sad\",\n"
-                f"    \"title\": \"{title}\", \"author\": \"architect_agent\", \"created\": \"{now}\", \"version\": 1}},\n"
-                f"  \"system_overview\": {{\n"
-                f"    \"description\": \"系统整体描述（string）\",\n"
-                f"    \"roles\": [\n"
-                f"      {{\"name\": \"角色名\",\n"
-                f"        \"permissions\": [\"权限1\", \"权限2\", ...]}}\n"
-                f"    ]\n"
-                f"  }},\n"
-                f"  \"architecture\": {{\n"
-                f"    \"style\": \"架构风格（如 微服务架构）\",\n"
-                f"    \"description\": \"架构设计描述（string）\",\n"
-                f"    \"layers\": [\n"
-                f"      {{\"name\": \"层名（如 接入层/网关层/服务层/数据层）\",\n"
-                f"        \"components\": [\"该层包含的组件名称\", ...]}}\n"
-                f"    ],\n"
-                f"    \"connections\": [\n"
-                f"      {{\"protocol\": \"层间通信协议（如 HTTPS / REST / SQL / AMQP）\"}}\n"
-                f"    ],\n"
-                f"    \"features\": [\"架构特征1\", \"架构特征2\", ...]\n"
-                f"  }},\n"
-                f"  \"tech_stack\": {{\n"
-                f"    \"backend\": {{\"language\": \"编程语言\", \"framework\": \"框架\"}},\n"
-                f"    \"frontend\": {{\"framework\": \"前端框架\", \"ui_library\": \"UI组件库\"}},\n"
-                f"    \"database\": \"数据库\",\n"
-                f"    \"cache\": \"缓存\",\n"
-                f"    \"mq\": \"消息队列\",\n"
-                f"    \"...\": \"按需增删字段\"\n"
-                f"  }},\n"
-                f"  \"components\": [\n"
-                f"    {{\"id\": \"CMP-001\", \"name\": \"组件名\", \"type\": \"frontend|gateway|service|database|infrastructure\",\n"
-                f"      \"description\": \"组件描述\", \"responsibilities\": [\"职责1\", ...]}}\n"
-                f"  ],\n"
-                f"  \"contracts\": [\n"
-                f"    {{\"id\": \"CTR-001\", \"interface\": \"接口名称\", \"provider\": \"提供者组件名\",\n"
-                f"      \"consumers\": [\"消费者组件名\", ...], \"type\": \"REST|gRPC|MQ\",\n"
-                f"      \"endpoint\": \"GET/POST /api/...\",\n"
-                f"      \"request\": {{\"path_params\": [], \"query_params\": [], \"body\": {{}}}},\n"
-                f"      \"response\": {{\"status\": 200, \"body\": {{}}}},\n"
-                f"      \"description\": \"接口说明\"}}\n"
-                f"  ],\n"
-                f"  \"data_flow\": [\n"
-                f"    {{\"name\": \"数据流名称\",\n"
-                f"      \"steps\": [\"步骤1\", \"步骤2\", ...]}},\n"
-                f"    ...\n"
-                f"  ]\n"
-                f"}}\n\n"
-                f"重要说明:\n"
-                f"- 每个 component 必须分配唯一 id（CMP-001, CMP-002...）\n"
-                f"- 每个 contract 必须分配唯一 id（CTR-001, CTR-002...）\n"
-                f"- system_overview.roles: 从 PRD 中提取用户角色及其权限\n"
-                f"- architecture.layers: 按系统分层列出每层包含的组件（组件名与 components[].name 一致）\n"
-                f"- architecture.connections: 相邻层之间的通信协议，数组长度 = layers 数量 - 1\n"
-                f"- architecture.features: 列出架构的关键技术特征，每项一个短语\n"
-                f"- tech_stack: 根据架构设计明确定义技术选型（语言/框架/数据库/缓存/消息队列等），字段按需增删\n"
-                f"- components: 每个组件需要 id/name/type/description/responsibilities\n"
-                f"- data_flow: 每条数据流用 steps 数组描述从起点到终点的步骤序列\n"
-                f"- contracts: 每个需要跨模块调用的接口必须定义，是 MDE 生成 LLD 的强制约束\n"
-                f"- request/response: 精确的字段名、类型，MDE 将以此为准\n\n"
-                f"参考输入数据:\n"
-                f"system_overview: {system_overview}\n"
-                f"architecture: {architecture}\n"
-                f"components: {json.dumps(components, ensure_ascii=False)}\n"
-                f"data_flow: {data_flow}\n"
-                f"已批准的 PRD 文档:\n{prd_context}\n\n"
-                f"要求: 基于 PRD 内容设计架构、使用中文"
+            return self._generate_initial(
+                title, system_overview, architecture, components, data_flow,
             )
-
-            response = self.agent.generate_think_then_json(
-                prompt, role="architect", max_tokens=8192,
-            )
-
-            # Strip markdown fences if present
-            json_text = _extract_json(response.content)
-
-            # Parse and assign stable IDs
-            try:
-                data = json.loads(json_text)
-                data["components"] = self._assign_ids(data.get("components", []), "CMP")
-                data["contracts"] = self._assign_ids(data.get("contracts", []), "CTR")
-                json_text = json.dumps(data, ensure_ascii=False, indent=2)
-            except json.JSONDecodeError:
-                pass  # Write raw text; _commit_and_result will handle
-
-            # Write JSON file
-            json_abs = Path(self.config.repo_path) / json_path
-            json_abs.parent.mkdir(parents=True, exist_ok=True)
-            json_abs.write_text(json_text, encoding="utf-8")
-
-            return self._commit_and_result(json_path, title, response.content)
 
         except Exception as e:
             return self.format_result(status="failed", message=str(e))
 
-    # Canonical component type values expected by downstream consumers
+    # ------------------------------------------------------------------
+    # Initial SAD generation
+    # ------------------------------------------------------------------
+
+    def _generate_initial(
+        self, title: str, system_overview: str, architecture: str,
+        components: list, data_flow: str,
+    ) -> dict:
+        t0 = time.time()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        sad_path = self.config.repo_path / "docs" / "sad.json"
+
+        prd_context = self._load_latest_prd()
+        prd_data = self._load_latest_prd_dict()
+
+        # Determine doc_id and version
+        existing = self._load_current_sad()
+        if existing:
+            doc_id = existing.get("meta", {}).get("doc_id", "sad-001")
+            version = existing.get("meta", {}).get("version", 1)
+        else:
+            doc_id = "sad-001"
+            version = 1
+
+        # Build source_prd from current PRD
+        source_prd = {}
+        if prd_data:
+            source_prd = {
+                "doc_id": prd_data.get("meta", {}).get("doc_id", "prd-current"),
+                "version": prd_data.get("meta", {}).get("version", 1),
+            }
+
+        prompt = (
+            f"根据以下数据创建一份系统架构文档 (SAD)，返回合法 JSON 对象:\n\n"
+            f"JSON 结构如下:\n\n"
+            f"{{\n"
+            f"  \"meta\": {{\"doc_id\": \"{doc_id}\", \"type\": \"sad\",\n"
+            f"    \"title\": \"{title}\", \"author\": \"architect_agent\",\n"
+            f"    \"created\": \"{now}\", \"version\": {version}}},\n"
+            f"  \"title\": \"{title}\",\n"
+            f"  \"source_prd\": {json.dumps(source_prd, ensure_ascii=False)},\n"
+            f"  \"system_overview\": {{\n"
+            f"    \"description\": \"系统整体描述（string）\",\n"
+            f"    \"roles\": [\n"
+            f"      {{\"name\": \"角色名\",\n"
+            f"        \"permissions\": [\"权限1\", \"权限2\", ...]}}\n"
+            f"    ]\n"
+            f"  }},\n"
+            f"  \"architecture\": {{\n"
+            f"    \"style\": \"架构风格（如 微服务架构）\",\n"
+            f"    \"description\": \"架构设计描述（string）\",\n"
+            f"    \"layers\": [\n"
+            f"      {{\"name\": \"层名（如 接入层/网关层/服务层/数据层）\",\n"
+            f"        \"components\": [\"该层包含的组件名称\", ...]}}\n"
+            f"    ],\n"
+            f"    \"connections\": [\n"
+            f"      {{\"protocol\": \"层间通信协议（如 HTTPS / REST / SQL / AMQP）\",\n"
+            f"        \"description\": \"通信说明\"}}\n"
+            f"    ],\n"
+            f"    \"features\": [\"架构特征1\", \"架构特征2\", ...]\n"
+            f"  }},\n"
+            f"  \"tech_stack\": {{\n"
+            f"    \"backend\": {{\"language\": \"编程语言\", \"framework\": \"框架\"}},\n"
+            f"    \"frontend\": {{\"framework\": \"前端框架\", \"ui_library\": \"UI组件库\"}},\n"
+            f"    \"database\": \"数据库\",\n"
+            f"    \"...\": \"按需增删字段\"\n"
+            f"  }},\n"
+            f"  \"components\": [\n"
+            f"    {{\"id\": \"CMP-001\", \"name\": \"组件名\",\n"
+            f"      \"type\": \"frontend|backend|gateway|service|database|infrastructure\",\n"
+            f"      \"status\": \"active\", \"version\": 1,\n"
+            f"      \"description\": \"组件描述\",\n"
+            f"      \"responsibilities\": [\"职责1\", ...],\n"
+            f"      \"source_requirements\": [\"REQ-001\"],\n"
+            f"      \"contracts\": [\"CTR-001\"],\n"
+            f"      \"depends_on_components\": [],\n"
+            f"      \"change_history\": [{{\"version\": 1, \"change_type\": \"created\",\n"
+            f"        \"summary\": \"初始创建\", \"reason\": \"首次生成 SAD\"}}]}}\n"
+            f"  ],\n"
+            f"  \"contracts\": [\n"
+            f"    {{\"id\": \"CTR-001\", \"interface\": \"接口名称\",\n"
+            f"      \"provider_component_id\": \"CMP-001\",\n"
+            f"      \"provider\": \"提供者组件名\",\n"
+            f"      \"consumers\": [\"消费者组件名\", ...],\n"
+            f"      \"type\": \"REST|WebSocket|SSE|Event\",\n"
+            f"      \"status\": \"active\", \"version\": 1,\n"
+            f"      \"endpoint\": \"GET /api/...\",\n"
+            f"      \"request\": {{\"path_params\": [], \"query_params\": [], \"body\": {{}}}},\n"
+            f"      \"response\": {{\"status\": 200, \"body\": {{}}}},\n"
+            f"      \"errors\": [{{\"status\": 404, \"code\": \"NOT_FOUND\",\n"
+            f"        \"message\": \"资源不存在\"}}],\n"
+            f"      \"description\": \"接口说明\",\n"
+            f"      \"source_requirements\": [\"REQ-001\"],\n"
+            f"      \"change_history\": [{{\"version\": 1, \"change_type\": \"created\",\n"
+            f"        \"summary\": \"初始创建\", \"reason\": \"首次生成 SAD\"}}]}}\n"
+            f"  ],\n"
+            f"  \"data_flow\": [\n"
+            f"    {{\"name\": \"数据流名称\",\n"
+            f"      \"steps\": [\"步骤1\", \"步骤2\", ...]}},\n"
+            f"    ...\n"
+            f"  ],\n"
+            f"  \"data_models\": [],\n"
+            f"  \"requirement_traceability\": [\n"
+            f"    {{\"requirement_id\": \"REQ-001\", \"coverage\": \"full\",\n"
+            f"      \"components\": [\"CMP-001\"], \"contracts\": [\"CTR-001\"],\n"
+            f"      \"data_models\": [], \"notes\": \"\"}}\n"
+            f"  ],\n"
+            f"  \"architecture_decisions\": [],\n"
+            f"  \"risks\": [],\n"
+            f"  \"open_questions\": []\n"
+            f"}}\n\n"
+            f"重要说明:\n"
+            f"- 每个 component 必须分配唯一 id（CMP-001, CMP-002...）\n"
+            f"- 每个 contract 必须分配唯一 id（CTR-001, CTR-002...）\n"
+            f"- system_overview.roles: 从 PRD 中提取用户角色及其权限\n"
+            f"- architecture.layers: 按系统分层列出每层包含的组件\n"
+            f"- architecture.connections: 相邻层之间的通信协议\n"
+            f"- architecture.features: 列出架构的关键技术特征\n"
+            f"- tech_stack: 根据架构设计明确定义技术选型\n"
+            f"- components: 每个组件需要 status/version/source_requirements/change_history\n"
+            f"- contracts: 每个契约需要 status/version/source_requirements/provider_component_id/errors/change_history\n"
+            f"- requirement_traceability: 每个 PRD 需求必须有一条覆盖记录\n"
+            f"- 所有文字使用中文\n\n"
+            f"参考输入数据:\n"
+            f"system_overview: {system_overview}\n"
+            f"architecture: {architecture}\n"
+            f"components: {json.dumps(components, ensure_ascii=False)}\n"
+            f"data_flow: {data_flow}\n"
+            f"已批准的 PRD 文档:\n{prd_context}\n"
+        )
+
+        response = self.agent.generate_think_then_json(
+            prompt, role="architect", max_tokens=8192,
+        )
+
+        json_text = _extract_json(response.content)
+
+        try:
+            data = json.loads(json_text)
+            data["components"] = self._assign_ids(data.get("components", []), "CMP")
+            data["contracts"] = self._assign_ids(data.get("contracts", []), "CTR")
+            data["data_models"] = self._assign_ids(data.get("data_models", []), "DM")
+            json_text = json.dumps(data, ensure_ascii=False, indent=2)
+        except json.JSONDecodeError:
+            pass
+
+        # Write JSON file
+        sad_path.parent.mkdir(parents=True, exist_ok=True)
+        sad_path.write_text(json_text, encoding="utf-8")
+
+        return self._commit_and_result(
+            sad_path, title, response.content,
+            llm_timings=response.timings, t_total=time.time() - t0,
+        )
+
+    # ------------------------------------------------------------------
+    # Interactive modification — patch-based iteration
+    # ------------------------------------------------------------------
+
+    def modify_interactive(
+        self,
+        pm_turn_result: dict,
+        progress_callback: callable = None,
+    ) -> dict:
+        """Execute a single SE architecture modification turn.
+
+        1. Read docs/prd.json (full state)
+        2. Read pm_turn_result (this round's PM delta)
+        3. Read docs/sad.json (current architecture state)
+        4. Build SE input package, call LLM to get se-turn-result
+        5. Validate se-turn-result against schema
+        6. Apply patches to sad.json
+        7. Validate sad-schema + consistency checks
+        8. Save, re-render, commit
+        """
+        try:
+            t0 = time.time()
+            sad_path = self.config.repo_path / "docs" / "sad.json"
+            current_sad = self._load_current_sad()
+            if current_sad is None:
+                return self.format_result(
+                    status="failed",
+                    message="docs/sad.json 不存在。请先生成 SAD。",
+                )
+
+            sad_before_version = current_sad.get("meta", {}).get("version", 1)
+            current_sad_json = json.dumps(current_sad, ensure_ascii=False, indent=2)
+
+            # Load PRD
+            prd_data = self._load_latest_prd_dict()
+            if prd_data is None:
+                return self.format_result(
+                    status="failed",
+                    message="docs/prd.json 不存在。请先创建 PRD。",
+                )
+            prd_json = json.dumps(prd_data, ensure_ascii=False, indent=2)
+
+            # Load turn schema
+            turn_schema_path = self.config.repo_path / "schemas" / "se-turn-result-schema.json"
+            turn_schema = None
+            if turn_schema_path.exists():
+                turn_schema = json.loads(turn_schema_path.read_text(encoding="utf-8"))
+
+            # System prompt for SE modification
+            system_prompt = (
+                "你是 CogniForge 系统的 SE (Architect) Agent。\n"
+                "职责: 根据 PRD 变更维护系统架构文档 (SAD)。\n"
+                "规则:\n"
+                "1. 不要直接输出完整 SAD 文档，只输出包含 patches 数组的变更结果 JSON。\n"
+                "2. 保留所有已有的 CMP-ID、CTR-ID、DM-ID 不变。\n"
+                "3. 新增组件/契约/数据模型时分配新的 ID（下一个可用的编号）。\n"
+                "4. 修改已有 component/contract 时，version +1 并追加 change_history。\n"
+                "5. 优先判断现有组件是否能承载新需求，不要默认新增组件。\n"
+                "6. 每个 active requirement 必须在 requirement_traceability 中有覆盖状态。\n"
+                "7. SAD 有变化时 meta.version +1。\n"
+                "8. 如果 PRD 需求无法被当前架构覆盖，返回 coverage=partial/blocked。\n"
+                "9. 如果接口契约缺少 request/response/provider_component_id，必须补齐。\n"
+                "10. 默认不删除，用 status=deprecated/removed 标记。\n"
+                "11. patches 使用 RFC 6902 JSON Pointer 格式路径。\n"
+                "12. 在 downstream_handoff 中给出 BE/FE/QA/DevOps agent 的任务提示。\n"
+                "所有文字使用中文。"
+            )
+
+            # Build SE agent input
+            pm_turn_json = json.dumps(pm_turn_result, ensure_ascii=False, indent=2)
+
+            user_prompt = (
+                f"## 当前 PRD 状态 (docs/prd.json)\n```json\n{prd_json}\n```\n\n"
+                f"## PM 本轮变更 (pm-turn-result)\n```json\n{pm_turn_json}\n```\n\n"
+                f"## 当前 SAD 状态 (docs/sad.json)\n```json\n{current_sad_json}\n```\n\n"
+                f"请根据 PM 本轮变更，生成 se-turn-result JSON。\n"
+                f"分析 PM 变更对架构的影响，判断已有组件是否能承载，\n"
+                f"给出 patches 和 downstream_handoff。"
+            )
+
+            # Call LLM
+            if progress_callback:
+                progress_callback("Architect 正在分析架构影响...")
+
+            if hasattr(self.agent, "generate_interactive_patch"):
+                response = self.agent.generate_interactive_patch(
+                    current_document=current_sad_json,
+                    user_request=user_prompt,
+                    system_prompt=system_prompt,
+                    turn_schema=turn_schema,
+                )
+            else:
+                response = self.agent.generate_interactive(
+                    current_document=current_sad_json,
+                    user_request=user_prompt,
+                    system_prompt=system_prompt,
+                )
+            llm_timings = response.timings
+
+            raw_content = response.content if hasattr(response, "content") else str(response)
+            json_text = _extract_json(raw_content)
+
+            try:
+                turn_data = json.loads(json_text)
+            except json.JSONDecodeError as e:
+                return self.format_result(
+                    status="failed",
+                    message=f"LLM 输出的 JSON 无法解析: {e}",
+                    reasoning=raw_content,
+                )
+
+            # Validate turn result against schema
+            if turn_schema:
+                turn_errors = self._validate_with_schema(turn_data, turn_schema_path)
+                if turn_errors:
+                    return self.format_result(
+                        status="failed",
+                        message=f"SE turn result schema error: {'; '.join(turn_errors[:3])}",
+                        reasoning=raw_content,
+                    )
+
+            # Handle non-update statuses
+            status = turn_data.get("status", "updated")
+            if status == "no_change":
+                return self.format_result(
+                    status="success",
+                    message=turn_data.get("message", "无需修改架构。"),
+                    reasoning=raw_content,
+                )
+            if status == "need_clarification":
+                return self.format_result(
+                    status="success",
+                    message=turn_data.get("message", "需要更多信息。"),
+                    data={
+                        "open_questions": turn_data.get("open_questions", []),
+                    },
+                    reasoning=raw_content,
+                )
+            if status == "rejected":
+                return self.format_result(
+                    status="failed",
+                    message=turn_data.get("message", "架构变更请求被拒绝。"),
+                    reasoning=raw_content,
+                )
+
+            # Apply patches
+            t_apply_start = time.time()
+            patches = turn_data.get("patches", [])
+            if not patches:
+                return self.format_result(
+                    status="failed",
+                    message="Turn returned 'updated' status but no patches.",
+                    reasoning=raw_content,
+                )
+
+            updated_sad = self._apply_patches(current_sad, patches)
+
+            # Validate updated SAD against sad-schema
+            sad_schema_path = self.config.repo_path / "schemas" / "sad-schema.json"
+            schema_errors = self._validate_with_schema(updated_sad, sad_schema_path)
+            if schema_errors:
+                return self.format_result(
+                    status="failed",
+                    message=f"Updated SAD schema error: {'; '.join(schema_errors[:3])}",
+                    reasoning=raw_content,
+                )
+
+            # Consistency checks
+            from cogniforge.consistency_checks import run_all
+            cc_errors = run_all(prd_data, updated_sad, sad_before=current_sad)
+            if cc_errors:
+                return self.format_result(
+                    status="failed",
+                    message=f"Consistency check failed: {'; '.join(cc_errors[:3])}",
+                    reasoning=raw_content,
+                )
+
+            # Write updated SAD
+            sad_path.write_text(
+                json.dumps(updated_sad, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            rel_sad = sad_path.relative_to(self.config.repo_path).as_posix()
+            self.wiki_system.git_storage.repo.index.add([rel_sad])
+
+            # Render HTML
+            from cogniforge.wiki.wiki_renderer import render_file
+            html_path = render_file(sad_path)
+            if html_path:
+                rel_html = html_path.relative_to(self.config.repo_path).as_posix()
+                self.wiki_system.git_storage.repo.index.add([rel_html])
+
+            operation = turn_data.get("operation", "modify")
+            self.wiki_system.git_storage.commit(
+                f"docs: update SAD - {operation}",
+                "architect_agent",
+            )
+
+            artifacts = [rel_sad]
+            if html_path:
+                artifacts.append(
+                    html_path.relative_to(self.config.repo_path).as_posix())
+
+            t_apply = time.time() - t_apply_start
+            t_total = time.time() - t0
+            timings = []
+            if llm_timings:
+                timings.extend(llm_timings)
+            timings.append({"phase": "应用变更", "duration_s": round(t_apply, 1)})
+            timings.append({"phase": "总计", "duration_s": round(t_total, 1)})
+
+            return self.format_result(
+                status="success",
+                message=turn_data.get("message", "SAD updated."),
+                artifacts=artifacts,
+                data={
+                    "open_questions": turn_data.get("open_questions", []),
+                    "affected_components": turn_data.get("affected_components", []),
+                    "affected_contracts": turn_data.get("affected_contracts", []),
+                    "downstream_handoff": turn_data.get("downstream_handoff", {}),
+                    "new_version": updated_sad["meta"]["version"],
+                    "timings": timings,
+                },
+                reasoning=raw_content,
+            )
+
+        except Exception as e:
+            return self.format_result(status="failed", message=str(e))
+
+    # ------------------------------------------------------------------
+    # Canonical component type values
+    # ------------------------------------------------------------------
+
     _COMPONENT_TYPE_CANONICAL: dict[str, str] = {
-        # Canonical
-        "frontend": "frontend", "gateway": "gateway", "service": "service",
+        "frontend": "frontend", "backend": "backend",
+        "gateway": "gateway", "service": "service",
         "database": "database", "infrastructure": "infrastructure",
+        "integration": "integration", "security": "security",
         # LLM common variants → canonical
         "db": "database", "DB": "database", "Database": "database",
         "cache": "infrastructure", "redis": "infrastructure",
@@ -149,9 +460,13 @@ class ArchitectAgent(BaseAgent):
     def _normalize_component_type(cls, raw: str) -> str:
         return cls._COMPONENT_TYPE_CANONICAL.get(raw, "service")
 
+    # ------------------------------------------------------------------
+    # ID assignment
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _assign_ids(items: list[dict], prefix: str) -> list[dict]:
-        """Assign stable serial IDs (CMP-001, CTR-001, etc.) to items lacking them."""
+        """Assign stable serial IDs (CMP-001, CTR-001, DM-001) to items lacking them."""
         max_num = 0
         for item in items:
             item_id = item.get("id", "")
@@ -172,8 +487,12 @@ class ArchitectAgent(BaseAgent):
             assigned.append(item)
         return assigned
 
+    # ------------------------------------------------------------------
+    # Document I/O
+    # ------------------------------------------------------------------
+
     def _load_latest_prd(self) -> str:
-        """Read the current PRD JSON from docs/prd.json, fall back to old wiki path."""
+        """Read the current PRD JSON as string from docs/prd.json."""
         prd_path = Path(self.config.repo_path) / "docs" / "prd.json"
         if prd_path.exists():
             try:
@@ -191,15 +510,77 @@ class ArchitectAgent(BaseAgent):
         except Exception:
             return "(无法读取 PRD 文档)"
 
-    def _commit_and_result(self, json_path: Path, title: str, reasoning: str = "") -> dict:
-        json_abs = Path(self.config.repo_path) / json_path
-        if not json_abs.exists():
-            return self.format_result(status="failed",
-                                       message=f"LLM did not produce {json_path}")
+    def _load_latest_prd_dict(self) -> dict | None:
+        """Read the current PRD JSON as dict from docs/prd.json."""
+        prd_path = Path(self.config.repo_path) / "docs" / "prd.json"
+        if prd_path.exists():
+            try:
+                return json.loads(prd_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return None
 
-        # Normalize component types before commit
+    def _load_current_sad(self) -> dict | None:
+        """Load current SAD from docs/sad.json, fall back to old wiki path."""
+        sad_path = self.config.repo_path / "docs" / "sad.json"
+        if sad_path.exists():
+            try:
+                return json.loads(sad_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, ValueError):
+                pass
+        # Fallback: old wiki format
+        old_dir = self.config.repo_path / ".cogniforge" / "wiki" / "sad"
+        if old_dir.exists():
+            old_files = sorted(old_dir.glob("*.json"))
+            if old_files:
+                try:
+                    return json.loads(old_files[-1].read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, ValueError):
+                    pass
+        return None
+
+    # ------------------------------------------------------------------
+    # Patches & validation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _apply_patches(doc: dict, patches: list[dict]) -> dict:
+        """Apply RFC 6902 JSON Patch operations to doc dict."""
+        from jsonpatch import JsonPatch
+        patch = JsonPatch(patches)
+        return patch.apply(doc)
+
+    @staticmethod
+    def _validate_with_schema(data: dict, schema_path: Path) -> list[str]:
+        """Validate dict against JSON schema. Returns list of error messages."""
+        if not schema_path.exists():
+            return []
         try:
-            data = json.loads(json_abs.read_text(encoding="utf-8"))
+            import jsonschema
+            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            validator = jsonschema.Draft7Validator(schema)
+            errors = list(validator.iter_errors(data))
+            return [e.message for e in errors]
+        except ImportError:
+            return []
+        except Exception as e:
+            return [f"Schema validation error: {e}"]
+
+    # ------------------------------------------------------------------
+    # Commit & result formatting
+    # ------------------------------------------------------------------
+
+    def _commit_and_result(self, sad_path: Path, title: str, reasoning: str = "",
+                           llm_timings: list = None, t_total: float = 0) -> dict:
+        t_write_start = time.time()
+
+        if not sad_path.exists():
+            return self.format_result(status="failed",
+                                       message=f"LLM did not produce {sad_path}")
+
+        # Normalize component types
+        try:
+            data = json.loads(sad_path.read_text(encoding="utf-8"))
             components = data.get("components", [])
             fixed = 0
             for c in components:
@@ -209,33 +590,46 @@ class ArchitectAgent(BaseAgent):
                     c["type"] = canonical
                     fixed += 1
             if fixed:
-                json_abs.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                sad_path.write_text(json.dumps(data, ensure_ascii=False, indent=2),
                                     encoding="utf-8")
         except Exception:
-            pass  # Don't block on normalization failure
+            pass
 
-        rel_json = json_path.relative_to(self.config.repo_path).as_posix()
-        self.wiki_system.git_storage.repo.index.add([rel_json])
+        rel_sad = sad_path.relative_to(self.config.repo_path).as_posix()
+        self.wiki_system.git_storage.repo.index.add([rel_sad])
 
         from cogniforge.wiki.wiki_renderer import render_file
-        html_path = render_file(json_abs)
+        html_path = render_file(sad_path)
         rel_html = html_path.relative_to(self.config.repo_path).as_posix() if html_path else ""
         if rel_html:
             self.wiki_system.git_storage.repo.index.add([rel_html])
 
         self.wiki_system.git_storage.commit(f"feat: add SAD - {title}", "architect_agent")
 
-        artifacts = [rel_json]
+        artifacts = [rel_sad]
         if rel_html:
             artifacts.append(rel_html)
 
+        t_write = time.time() - t_write_start
+        timings = []
+        if llm_timings:
+            timings.extend(llm_timings)
+        timings.append({"phase": "创建文档", "duration_s": round(t_write, 1)})
+        if t_total > 0:
+            timings.append({"phase": "总计", "duration_s": round(t_total, 1)})
+
         return self.format_result(
             status="success",
-            message=f"SAD created: {json_path.stem}",
+            message=f"SAD created at docs/sad.json",
             artifacts=artifacts,
             reasoning=reasoning,
+            data={"timings": timings},
         )
 
+
+# ------------------------------------------------------------------
+# JSON extraction
+# ------------------------------------------------------------------
 
 def _extract_json(text: str) -> str:
     """Strip markdown code fences, return bare JSON."""
