@@ -1,0 +1,711 @@
+{
+  "meta": {
+    "doc_id": "lld-file-management-service-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "文件管理服务",
+    "title": "文件管理服务 详细设计文档",
+    "author": "design_agent",
+    "created": "2025-01-01T00:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-003"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-004"
+      ],
+      "contracts": [
+        "CTR-005"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "接收上传文件（支持 .zip, .tar.gz, .tgz）",
+      "文件大小限制与进度反馈",
+      "计算文件校验和（SHA256）",
+      "生成版本标识（自定义或自动）",
+      "文件元数据管理（存储到 PostgreSQL）",
+      "文件存储到 MinIO"
+    ],
+    "out_of_scope": [
+      "文件下载接口",
+      "部署执行",
+      "日志推送",
+      "用户权限管理（认证依赖网关）",
+      "项目/环境管理"
+    ],
+    "owned_components": [
+      "CMP-004"
+    ],
+    "owned_contracts": [
+      "CTR-005"
+    ],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": [
+      "DM-001"
+    ]
+  },
+  "overview": {
+    "description": "文件管理服务负责接收部署包文件，进行安全校验后存放到对象存储 MinIO，同时在 PostgreSQL 中记录文件元信息（如文件 ID、校验和、大小、版本标识等），为下游部署执行服务提供可靠的文件引用依据。",
+    "dependencies": [
+      "API 网关（认证转发）",
+      "PostgreSQL",
+      "MinIO"
+    ],
+    "tech_stack": [
+      "Go",
+      "Gin",
+      "PostgreSQL",
+      "MinIO"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-003",
+      "sad_component_ids": [
+        "CMP-004"
+      ],
+      "sad_contract_ids": [
+        "CTR-005"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-001"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": "REQ-003 的上传文件、校验和计算、版本标识生成等需求被完全覆盖"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "files",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "files"
+      },
+      "description": "记录上传部署文件的元信息，是部署任务引用的核心数据。主数据源在 Primary Database LLD 中定义，此处列出本服务关心的字段视图。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID",
+          "required": true,
+          "description": "内部主键，与 MinIO 对象名关联"
+        },
+        {
+          "name": "file_id",
+          "type": "string",
+          "required": true,
+          "description": "对外的文件唯一标识，等同于 id"
+        },
+        {
+          "name": "original_name",
+          "type": "string",
+          "required": true,
+          "description": "用户上传时的原始文件名"
+        },
+        {
+          "name": "storage_path",
+          "type": "string",
+          "required": true,
+          "description": "MinIO 中的对象路径，格式为 {file_id}.{ext}"
+        },
+        {
+          "name": "size",
+          "type": "bigint",
+          "required": true,
+          "description": "文件字节数"
+        },
+        {
+          "name": "checksum",
+          "type": "string",
+          "required": true,
+          "description": "SHA256 校验和（64位十六进制字符串）"
+        },
+        {
+          "name": "version_tag",
+          "type": "string",
+          "required": true,
+          "description": "版本标签，自定义或自动生成"
+        },
+        {
+          "name": "notes",
+          "type": "text",
+          "required": false,
+          "description": "备注信息"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "required": true,
+          "description": "最后更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_files_file_id",
+          "unique": true,
+          "columns": [
+            "file_id"
+          ]
+        },
+        {
+          "name": "idx_files_version_tag",
+          "unique": false,
+          "columns": [
+            "version_tag"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "CTR-005"
+      ],
+      "constraints": [
+        "file_id 必须唯一",
+        "size 必须大于 0",
+        "checksum 不能为空"
+      ],
+      "lifecycle": {
+        "create": "文件上传成功后写入",
+        "update": "通常不更新",
+        "delete": "不应直接物理删除，需检查部署历史引用",
+        "retention": "永久保留，或根据业务策略归档清理"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建，源自 CTR-005 响应字段映射",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "FileMetadata",
+      "description": "文件元数据信息",
+      "attributes": [
+        {
+          "name": "FileID",
+          "type": "string",
+          "required": true,
+          "description": "文件唯一标识",
+          "source": "input"
+        },
+        {
+          "name": "OriginalName",
+          "type": "string",
+          "required": true,
+          "description": "原始文件名",
+          "source": "input"
+        },
+        {
+          "name": "StoragePath",
+          "type": "string",
+          "required": true,
+          "description": "存储路径",
+          "source": "computed"
+        },
+        {
+          "name": "Size",
+          "type": "int64",
+          "required": true,
+          "description": "文件大小",
+          "source": "computed"
+        },
+        {
+          "name": "Checksum",
+          "type": "string",
+          "required": true,
+          "description": "SHA256校验和",
+          "source": "computed"
+        },
+        {
+          "name": "VersionTag",
+          "type": "string",
+          "required": true,
+          "description": "版本标识",
+          "source": "input"
+        },
+        {
+          "name": "Notes",
+          "type": "string",
+          "required": false,
+          "description": "备注",
+          "source": "input"
+        },
+        {
+          "name": "CreatedAt",
+          "type": "timestamp",
+          "required": true,
+          "description": "创建时间",
+          "source": "computed"
+        },
+        {
+          "name": "UpdatedAt",
+          "type": "timestamp",
+          "required": true,
+          "description": "更新时间",
+          "source": "computed"
+        }
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "UploadRequest",
+      "description": "上传请求参数",
+      "attributes": [
+        {
+          "name": "File",
+          "type": "multipart.File",
+          "required": true,
+          "description": "上传的文件流",
+          "source": "input"
+        },
+        {
+          "name": "VersionTag",
+          "type": "string",
+          "required": false,
+          "description": "自定义版本标识",
+          "source": "input"
+        },
+        {
+          "name": "Notes",
+          "type": "string",
+          "required": false,
+          "description": "备注",
+          "source": "input"
+        }
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "UploadResponse",
+      "description": "上传响应数据",
+      "attributes": [
+        {
+          "name": "FileID",
+          "type": "string",
+          "required": true,
+          "description": "生成的文件ID",
+          "source": "computed"
+        },
+        {
+          "name": "OriginalName",
+          "type": "string",
+          "required": true,
+          "description": "原始文件名",
+          "source": "input"
+        },
+        {
+          "name": "Size",
+          "type": "int64",
+          "required": true,
+          "description": "文件大小",
+          "source": "computed"
+        },
+        {
+          "name": "Checksum",
+          "type": "string",
+          "required": true,
+          "description": "SHA256校验和",
+          "source": "computed"
+        },
+        {
+          "name": "VersionTag",
+          "type": "string",
+          "required": true,
+          "description": "版本标识",
+          "source": "input"
+        },
+        {
+          "name": "CreatedAt",
+          "type": "timestamp",
+          "required": true,
+          "description": "创建时间",
+          "source": "computed"
+        }
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "FileQuery",
+      "description": "查询文件元数据过滤器",
+      "attributes": [
+        {
+          "name": "FileID",
+          "type": "string",
+          "required": false,
+          "description": "文件ID精确匹配",
+          "source": "input"
+        },
+        {
+          "name": "VersionTag",
+          "type": "string",
+          "required": false,
+          "description": "版本标识精确匹配",
+          "source": "input"
+        },
+        {
+          "name": "StartDate",
+          "type": "timestamp",
+          "required": false,
+          "description": "开始时间",
+          "source": "input"
+        },
+        {
+          "name": "EndDate",
+          "type": "timestamp",
+          "required": false,
+          "description": "结束时间",
+          "source": "input"
+        },
+        {
+          "name": "Limit",
+          "type": "int",
+          "required": false,
+          "description": "分页限制",
+          "source": "input"
+        },
+        {
+          "name": "Offset",
+          "type": "int",
+          "required": false,
+          "description": "分页偏移",
+          "source": "input"
+        }
+      ]
+    },
+    {
+      "id": "DO-005",
+      "name": "FileListResponse",
+      "description": "文件列表响应",
+      "attributes": [
+        {
+          "name": "Files",
+          "type": "[]FileMetadata",
+          "required": true,
+          "description": "文件元数据列表",
+          "source": "computed"
+        },
+        {
+          "name": "Total",
+          "type": "int",
+          "required": true,
+          "description": "总数",
+          "source": "computed"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "FileManagementServiceAPI",
+      "description": "文件管理服务对外提供的 HTTP API",
+      "type": "api",
+      "protocol": "HTTP/REST",
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/api/v1/files/upload",
+          "operation_id": "uploadFile",
+          "summary": "上传部署文件",
+          "request_schema": {
+            "content_type": "multipart/form-data",
+            "params": {
+              "file": {
+                "type": "file",
+                "required": true,
+                "description": "部署包文件"
+              },
+              "version_tag": {
+                "type": "string",
+                "required": false,
+                "description": "自定义版本标签"
+              },
+              "notes": {
+                "type": "string",
+                "required": false,
+                "description": "备注"
+              }
+            }
+          },
+          "response_schema": {
+            "200": {
+              "description": "上传成功",
+              "content": {
+                "application/json": {
+                  "schema_ref": "#/domain_objects/DO-003"
+                }
+              }
+            },
+            "400": {
+              "description": "请求无效"
+            },
+            "413": {
+              "description": "文件大小超出限制"
+            },
+            "500": {
+              "description": "服务器内部错误"
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/files",
+          "operation_id": "listFiles",
+          "summary": "查询文件列表",
+          "request_schema": {
+            "params": {
+              "file_id": {
+                "type": "string",
+                "required": false
+              },
+              "version_tag": {
+                "type": "string",
+                "required": false
+              },
+              "start_date": {
+                "type": "string",
+                "format": "date-time",
+                "required": false
+              },
+              "end_date": {
+                "type": "string",
+                "format": "date-time",
+                "required": false
+              },
+              "limit": {
+                "type": "integer",
+                "required": false
+              },
+              "offset": {
+                "type": "integer",
+                "required": false
+              }
+            }
+          },
+          "response_schema": {
+            "200": {
+              "description": "查询成功",
+              "content": {
+                "application/json": {
+                  "schema_ref": "#/domain_objects/DO-005"
+                }
+              }
+            },
+            "400": {
+              "description": "请求无效"
+            },
+            "500": {
+              "description": "服务器内部错误"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "FileManagementServiceContract",
+      "description": "文件管理服务的契约定义，与 SAD 中的 CTR-005 对齐",
+      "operations": [
+        {
+          "id": "uploadFile",
+          "name": "上传文件",
+          "method": "POST",
+          "path": "/api/v1/files/upload",
+          "request": {
+            "params": [
+              {
+                "name": "file",
+                "type": "file",
+                "required": true,
+                "description": "部署包文件"
+              },
+              {
+                "name": "version_tag",
+                "type": "string",
+                "required": false,
+                "description": "自定义版本标签"
+              },
+              {
+                "name": "notes",
+                "type": "string",
+                "required": false,
+                "description": "备注"
+              }
+            ]
+          },
+          "response": {
+            "200": {
+              "type": "object",
+              "properties": {
+                "file_id": {
+                  "type": "string",
+                  "description": "文件ID"
+                },
+                "original_name": {
+                  "type": "string",
+                  "description": "原始文件名"
+                },
+                "size": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "文件大小"
+                },
+                "checksum": {
+                  "type": "string",
+                  "description": "SHA256校验和"
+                },
+                "version_tag": {
+                  "type": "string",
+                  "description": "版本标识"
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "创建时间"
+                }
+              }
+            }
+          }
+        },
+        {
+          "id": "listFiles",
+          "name": "查询文件列表",
+          "method": "GET",
+          "path": "/api/v1/files",
+          "request": {
+            "params": [
+              {
+                "name": "file_id",
+                "type": "string",
+                "required": false,
+                "description": "文件ID精确匹配"
+              },
+              {
+                "name": "version_tag",
+                "type": "string",
+                "required": false,
+                "description": "版本标识精确匹配"
+              },
+              {
+                "name": "start_date",
+                "type": "string",
+                "format": "date-time",
+                "required": false,
+                "description": "开始时间"
+              },
+              {
+                "name": "end_date",
+                "type": "string",
+                "format": "date-time",
+                "required": false,
+                "description": "结束时间"
+              },
+              {
+                "name": "limit",
+                "type": "integer",
+                "required": false,
+                "description": "分页限制"
+              },
+              {
+                "name": "offset",
+                "type": "integer",
+                "required": false,
+                "description": "分页偏移"
+              }
+            ]
+          },
+          "response": {
+            "200": {
+              "type": "object",
+              "properties": {
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "file_id": {
+                        "type": "string"
+                      },
+                      "original_name": {
+                        "type": "string"
+                      },
+                      "size": {
+                        "type": "integer"
+                      },
+                      "checksum": {
+                        "type": "string"
+                      },
+                      "version_tag": {
+                        "type": "string"
+                      },
+                      "created_at": {
+                        "type": "string",
+                        "format": "date-time"
+                      }
+                    }
+                  }
+                },
+                "total": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
