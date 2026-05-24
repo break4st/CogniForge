@@ -3012,7 +3012,22 @@ def _render_lld(d: dict) -> str:
 
     # ── Service: Business Rules ──
     if module_type == "service" and business_rules:
-        parts.append(_section_header("📐", "业务规则", "rgba(251,191,36,0.12)", "business-rules"))
+        # Normalize: LLM may output a list of {id, type, description} instead of
+        # the expected dict with invariants/state_machines/cross_service_rules keys.
+        if isinstance(business_rules, list):
+            normalized: dict = {"invariants": [], "state_machines": [], "cross_service_rules": []}
+            for rule in business_rules:
+                desc = rule.get("description", "")
+                rtype = rule.get("type", "")
+                if rtype in ("invariant", "constraint", "precondition", "postcondition"):
+                    normalized["invariants"].append(f"[{rtype}] {desc}")
+                elif rtype == "state_machine":
+                    normalized["state_machines"].append(rule)
+                elif rtype == "cross_service":
+                    normalized["cross_service_rules"].append(desc)
+                else:
+                    normalized["invariants"].append(desc)
+            business_rules = normalized
 
         # Invariants
         invariants = business_rules.get("invariants", [])
@@ -3084,16 +3099,39 @@ def _render_lld(d: dict) -> str:
     # ── Database: Index Strategy ──
     if module_type == "database" and d.get("index_strategy"):
         parts.append(_section_header("📊", "索引策略", "rgba(52,211,153,0.12)", "index-strategy"))
-        for table in d["index_strategy"]:
+        raw = d["index_strategy"]
+        # Normalize: LLM may output {description, indexes: [{table, index_name, ...}]}
+        # or the list-of-tables format [{table, indexes: [{name, ...}]}]
+        tables: list[dict] = []
+        if isinstance(raw, dict):
+            desc = raw.get("description", "")
+            if desc:
+                parts.append(f'<p style="margin-bottom:16px;color:var(--c-muted)">{_esc(desc)}</p>')
+            flat = raw.get("indexes", [])
+            # Group flat indexes by table name
+            grouped: dict[str, list] = {}
+            for idx in flat:
+                t = idx.get("table", "_other")
+                grouped.setdefault(t, []).append(idx)
+            for tname, idxs in grouped.items():
+                tables.append({"table": tname, "indexes": idxs})
+        elif isinstance(raw, list):
+            tables = raw
+        for table in tables:
             idx_rows = ""
             for idx in table.get("indexes", []):
                 cols = ", ".join(idx.get("columns", []))
+                # Map LLM variant field names to canonical
+                idx_name = idx.get("name") or idx.get("index_name", "")
+                idx_unique = idx.get("unique") or ("UNIQUE" in str(idx.get("type", "")).upper())
+                idx_type = idx.get("type", "B-tree")
+                idx_purpose = idx.get("purpose") or idx.get("reason", "")
                 idx_rows += (
-                    f'<tr><td><strong>{_esc(idx.get("name",""))}</strong></td>'
+                    f'<tr><td><strong>{_esc(idx_name)}</strong></td>'
                     f'<td style="font-family:monospace;font-size:0.85em">{_esc(cols)}</td>'
-                    f'<td>{"✓" if idx.get("unique") else ""}</td>'
-                    f'<td>{_esc(idx.get("type","B-tree"))}</td>'
-                    f'<td style="color:var(--c-muted);font-size:0.85em">{_esc(idx.get("purpose",""))}</td></tr>'
+                    f'<td>{"✓" if idx_unique else ""}</td>'
+                    f'<td>{_esc(idx_type)}</td>'
+                    f'<td style="color:var(--c-muted);font-size:0.85em">{_esc(idx_purpose)}</td></tr>'
                 )
             parts.append(
                 f'<div class="body-label">{_esc(table.get("table",""))}</div>'
@@ -3133,6 +3171,8 @@ def _render_lld(d: dict) -> str:
     # ── Database / Infra: Connection Contracts ──
     if module_type in ("database", "infrastructure") and d.get("connection_contracts"):
         cc = d["connection_contracts"]
+        if not isinstance(cc, dict):
+            cc = {}
         parts.append(_section_header("🔗", "连接配置", "rgba(124,111,247,0.12)", "connections"))
         parts.append(
             f'<div style="margin-bottom:8px">'
