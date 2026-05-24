@@ -1,0 +1,660 @@
+{
+  "meta": {
+    "doc_id": "lld-File Storage-001",
+    "type": "lld",
+    "module_type": "infrastructure",
+    "module": "File Storage",
+    "title": "文件存储服务详细设计",
+    "author": "design_agent",
+    "created": "2025-03-21T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-001"
+      ],
+      "contracts": [
+        "CTR-001"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "文件的上传/存储操作",
+      "文件的下载/读取操作",
+      "文件元数据管理（文件名、大小、类型、上传时间、关联的项目/环境）",
+      "文件清理策略（基于时间或版本的自动清理）",
+      "存储后端的抽象（支持本地文件系统或 MinIO 对象存储）",
+      "文件完整性校验（哈希校验）"
+    ],
+    "out_of_scope": [
+      "用户权限鉴权（由 Auth Service 负责）",
+      "部署包的业务逻辑验证（由 Business Service 负责）",
+      "文件解压与部署执行（由 Deploy Engine 负责）",
+      "文件上传的前端界面（由 Web App 负责）",
+      "文件传输协议（SCP）的使用（由 Deploy Engine 负责）"
+    ],
+    "owned_components": [
+      "CMP-001"
+    ],
+    "owned_contracts": [
+      "CTR-001"
+    ],
+    "consumed_contracts": [],
+    "owned_data_models": [
+      "DM-001",
+      "DM-002",
+      "DM-003"
+    ],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "文件存储服务，负责接收并存储用户上传的部署包，为部署引擎提供文件读取能力，并支持文件清理策略。提供统一的存储后端抽象，可切换本地文件系统或 MinIO 对象存储。",
+    "dependencies": [
+      "Business Service",
+      "Deploy Engine"
+    ],
+    "tech_stack": [
+      "Python 3.11",
+      "FastAPI",
+      "MinIO (或本地文件系统)",
+      "Docker + Docker Compose"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [
+        "CTR-001"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002",
+          "DM-003"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003",
+          "IF-004"
+        ],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "StorageConfig",
+      "type": "config",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "存储后端配置参数，支持本地文件系统或 MinIO 对象存储切换。",
+      "fields": [
+        {
+          "name": "backend",
+          "type": "string",
+          "required": true,
+          "description": "存储后端类型，取值 local 或 minio"
+        },
+        {
+          "name": "local_path",
+          "type": "string",
+          "required": false,
+          "description": "本地文件系统存储根路径，backend=local 时必填"
+        },
+        {
+          "name": "minio_endpoint",
+          "type": "string",
+          "required": false,
+          "description": "MinIO 服务端点，backend=minio 时必填"
+        },
+        {
+          "name": "minio_access_key",
+          "type": "string",
+          "required": false,
+          "description": "MinIO 访问密钥"
+        },
+        {
+          "name": "minio_secret_key",
+          "type": "string",
+          "required": false,
+          "description": "MinIO 密钥"
+        },
+        {
+          "name": "minio_bucket",
+          "type": "string",
+          "required": false,
+          "description": "MinIO 桶名称"
+        },
+        {
+          "name": "minio_secure",
+          "type": "boolean",
+          "required": false,
+          "description": "是否使用 HTTPS 连接 MinIO"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "首次部署时通过环境变量或配置文件注入",
+        "update": "修改配置文件后重启服务生效",
+        "delete": "服务下线时删除配置",
+        "retention": "与部署生命周期一致"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "FileMeta",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "文件元数据结构，用于文件上传后返回及查询时使用。",
+      "fields": [
+        {
+          "name": "file_id",
+          "type": "string",
+          "required": true,
+          "description": "文件唯一标识（UUID）"
+        },
+        {
+          "name": "original_name",
+          "type": "string",
+          "required": true,
+          "description": "文件原始名称"
+        },
+        {
+          "name": "stored_path",
+          "type": "string",
+          "required": true,
+          "description": "存储路径（本地路径或 MinIO object key）"
+        },
+        {
+          "name": "size_bytes",
+          "type": "integer",
+          "required": true,
+          "description": "文件大小（字节）"
+        },
+        {
+          "name": "content_type",
+          "type": "string",
+          "required": false,
+          "description": "MIME 类型"
+        },
+        {
+          "name": "sha256_hash",
+          "type": "string",
+          "required": true,
+          "description": "文件的 SHA-256 哈希值"
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "required": false,
+          "description": "关联项目 ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "string",
+          "required": false,
+          "description": "关联环境 ID"
+        },
+        {
+          "name": "uploaded_at",
+          "type": "string",
+          "required": false,
+          "description": "上传时间（ISO 8601 格式）"
+        },
+        {
+          "name": "uploaded_by",
+          "type": "string",
+          "required": false,
+          "description": "上传者用户 ID"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "文件上传时创建元数据记录",
+        "update": "仅在必要时更新（如清理标记）",
+        "delete": "文件删除时同步删除元数据",
+        "retention": "与文件保留策略一致"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-003",
+      "name": "FileStorageTopology",
+      "type": "store",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "文件存储拓扑定义，包含桶或目录结构以及路径规范。",
+      "fields": [
+        {
+          "name": "bucket_name",
+          "type": "string",
+          "required": true,
+          "description": "存储桶名称（MinIO 模式为 deploy-packages，本地模式可忽略）"
+        },
+        {
+          "name": "path_conventions",
+          "type": "string",
+          "required": true,
+          "description": "路径规范，格式为 {project_id}/{environment_id}/{file_id}_{original_name}"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "初始化存储服务时创建桶或根目录",
+        "update": "更新路径规范需数据迁移",
+        "delete": "服务下线时清理",
+        "retention": "长期保留"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "文件上传",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "POST",
+      "endpoint": "/api/v1/files/upload",
+      "description": "接收 Business Service 上传的部署包文件，保存到存储后端，返回文件元数据。",
+      "parameters": [
+        {
+          "name": "project_id",
+          "type": "string",
+          "in": "query",
+          "required": true,
+          "description": "关联项目 ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "string",
+          "in": "query",
+          "required": true,
+          "description": "关联环境 ID"
+        },
+        {
+          "name": "file",
+          "type": "binary",
+          "in": "body",
+          "required": true,
+          "description": "文件内容（multipart/form-data）"
+        }
+      ],
+      "request_body": {
+        "file": "binary"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "file_id": "string",
+          "original_name": "string",
+          "stored_path": "string",
+          "size_bytes": "integer",
+          "sha256_hash": "string",
+          "uploaded_at": "string"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "FILE_EMPTY",
+          "message": "上传文件为空"
+        },
+        {
+          "status": 400,
+          "code": "FILE_TOO_LARGE",
+          "message": "文件超过大小限制（500MB）"
+        },
+        {
+          "status": 400,
+          "code": "INVALID_FILE_TYPE",
+          "message": "文件类型不允许，仅支持 .zip, .tar.gz, .tgz"
+        },
+        {
+          "status": 500,
+          "code": "STORAGE_WRITE_ERROR",
+          "message": "存储后端写入失败"
+        },
+        {
+          "status": 503,
+          "code": "STORAGE_UNAVAILABLE",
+          "message": "存储服务不可用"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "文件下载",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "GET",
+      "endpoint": "/api/v1/files/{file_id}/download",
+      "description": "为 Deploy Engine 提供文件下载能力，返回文件二进制流。",
+      "parameters": [
+        {
+          "name": "file_id",
+          "type": "string",
+          "in": "path",
+          "required": true,
+          "description": "文件唯一标识"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "file_stream": "binary"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 404,
+          "code": "FILE_NOT_FOUND",
+          "message": "文件不存在"
+        },
+        {
+          "status": 500,
+          "code": "STORAGE_READ_ERROR",
+          "message": "存储后端读取失败"
+        },
+        {
+          "status": 503,
+          "code": "STORAGE_UNAVAILABLE",
+          "message": "存储服务不可用"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-003",
+      "name": "文件删除",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "DELETE",
+      "endpoint": "/api/v1/files/{file_id}",
+      "description": "根据文件 ID 删除存储的文件，用于清理过期或废弃的部署包。",
+      "parameters": [
+        {
+          "name": "file_id",
+          "type": "string",
+          "in": "path",
+          "required": true,
+          "description": "文件唯一标识"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 204,
+        "body": {}
+      },
+      "error_codes": [
+        {
+          "status": 404,
+          "code": "FILE_NOT_FOUND",
+          "message": "文件不存在"
+        },
+        {
+          "status": 500,
+          "code": "STORAGE_DELETE_ERROR",
+          "message": "存储后端删除失败"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-004",
+      "name": "文件信息查询",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "GET",
+      "endpoint": "/api/v1/files/{file_id}",
+      "description": "查询文件的元数据信息，包括名称、大小、哈希、上传时间等。",
+      "parameters": [
+        {
+          "name": "file_id",
+          "type": "string",
+          "in": "path",
+          "required": true,
+          "description": "文件唯一标识"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "file_id": "string",
+          "original_name": "string",
+          "stored_path": "string",
+          "size_bytes": "integer",
+          "content_type": "string",
+          "sha256_hash": "string",
+          "project_id": "string",
+          "environment_id": "string",
+          "uploaded_at": "string",
+          "uploaded_by": "string"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 404,
+          "code": "FILE_NOT_FOUND",
+          "message": "文件不存在"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "采用分层错误处理：接口层统一捕获异常并转换为标准 JSON 错误响应，存储层抛出明确的业务异常，由接口层映射为对应的 HTTP 状态码和错误码。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "4xx",
+        "name": "CLIENT_ERROR",
+        "description": "客户端请求错误（文件为空、类型无效、大小超限等），返回明确错误信息并记录请求日志"
+      },
+      {
+        "code": "404",
+        "name": "NOT_FOUND",
+        "description": "请求的文件不存在，可能是 file_id 无效或文件已被清理"
+      },
+      {
+        "code": "5xx",
+        "name": "SERVER_ERROR",
+        "description": "服务器内部错误（存储读写失败、哈希计算失败等），记录详细错误日志并向客户端返回通用错误信息"
+      },
+      {
+        "code": "503",
+        "name": "SERVICE_UNAVAILABLE",
+        "description": "存储后端不可用（MinIO 连接失败、磁盘满等），触发告警并返回服务不可用"
+      }
+    ]
+  },
+  "topology": {
+    "buckets": [
+      {
+        "name": "deploy-packages",
+        "region": "us-east-1",
+        "access": "private",
+        "versioning": false
+      }
+    ],
+    "path_conventions": "{project_id}/{environment_id}/{file_id}_{original_name}"
+  },
+  "connection_contracts": {
+    "minio": {
+      "endpoint": "${MINIO_ENDPOINT:minio:9000}",
+      "access_key": "${MINIO_ACCESS_KEY}",
+      "secret_key": "${MINIO_SECRET_KEY}",
+      "secure": false,
+      "pool_size": 10,
+      "connect_timeout_seconds": 30,
+      "read_timeout_seconds": 300,
+      "write_timeout_seconds": 300
+    },
+    "local": {
+      "root_path": "/data/deploy-packages/",
+      "dir_permission": "0755",
+      "file_permission": "0644"
+    }
+  }
+}
