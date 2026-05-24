@@ -1,6 +1,6 @@
 """Architect Agent — dual-JSON SAD creation and incremental architecture governance.
 
-Long-term state: ``docs/sad.json``
+Long-term state: ``.cogniforge/wiki/sad/sad-{id}.json``
 Per-turn output: ``schemas/se-turn-result-schema.json``
 """
 
@@ -65,19 +65,21 @@ class ArchitectAgent(BaseAgent):
     ) -> dict:
         t0 = time.time()
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        sad_path = self.config.repo_path / "docs" / "sad.json"
-
         prd_context = self._load_latest_prd()
         prd_data = self._load_latest_prd_dict()
 
         # Determine doc_id and version
-        existing = self._load_current_sad()
-        if existing:
-            doc_id = existing.get("meta", {}).get("doc_id", "sad-001")
-            version = existing.get("meta", {}).get("version", 1)
+        existing_sad = self._load_current_sad()
+        if existing_sad:
+            doc_id = existing_sad.get("meta", {}).get("doc_id", "sad-001")
+            version = existing_sad.get("meta", {}).get("version", 1) + 1
         else:
-            doc_id = "sad-001"
+            existing = self.wiki_system.list_documents(DocumentType.SAD)
+            seq = len(existing) + 1
+            doc_id = f"sad-{seq:03d}"
             version = 1
+
+        sad_path = self.wiki_system.agent_path(DocumentType.SAD, doc_id=doc_id)
 
         # Build source_prd from current PRD
         source_prd = {}
@@ -221,24 +223,25 @@ class ArchitectAgent(BaseAgent):
     ) -> dict:
         """Execute a single SE architecture modification turn.
 
-        1. Read docs/prd.json (full state)
+        1. Read current PRD (full state)
         2. Read pm_turn_result (this round's PM delta)
-        3. Read docs/sad.json (current architecture state)
+        3. Read current SAD (current architecture state)
         4. Build SE input package, call LLM to get se-turn-result
         5. Validate se-turn-result against schema
-        6. Apply patches to sad.json
+        6. Apply patches to SAD
         7. Validate sad-schema + consistency checks
         8. Save, re-render, commit
         """
         try:
             t0 = time.time()
-            sad_path = self.config.repo_path / "docs" / "sad.json"
             current_sad = self._load_current_sad()
             if current_sad is None:
                 return self.format_result(
                     status="failed",
-                    message="docs/sad.json 不存在。请先生成 SAD。",
+                    message="SAD 不存在。请先生成 SAD。",
                 )
+            sad_doc_id = current_sad.get("meta", {}).get("doc_id", "sad-001")
+            sad_path = self.wiki_system.agent_path(DocumentType.SAD, doc_id=sad_doc_id)
 
             sad_before_version = current_sad.get("meta", {}).get("version", 1)
             current_sad_json = json.dumps(current_sad, ensure_ascii=False, indent=2)
@@ -248,7 +251,7 @@ class ArchitectAgent(BaseAgent):
             if prd_data is None:
                 return self.format_result(
                     status="failed",
-                    message="docs/prd.json 不存在。请先创建 PRD。",
+                    message="PRD 不存在。请先创建 PRD。",
                 )
             prd_json = json.dumps(prd_data, ensure_ascii=False, indent=2)
 
@@ -282,9 +285,9 @@ class ArchitectAgent(BaseAgent):
             pm_turn_json = json.dumps(pm_turn_result, ensure_ascii=False, indent=2)
 
             user_prompt = (
-                f"## 当前 PRD 状态 (docs/prd.json)\n```json\n{prd_json}\n```\n\n"
+                f"## 当前 PRD 状态\n```json\n{prd_json}\n```\n\n"
                 f"## PM 本轮变更 (pm-turn-result)\n```json\n{pm_turn_json}\n```\n\n"
-                f"## 当前 SAD 状态 (docs/sad.json)\n```json\n{current_sad_json}\n```\n\n"
+                f"## 当前 SAD 状态\n```json\n{current_sad_json}\n```\n\n"
                 f"请根据 PM 本轮变更，生成 se-turn-result JSON。\n"
                 f"分析 PM 变更对架构的影响，判断已有组件是否能承载，\n"
                 f"给出 patches 和 downstream_handoff。"
@@ -492,52 +495,33 @@ class ArchitectAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _load_latest_prd(self) -> str:
-        """Read the current PRD JSON as string from docs/prd.json."""
-        prd_path = Path(self.config.repo_path) / "docs" / "prd.json"
-        if prd_path.exists():
-            try:
-                return prd_path.read_text(encoding="utf-8")
-            except Exception:
-                pass
-        # Fallback: old wiki format
-        import glob
-        pattern = str(Path(self.config.repo_path) / ".cogniforge/wiki/prd/*.json")
-        files = sorted(glob.glob(pattern))
-        if not files:
-            return "(无 PRD 文档)"
-        try:
-            return Path(files[-1]).read_text(encoding="utf-8")
-        except Exception:
-            return "(无法读取 PRD 文档)"
+        """Read the latest PRD JSON from the wiki path as string."""
+        data = self._load_latest_prd_dict()
+        if data:
+            return json.dumps(data, ensure_ascii=False, indent=2)
+        return "(无 PRD 文档)"
 
     def _load_latest_prd_dict(self) -> dict | None:
-        """Read the current PRD JSON as dict from docs/prd.json."""
-        prd_path = Path(self.config.repo_path) / "docs" / "prd.json"
-        if prd_path.exists():
-            try:
-                return json.loads(prd_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, ValueError):
-                pass
-        return None
+        """Read the latest PRD JSON as dict from the wiki path."""
+        docs = self.wiki_system.list_documents(DocumentType.PRD)
+        if not docs:
+            return None
+        latest = docs[-1]
+        try:
+            return json.loads((self.config.repo_path / latest.path).read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError):
+            return None
 
     def _load_current_sad(self) -> dict | None:
-        """Load current SAD from docs/sad.json, fall back to old wiki path."""
-        sad_path = self.config.repo_path / "docs" / "sad.json"
-        if sad_path.exists():
-            try:
-                return json.loads(sad_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, ValueError):
-                pass
-        # Fallback: old wiki format
-        old_dir = self.config.repo_path / ".cogniforge" / "wiki" / "sad"
-        if old_dir.exists():
-            old_files = sorted(old_dir.glob("*.json"))
-            if old_files:
-                try:
-                    return json.loads(old_files[-1].read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, ValueError):
-                    pass
-        return None
+        """Load the latest SAD JSON from the wiki path."""
+        docs = self.wiki_system.list_documents(DocumentType.SAD)
+        if not docs:
+            return None
+        latest = docs[-1]
+        try:
+            return json.loads((self.config.repo_path / latest.path).read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError):
+            return None
 
     # ------------------------------------------------------------------
     # Patches & validation
@@ -620,7 +604,7 @@ class ArchitectAgent(BaseAgent):
 
         return self.format_result(
             status="success",
-            message=f"SAD created at docs/sad.json",
+            message=f"SAD created: {sad_path.stem}",
             artifacts=artifacts,
             reasoning=reasoning,
             data={"timings": timings},

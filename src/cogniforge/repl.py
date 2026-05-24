@@ -1485,11 +1485,6 @@ class Repl:
         }
         dir_path = role_dir_map.get(agent_role)
         artifact_path = None
-        # PM uses docs/prd.json as the canonical source
-        if agent_role == "pm":
-            prd_candidate = repo_path / "docs" / "prd.json"
-            if prd_candidate.exists():
-                artifact_path = prd_candidate
         if artifact_path is None and dir_path:
             files = sorted(_glob.glob(str(repo_path / dir_path / "*.json")))
             artifact_path = Path(files[-1]) if files else None

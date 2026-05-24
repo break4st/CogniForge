@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -22,13 +23,39 @@ _SCHEMA_BASE = """\
   "meta": {{
     "doc_id": "{doc_id}", "type": "lld",
     "module_type": "{module_type}", "module": "{module}",
-    "title": "{title}", "author": "design_agent", "created": "{now}"
+    "title": "{title}", "author": "design_agent", "created": "{now}",
+    "version": 1, "status": "active"
+  }},
+  "source": {{
+    "prd": {{"doc_id": "prd-current", "version": 1, "requirements": ["REQ-001"]}},
+    "sad": {{"doc_id": "sad-001", "version": 1,
+      "components": ["CMP-001"], "contracts": ["CTR-001"], "data_models": []}},
+    "pm_turn_id": "", "se_turn_id": ""
+  }},
+  "module_boundary": {{
+    "in_scope": ["本模块负责的功能范围"],
+    "out_of_scope": ["不属于本模块的内容"],
+    "owned_components": ["CMP-001"],
+    "owned_contracts": [],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": []
   }},
   "overview": {{
     "description": "模块概述（string）",
     "dependencies": ["依赖的模块名"],
     "tech_stack": ["技术栈"]
-  }}"""
+  }},
+  "traceability": [
+    {{
+      "requirement_id": "REQ-001",
+      "sad_component_ids": ["CMP-001"],
+      "sad_contract_ids": ["CTR-001"],
+      "lld_objects": {{"data_models": [], "interfaces": ["IF-001"], "domain_objects": [], "service_contracts": []}},
+      "coverage": "full",
+      "notes": ""
+    }}
+  ]"""
 
 _SCHEMA_DATA_MODELS = """\
   "data_models": [
@@ -36,6 +63,7 @@ _SCHEMA_DATA_MODELS = """\
       "id": "DM-001",
       "name": "模型名",
       "type": "table|reference|struct|store|config",
+      "status": "active", "version": 1,
       "ownership": "canonical|derived|owned",
       // ownership=derived 时必须:
       "source": {{"doc_id": "lld-Primary Database-001", "model_name": "表名"}},
@@ -46,6 +74,14 @@ _SCHEMA_DATA_MODELS = """\
       // type=table 时必须:
       "indexes": [
         {{"name": "索引名", "unique": false, "columns": ["列名"]}}
+      ],
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-001"],
+      "source_contracts": ["CTR-001"],
+      "constraints": [],
+      "lifecycle": {{"create": "", "update": "", "delete": "", "retention": ""}},
+      "change_history": [
+        {{"version": 1, "change_type": "created", "summary": "初始创建", "reason": "首次生成 LLD"}}
       ]
     }}
   ]"""
@@ -55,18 +91,30 @@ _SCHEMA_INTERFACES = """\
     {{
       "id": "IF-001",
       "name": "接口名称",
+      "status": "active", "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
       "method": "GET|POST|PUT|DELETE|INTERNAL|MQ|WS|frontend",
       "endpoint": "/api/...（不含 HTTP 方法前缀，method 与 endpoint 必须分别填写）",
       "description": "接口说明",
       "parameters": [
-        {{"name": "参数名", "type": "类型", "description": "说明"}}
+        {{"name": "参数名", "type": "类型", "in": "path|query|body|header", "required": true, "description": "说明"}}
       ],
+      "request_body": {{}},
       "response": {{
         "status": 200,
         "body": {{"字段名": "类型"}}
       }},
       "error_codes": [
-        {{"code": 400, "message": "错误说明"}}
+        {{"status": 400, "code": "ERROR_CODE", "message": "错误说明"}}
+      ],
+      "auth": {{"required": false, "policy": ""}},
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": ["REQ-001"],
+      "change_history": [
+        {{"version": 1, "change_type": "created", "summary": "初始创建", "reason": "首次生成 LLD"}}
       ]
     }}
   ]"""
@@ -412,16 +460,27 @@ _OWNERSHIP_RULES: dict[str, str] = {
 
 
 class DesignAgent(BaseAgent):
-    """Design Agent (MDE) — two-step thinking→JSON to generate LLD."""
+    """Design Agent (MDE) — dual-JSON: initial generation + patch-based iteration."""
 
     def run(self, input_data: dict, progress_callback: Callable[[str], None] | None = None) -> dict:
         try:
             if self.agent is None:
-                raise AgentError("DesignAgent requires a Claude Code agent")
+                raise AgentError("DesignAgent requires an LLM agent")
 
             def _progress(phase: str) -> None:
                 if progress_callback:
                     progress_callback(phase)
+
+            # ── Interactive modification mode ──
+            mde_request = input_data.get("mde_request")
+            if mde_request:
+                _progress("MDE 正在分析上游变更...")
+                return self.modify_interactive(
+                    mde_request=mde_request,
+                    progress_callback=_progress,
+                )
+
+            # ── Initial creation mode ──
 
             module = input_data.get("module", "unknown")
             title = input_data.get("title", f"LLD - {module}")
@@ -752,7 +811,7 @@ class DesignAgent(BaseAgent):
             return self.format_result(status="failed",
                                        message=f"Claude Code did not produce {json_path}")
 
-        rel_json = json_path.relative_to(self.config.repo_path).as_posix()
+        rel_json = json_abs.relative_to(self.config.repo_path).as_posix()
         self.wiki_system.git_storage.repo.index.add([rel_json])
 
         _progress("渲染 HTML")
@@ -781,6 +840,224 @@ class DesignAgent(BaseAgent):
             decisions=decisions,
         )
 
+    # ------------------------------------------------------------------
+    # Interactive modification — patch-based iteration
+    # ------------------------------------------------------------------
+
+    def modify_interactive(
+        self,
+        mde_request: dict,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> dict:
+        """Execute a single MDE modification turn."""
+        try:
+            t0 = time.time()
+            target = mde_request.get("target_module", {})
+            module = target.get("module", "unknown")
+            module_type = target.get("module_type", "service")
+
+            existing_docs = self.wiki_system.list_documents(DocumentType.LLD, module=module)
+            if existing_docs:
+                lld_path = self.config.repo_path / Path(existing_docs[-1].path)
+            else:
+                seq = 1
+                doc_id = f"lld-{module}-{seq:03d}"
+                lld_path = self.wiki_system.agent_path(DocumentType.LLD, doc_id=doc_id, module=module)
+
+            current_lld = self._load_current_lld(module)
+            lld_before_version = current_lld.get("meta", {}).get("version", 0) if current_lld else 0
+            current_lld_json = json.dumps(current_lld, ensure_ascii=False, indent=2) if current_lld else "{}"
+
+            prd_slice_json = json.dumps(mde_request.get("prd_slice", {}), ensure_ascii=False, indent=2)
+            sad_slice_json = json.dumps(mde_request.get("sad_slice", {}), ensure_ascii=False, indent=2)
+            upstream_json = json.dumps(mde_request.get("upstream_change", {}), ensure_ascii=False, indent=2)
+
+            turn_schema_path = self.config.repo_path / "schemas" / "mde-turn-result-schema.json"
+            turn_schema = None
+            if turn_schema_path.exists():
+                turn_schema = json.loads(turn_schema_path.read_text(encoding="utf-8"))
+
+            system_prompt = (
+                "你是 CogniForge 系统的 MDE (Design) Agent。\n"
+                f"职责: 维护模块 '{module}' ({module_type}) 的详细设计文档 (LLD)。\n"
+                "规则:\n"
+                "1. 不要直接输出完整 LLD 文档，只输出包含 patches 数组的变更结果 JSON。\n"
+                "2. 保留所有已有的 DM-ID、IF-ID、DO-ID、SC-ID 不变。\n"
+                "3. 新增对象时分配新的 ID（下一个可用编号）。\n"
+                "4. 修改已有对象时，version +1 并追加 change_history。\n"
+                "5. 你只能设计本模块范围内的内容，不可越界设计其他模块。\n"
+                "6. SAD contract 由本模块实现时，在 interfaces[] 中建立对应 interface 并填写 source_contract_id。\n"
+                "7. 只消费 contract 时，在 api_integration/connection_contracts 中引用。\n"
+                "8. SAD contract 不完整或不一致时，不可擅自修改——在 upstream_issues 中反馈。\n"
+                "9. 每次 LLD 有变化，meta.version +1。\n"
+                "10. patches 使用 RFC 6902 JSON Pointer 格式路径。\n"
+                "11. 在 implementation_handoff 和 test_handoff 中给出下游任务提示。\n"
+                "所有文字使用中文。"
+            )
+
+            user_prompt = (
+                f"## PRD 切片（本模块相关需求）\n```json\n{prd_slice_json}\n```\n\n"
+                f"## SAD 切片（本模块相关组件/接口）\n```json\n{sad_slice_json}\n```\n\n"
+                f"## 上游变更摘要\n```json\n{upstream_json}\n```\n\n"
+                f"## 当前 LLD 状态\n```json\n{current_lld_json}\n```\n\n"
+                f"请根据上游变更，生成 mde-turn-result JSON。"
+            )
+
+            if progress_callback:
+                progress_callback("MDE 正在分析设计影响...")
+
+            if hasattr(self.agent, "generate_interactive_patch"):
+                response = self.agent.generate_interactive_patch(
+                    current_document=current_lld_json,
+                    user_request=user_prompt,
+                    system_prompt=system_prompt,
+                    turn_schema=turn_schema,
+                )
+            else:
+                response = self.agent.generate_interactive(
+                    current_document=current_lld_json,
+                    user_request=user_prompt,
+                    system_prompt=system_prompt,
+                )
+            llm_timings = response.timings
+
+            raw_content = response.content if hasattr(response, "content") else str(response)
+            json_text = _extract_json(raw_content)
+
+            try:
+                turn_data = json.loads(json_text)
+            except json.JSONDecodeError as e:
+                return self.format_result(status="failed",
+                    message=f"LLM 输出的 JSON 无法解析: {e}", reasoning=raw_content)
+
+            if turn_schema:
+                turn_errors = self._validate_with_schema(turn_data, turn_schema_path)
+                if turn_errors:
+                    return self.format_result(status="failed",
+                        message=f"MDE turn result schema error: {'; '.join(turn_errors[:3])}",
+                        reasoning=raw_content)
+
+            status = turn_data.get("status", "updated")
+            if status == "no_change":
+                return self.format_result(status="success",
+                    message=turn_data.get("message", "无需修改设计。"), reasoning=raw_content)
+            if status == "need_clarification":
+                return self.format_result(status="success",
+                    message=turn_data.get("message", "需要更多信息。"),
+                    data={"open_questions": turn_data.get("open_questions", [])},
+                    reasoning=raw_content)
+            if status == "rejected":
+                return self.format_result(status="failed",
+                    message=turn_data.get("message", "设计变更请求被拒绝。"),
+                    reasoning=raw_content)
+
+            t_apply_start = time.time()
+            patches = turn_data.get("patches", [])
+            if not patches:
+                return self.format_result(status="failed",
+                    message="Turn returned 'updated' status but no patches.",
+                    reasoning=raw_content)
+
+            updated_lld = self._apply_patches(current_lld or {}, patches)
+
+            lld_schema_path = self.config.repo_path / "schemas" / "lld-schema.json"
+            schema_errors = self._validate_with_schema(updated_lld, lld_schema_path)
+            if schema_errors:
+                return self.format_result(status="failed",
+                    message=f"Updated LLD schema error: {'; '.join(schema_errors[:3])}",
+                    reasoning=raw_content)
+
+            lld_path.parent.mkdir(parents=True, exist_ok=True)
+            lld_path.write_text(
+                json.dumps(updated_lld, ensure_ascii=False, indent=2), encoding="utf-8")
+            rel_lld = lld_path.relative_to(self.config.repo_path).as_posix()
+            self.wiki_system.git_storage.repo.index.add([rel_lld])
+
+            from cogniforge.wiki.wiki_renderer import render_file
+            html_path = render_file(lld_path)
+            if html_path:
+                rel_html = html_path.relative_to(self.config.repo_path).as_posix()
+                self.wiki_system.git_storage.repo.index.add([rel_html])
+
+            operation = turn_data.get("operation", "modify")
+            self.wiki_system.git_storage.commit(
+                f"docs: update LLD {module} - {operation}", "design_agent")
+
+            artifacts = [rel_lld]
+            if html_path:
+                artifacts.append(html_path.relative_to(self.config.repo_path).as_posix())
+
+            t_apply = time.time() - t_apply_start
+            t_total = time.time() - t0
+            timings = []
+            if llm_timings:
+                timings.extend(llm_timings)
+            timings.append({"phase": "应用变更", "duration_s": round(t_apply, 1)})
+            timings.append({"phase": "总计", "duration_s": round(t_total, 1)})
+
+            return self.format_result(
+                status="success",
+                message=turn_data.get("message", "LLD updated."),
+                artifacts=artifacts,
+                data={
+                    "open_questions": turn_data.get("open_questions", []),
+                    "upstream_issues": turn_data.get("upstream_issues", []),
+                    "affected_lld_objects": turn_data.get("affected_lld_objects", []),
+                    "implementation_handoff": turn_data.get("implementation_handoff", []),
+                    "test_handoff": turn_data.get("test_handoff", []),
+                    "new_version": updated_lld["meta"].get("version", 1),
+                    "timings": timings,
+                },
+                reasoning=raw_content,
+            )
+
+        except Exception as e:
+            return self.format_result(status="failed", message=str(e))
+
+    # ------------------------------------------------------------------
+    # Document I/O helpers
+    # ------------------------------------------------------------------
+
+    def _load_current_lld(self, module: str) -> dict | None:
+        """Load the latest LLD JSON for a module from the wiki path."""
+        docs = self.wiki_system.list_documents(DocumentType.LLD, module=module)
+        if not docs:
+            return None
+        latest = docs[-1]
+        try:
+            return json.loads((self.config.repo_path / Path(latest.path)).read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+    @staticmethod
+    def _apply_patches(doc: dict, patches: list[dict]) -> dict:
+        """Apply RFC 6902 JSON Patch operations to doc dict."""
+        from jsonpatch import JsonPatch
+        patch = JsonPatch(patches)
+        return patch.apply(doc)
+
+    @staticmethod
+    def _validate_with_schema(data: dict, schema_path: Path) -> list[str]:
+        """Validate dict against JSON schema. Returns list of error messages."""
+        if not schema_path.exists():
+            return []
+        try:
+            import jsonschema
+            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            validator = jsonschema.Draft7Validator(schema)
+            errors = list(validator.iter_errors(data))
+            return [e.message for e in errors]
+        except ImportError:
+            return []
+        except Exception as e:
+            return [f"Schema validation error: {e}"]
+
+    # SAD component type → ModuleType mapping
+
+
+# ---------------------------------------------------------------------------
+# JSON extraction
+# ---------------------------------------------------------------------------
 
 def _extract_json(text: str) -> str:
     """Strip markdown code fences, return bare JSON."""

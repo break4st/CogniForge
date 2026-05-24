@@ -1,7 +1,7 @@
 """PM Agent - Product Manager Agent for PRD creation and iterative management
 
 Dual-JSON architecture:
-- ``docs/prd.json`` — long-term PRD state (stable IDs, versioning, change history)
+- ``.cogniforge/wiki/prd/prd-current.json`` — long-term PRD state (stable IDs, versioning, change history)
 - ``pm-turn-result.schema.json`` — per-turn structured change output (JSON Patch)
 """
 
@@ -69,7 +69,7 @@ class PMAgent(BaseAgent):
     def _run_raw(self, raw_text: str) -> dict:
         t0 = time.time()
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        prd_path = self.config.repo_path / "docs" / "prd.json"
+        prd_path = self.wiki_system.agent_path(DocumentType.PRD, doc_id="prd-current")
 
         prompt = (
             f"根据以下用户描述，创建一份完整的产品需求文档 (PRD)。\n"
@@ -115,7 +115,7 @@ class PMAgent(BaseAgent):
     ) -> dict:
         t0 = time.time()
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        prd_path = self.config.repo_path / "docs" / "prd.json"
+        prd_path = self.wiki_system.agent_path(DocumentType.PRD, doc_id="prd-current")
 
         prompt = (
             f"根据以下数据创建一份产品需求文档 (PRD)。\n\n"
@@ -234,7 +234,7 @@ class PMAgent(BaseAgent):
 
         return self.format_result(
             status="success",
-            message=f"PRD created at docs/prd.json",
+            message=f"PRD created: {prd_path.stem}",
             artifacts=artifacts,
             reasoning=raw_content,
             data={"timings": timings},
@@ -260,13 +260,14 @@ class PMAgent(BaseAgent):
         """
         try:
             t0 = time.time()
-            prd_path = self.config.repo_path / "docs" / "prd.json"
             current_prd = self._load_current_prd()
             if current_prd is None:
                 return self.format_result(
                     status="failed",
-                    message="docs/prd.json 不存在。请先创建 PRD。",
+                    message="PRD 不存在。请先创建 PRD。",
                 )
+            prd_doc_id = current_prd.get("meta", {}).get("doc_id", "prd-current")
+            prd_path = self.wiki_system.agent_path(DocumentType.PRD, doc_id=prd_doc_id)
 
             current_json = json.dumps(current_prd, ensure_ascii=False, indent=2)
 
@@ -439,23 +440,15 @@ class PMAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _load_current_prd(self) -> dict | None:
-        """Load current PRD from docs/prd.json, fall back to old wiki format."""
-        prd_path = self.config.repo_path / "docs" / "prd.json"
-        if prd_path.exists():
-            try:
-                return json.loads(prd_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, ValueError):
-                pass
-        # Fallback: try old wiki format
-        old_dir = self.config.repo_path / ".cogniforge" / "wiki" / "prd"
-        if old_dir.exists():
-            old_files = sorted(old_dir.glob("*.json"))
-            if old_files:
-                try:
-                    return json.loads(old_files[-1].read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, ValueError):
-                    pass
-        return None
+        """Load the latest PRD JSON from the wiki path."""
+        docs = self.wiki_system.list_documents(DocumentType.PRD)
+        if not docs:
+            return None
+        latest = docs[-1]
+        try:
+            return json.loads((self.config.repo_path / latest.path).read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError):
+            return None
 
     @staticmethod
     def _assign_ids(items: list[dict], prefix: str = "REQ") -> list[dict]:

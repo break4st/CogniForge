@@ -1144,7 +1144,6 @@ def render_file(json_path: Path, wiki_root: Path | None = None) -> Optional[Path
         return None
 
     # Map .cogniforge/wiki/{type}[/{module}]/file.json → .cogniforge/html/{type}[/{module}]/file.html
-    # Also handle docs/prd.json → .cogniforge/html/prd/prd.html
     path_str = json_path.as_posix()
     marker = ".cogniforge/wiki/"
     idx = path_str.find(marker)
@@ -1152,11 +1151,6 @@ def render_file(json_path: Path, wiki_root: Path | None = None) -> Optional[Path
         cogniforge_root = Path(path_str[:idx + len(".cogniforge/")])
         rel = Path(path_str[idx + len(marker):])
         html_dir = cogniforge_root / "html" / rel.parent
-    elif path_str.endswith("docs/prd.json"):
-        # docs/prd.json lives outside .cogniforge/wiki/ — render into .cogniforge/html/prd/
-        html_dir = json_path.parent.parent / ".cogniforge" / "html" / "prd"
-    elif path_str.endswith("docs/sad.json"):
-        html_dir = json_path.parent.parent / ".cogniforge" / "html" / "sad"
     else:
         html_dir = json_path.parent.parent / "html"
     html_dir.mkdir(parents=True, exist_ok=True)
@@ -2363,6 +2357,51 @@ def _render_lld(d: dict) -> str:
             for t in tech
         )
         parts.append(f'<div style="margin-bottom:8px">{tags}</div>')
+
+    # Source info
+    src = d.get("source", {})
+    if src:
+        prd_info = src.get("prd", {})
+        sad_info = src.get("sad", {})
+        src_parts = []
+        if prd_info:
+            src_parts.append(f'PRD {_esc(prd_info.get("doc_id","?"))} v{prd_info.get("version","?")}')
+        if sad_info:
+            src_parts.append(f'SAD {_esc(sad_info.get("doc_id","?"))} v{sad_info.get("version","?")}')
+        se_turn = src.get("se_turn_id", "")
+        if se_turn:
+            src_parts.append(f'SE: {_esc(se_turn)}')
+        if src_parts:
+            parts.append(f'<div style="font-size:0.82em;color:var(--c-muted);margin-bottom:8px">'
+                         f'基于: {" · ".join(src_parts)}</div>')
+
+    # Module boundary
+    boundary = d.get("module_boundary", {})
+    if boundary:
+        in_scope = boundary.get("in_scope", [])
+        out_scope = boundary.get("out_of_scope", [])
+        owned_comps = boundary.get("owned_components", [])
+        owned_ctrs = boundary.get("owned_contracts", [])
+        consumed_ctrs = boundary.get("consumed_contracts", [])
+        if in_scope or out_scope or owned_comps or owned_ctrs:
+            b_parts = []
+            if in_scope:
+                tags = " ".join(f'<span class="cn-tag prop">{_esc(s)}</span>' for s in in_scope)
+                b_parts.append(f'<div style="margin:4px 0"><strong style="font-size:0.8em;color:var(--c-green)">范围内: </strong>{tags}</div>')
+            if out_scope:
+                tags = " ".join(f'<span class="cn-tag">{_esc(s)}</span>' for s in out_scope)
+                b_parts.append(f'<div style="margin:4px 0"><strong style="font-size:0.8em;color:var(--c-red)">范围外: </strong>{tags}</div>')
+            if owned_comps:
+                tags = " ".join(f'<span style="font-family:monospace;font-size:0.82em;color:var(--c-accent)">{_esc(c)}</span>' for c in owned_comps)
+                b_parts.append(f'<div style="margin:4px 0"><strong style="font-size:0.8em;color:var(--c-muted)">拥有组件: </strong>{tags}</div>')
+            if owned_ctrs:
+                tags = " ".join(f'<span style="font-family:monospace;font-size:0.82em;color:var(--c-accent)">{_esc(c)}</span>' for c in owned_ctrs)
+                b_parts.append(f'<div style="margin:4px 0"><strong style="font-size:0.8em;color:var(--c-muted)">实现契约: </strong>{tags}</div>')
+            if consumed_ctrs:
+                tags = " ".join(f'<span style="font-family:monospace;font-size:0.82em;color:var(--c-accent2)">{_esc(c)}</span>' for c in consumed_ctrs)
+                b_parts.append(f'<div style="margin:4px 0"><strong style="font-size:0.8em;color:var(--c-muted)">消费契约: </strong>{tags}</div>')
+            parts.append(f'<details class="contract-group" style="margin-bottom:12px"><summary>📐 模块边界</summary>'
+                         f'<div style="padding:8px 16px">{"".join(b_parts)}</div></details>')
     parts.append(_SECTION_FOOT)
 
     # ═══════════════════════════════════════════════════════════
@@ -3240,6 +3279,13 @@ def _render_lld(d: dict) -> str:
                     )
                 cat_html += '</div>'
                 parts.append(cat_html)
+        parts.append(_SECTION_FOOT)
+
+    # ── Traceability ──
+    traces = d.get("traceability", [])
+    if traces:
+        parts.append(_section_header("🔍", f"需求追溯 ({len(traces)})", "rgba(124,111,247,0.12)", "traceability"))
+        parts.append(_render_traceability_section(traces))
         parts.append(_SECTION_FOOT)
 
     parts.append(_PAGE_END_SIDEBAR)

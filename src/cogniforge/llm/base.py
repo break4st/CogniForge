@@ -208,7 +208,7 @@ class BaseLLMAdapter(ABC):
                 "status": "updated",
                 "operation": "modify",
                 "doc_changed": "prd",
-                "changed_file": "docs/prd.json",
+                "changed_file": ".cogniforge/wiki/prd/prd-current.json",
                 "affected_requirements": [],
                 "conflicts": [],
                 "message": "Document updated via fallback (full replace).",

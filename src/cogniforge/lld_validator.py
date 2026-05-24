@@ -87,6 +87,9 @@ def validate_lld_json(json_path: Path) -> dict:
 
     base = {"meta": meta, "module": module, "module_type": module_type}
 
+    # ── 0. JSON Schema structural validation ──
+    _run_schema_validation(data, violations)
+
     # ── 1. Meta completeness ──
     _check_meta(meta, violations)
 
@@ -230,6 +233,29 @@ def validate_lld_json(json_path: Path) -> dict:
         if not eh.get("strategy"):
             warnings.append(_v("error_handling", "strategy", "error_handling 缺少 strategy"))
 
+    # ── 5. Source consistency checks ──
+    src = data.get("source", {})
+    if src:
+        if not src.get("prd", {}).get("doc_id"):
+            violations.append(_v("source", "prd.doc_id", "source.prd.doc_id 不可为空"))
+        if not src.get("sad", {}).get("doc_id"):
+            violations.append(_v("source", "sad.doc_id", "source.sad.doc_id 不可为空"))
+
+    # ── 6. Module boundary checks ──
+    boundary = data.get("module_boundary", {})
+    if boundary:
+        in_scope = boundary.get("in_scope", [])
+        if not in_scope:
+            warnings.append(_v("module_boundary", "in_scope", "module_boundary.in_scope 为空，建议明确模块范围"))
+
+    # ── 7. Traceability checks ──
+    traces = data.get("traceability", [])
+    for t in traces:
+        req_id = t.get("requirement_id", "")
+        if not t.get("sad_component_ids") and not t.get("sad_contract_ids"):
+            warnings.append(_v("traceability", req_id,
+                             f"追溯条目 {req_id} 未关联任何 SAD component 或 contract"))
+
     return {
         "passed": len(violations) == 0,
         "violations": violations,
@@ -291,3 +317,21 @@ def _load_json(path: Path) -> dict:
     # Attempt repair
     from cogniforge.wiki.wiki_renderer import load_json_with_repair
     return load_json_with_repair(path)
+
+
+def _run_schema_validation(data: dict, violations: list) -> None:
+    """Validate LLD data against lld-schema.json if the schema file exists."""
+    schema_path = Path(__file__).parent.parent.parent / "schemas" / "lld-schema.json"
+    if not schema_path.exists():
+        return
+    try:
+        import jsonschema
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        validator = jsonschema.Draft7Validator(schema)
+        for e in validator.iter_errors(data):
+            path_str = " → ".join(str(p) for p in e.absolute_path) if e.absolute_path else "(root)"
+            violations.append(_v("schema", path_str, e.message))
+    except ImportError:
+        pass
+    except Exception as e:
+        violations.append(_v("schema", "load", f"Schema 校验异常: {e}"))
