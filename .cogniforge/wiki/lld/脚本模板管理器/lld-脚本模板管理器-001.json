@@ -1,0 +1,760 @@
+{
+  "meta": {
+    "doc_id": "lld-script-template-manager-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "脚本模板管理器",
+    "title": "脚本模板管理器详细设计",
+    "author": "design_agent",
+    "created": "2025-05-24T00:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-001"
+      ],
+      "contracts": [
+        "CTR-001"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "提供内置默认启动脚本（start.sh）与停止脚本（stop.sh）模板",
+      "允许用户根据项目或环境维度自定义脚本内容并持久化存储",
+      "支持脚本模板的创建、读取、更新、删除，并维护继承关系（自定义优先，否则回退至默认）",
+      "根据部署时的环境变量对模板进行占位符替换，生成最终可执行脚本",
+      "在保存自定义脚本时执行基本语法校验（如 shebang 检查、非法字符过滤）"
+    ],
+    "out_of_scope": [
+      "实际的部署执行、文件上传、SSH 连接等（由部署执行引擎和 SSH 模块负责）",
+      "环境变量值的获取与维护（假设由环境/项目模块提供底层数据，本模块仅读取）",
+      "前端界面渲染与交互逻辑（由 React 表现层处理）"
+    ],
+    "owned_components": [
+      "CMP-001"
+    ],
+    "owned_contracts": [
+      "CTR-001"
+    ],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "脚本模板管理器是部署系统的支撑服务，负责管理启动/停止脚本模板的生命周期。它提供默认模板，并允许用户针对特定环境或项目进行自定义。在部署时，根据上下文进行变量替换，生成最终脚本。同时内置轻量级语法校验。",
+    "dependencies": [
+      "Primary Database",
+      "部署执行引擎"
+    ],
+    "tech_stack": [
+      "Python 3.10+",
+      "SQLAlchemy",
+      "Flask",
+      "SQLite 3"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [
+        "CTR-001"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003",
+          "IF-004"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005",
+          "DO-006",
+          "DO-007"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": "默认模板内容可由配置文件或代码常量定义，不在数据库持久化，但可通过查询接口统一返回"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "ScriptTemplate",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "script_template"
+      },
+      "description": "存储用户自定义的脚本模板（按环境和项目维度），同时包含默认模板可通过 scope 为 DEFAULT 的行进行逻辑区分",
+      "fields": [
+        {
+          "name": "id",
+          "type": "integer",
+          "required": true,
+          "description": "主键，自增唯一标识"
+        },
+        {
+          "name": "name",
+          "type": "string(128)",
+          "required": true,
+          "description": "模板名称"
+        },
+        {
+          "name": "content",
+          "type": "text",
+          "required": true,
+          "description": "脚本内容（包含占位符）"
+        },
+        {
+          "name": "script_type",
+          "type": "string(16)",
+          "required": true,
+          "description": "脚本类型（START 或 STOP）"
+        },
+        {
+          "name": "scope",
+          "type": "string(16)",
+          "required": true,
+          "description": "作用域（DEFAULT, PROJECT, ENVIRONMENT）"
+        },
+        {
+          "name": "project_id",
+          "type": "integer",
+          "required": false,
+          "description": "当 scope=PROJECT 时关联的项目ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "integer",
+          "required": false,
+          "description": "当 scope=ENVIRONMENT 时关联的环境ID"
+        },
+        {
+          "name": "created_at",
+          "type": "datetime",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "datetime",
+          "required": true,
+          "description": "最后更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_scope_project_env_type",
+          "unique": true,
+          "columns": [
+            "scope",
+            "project_id",
+            "environment_id",
+            "script_type"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [
+        "scope 为 PROJECT 时 project_id 不为空，environment_id 为空；scope 为 ENVIRONMENT 时 environment_id 不为空；scope 为 DEFAULT 时两关联字段均为空"
+      ],
+      "lifecycle": {
+        "create": "用户保存自定义模板时插入",
+        "update": "再次编辑时更新内容",
+        "delete": "显式删除自定义模板",
+        "retention": "默认模板永不删除"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "list_script_templates",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "list_script_templates(project_id, environment_id)",
+      "description": "根据项目ID和环境ID，返回该上下文中可用的脚本模板列表（包括默认模板和覆盖的自定义模板）",
+      "parameters": [
+        {
+          "name": "project_id",
+          "type": "integer",
+          "in": "body",
+          "required": false,
+          "description": "项目ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "integer",
+          "in": "body",
+          "required": false,
+          "description": "环境ID"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "templates": [
+            {
+              "id": "integer",
+              "name": "string",
+              "script_type": "string",
+              "scope": "string",
+              "content": "string"
+            }
+          ]
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_PARAMETER",
+          "message": "project_id 和 environment_id 必须同时提供或同时不提供"
+        }
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "get_script_template",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "get_script_template(template_id)",
+      "description": "根据模板ID获取单个模板的详细信息",
+      "parameters": [
+        {
+          "name": "template_id",
+          "type": "integer",
+          "in": "body",
+          "required": true,
+          "description": "模板ID"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "integer",
+          "name": "string",
+          "script_type": "string",
+          "scope": "string",
+          "content": "string",
+          "project_id": "integer|null",
+          "environment_id": "integer|null"
+        }
+      },
+      "errors": [
+        {
+          "code": "TEMPLATE_NOT_FOUND",
+          "message": "指定ID的模板不存在"
+        }
+      ]
+    },
+    {
+      "id": "IF-003",
+      "name": "delete_custom_template",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "delete_custom_template(template_id)",
+      "description": "删除用户自定义模板（不允许删除默认模板）",
+      "parameters": [
+        {
+          "name": "template_id",
+          "type": "integer",
+          "in": "body",
+          "required": true,
+          "description": "要删除的模板ID"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "errors": [
+        {
+          "code": "TEMPLATE_NOT_FOUND",
+          "message": "指定ID的模板不存在"
+        },
+        {
+          "code": "DEFAULT_TEMPLATE_DELETE_FORBIDDEN",
+          "message": "不允许删除默认模板"
+        }
+      ]
+    },
+    {
+      "id": "IF-004",
+      "name": "generate_script",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "generate_script(template_id, variables)",
+      "description": "根据模板ID和变量映射，执行占位符替换并返回生成的脚本内容",
+      "parameters": [
+        {
+          "name": "template_id",
+          "type": "integer",
+          "in": "body",
+          "required": true,
+          "description": "模板ID"
+        },
+        {
+          "name": "variables",
+          "type": "object",
+          "in": "body",
+          "required": true,
+          "description": "变量键值对映射"
+        }
+      ],
+      "request_body": {
+        "template_id": "integer",
+        "variables": "object"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "generated_script": "string"
+        }
+      },
+      "errors": [
+        {
+          "code": "TEMPLATE_NOT_FOUND",
+          "message": "指定ID的模板不存在"
+        },
+        {
+          "code": "MISSING_VARIABLE",
+          "message": "模板中存在未提供值的占位符"
+        }
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "ScriptTemplate",
+      "object_type": "entity",
+      "description": "脚本模板实体",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "integer",
+          "required": true,
+          "description": "唯一标识"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "模板名称"
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "required": true,
+          "description": "脚本内容"
+        },
+        {
+          "name": "script_type",
+          "type": "string",
+          "required": true,
+          "description": "START 或 STOP"
+        },
+        {
+          "name": "scope",
+          "type": "string",
+          "required": true,
+          "description": "DEFAULT, PROJECT, ENVIRONMENT"
+        },
+        {
+          "name": "project_id",
+          "type": "integer",
+          "required": false,
+          "description": "关联项目ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "integer",
+          "required": false,
+          "description": "关联环境ID"
+        }
+      ],
+      "behaviors": [],
+      "states": [],
+      "relationships": []
+    },
+    {
+      "id": "DO-002",
+      "name": "TemplateListResponse",
+      "object_type": "value_object",
+      "description": "模板列表响应",
+      "attributes": [
+        {
+          "name": "templates",
+          "type": "array",
+          "required": true,
+          "description": "模板摘要列表"
+        }
+      ],
+      "behaviors": [],
+      "states": [],
+      "relationships": []
+    },
+    {
+      "id": "DO-003",
+      "name": "TemplateDetailResponse",
+      "object_type": "value_object",
+      "description": "单个模板详情响应",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "integer",
+          "required": true,
+          "description": "模板ID"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "模板名称"
+        },
+        {
+          "name": "script_type",
+          "type": "string",
+          "required": true,
+          "description": "脚本类型"
+        },
+        {
+          "name": "scope",
+          "type": "string",
+          "required": true,
+          "description": "作用域"
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "required": true,
+          "description": "脚本内容"
+        },
+        {
+          "name": "project_id",
+          "type": "integer",
+          "required": false,
+          "description": "项目ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "integer",
+          "required": false,
+          "description": "环境ID"
+        }
+      ],
+      "behaviors": [],
+      "states": [],
+      "relationships": []
+    },
+    {
+      "id": "DO-004",
+      "name": "DeleteResponse",
+      "object_type": "value_object",
+      "description": "删除操作响应",
+      "attributes": [
+        {
+          "name": "success",
+          "type": "boolean",
+          "required": true,
+          "description": "是否成功"
+        }
+      ],
+      "behaviors": [],
+      "states": [],
+      "relationships": []
+    },
+    {
+      "id": "DO-005",
+      "name": "GenerateScriptRequest",
+      "object_type": "value_object",
+      "description": "生成脚本请求",
+      "attributes": [
+        {
+          "name": "template_id",
+          "type": "integer",
+          "required": true,
+          "description": "模板ID"
+        },
+        {
+          "name": "variables",
+          "type": "map",
+          "required": true,
+          "description": "变量映射"
+        }
+      ],
+      "behaviors": [],
+      "states": [],
+      "relationships": []
+    },
+    {
+      "id": "DO-006",
+      "name": "GenerateScriptResponse",
+      "object_type": "value_object",
+      "description": "生成脚本响应",
+      "attributes": [
+        {
+          "name": "generated_script",
+          "type": "string",
+          "required": true,
+          "description": "生成的脚本内容"
+        }
+      ],
+      "behaviors": [],
+      "states": [],
+      "relationships": []
+    },
+    {
+      "id": "DO-007",
+      "name": "TemplateSummary",
+      "object_type": "value_object",
+      "description": "模板列表中的摘要项",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "integer",
+          "required": true,
+          "description": "模板ID"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "模板名称"
+        },
+        {
+          "name": "script_type",
+          "type": "string",
+          "required": true,
+          "description": "脚本类型"
+        },
+        {
+          "name": "scope",
+          "type": "string",
+          "required": true,
+          "description": "作用域"
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "required": true,
+          "description": "脚本内容"
+        }
+      ],
+      "behaviors": [],
+      "states": [],
+      "relationships": []
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "description": "当查询脚本模板列表时，应合并默认模板和指定上下文的自定义模板，自定义模板优先覆盖同类型默认模板",
+      "type": "invariant"
+    },
+    {
+      "id": "BR-002",
+      "description": "删除模板时，只能删除scope非DEFAULT的模板，否则拒绝操作",
+      "type": "constraint"
+    },
+    {
+      "id": "BR-003",
+      "description": "生成脚本时，必须提供模板中所有占位符对应的变量值，否则拒绝生成并提示缺失变量",
+      "type": "precondition"
+    },
+    {
+      "id": "BR-004",
+      "description": "自定义模板在保存时必须进行语法校验：至少包含合法的 shebang 行，且不包含危险字符",
+      "type": "invariant"
+    }
+  ],
+  "error_handling": {
+    "strategy": "每个接口方法内部捕获异常并转换为统一的错误响应格式 { error_code: string, message: string }，对外不暴露内部异常细节。对于数据库操作异常重试一次，仍失败则向上抛出服务不可用错误。",
+    "definitions": [
+      {
+        "code": "INVALID_PARAMETER",
+        "message": "请求参数不符合规范",
+        "http_status": 400
+      },
+      {
+        "code": "TEMPLATE_NOT_FOUND",
+        "message": "请求的模板不存在",
+        "http_status": 404
+      },
+      {
+        "code": "DEFAULT_TEMPLATE_DELETE_FORBIDDEN",
+        "message": "不允许删除默认模板",
+        "http_status": 403
+      },
+      {
+        "code": "MISSING_VARIABLE",
+        "message": "生成脚本时缺少必要的变量",
+        "http_status": 400
+      },
+      {
+        "code": "SYNTAX_ERROR",
+        "message": "模板内容语法校验失败",
+        "http_status": 400
+      },
+      {
+        "code": "DATABASE_ERROR",
+        "message": "数据库操作失败",
+        "http_status": 500
+      }
+    ]
+  },
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "ScriptTemplateService",
+      "provider_component_id": "CMP-001",
+      "methods": [
+        {
+          "name": "list_script_templates",
+          "signature": "list_script_templates(project_id: int, environment_id: int) -> TemplateListResponse",
+          "precondition": "project_id 和 environment_id 要么同时提供，要么同时为 None",
+          "postcondition": "返回合并后的模板摘要列表，自定义模板覆盖同类型默认模板",
+          "description": "根据项目和环境（可选）获取合并后的脚本模板列表",
+          "parameters": [
+            {
+              "name": "project_id",
+              "type": "integer",
+              "required": false,
+              "description": "项目ID"
+            },
+            {
+              "name": "environment_id",
+              "type": "integer",
+              "required": false,
+              "description": "环境ID"
+            }
+          ],
+          "returns": {
+            "type": "TemplateListResponse",
+            "description": "包含模板摘要列表的响应对象"
+          }
+        },
+        {
+          "name": "get_script_template",
+          "signature": "get_script_template(template_id: int) -> TemplateDetailResponse",
+          "precondition": "template_id 对应的模板必须存在",
+          "postcondition": "返回该模板的完整信息",
+          "description": "获取单个模板的详细信息",
+          "parameters": [
+            {
+              "name": "template_id",
+              "type": "integer",
+              "required": true,
+              "description": "模板ID"
+            }
+          ],
+          "returns": {
+            "type": "TemplateDetailResponse",
+            "description": "模板详情响应对象"
+          }
+        },
+        {
+          "name": "delete_custom_template",
+          "signature": "delete_custom_template(template_id: int) -> DeleteResponse",
+          "precondition": "模板存在且 scope != DEFAULT",
+          "postcondition": "模板被成功删除，返回成功标志",
+          "description": "删除指定的自定义模板",
+          "parameters": [
+            {
+              "name": "template_id",
+              "type": "integer",
+              "required": true,
+              "description": "模板ID"
+            }
+          ],
+          "returns": {
+            "type": "DeleteResponse",
+            "description": "成功标志"
+          }
+        },
+        {
+          "name": "generate_script",
+          "signature": "generate_script(request: GenerateScriptRequest) -> GenerateScriptResponse",
+          "precondition": "模板存在且所有占位符变量均在 request.variables 中提供",
+          "postcondition": "返回替换变量后的最终脚本内容",
+          "description": "根据模板和变量映射生成最终脚本",
+          "parameters": [
+            {
+              "name": "request",
+              "type": "GenerateScriptRequest",
+              "required": true,
+              "description": "包含 template_id 和 variables 的请求对象"
+            }
+          ],
+          "returns": {
+            "type": "GenerateScriptResponse",
+            "description": "包含生成脚本内容的响应对象"
+          }
+        }
+      ]
+    }
+  ]
+}
