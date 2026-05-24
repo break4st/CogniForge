@@ -1,0 +1,1077 @@
+{
+  "meta": {
+    "doc_id": "lld-redis-001",
+    "type": "lld",
+    "module_type": "infrastructure",
+    "module": "Redis",
+    "title": "Redis 基础设施模块详细设计",
+    "author": "design_agent",
+    "created": "2025-04-14T10:30:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-001"
+      ],
+      "contracts": [
+        "CTR-001"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "用户会话管理：存储会话信息，支持TTL自动过期与刷新",
+      "JWT黑名单：记录被吊销的令牌JTI，配合TTL自动清理",
+      "部署日志实时转发：通过Redis Pub/Sub将部署执行日志推送给订阅方",
+      "通用热点缓存：提供任意Key-Value缓存，提升查询性能"
+    ],
+    "out_of_scope": [
+      "数据的持久化到磁盘（由MySQL负责）",
+      "业务消息队列或任务调度（由RabbitMQ负责）",
+      "用户认证与授权逻辑（由Auth Service实现）",
+      "网络通信协议转换（HTTP/WebSocket由Gateway/服务层处理）"
+    ],
+    "owned_components": [
+      "CMP-001"
+    ],
+    "owned_contracts": [],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "缓存与临时数据存储，用于存储用户会话、JWT黑名单以及部署日志流的临时转发。",
+    "dependencies": [],
+    "tech_stack": [
+      "Redis 7",
+      "redis-py",
+      "Python 3.11"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [
+        "CTR-001"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002",
+          "DM-003",
+          "DM-004"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003",
+          "IF-004",
+          "IF-005",
+          "IF-006",
+          "IF-007",
+          "IF-008",
+          "IF-009",
+          "IF-010",
+          "IF-011"
+        ],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": "REQ-001 覆盖系统对用户会话缓存与JWT吊销的支持，所有数据模型和接口均为此设计"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "Session Store",
+      "type": "store",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "用户会话存储。以session:{session_id}为键，存储Hash结构，包含用户ID、用户名、令牌、角色、创建时间和最后访问时间。设置TTL并可在访问时刷新。",
+      "fields": [
+        {
+          "name": "user_id",
+          "type": "string",
+          "required": true,
+          "description": "用户唯一标识"
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "required": true,
+          "description": "用户名"
+        },
+        {
+          "name": "access_token",
+          "type": "string",
+          "required": true,
+          "description": "访问令牌"
+        },
+        {
+          "name": "refresh_token",
+          "type": "string",
+          "required": true,
+          "description": "刷新令牌"
+        },
+        {
+          "name": "roles",
+          "type": "string",
+          "required": true,
+          "description": "用户角色，以JSON数组字符串存储"
+        },
+        {
+          "name": "created_at",
+          "type": "string",
+          "required": true,
+          "description": "会话创建时间，ISO8601格式"
+        },
+        {
+          "name": "last_access",
+          "type": "string",
+          "required": true,
+          "description": "最后访问时间，ISO8601格式"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "用户登录时创建session:{session_id}键，写入Hash字段，设置TTL默认1800秒",
+        "update": "每次令牌验证时更新last_access字段并重置TTL",
+        "delete": "用户主动登出时删除键；TTL到期自动销毁",
+        "retention": "无额外保留策略，完全依赖TTL"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "JWT Blacklist",
+      "type": "store",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "JWT黑名单。以blacklist:{jti}为键，值为固定字符串\"1\"，利用键的存在性判断令牌是否被吊销。设置TTL等于JWT剩余有效时间。",
+      "fields": [
+        {
+          "name": "value",
+          "type": "string",
+          "required": true,
+          "description": "固定值\"1\"，仅用于标记"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "管理员吊销令牌或用户登出时添加，SET键并设EXPIRE为令牌剩余有效期",
+        "update": "无",
+        "delete": "TTL到期自动删除",
+        "retention": "不额外保留"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-003",
+      "name": "Deploy Log Channel",
+      "type": "store",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "部署日志发布/订阅频道。频道模式为deploy_logs:{deployment_id}，消息为包含部署ID、时间戳、日志级别、消息和步骤索引的JSON对象。",
+      "fields": [
+        {
+          "name": "deployment_id",
+          "type": "string",
+          "required": true,
+          "description": "部署任务ID"
+        },
+        {
+          "name": "timestamp",
+          "type": "string",
+          "required": true,
+          "description": "日志时间戳，ISO8601格式"
+        },
+        {
+          "name": "log_level",
+          "type": "string",
+          "required": true,
+          "description": "日志级别，如INFO、ERROR"
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "required": true,
+          "description": "日志内容"
+        },
+        {
+          "name": "step_index",
+          "type": "integer",
+          "required": false,
+          "description": "当前步骤序号，可选"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "部署开始时由Deploy Engine发布第一条消息，频道自动创建",
+        "update": "持续发布消息直至部署结束",
+        "delete": "无消息时频道自动消失，无主动删除",
+        "retention": "无，消息不持久化"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-004",
+      "name": "Generic Cache",
+      "type": "store",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "通用缓存。以cache:{namespace}:{key}或调用方自定义模式为键，存储字符串值。调用方指定TTL，未指定时默认3600秒。",
+      "fields": [
+        {
+          "name": "value",
+          "type": "string",
+          "required": true,
+          "description": "序列化后的缓存数据，通常为JSON字符串"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "调用方通过cache.set写入键值并指定TTL",
+        "update": "调用方可通过set覆盖更新",
+        "delete": "调用方主动删除或TTL到期自动删除",
+        "retention": "依赖TTL，无额外保留"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "创建会话",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "session.create",
+      "description": "创建用户会话，写入Hash字段并设置TTL",
+      "parameters": [
+        {
+          "name": "session_id",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "会话唯一ID"
+        },
+        {
+          "name": "user_data",
+          "type": "object",
+          "in": "body",
+          "required": true,
+          "description": "包含user_id, username, access_token, refresh_token, roles的字典"
+        },
+        {
+          "name": "ttl_seconds",
+          "type": "integer",
+          "in": "body",
+          "required": false,
+          "description": "过期时间秒数，默认1800"
+        }
+      ],
+      "request_body": {
+        "session_id": "string",
+        "user_data": "object",
+        "ttl_seconds": "integer"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 500,
+          "code": "REDIS_CONNECTION_ERROR",
+          "message": "Redis连接失败或超时"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "读取会话",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "session.get",
+      "description": "根据session_id获取完整会话数据",
+      "parameters": [
+        {
+          "name": "session_id",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "会话ID"
+        }
+      ],
+      "request_body": {
+        "session_id": "string"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user_id": "string",
+          "username": "string",
+          "access_token": "string",
+          "refresh_token": "string",
+          "roles": "string",
+          "created_at": "string",
+          "last_access": "string"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "会话不存在"
+        },
+        {
+          "status": 500,
+          "code": "REDIS_CONNECTION_ERROR",
+          "message": "Redis连接失败或超时"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-003",
+      "name": "刷新会话TTL",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "session.touch",
+      "description": "更新会话的last_access时间并重置TTL",
+      "parameters": [
+        {
+          "name": "session_id",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "会话ID"
+        },
+        {
+          "name": "ttl_seconds",
+          "type": "integer",
+          "in": "body",
+          "required": false,
+          "description": "新的TTL秒数，默认1800"
+        }
+      ],
+      "request_body": {
+        "session_id": "string",
+        "ttl_seconds": "integer"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 500,
+          "code": "REDIS_CONNECTION_ERROR",
+          "message": "Redis连接失败或超时"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-004",
+      "name": "删除会话",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "session.delete",
+      "description": "删除指定会话键",
+      "parameters": [
+        {
+          "name": "session_id",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "会话ID"
+        }
+      ],
+      "request_body": {
+        "session_id": "string"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 500,
+          "code": "REDIS_CONNECTION_ERROR",
+          "message": "Redis连接失败或超时"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-005",
+      "name": "添加JWT黑名单",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "blacklist.add",
+      "description": "将JWT的唯一标识jti加入黑名单，并设置过期时间为令牌剩余有效期",
+      "parameters": [
+        {
+          "name": "jti",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "JWT ID"
+        },
+        {
+          "name": "ttl_seconds",
+          "type": "integer",
+          "in": "body",
+          "required": true,
+          "description": "过期时间，应等于令牌剩余有效时间"
+        }
+      ],
+      "request_body": {
+        "jti": "string",
+        "ttl_seconds": "integer"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 500,
+          "code": "REDIS_CONNECTION_ERROR",
+          "message": "Redis连接失败或超时"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-006",
+      "name": "检查黑名单",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "blacklist.check",
+      "description": "检查jti是否在黑名单中",
+      "parameters": [
+        {
+          "name": "jti",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "JWT ID"
+        }
+      ],
+      "request_body": {
+        "jti": "string"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "blacklisted": "boolean"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 500,
+          "code": "REDIS_CONNECTION_ERROR",
+          "message": "Redis连接失败或超时"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-007",
+      "name": "发布部署日志",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "pubsub.publish",
+      "description": "向deploy_logs:{deployment_id}频道发布一条日志消息",
+      "parameters": [
+        {
+          "name": "deployment_id",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "部署ID"
+        },
+        {
+          "name": "message",
+          "type": "object",
+          "in": "body",
+          "required": true,
+          "description": "日志内容，符合DM-003 schema"
+        }
+      ],
+      "request_body": {
+        "deployment_id": "string",
+        "message": "object"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "subscribers_count": "integer"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 500,
+          "code": "REDIS_CONNECTION_ERROR",
+          "message": "Redis连接失败或超时"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-008",
+      "name": "订阅部署日志",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "pubsub.subscribe",
+      "description": "订阅deploy_logs:{deployment_id}频道，通过异步回调接收消息",
+      "parameters": [
+        {
+          "name": "deployment_id",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "部署ID"
+        },
+        {
+          "name": "callback",
+          "type": "callable",
+          "in": "body",
+          "required": true,
+          "description": "处理消息的回调函数，接收消息字典"
+        }
+      ],
+      "request_body": {
+        "deployment_id": "string",
+        "callback": "callable"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "subscription_handle": "object"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 500,
+          "code": "REDIS_CONNECTION_ERROR",
+          "message": "Redis连接失败或超时"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-009",
+      "name": "设置缓存",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "cache.set",
+      "description": "设置一个缓存键值对，可指定TTL",
+      "parameters": [
+        {
+          "name": "key",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "缓存键"
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "缓存值，序列化后的字符串"
+        },
+        {
+          "name": "ttl",
+          "type": "integer",
+          "in": "body",
+          "required": false,
+          "description": "过期时间秒数，默认3600"
+        }
+      ],
+      "request_body": {
+        "key": "string",
+        "value": "string",
+        "ttl": "integer"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 500,
+          "code": "REDIS_CONNECTION_ERROR",
+          "message": "Redis连接失败或超时"
+        },
+        {
+          "status": 400,
+          "code": "SERIALIZATION_ERROR",
+          "message": "值序列化失败"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-010",
+      "name": "获取缓存",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "cache.get",
+      "description": "根据键获取缓存值",
+      "parameters": [
+        {
+          "name": "key",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "缓存键"
+        }
+      ],
+      "request_body": {
+        "key": "string"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "value": "string | null"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 500,
+          "code": "REDIS_CONNECTION_ERROR",
+          "message": "Redis连接失败或超时"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-011",
+      "name": "删除缓存",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "cache.delete",
+      "description": "删除指定缓存键",
+      "parameters": [
+        {
+          "name": "key",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "缓存键"
+        }
+      ],
+      "request_body": {
+        "key": "string"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 500,
+          "code": "REDIS_CONNECTION_ERROR",
+          "message": "Redis连接失败或超时"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "所有Redis操作采用防崩溃设计，连接中断或命令失败时抛出明确内部异常，上层根据异常类型重试或降级。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "500",
+        "name": "REDIS_CONNECTION_ERROR",
+        "description": "无法建立连接、连接池耗尽或超时；触发告警，调用方重试或返回服务不可用"
+      },
+      {
+        "code": "500",
+        "name": "REDIS_TIMEOUT",
+        "description": "命令执行超过socket_timeout；重试一次，仍失败则返回TIMEOUT错误给客户端"
+      },
+      {
+        "code": "404",
+        "name": "NOT_FOUND",
+        "description": "get/check未命中对应键；返回None/false，不视为异常"
+      },
+      {
+        "code": "400",
+        "name": "SERIALIZATION_ERROR",
+        "description": "写入缓存时数据无法序列化为JSON；记录错误，返回参数无效"
+      },
+      {
+        "code": "500",
+        "name": "UNKNOWN_ERROR",
+        "description": "其他未预料的Redis响应；记录完整异常堆栈，返回500"
+      }
+    ]
+  },
+  "topology": {
+    "namespaces": [
+      "session",
+      "blacklist",
+      "log_channel",
+      "cache"
+    ],
+    "key_patterns": [
+      "session:{session_id}",
+      "blacklist:{jti}",
+      "deploy_logs:{deployment_id}",
+      "cache:{namespace}:{key}"
+    ],
+    "expiry_strategy": "会话默认TTL 1800s可刷新；黑名单TTL等于JWT剩余时间；部署日志频道无TTL；通用缓存默认3600s，调用方可指定"
+  },
+  "connection_contracts": {
+    "endpoint": "从环境变量REDIS_HOST、REDIS_PORT读取，默认localhost:6379",
+    "auth": "通过REDIS_PASSWORD环境变量提供密码（若设置）",
+    "connection_pool": {
+      "max_connections": 50,
+      "min_idle": 10,
+      "socket_timeout": 5,
+      "socket_connect_timeout": 3
+    },
+    "health_check": {
+      "enabled": true,
+      "interval_seconds": 30
+    },
+    "retry": {
+      "max_attempts": 2,
+      "backoff": "exponential",
+      "retryable_errors": [
+        "connection_reset",
+        "timeout"
+      ]
+    }
+  }
+}
