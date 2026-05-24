@@ -33,6 +33,7 @@ class LLMResponse:
     provider: str
     usage: dict = None
     cost: float = 0.0
+    timings: list = None  # [{"phase": "...", "duration_s": float}]
 
 
 @dataclass

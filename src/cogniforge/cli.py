@@ -508,9 +508,17 @@ def agent(ctx: Context, role: str, input_file: str):
                 click.echo(f"  - {artifact}")
 
         if result.get('data'):
-            click.echo(f"\n数据:")
-            for key, value in result['data'].items():
-                click.echo(f"  {key}: {value}")
+            timings = result['data'].get('timings', [])
+            other_data = {k: v for k, v in result['data'].items() if k != 'timings'}
+            if timings:
+                parts = []
+                for t in timings:
+                    parts.append(f"{t.get('phase', '')} {t.get('duration_s', 0)}s")
+                click.echo(f"\n{C_DIM}⏱ {'  |  '.join(parts)}{C_RESET}")
+            if other_data:
+                click.echo(f"\n数据:")
+                for key, value in other_data.items():
+                    click.echo(f"  {key}: {value}")
 
     except Exception as e:
         click.echo(f"执行失败: {e}")

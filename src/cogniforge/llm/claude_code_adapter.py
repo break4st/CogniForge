@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from cogniforge.llm.base import BaseLLMAdapter, LLMResponse, LLMMessage
@@ -318,7 +319,9 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
         think_prompt = prompt + "\n\n请先深入分析思考，输出详细的设计方案。用自然语言描述，不要输出 JSON。"
         cmd1 = [self.claude_cli_path, "-p", "-",
                  "--output-format", "json", "--model", model]
+        t1_start = time.time()
         resp1 = self._invoke_cli_stdin(cmd1, think_prompt)
+        t1 = time.time() - t1_start
         content1 = resp1.content.strip()
 
         # Step 2: feed the analysis back + JSON formatting instruction
@@ -332,7 +335,15 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
         )
         cmd2 = [self.claude_cli_path, "-p", "-",
                  "--output-format", "json", "--model", model]
-        return self._invoke_cli_stdin(cmd2, json_prompt)
+        t2_start = time.time()
+        result = self._invoke_cli_stdin(cmd2, json_prompt)
+        t2 = time.time() - t2_start
+        label = {"pm": "PM", "architect": "架构", "design": "设计"}.get(role, role.upper() if role else "LLM")
+        result.timings = [
+            {"phase": f"{label}分析", "duration_s": round(t1, 1)},
+            {"phase": f"{label}生成", "duration_s": round(t2, 1)},
+        ]
+        return result
 
     # ------------------------------------------------------------------
     # Interactive modification (via claude -p --session-id)

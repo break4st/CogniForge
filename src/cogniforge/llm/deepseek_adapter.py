@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import time
 import glob as _glob
 from pathlib import Path
 
@@ -260,6 +261,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
         think_prompt = prompt + "\n\n请先深入分析思考，输出详细的设计方案。用自然语言描述，不要输出 JSON。"
         messages = self._build_agentic_messages(think_prompt, role)
 
+        t1_start = time.time()
         resp1 = self._client.chat.completions.create(
             model=model,
             messages=messages,
@@ -267,6 +269,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
             timeout=self.timeout,
             extra_body={"thinking": {"type": "enabled"}},
         )
+        t1 = time.time() - t1_start
         content1 = resp1.choices[0].message.content or ""
 
         # Step 2: append thinking result + JSON formatting instruction
@@ -281,6 +284,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
             ),
         })
 
+        t2_start = time.time()
         resp2 = self._client.chat.completions.create(
             model=model,
             messages=messages,
@@ -288,7 +292,14 @@ class DeepSeekAdapter(BaseLLMAdapter):
             timeout=self.timeout,
             **self._JSON_KWARGS,
         )
-        return self._to_llm_response(resp2)
+        t2 = time.time() - t2_start
+        label = {"pm": "PM", "architect": "架构", "design": "设计"}.get(role, role.upper() if role else "LLM")
+        result = self._to_llm_response(resp2)
+        result.timings = [
+            {"phase": f"{label}分析", "duration_s": round(t1, 1)},
+            {"phase": f"{label}生成", "duration_s": round(t2, 1)},
+        ]
+        return result
 
     # ------------------------------------------------------------------
     # Agent mode — tool-calling loop
@@ -475,6 +486,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
         messages = self._build_agentic_messages(think_prompt, role="pm")
 
         # Step 1: thinking
+        t1_start = time.time()
         resp1 = self._client.chat.completions.create(
             model=model,
             messages=messages,
@@ -482,6 +494,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
             timeout=self.timeout,
             extra_body={"thinking": {"type": "enabled"}},
         )
+        t1 = time.time() - t1_start
         content1 = resp1.choices[0].message.content or ""
 
         # Step 2: structured output
@@ -498,6 +511,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
             ),
         })
 
+        t2_start = time.time()
         resp2 = self._client.chat.completions.create(
             model=model,
             messages=messages,
@@ -505,7 +519,13 @@ class DeepSeekAdapter(BaseLLMAdapter):
             timeout=self.timeout,
             **self._JSON_KWARGS,
         )
-        return self._to_llm_response(resp2)
+        t2 = time.time() - t2_start
+        result = self._to_llm_response(resp2)
+        result.timings = [
+            {"phase": "PM分析", "duration_s": round(t1, 1)},
+            {"phase": "PM生成", "duration_s": round(t2, 1)},
+        ]
+        return result
 
     # ------------------------------------------------------------------
     # Tool implementations

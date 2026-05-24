@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -66,6 +67,7 @@ class PMAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _run_raw(self, raw_text: str) -> dict:
+        t0 = time.time()
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         prd_path = self.config.repo_path / "docs" / "prd.json"
 
@@ -99,7 +101,10 @@ class PMAgent(BaseAgent):
         response = self.agent.generate_think_then_json(
             prompt, role="pm", max_tokens=8192,
         )
-        return self._write_prd(prd_path, response.content)
+
+        result = self._write_prd(prd_path, response.content,
+                                 llm_timings=response.timings, t_total=time.time() - t0)
+        return result
 
     # ------------------------------------------------------------------
     # Initial creation — structured fields
@@ -108,6 +113,7 @@ class PMAgent(BaseAgent):
     def _run_structured(
         self, title, overview, requirements, user_stories, priorities,
     ) -> dict:
+        t0 = time.time()
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         prd_path = self.config.repo_path / "docs" / "prd.json"
 
@@ -142,14 +148,19 @@ class PMAgent(BaseAgent):
         response = self.agent.generate_think_then_json(
             prompt, role="pm", max_tokens=8192,
         )
-        return self._write_prd(prd_path, response.content)
+
+        result = self._write_prd(prd_path, response.content,
+                                 llm_timings=response.timings, t_total=time.time() - t0)
+        return result
 
     # ------------------------------------------------------------------
     # Write PRD (creation)
     # ------------------------------------------------------------------
 
-    def _write_prd(self, prd_path: Path, raw_content: str) -> dict:
+    def _write_prd(self, prd_path: Path, raw_content: str,
+                   llm_timings: list = None, t_total: float = 0) -> dict:
         """Extract JSON, assign stable IDs, validate, write, render, commit."""
+        t_write_start = time.time()
         json_text = _extract_json(raw_content)
         prd_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -213,11 +224,20 @@ class PMAgent(BaseAgent):
             artifacts.append(
                 html_path.relative_to(self.config.repo_path).as_posix())
 
+        t_write = time.time() - t_write_start
+        timings = []
+        if llm_timings:
+            timings.extend(llm_timings)
+        timings.append({"phase": "创建文档", "duration_s": round(t_write, 1)})
+        if t_total > 0:
+            timings.append({"phase": "总计", "duration_s": round(t_total, 1)})
+
         return self.format_result(
             status="success",
             message=f"PRD created at docs/prd.json",
             artifacts=artifacts,
             reasoning=raw_content,
+            data={"timings": timings},
         )
 
     # ------------------------------------------------------------------
@@ -239,6 +259,7 @@ class PMAgent(BaseAgent):
         6. Save, re-render, commit
         """
         try:
+            t0 = time.time()
             prd_path = self.config.repo_path / "docs" / "prd.json"
             current_prd = self._load_current_prd()
             if current_prd is None:
@@ -288,6 +309,7 @@ class PMAgent(BaseAgent):
                     user_request=user_request,
                     system_prompt=system_prompt,
                 )
+            llm_timings = response.timings
 
             raw_content = response.content if hasattr(response, "content") else str(response)
             json_text = _extract_json(raw_content)
@@ -336,6 +358,7 @@ class PMAgent(BaseAgent):
                 )
 
             # Apply patches
+            t_apply_start = time.time()
             patches = turn_data.get("patches", [])
             if not patches:
                 return self.format_result(
@@ -387,6 +410,14 @@ class PMAgent(BaseAgent):
                 artifacts.append(
                     html_path.relative_to(self.config.repo_path).as_posix())
 
+            t_apply = time.time() - t_apply_start
+            t_total = time.time() - t0
+            timings = []
+            if llm_timings:
+                timings.extend(llm_timings)
+            timings.append({"phase": "应用变更", "duration_s": round(t_apply, 1)})
+            timings.append({"phase": "总计", "duration_s": round(t_total, 1)})
+
             return self.format_result(
                 status="success",
                 message=turn_data.get("message", "PRD updated."),
@@ -395,6 +426,7 @@ class PMAgent(BaseAgent):
                     "open_questions": turn_data.get("open_questions", []),
                     "affected_requirements": turn_data.get("affected_requirements", []),
                     "new_version": updated_prd["meta"]["version"],
+                    "timings": timings,
                 },
                 reasoning=raw_content,
             )

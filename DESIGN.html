@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CogniForge 设计文档 v2.3</title>
+<title>CogniForge 设计文档 v2.4</title>
 <style>
   /* ═══════════════ Variables ═══════════════ */
   :root {
@@ -496,7 +496,7 @@
 <nav class="sidebar">
   <div class="sidebar-logo">
     <div class="name"><span>CogniForge</span> Design</div>
-    <div class="ver">Version 2.3</div>
+    <div class="ver">Version 2.4</div>
   </div>
   <div class="sidebar-nav">
     <a href="#s1"><span class="num">01</span>系统概述</a>
@@ -532,7 +532,7 @@
     <a href="#s16"><span class="num">16</span>总结</a>
     <a href="#s17"><span class="num">17</span>结论</a>
   </div>
-  <div class="sidebar-footer">Agentic + Doc-Driven<br>Claude Code Powered</div>
+  <div class="sidebar-footer">Agentic + Doc-Driven<br>Multi-Provider LLM</div>
 </nav>
 
 <!-- ═══════════════ MAIN ═══════════════ -->
@@ -541,11 +541,12 @@
 <!-- Hero -->
 <div class="hero">
   <h1>CogniForge <span>设计文档</span></h1>
-  <div class="tagline">Agentic &middot; Document-Driven &middot; Claude Code Powered Development System</div>
+  <div class="tagline">Agentic &middot; Document-Driven &middot; Multi-Provider LLM Development System</div>
   <div class="badges">
-    <span class="badge accent">v2.3</span>
+    <span class="badge accent">v2.4</span>
     <span class="badge">System Design</span>
     <span class="badge">8 Agent Roles</span>
+    <span class="badge">Multi-Provider</span>
   </div>
 </div>
 
@@ -654,7 +655,7 @@
       <div class="layer">
         <div class="dot"></div>
         <div class="lname">Agent Engine</div>
-        <div class="ldesc">Claude Code agent（Read + Write + Edit + Bash）— 每个 Agent Role 委托给它</div>
+        <div class="ldesc">多 Provider 适配层 — DeepSeek API / Claude Code CLI / Codex CLI — 每个 Agent Role 委托给对应 provider</div>
       </div>
       <div class="layer">
         <div class="dot"></div>
@@ -674,7 +675,7 @@
       <tbody>
         <tr><td>OpenX Workflow</td><td>编排</td><td>13 步 DAG 状态机 + 人工审批 + 中断恢复</td></tr>
         <tr><td>Agent Roles</td><td>调度</td><td>8 角色，每个将任务委托给 Claude Code agent 执行</td></tr>
-        <tr><td>Claude Code Agent</td><td>执行</td><td>Read + Write + Edit + Bash 工具链，真正执行 AI 工作</td></tr>
+        <tr><td>LLM Provider 适配层</td><td>执行</td><td>双通道架构：LLM API（DeepSeek）纯文本推理 + Agent CLI（Claude Code/Codex）工具链执行，通过 factory + role routing 实现 provider 切换</td></tr>
         <tr><td>Wiki System</td><td>存储</td><td>8 种文档类型的模板化路径 + HTML/markdown 读写</td></tr>
         <tr><td>Context Loader</td><td>上下文</td><td>glob 模式三级加载：Global → Module → Task</td></tr>
         <tr><td>Git Storage</td><td>持久化</td><td>GitPython 封装，所有产物自动 commit</td></tr>
@@ -1050,78 +1051,142 @@ WBS → DEV 编码 → REVIEW → QA → DEPLOY</code></pre>
   <div class="section-body">
 
     <div class="callout good">
-      <strong>核心设计变更 (v2.0)：</strong>Agent 不再自己用 Python 生成文档/代码，而是委托给 Claude Code agent。
-      Claude Code 以 <code>claude -p --tools Read,Write,Edit,Bash --permission-mode auto</code> 模式运行，
-      拥有完整的工具链能力，可以读上下文、写文件、跑命令。
+      <strong>核心设计 (v2.4)：</strong>Agent 只做编排（构建 prompt、调用 provider、git commit），真正的 AI 工作委托给 LLM provider。
+      系统支持双通道架构：<strong>LLM 通道</strong>（DeepSeek API — 纯文本推理 + tool-calling）和 <strong>Agent 通道</strong>（Claude Code CLI — Read/Write/Edit/Bash 工具链）。
+      每个 Agent Role 可通过 <code>.cogniforge/config.yaml</code> 独立配置使用哪个 provider。
     </div>
 
     <h3>8.1 委托模式</h3>
     <pre><code><span class="hl-keyword">class</span> <span class="hl-func">PMAgent</span>(<span class="hl-func">BaseAgent</span>):
     <span class="hl-keyword">def</span> <span class="hl-func">run</span>(self, input_data):
         <span class="hl-keyword">if</span> self.agent <span class="hl-keyword">is</span> <span class="hl-keyword">None</span>:
-            <span class="hl-keyword">raise</span> <span class="hl-func">AgentError</span>(<span class="hl-string">"requires Claude Code agent"</span>)
+            <span class="hl-keyword">raise</span> <span class="hl-func">AgentError</span>(<span class="hl-string">"requires LLM agent"</span>)
         <span class="hl-keyword">return</span> self._run_agentic(...)
 
     <span class="hl-keyword">def</span> <span class="hl-func">_run_agentic</span>(self, ...):
         prompt = build_task_prompt(...)          <span class="hl-comment"># 中文指令</span>
-        response = self.agent.generate_agentic(  <span class="hl-comment"># Claude Code agent</span>
+        <span class="hl-comment"># 两步生成 (DeepSeek / Claude Code 均支持)</span>
+        response = self.agent.generate_think_then_json(
             prompt, role=<span class="hl-string">"pm"</span>)
-        <span class="hl-comment"># Claude Code 读取已有 PRD 了解格式，</span>
-        <span class="hl-comment"># 生成 JSON 写入 .cogniforge/wiki/prd/prd-003.json</span>
+        <span class="hl-comment"># Step 1: thinking 推理 → Step 2: 输出 JSON</span>
+        <span class="hl-comment"># 写入 docs/prd.json</span>
         <span class="hl-comment"># wiki_renderer 随后自动渲染为 HTML</span>
         git_stage_and_commit(output_path)</code></pre>
 
-    <h3>8.2 Agent Role → Claude Code Role 映射</h3>
+    <h3>8.2 LLM Provider 架构 — 双通道 + 角色路由</h3>
+
+    <div class="callout good">
+      <strong>核心设计 (v2.4)：</strong>CogniForge 采用双通道 LLM 架构：
+      <strong>LLM 通道</strong>（<code>llm.*</code>，如 DeepSeek API）负责纯文本推理（REPL NL→JSON 分类、两步生成 think→JSON）；
+      <strong>Agent 通道</strong>（<code>agent.*</code>，如 Claude Code CLI）负责完整 agent 模式执行（读上下文、写文件、跑命令）。
+      每个 Agent Role 通过 <code>config.yaml</code> 独立配置使用哪个 provider，支持按角色混用。
+    </div>
+
+    <h4>Provider 类型</h4>
     <table>
-      <thead><tr><th>CogniForge Agent</th><th>Claude Code role</th><th>系统提示词要点</th></tr></thead>
+      <thead><tr><th>Provider</th><th>通道类型</th><th>配置 key</th><th>说明</th></tr></thead>
       <tbody>
-        <tr><td>PMAgent</td><td><code>pm</code></td><td>读已有 PRD → 生成 PRD JSON（系统自动渲染 HTML）</td></tr>
-        <tr><td>ArchitectAgent</td><td><code>architect</code></td><td>读 PRD → 生成 SAD 架构文档</td></tr>
-        <tr><td>DesignAgent</td><td><code>design</code></td><td>自包含 prompt（SAD 定义 + contracts + 邻模块接口签名 + 拓扑）→ 生成 LLD，无需强制读文件</td></tr>
-        <tr><td>DevAgent</td><td><code>dev</code></td><td>读 LLD → 写代码 + 写测试 + 跑 pytest（约束外置）</td></tr>
-        <tr><td>ReviewAgent</td><td><code>reviewer</code></td><td>读 LLD + 代码 → 生成 CR 报告</td></tr>
-        <tr><td>QAAgent</td><td><code>qa</code></td><td>读 LLD + 代码 → 生成测试用例 + 跑测试 + 出报告</td></tr>
-        <tr><td>TechLeadAgent</td><td><code>techlead</code></td><td>读全部上下文 → WBS 分解 + 质量评估</td></tr>
-        <tr><td>DevOpsAgent</td><td><code>devops</code></td><td>读 SAD + LLD → 生成部署配置</td></tr>
+        <tr><td><code>deepseek</code></td><td>LLM (API)</td><td><code>llm.deepseek</code></td><td>通过 OpenAI SDK 调用 DeepSeek API — 纯文本推理 + tool-calling 循环 (agent 模式)</td></tr>
+        <tr><td><code>claude_code</code></td><td>Agent (CLI)</td><td><code>agent.claude_code</code></td><td>通过 <code>claude -p --tools ...</code> CLI 子进程 — 完整 agent 模式（Read/Write/Edit/Bash）</td></tr>
+        <tr><td><code>open_code</code></td><td>Agent (CLI)</td><td><code>agent.open_code</code></td><td>通过 Codex CLI 子进程 — 备选 agent provider</td></tr>
       </tbody>
     </table>
 
-    <h3>8.3 Agent 执行流程</h3>
+    <h4>Role → Provider 路由</h4>
+    <p>每个 Agent Role 默认使用 <code>agent.claude_code</code>，可在 <code>.cogniforge/config.yaml</code> 的 <code>roles</code> 段逐角色覆盖：</p>
+    <pre><code><span class="hl-comment"># .cogniforge/config.yaml</span>
+<span class="hl-keyword">llm</span>:
+  <span class="hl-keyword">deepseek</span>:
+    api_key: <span class="hl-string">"sk-..."</span>
+    model:    <span class="hl-string">"deepseek-v4-pro"</span>
+<span class="hl-keyword">agent</span>:
+  <span class="hl-keyword">claude_code</span>:
+    model:    <span class="hl-string">"claude-sonnet-4-20250514"</span>
+<span class="hl-keyword">roles</span>:
+  pm:        <span class="hl-string">"llm.deepseek"</span>        <span class="hl-comment"># PM 使用 DeepSeek API 推理</span>
+  architect: <span class="hl-string">"agent.claude_code"</span>   <span class="hl-comment"># Architect 使用 Claude Code CLI</span></code></pre>
+
+    <h4>工厂模式与解析优先级</h4>
+    <pre><code>_build_providers(config)   →  provider dict {
+      "llm.deepseek":      DeepSeekAdapter,
+      "agent.claude_code": ClaudeCodeAdapter,
+      "agent.open_code":   OpenCodeAdapter,
+    }
+
+    _resolve_provider(role, config, providers):
+      1. config.roles[role] 指定的 provider key
+      2. 回退: "agent.claude_code"
+      3. 保底: providers 中第一个可用</code></pre>
+
+    <h4>REPL 两层 LLM 使用</h4>
+    <pre><code>User 自然语言输入
+      ↓
+    REPL 层: _resolve_llm_adapter() → llm.* (DeepSeek API)
+      NL→JSON 分类，字段提取                          <span class="hl-comment"># 纯文本模式</span>
+      ↓
+    Agent 层: _resolve_provider(role) → agent.* (Claude Code CLI)
+      Read 上下文 → Think 推理 → Write 文件 → Bash 验证  <span class="hl-comment"># agent 模式</span></code></pre>
+
+    <h3>8.3 Agent Role → Provider 映射</h3>
+    <table>
+      <thead><tr><th>CogniForge Agent</th><th>默认 Provider</th><th>系统提示词要点</th></tr></thead>
+      <tbody>
+        <tr><td>PMAgent</td><td><code>agent.claude_code</code> 或 <code>llm.deepseek</code></td><td>读已有 PRD → 两步生成 (think→JSON) → 系统自动渲染 HTML</td></tr>
+        <tr><td>ArchitectAgent</td><td><code>agent.claude_code</code></td><td>读 PRD → 两步生成 SAD 架构文档</td></tr>
+        <tr><td>DesignAgent</td><td><code>agent.claude_code</code></td><td>自包含 prompt（SAD 定义 + contracts + 邻模块接口签名 + 拓扑）→ 两步生成 LLD</td></tr>
+        <tr><td>DevAgent</td><td><code>agent.claude_code</code></td><td>读 LLD → 写代码 + 写测试 + 跑 pytest（约束外置）</td></tr>
+        <tr><td>ReviewAgent</td><td><code>agent.claude_code</code></td><td>读 LLD + 代码 → 生成 CR 报告</td></tr>
+        <tr><td>QAAgent</td><td><code>agent.claude_code</code></td><td>读 LLD + 代码 → 生成测试用例 + 跑 pytest + 出报告</td></tr>
+        <tr><td>TechLeadAgent</td><td><code>agent.claude_code</code></td><td>读全部上下文 → WBS 分解（机械推导 + LLM 批处理丰富 + 覆盖率校验）</td></tr>
+        <tr><td>DevOpsAgent</td><td><code>agent.claude_code</code></td><td>读 SAD + LLD → 生成部署配置</td></tr>
+      </tbody>
+    </table>
+
+    <h3>8.4 Agent 执行流程</h3>
     <pre><code>CogniForge Agent.run(input_data)
   ↓
-self.agent.generate_agentic(prompt, role=<span class="hl-string">"pm"</span>)
+self.agent = _resolve_provider(role, config, providers)
+  │  ├─ config.roles[role] 指定 → 对应 provider key
+  │  ├─ 回退: <span class="hl-string">"agent.claude_code"</span>
+  │  └─ 保底: providers 中第一个可用
   ↓
-System Prompt = ROLE_PROMPTS[role] + ConstraintLoader.load(role) + 工具提示
+<span class="hl-comment"># 通道 1: DeepSeek API (llm.*)</span>
+DeepSeekAdapter.generate_think_then_json(prompt, role)
+  ├─ Step 1: thinking 推理（reasoning_effort=high）
+  └─ Step 2: 输出 JSON（OpenAI tool-calling 格式）
   ↓
-Anthropic SDK with tools (Read, Write, Bash, ListDir)
+<span class="hl-comment"># 通道 2: Claude Code CLI (agent.*)</span>
+ClaudeCodeAdapter.generate_agentic(prompt, role)
+  ├─ 构建 System Prompt = ROLE_PROMPTS[role] + ConstraintLoader.load(role)
+  ├─ subprocess: claude -p --tools Read,Write,Edit,Bash
+  ├─ Claude Code agent:
+  │   ├─ Read 已有文件              <span class="hl-comment"># 了解文档格式</span>
+  │   ├─ Think                      <span class="hl-comment"># 推理，设计文档结构</span>
+  │   ├─ Write output_file.json     <span class="hl-comment"># 生成 JSON（Agent Format）</span>
+  │   └─ Return result              <span class="hl-comment"># 返回确认信息</span>
+  └─ 超时: 300s, 重试: 2 次
   ↓
-Claude Code agent:
-  ├─ Read 已有 PRD 文件         <span class="hl-comment"># 了解文档格式</span>
-  ├─ Think                     <span class="hl-comment"># 理解需求，设计文档结构</span>
-  ├─ Write output_file.json    <span class="hl-comment"># 生成 JSON（Agent Format）</span>
-  └─ Return result             <span class="hl-comment"># 返回确认信息</span>
-  ↓
-CogniForge: wiki_renderer 渲染 HTML（使用内置 _SHARED_CSS）
+CogniForge: Schema 校验（jsonschema）+ wiki_renderer 渲染 HTML
   ↓
 CogniForge: git add + git commit
   ↓
 REPL: 显示文件链接 + 审批菜单</code></pre>
 
-    <h3>8.4 Role System Prompt & 约束系统</h3>
+    <h3>8.5 Role System Prompt & 约束系统</h3>
     <p><code>ROLE_PROMPTS</code> 仅包含身份和职责（"你是 X Agent，职责: Y"）。行为约束外置为 <code>.cogniforge/constraints/{role}.md</code> 文件，由 <code>ConstraintLoader</code> 加载后注入 system prompt。文件不存在时使用内置默认值，确保系统在任何项目都能运行。</p>
     <p>用户可编辑约束文件定制各角色行为，无需修改源码。<code>cogniforge init</code> 会自动生成全部默认约束文件。</p>
 
     <table>
       <thead><tr><th>设计原则</th><th>说明</th></tr></thead>
       <tbody>
-        <tr><td>Agent 只做编排</td><td>CogniForge Agent 构建 prompt、调用 Claude Code、git commit</td></tr>
-        <tr><td>Claude Code 做执行</td><td>读上下文、推理、生成文件 — 真正需要 AI 的工作</td></tr>
-        <tr><td>无 Python fallback</td><td>没有 Claude Code agent 时报错，不再用 Python 拼文档</td></tr>
-        <tr><td>Operational 保留</td><td>pytest 运行、git 提交等纯操作逻辑保留在 Agent 中</td></tr>
+        <tr><td>Agent 只做编排</td><td>CogniForge Agent 构建 prompt、路由 provider、Schema 校验、git commit</td></tr>
+        <tr><td>Provider 做执行</td><td>DeepSeek API / Claude Code CLI — 读上下文、推理、生成文件 — 真正需要 AI 的工作</td></tr>
+        <tr><td>无 Python fallback</td><td>没有可用 provider 时报错，不再用 Python 拼文档</td></tr>
+        <tr><td>Operational 保留</td><td>pytest 运行、git 提交、Schema 校验等纯操作逻辑保留在 Agent 中</td></tr>
       </tbody>
     </table>
 
-    <h3>8.5 三层接口一致性保障</h3>
+    <h3>8.6 三层接口一致性保障</h3>
     <p>多模块 LLD 生成时，模块间的接口契约必须一致。本系统通过<strong>三层防护</strong>确保接口对齐：</p>
 
     <table>
@@ -1161,7 +1226,7 @@ REPL: 显示文件链接 + 审批菜单</code></pre>
       </tbody>
     </table>
 
-    <h3 id="s8-6">8.6 LLD 校验门禁 (lld_validator.py)</h3>
+    <h3 id="s8-6">8.7 LLD 校验门禁 (lld_validator.py)</h3>
     <p>DesignAgent 在委托 Claude Code 生成 LLD 后，<strong>自动运行校验</strong>。校验不通过时带反馈重试（最多 2 次修正循环），确保 LLD JSON 的完整性和正确性。</p>
 
     <h4>校验流程</h4>
@@ -1186,7 +1251,7 @@ lld_validator.validate_lld_json(json_path)
     <h4>校验报告</h4>
     <p><code>format_validation_report()</code> 将校验失败项格式化为人类可读的反馈，直接注入修正 prompt，形成<strong>自动修正闭环</strong>。</p>
 
-    <h3 id="s8-7">8.7 模块类型与专属 LLD Schema</h3>
+    <h3 id="s8-7">8.8 模块类型与专属 LLD Schema</h3>
     <p>DesignAgent 从 SAD 读取模块的 <code>module_type</code>，按类型注入专属 JSON Schema 片段，确保每种模块类型的 LLD 包含正确的设计细节。</p>
 
     <table>
@@ -1210,7 +1275,7 @@ lld_validator.validate_lld_json(json_path)
       </tbody>
     </table>
 
-    <h3 id="s8-8">8.8 Wiki 分支隔离</h3>
+    <h3 id="s8-8">8.9 Wiki 分支隔离</h3>
     <p><code>GitStorage.commit_to_wiki_branch()</code> 确保 wiki 文档提交进入独立 <code>wiki</code> 分支，与开发分支完全隔离：</p>
     <ul>
       <li>创建临时 worktree → 复制文件 → 提交到 wiki 分支 → 清理 worktree</li>
@@ -1222,7 +1287,7 @@ lld_validator.validate_lld_json(json_path)
       <strong>多层防护：</strong>① <code>.gitignore</code> 忽略 <code>.cogniforge/</code> ② git hooks 拒绝含 wiki 文件的提交 ③ wiki 产物通过 worktree 直接写入 wiki 分支 ④ index 清理确保不残留跟踪状态。
     </div>
 
-    <h3 id="s8-9">8.9 WBS 系统 — MDE→DEV 结构化翻译层 (v2.1)</h3>
+    <h3 id="s8-9">8.10 WBS 系统 — MDE→DEV 结构化翻译层 (v2.1)</h3>
     <p>WBS（Work Breakdown Structure）子系统将结构化的 LLD JSON 翻译为可追踪、可验证的 Task 单元，让 Dev Agent 无需重新阅读完整 LLD 即可直接消费任务定义。流程为<strong>机械推导 + 批处理 LLM 丰富 + 覆盖率校验</strong>。</p>
 
     <h4>核心模块（7 个文件）</h4>
@@ -1275,7 +1340,7 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
       <strong>设计原则：</strong>WBS 系统遵循「机械推导 + LLM 丰富」分层架构。LLDArtifactRegistry 和 DecompositionRules 是确定性的（零 LLM），LLM 仅在 EnrichedWBSAssembler 层做批处理丰富（descriptions / estimates / deps 确认），且覆盖率校验自动触发重试（max 2 rounds），确保 MDE（设计）与 DEV（实现）之间无信息丢失。
     </div>
 
-    <h3 id="s8-10">8.10 PM Agent — 双 JSON 迭代体系 (v2.3)</h3>
+    <h3 id="s8-10">8.11 PM Agent — 双 JSON 迭代体系 (v2.3)</h3>
 
     <div class="callout good">
       <strong>核心设计 (v2.3)：</strong>PM Agent 升级为双 JSON 体系，支持长期 PRD 迭代管理。
@@ -1388,11 +1453,12 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
         <tr><td><code>schemas/pm-turn-result-schema.json</code></td><td>PM Turn Result Schema — status/operation/affected_requirements/conflicts/message/patches</td></tr>
         <tr><td><code>docs/prd.json</code></td><td>输出 — PRD 规范文件（Agent Format，长期状态）</td></tr>
         <tr><td><code>.cogniforge/html/prd/prd.html</code></td><td>输出 — User Format（人工审批阅读）</td></tr>
-        <tr><td><code>llm/deepseek_adapter.py</code></td><td>DeepSeekAdapter.generate_interactive_patch() — 两步生成 turn-result</td></tr>
+        <tr><td><code>llm/deepseek_adapter.py</code></td><td>DeepSeekAdapter — generate_think_then_json() 两步生成 + tool-calling agent 循环</td></tr>
+        <tr><td><code>llm/claude_code_adapter.py</code></td><td>ClaudeCodeAdapter — generate_think_then_json() + generate_agentic() CLI subprocess</td></tr>
       </tbody>
     </table>
 
-    <h3 id="s8-11">8.11 Architect Agent — 架构设计详细流程</h3>
+    <h3 id="s8-11">8.12 Architect Agent — 架构设计详细流程</h3>
 
     <h4>执行流程</h4>
     <div class="dag-flow">
@@ -1434,7 +1500,7 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
       </tbody>
     </table>
 
-    <h3 id="s8-12">8.12 Design Agent (MDE) — 详细设计流程</h3>
+    <h3 id="s8-12">8.13 Design Agent (MDE) — 详细设计流程</h3>
 
     <h4>执行流程</h4>
     <div class="dag-flow">
@@ -1481,7 +1547,7 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
       </tbody>
     </table>
 
-    <h3 id="s8-13">8.13 Tech Lead Agent — WBS 调度详细流程</h3>
+    <h3 id="s8-13">8.14 Tech Lead Agent — WBS 调度详细流程</h3>
 
     <h4>执行流程</h4>
     <div class="dag-flow">
@@ -1528,7 +1594,7 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
       </tbody>
     </table>
 
-    <h3 id="s8-14">8.14 Dev Agent — 编码实现详细流程</h3>
+    <h3 id="s8-14">8.15 Dev Agent — 编码实现详细流程</h3>
 
     <h4>执行流程</h4>
     <div class="dag-flow">
@@ -1573,7 +1639,7 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
       </tbody>
     </table>
 
-    <h3 id="s8-15">8.15 Reviewer Agent — 代码评审详细流程</h3>
+    <h3 id="s8-15">8.16 Reviewer Agent — 代码评审详细流程</h3>
 
     <h4>执行流程</h4>
     <div class="dag-flow">
@@ -1608,7 +1674,7 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
       </tbody>
     </table>
 
-    <h3 id="s8-16">8.16 QA Agent — 测试验证详细流程</h3>
+    <h3 id="s8-16">8.17 QA Agent — 测试验证详细流程</h3>
 
     <h4>执行流程</h4>
     <div class="dag-flow">
@@ -1645,7 +1711,7 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
       </tbody>
     </table>
 
-    <h3 id="s8-17">8.17 DevOps Agent — 部署运维详细流程</h3>
+    <h3 id="s8-17">8.18 DevOps Agent — 部署运维详细流程</h3>
 
     <h4>执行流程</h4>
     <div class="dag-flow">
@@ -1682,7 +1748,7 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
       </tbody>
     </table>
 
-    <h3 id="s8-18">8.18 角色流程总览</h3>
+    <h3 id="s8-18">8.19 角色流程总览</h3>
 
     <table>
       <thead><tr><th>角色</th><th>输入</th><th>核心方法</th><th>验证机制</th><th>输出</th></tr></thead>
@@ -1721,14 +1787,26 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
     </ol>
 
     <h3>9.2 CLI 审批命令</h3>
-    <pre><code>cogniforge <span class="hl-keyword">status</span>           <span class="hl-comment"># 查看当前状态 + 审批状态 + 操作历史</span>
+    <pre><code>cogniforge <span class="hl-keyword">init</span>             <span class="hl-comment"># 初始化新项目（创建 wiki 结构 + 生成约束文件）</span>
+cogniforge <span class="hl-keyword">status</span>           <span class="hl-comment"># 查看当前状态 + 审批状态 + 操作历史 + 任务统计</span>
 cogniforge <span class="hl-keyword">start</span>            <span class="hl-comment"># 启动工作流 / 从中断恢复</span>
-cogniforge <span class="hl-keyword">agent</span> &lt;role&gt;     <span class="hl-comment"># 手动执行指定 Agent → 委托给 Claude Code</span>
+cogniforge <span class="hl-keyword">agent</span> &lt;role&gt;     <span class="hl-comment"># 手动执行指定 Agent → 委托给对应 provider</span>
 cogniforge <span class="hl-keyword">approve</span>          <span class="hl-comment"># 人工审批通过当前步骤</span>
 cogniforge <span class="hl-keyword">reject</span>           <span class="hl-comment"># 拒绝 → 返工</span>
 cogniforge <span class="hl-keyword">advance</span>          <span class="hl-comment"># 审批通过后进入下一步</span>
 cogniforge <span class="hl-keyword">wait</span>             <span class="hl-comment"># 阻塞等待人工确认</span>
 cogniforge <span class="hl-keyword">repl</span>             <span class="hl-comment"># 自然语言 REPL 交互</span>
+cogniforge <span class="hl-keyword">tasks</span>            <span class="hl-comment"># 列出所有任务（可按状态过滤）</span>
+cogniforge <span class="hl-keyword">task</span> &lt;id&gt;        <span class="hl-comment"># 查看指定任务详情</span>
+cogniforge <span class="hl-keyword">adr</span>              <span class="hl-comment"># 创建架构决策记录</span>
+cogniforge <span class="hl-keyword">lsadr</span>            <span class="hl-comment"># 列出所有 ADR</span>
+cogniforge <span class="hl-keyword">wiki</span> push        <span class="hl-comment"># 推送 wiki 文档到独立 wiki 分支</span>
+cogniforge <span class="hl-keyword">audit</span>            <span class="hl-comment"># 查看全部 AI 操作审计日志</span>
+cogniforge <span class="hl-keyword">review</span> &lt;idx&gt;     <span class="hl-comment"># 审核指定 AI 操作</span>
+cogniforge <span class="hl-keyword">audit_report</span>     <span class="hl-comment"># 生成完整审核报告</span>
+cogniforge <span class="hl-keyword">pending_reviews</span>  <span class="hl-comment"># 列出所有待审核项</span>
+cogniforge <span class="hl-keyword">log</span>              <span class="hl-comment"># 显示 Git 提交日志</span>
+cogniforge <span class="hl-keyword">info</span> [step]      <span class="hl-comment"># 查看指定步骤详情</span>
 cogniforge <span class="hl-keyword">history</span>          <span class="hl-comment"># 完整操作审计追踪</span></code></pre>
 
     <h3>9.3 状态持久化</h3>
@@ -1819,16 +1897,61 @@ REPL: 显示文件链接 + 审批菜单
       <span style="color:#a0a8c0">    终止工作流</span><br>
       <span style="color:#b8a9ff">  ╰──────────────────╯</span>
     </div>
+    <h4>多模块并行生成 (v2.4)</h4>
+    <p>当项目有多个模块时（从 SAD components 解析），REPL 在 LLD 和 WBS 步骤提供 <code>auto_all</code> 选项：</p>
+
+    <h4>拓扑分层并行 (LLD)</h4>
+    <pre><code>LLD 生成按拓扑依赖分层:
+    Layer 0: database / infrastructure (底层，先执行)
+    Layer 1: service (依赖 Layer 0)
+    Layer 2: gateway (依赖 Layer 1)
+    Layer 3: frontend (最后)
+
+    同层内模块可并行生成（ThreadPoolExecutor, max 10 workers）
+    逐层批次执行，确保下层依赖已完成</code></pre>
+
+    <h4>全量并行 (WBS)</h4>
+    <pre><code>WBS 生成对所有模块并发:
+    ── 并行阶段 ──
+    每个模块独立 LLM 调用（ThreadPoolExecutor, max 10 workers）
+    实时进度: 多行 ANSI 面板，每模块独立 spinner → ✓/✗
+    ── 串行阶段 ──
+    每个模块独立 git I/O（task 注册 + HTML 渲染 + git commit）</code></pre>
+
+    <h4>ParallelProgress 组件</h4>
+    <p><code>ParallelProgress</code> 是多行实时状态面板：</p>
+    <ul>
+      <li><strong>注册</strong> — 启动前注册所有任务名称</li>
+      <li><strong>更新</strong> — 回调更新每个任务的当前阶段 (phase)，spinner 持续旋转</li>
+      <li><strong>完成标记</strong> — <code>mark_done(name, success)</code> 将 spinner 置为 ✓ 或 ✗</li>
+      <li><strong>自动清理</strong> — <code>stop()</code> 时 ANSI 擦除所有行</li>
+      <li><strong>耗时显示</strong> — 每个任务行显示已用秒数</li>
+    </ul>
+
+    <h4>交互式修改会话 (v2.4)</h4>
+    <p>Agent 执行后，PRD/SAD 步骤支持「修改」模式，进入紫色边框的交互式会话，用户可多轮提出修改意见：</p>
+    <ul>
+      <li><strong>PM 角色</strong> — 使用 <code>modify_interactive()</code> 补丁模式（两步生成 turn-result + JSON Patch 应用 + 双重 Schema 校验）</li>
+      <li><strong>非 PM 角色</strong> — 使用 <code>generate_interactive()</code> 全量替换模式（支持 session-id 上下文保持）</li>
+      <li><strong>自动修复</strong> — JSON 解析失败时自动重试一次修复</li>
+      <li><strong>实时保存</strong> — 每轮修改后自动写入文件 + 渲染 HTML + git commit</li>
+      <li><strong>退出</strong> — <code>/done</code> 完成修改，返回审批流程</li>
+    </ul>
+
     <h4>UX 设计要点 (v2.0)</h4>
     <table>
       <thead><tr><th>特性</th><th>实现</th><th>说明</th></tr></thead>
       <tbody>
-        <tr><td>步骤提示</td><td><code>_print_step_hint()</code></td><td>每步显示当前需要输入什么字段</td></tr>
-        <tr><td>卡片式输入</td><td><code>_wizard_prd()</code></td><td>LLM 判断信息不足时弹卡片逐项填写，已有字段自动跳过</td></tr>
-        <tr><td>修改模式</td><td><code>_exec_retry_modify()</code></td><td>retry 时 LLM 基于上一版数据 + 修改描述 合并出新版</td></tr>
-        <tr><td>加载动画</td><td><code>Spinner</code> 类</td><td>Braille 字符旋转动画，标明"Claude Code 执行中"</td></tr>
-        <tr><td>文件预览</td><td><code>_exec_run_agent()</code></td><td>Agent 执行后立即打印可点击的文件路径，再弹审批菜单</td></tr>
-        <tr><td>行编辑</td><td><code>readline</code></td><td>使用 <code>input()</code> + readline 支持左右光标移动</td></tr>
+        <tr><td>步骤提示</td><td><code>_print_step_hint()</code></td><td>每步 CJK 对齐画框显示当前需要做什么</td></tr>
+        <tr><td>卡片式向导</td><td><code>_wizard_prd()</code></td><td>LLM 判断信息不足时弹卡片逐项填写，已有字段自动跳过</td></tr>
+        <tr><td>箭头键菜单</td><td><code>_select()</code></td><td>↑↓ 键导航、Enter 确认、Esc 取消，Windows/macOS/Linux 支持</td></tr>
+        <tr><td>交互式修改</td><td><code>_exec_interactive_session()</code></td><td>紫色边框会话框，多轮修改 + 实时保存 + 自动 git commit（v2.4）</td></tr>
+        <tr><td>并行生成</td><td><code>ParallelProgress</code> 类</td><td>多行 ANSI 实时面板，每模块独立 spinner → ✓/✗，支持拓扑分层并行（v2.4）</td></tr>
+        <tr><td>加载动画</td><td><code>Spinner</code> 类</td><td>Braille 字符旋转动画 + 耗时显示，进度回调更新状态文本</td></tr>
+        <tr><td>文件预览</td><td><code>_exec_run_agent()</code></td><td>Agent 执行后立即打印可点击的文件路径（OSC 8 超链接），再弹审批菜单</td></tr>
+        <tr><td>行编辑</td><td><code>readline</code></td><td>使用 <code>input()</code> + readline/pyreadline3 支持左右光标移动和 Ctrl+C 退出</td></tr>
+        <tr><td>自动跳过评审</td><td><code>REVIEW_STEPS</code></td><td><code>req_review/arch_review/design_review/retro</code> 自动 approve+advance</td></tr>
+        <tr><td>设计决策菜单</td><td><code>DESIGN_STEP_CHOICES</code></td><td>SAD/LLD/WBS 步骤：自动生成 或 手动描述，多模块时 offer auto_all</td></tr>
       </tbody>
     </table>
 
@@ -1836,10 +1959,12 @@ REPL: 显示文件链接 + 审批菜单
     <table>
       <thead><tr><th>组件</th><th>文件</th><th>职责</th></tr></thead>
       <tbody>
-        <tr><td><code>Repl</code> 类</td><td><code>repl.py</code></td><td>主循环 + 斜杠命令 + action 执行 + 卡片向导</td></tr>
-        <tr><td>ClaudeCodeAdapter</td><td><code>llm/claude_code_adapter.py</code></td><td>双模式：纯文本 generate() + agentic generate_agentic()</td></tr>
-        <tr><td>Agent Roles</td><td><code>agents/*.py</code></td><td>8 个 Agent，每个委托给 Claude Code，只做编排</td></tr>
-        <tr><td>Role Prompts</td><td><code>llm/claude_code_adapter.py:ROLE_PROMPTS</code></td><td>8 套身份+职责定义，行为约束外置为 .md 文件</td></tr>
+        <tr><td><code>Repl</code> 类</td><td><code>repl.py</code></td><td>主循环 + 斜杠命令 + action 执行 + 卡片向导 + 并行生成调度 + 交互式修改会话</td></tr>
+        <tr><td><code>ReplText</code></td><td><code>repl_text.py</code></td><td>所有 REPL 显示文案、Agent Schema 定义、步骤标签集中管理</td></tr>
+        <tr><td><code>DeepSeekAdapter</code></td><td><code>llm/deepseek_adapter.py</code></td><td>LLM 通道 — 纯文本 generate() + 两步 think→JSON + agentic tool-calling 循环</td></tr>
+        <tr><td>ClaudeCodeAdapter</td><td><code>llm/claude_code_adapter.py</code></td><td>Agent 通道 — 纯文本 generate() + agentic generate_agentic() (CLI subprocess)</td></tr>
+        <tr><td>Agent Roles</td><td><code>agents/*.py</code></td><td>8 个 Agent，每个委托给对应 provider，只做编排</td></tr>
+        <tr><td>Role Prompts</td><td><code>llm/base.py + 各 adapter</code></td><td>8 套身份+职责定义，行为约束外置为 .md 文件</td></tr>
         <tr><td>约束系统</td><td><code>constraints/constraint_loader.py</code></td><td>从 .cogniforge/constraints/{role}.md 加载，不存在时用内置默认值</td></tr>
       </tbody>
     </table>
@@ -2021,7 +2146,7 @@ cogniforge <span class="hl-keyword">pending_reviews</span>   <span class="hl-com
 
     <div style="text-align:center; margin-top:20px; padding: 18px; background:var(--c-surface); border-radius:8px; border:1px solid var(--c-border);">
       <span style="color:var(--c-muted);">核心能力：</span>
-      <strong style="color:var(--c-heading);">Claude Code Agent</strong>
+      <strong style="color:var(--c-heading);">Multi-Provider LLM</strong>
       <span style="color:var(--c-accent);"> × </span>
       <strong style="color:var(--c-heading);">文档驱动</strong>
       <span style="color:var(--c-accent);"> × </span>
@@ -2050,7 +2175,7 @@ cogniforge <span class="hl-keyword">pending_reviews</span>   <span class="hl-com
 </div>
 
 <div class="footer">
-  CogniForge Design Document &middot; Version 2.3 &middot; Agentic + Document-Driven + Claude Code Powered
+  CogniForge Design Document &middot; Version 2.4 &middot; Agentic + Document-Driven + Multi-Provider LLM
 </div>
 
 </div>
