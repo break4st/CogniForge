@@ -1,0 +1,791 @@
+{
+  "meta": {
+    "doc_id": "lld-deployment-history-service-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "部署历史与日志服务",
+    "title": "部署历史与日志服务详细设计",
+    "author": "design_agent",
+    "created": "2025-04-02T12:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-005"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-007"
+      ],
+      "contracts": [
+        "CTR-008"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "存储每次部署的元数据（项目标识、环境标识、版本标签、状态、开始/结束时间、耗时）",
+      "存储结构化部署日志（时间戳、级别、步骤、消息）",
+      "提供分页、按项目/环境/状态过滤的部署历史查询REST API",
+      "提供单次部署详情及关联日志的内部查询能力",
+      "提供历史记录中的版本标签、文件引用等字段供回滚预填充"
+    ],
+    "out_of_scope": [
+      "实际的部署执行、SSH连接、文件传输、启停脚本",
+      "文件存储与管理（由文件管理服务和MinIO负责）",
+      "环境变量和服务器配置管理（由项目与环境服务负责）",
+      "用户认证与授权实现（仅校验令牌并依赖用户权限服务）",
+      "实时日志WebSocket推送（由网关或日志频道服务负责）"
+    ],
+    "owned_components": [
+      "CMP-007"
+    ],
+    "owned_contracts": [],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "记录每次部署的元数据和完整日志，提供查询、过滤、回滚入口。内部接收日志事件并持久化。",
+    "dependencies": [
+      "用户与权限服务",
+      "项目与环境服务",
+      "文件管理服务"
+    ],
+    "tech_stack": [
+      "Go",
+      "Gin",
+      "PostgreSQL",
+      "Redis"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-005",
+      "sad_component_ids": [
+        "CMP-007"
+      ],
+      "sad_contract_ids": [
+        "CTR-008"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002",
+          "DM-003"
+        ],
+        "interfaces": [
+          "IF-001"
+        ],
+        "domain_objects": [
+          "DO-301",
+          "DO-302",
+          "DO-303",
+          "DO-304",
+          "DO-305",
+          "DO-306"
+        ],
+        "service_contracts": [
+          "SC-101"
+        ]
+      },
+      "coverage": "full",
+      "notes": "全部由本模块实现"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "部署记录",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "deployments"
+      },
+      "description": "对 Primary Database 中 deployments 表的引用，列出本服务关心的字段。项目名称和环境名称在部署创建时保存为快照，以便历史查询不依赖外部服务。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "project_id",
+          "type": "bigint",
+          "required": true,
+          "description": "项目ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "bigint",
+          "required": true,
+          "description": "环境ID"
+        },
+        {
+          "name": "version_tag",
+          "type": "varchar(100)",
+          "required": true,
+          "description": "部署版本标签"
+        },
+        {
+          "name": "status",
+          "type": "varchar(30)",
+          "required": true,
+          "description": "部署状态，取值：pending/running/success/failed/cancelled"
+        },
+        {
+          "name": "start_time",
+          "type": "timestamp",
+          "required": true,
+          "description": "部署开始时间"
+        },
+        {
+          "name": "end_time",
+          "type": "timestamp",
+          "required": false,
+          "description": "部署结束时间，未完成时为null"
+        },
+        {
+          "name": "duration_seconds",
+          "type": "integer",
+          "required": false,
+          "description": "执行耗时（秒），部署结束后计算"
+        },
+        {
+          "name": "project_name",
+          "type": "varchar(200)",
+          "required": true,
+          "description": "部署时的项目名称快照"
+        },
+        {
+          "name": "environment_name",
+          "type": "varchar(200)",
+          "required": true,
+          "description": "部署时的环境名称快照"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "required": true,
+          "description": "记录创建时间"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": [
+        "REQ-005"
+      ],
+      "source_components": [
+        "CMP-007"
+      ],
+      "source_contracts": [
+        "CTR-008"
+      ],
+      "constraints": [
+        "status 字段必须为预定义枚举值之一",
+        "end_time 允许为 NULL（部署未完成时）"
+      ],
+      "lifecycle": {
+        "create": "部署执行服务调用内部API创建记录",
+        "update": "部署结束后更新状态和耗时",
+        "delete": "不支持物理删除",
+        "retention": "永久保存，按业务规则归档"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "部署历史列表项DTO",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "GET /api/deployments 响应中 items 数组的元素结构，为前端展示使用。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "description": "部署ID，序列化为字符串"
+        },
+        {
+          "name": "project_name",
+          "type": "string",
+          "required": true,
+          "description": "项目名称（快照）"
+        },
+        {
+          "name": "environment_name",
+          "type": "string",
+          "required": true,
+          "description": "环境名称（快照）"
+        },
+        {
+          "name": "version_tag",
+          "type": "string",
+          "required": true,
+          "description": "版本标签"
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "required": true,
+          "description": "部署状态"
+        },
+        {
+          "name": "start_time",
+          "type": "string",
+          "required": true,
+          "description": "开始时间 (ISO 8601)"
+        },
+        {
+          "name": "end_time",
+          "type": "string",
+          "required": false,
+          "description": "结束时间 (ISO 8601)"
+        },
+        {
+          "name": "duration_seconds",
+          "type": "number",
+          "required": false,
+          "description": "耗时（秒）"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": [
+        "REQ-005"
+      ],
+      "source_components": [
+        "CMP-007"
+      ],
+      "source_contracts": [
+        "CTR-008"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "API响应时构造",
+        "update": "",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-003",
+      "name": "部署详情响应DTO",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "GET /api/deployments/{id} 响应的结构，包含部署元数据和关联日志。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "description": "部署ID"
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "required": true,
+          "description": "项目ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "string",
+          "required": true,
+          "description": "环境ID"
+        },
+        {
+          "name": "version_tag",
+          "type": "string",
+          "required": true,
+          "description": "版本标签"
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "required": true,
+          "description": "部署状态"
+        },
+        {
+          "name": "start_time",
+          "type": "string",
+          "required": true,
+          "description": "开始时间 (ISO 8601)"
+        },
+        {
+          "name": "end_time",
+          "type": "string",
+          "required": false,
+          "description": "结束时间 (ISO 8601)"
+        },
+        {
+          "name": "duration_seconds",
+          "type": "number",
+          "required": false,
+          "description": "耗时（秒）"
+        },
+        {
+          "name": "project_name",
+          "type": "string",
+          "required": true,
+          "description": "项目名称快照"
+        },
+        {
+          "name": "environment_name",
+          "type": "string",
+          "required": true,
+          "description": "环境名称快照"
+        },
+        {
+          "name": "logs",
+          "type": "array",
+          "required": false,
+          "description": "关联的日志条目数组",
+          "items": {
+            "type": "object",
+            "properties": {
+              "timestamp": {
+                "type": "string",
+                "required": true,
+                "description": "日志时间戳 (ISO 8601)"
+              },
+              "level": {
+                "type": "string",
+                "required": true,
+                "description": "日志级别 (INFO, WARN, ERROR)"
+              },
+              "step": {
+                "type": "string",
+                "required": true,
+                "description": "部署步骤名称"
+              },
+              "message": {
+                "type": "string",
+                "required": true,
+                "description": "日志消息"
+              }
+            }
+          }
+        }
+      ],
+      "indexes": [],
+      "source_requirements": [
+        "REQ-005"
+      ],
+      "source_components": [
+        "CMP-007"
+      ],
+      "source_contracts": [
+        "CTR-008"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "API响应时构造",
+        "update": "",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "部署历史查询REST API",
+      "type": "REST",
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/api/deployments",
+          "description": "获取部署历史列表，支持分页和过滤",
+          "parameters": [
+            {
+              "name": "page",
+              "in": "query",
+              "required": false,
+              "type": "integer",
+              "default": 1,
+              "description": "页码"
+            },
+            {
+              "name": "page_size",
+              "in": "query",
+              "required": false,
+              "type": "integer",
+              "default": 20,
+              "max": 100,
+              "description": "每页数量"
+            },
+            {
+              "name": "project_id",
+              "in": "query",
+              "required": false,
+              "type": "integer",
+              "description": "按项目ID过滤"
+            },
+            {
+              "name": "environment_id",
+              "in": "query",
+              "required": false,
+              "type": "integer",
+              "description": "按环境ID过滤"
+            },
+            {
+              "name": "status",
+              "in": "query",
+              "required": false,
+              "type": "string",
+              "description": "按状态过滤"
+            }
+          ],
+          "responses": [
+            {
+              "status_code": 200,
+              "description": "成功",
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "DM-002"
+                    }
+                  },
+                  "total_count": {
+                    "type": "integer"
+                  },
+                  "page": {
+                    "type": "integer"
+                  },
+                  "page_size": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/api/deployments/{id}",
+          "description": "获取单次部署详情，包括关联日志",
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "type": "string",
+              "description": "部署ID"
+            }
+          ],
+          "responses": [
+            {
+              "status_code": 200,
+              "description": "成功",
+              "schema": {
+                "$ref": "DM-003"
+              }
+            },
+            {
+              "status_code": 404,
+              "description": "部署记录不存在"
+            }
+          ]
+        }
+      ],
+      "authentication": "Bearer Token",
+      "authorization": "需要用户权限服务校验 read:deployments 范围",
+      "source_requirements": [
+        "REQ-005"
+      ],
+      "source_components": [
+        "CMP-007"
+      ],
+      "source_contracts": [
+        "CTR-008"
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "部署状态必须为预定义值之一：pending、running、success、failed、cancelled",
+      "部署开始时间不能晚于结束时间",
+      "部署记录一旦创建不可删除",
+      "项目名称和环境名称在部署时记录快照，后续不随项目/环境修改而变化",
+      "日志级别必须为 INFO、WARN、ERROR 之一",
+      "分页参数 page 必须 >= 1，page_size 必须在 1-100 之间",
+      "通过认证的用户只能查看其有权限的项目部署历史（权限校验可推迟到网关层）"
+    ],
+    "rules": [
+      {
+        "name": "部署状态生命周期",
+        "description": "pending → running → (success | failed | cancelled)。不允许从终态回退。",
+        "trigger": "部署执行服务调用状态更新 API",
+        "validation": "检查当前状态和目标状态是否合法"
+      },
+      {
+        "name": "日志追加规则",
+        "description": "只能为状态为 running 的部署追加日志。部署结束后（终态）禁止追加日志。",
+        "trigger": "日志采集服务调用日志追加 API",
+        "validation": "关联的部署记录状态必须为 running"
+      }
+    ]
+  },
+  "service_contracts": {
+    "id": "SC-101",
+    "name": "部署历史与日志服务契约",
+    "version": "1.0",
+    "description": "本服务对外提供的 API 契约。",
+    "interfaces": [
+      {
+        "interface_id": "IF-001",
+        "method": "GET",
+        "path": "/api/deployments",
+        "request": {
+          "query": {
+            "page": "integer",
+            "page_size": "integer",
+            "project_id": "integer",
+            "environment_id": "integer",
+            "status": "string"
+          }
+        },
+        "response": {
+          "200": {
+            "type": "object",
+            "properties": {
+              "items": "array",
+              "total_count": "integer",
+              "page": "integer",
+              "page_size": "integer"
+            }
+          }
+        },
+        "errors": [
+          "400: 无效分页参数",
+          "401: 未认证",
+          "403: 无权限"
+        ]
+      },
+      {
+        "interface_id": "IF-001",
+        "method": "GET",
+        "path": "/api/deployments/{id}",
+        "request": {
+          "path": {
+            "id": "string"
+          }
+        },
+        "response": {
+          "200": {
+            "$ref": "DM-003"
+          },
+          "404": {
+            "error": "部署记录不存在"
+          }
+        },
+        "errors": [
+          "401: 未认证",
+          "403: 无权限",
+          "404: 部署记录不存在"
+        ]
+      }
+    ]
+  },
+  "domain_objects": [
+    {
+      "id": "DO-301",
+      "name": "Deployment",
+      "description": "部署聚合根，包含部署元数据和关联的日志集合。",
+      "properties": {
+        "id": "bigint",
+        "projectId": "bigint",
+        "environmentId": "bigint",
+        "versionTag": "string",
+        "status": "DeploymentStatus (enum)",
+        "startTime": "time.Time",
+        "endTime": "*time.Time",
+        "durationSeconds": "*int",
+        "projectName": "string",
+        "environmentName": "string",
+        "createdAt": "time.Time",
+        "logs": "[]DeploymentLog"
+      },
+      "methods": [
+        {
+          "name": "AddLog",
+          "parameters": "log DeploymentLog",
+          "return": "error",
+          "description": "添加一条日志，需校验部署状态为 running"
+        },
+        {
+          "name": "UpdateStatus",
+          "parameters": "newStatus DeploymentStatus",
+          "return": "error",
+          "description": "更新部署状态，遵循状态生命周期"
+        },
+        {
+          "name": "CalculateDuration",
+          "parameters": "",
+          "return": "",
+          "description": "部署结束时计算耗时"
+        }
+      ]
+    },
+    {
+      "id": "DO-302",
+      "name": "DeploymentLog",
+      "description": "部署日志值对象",
+      "properties": {
+        "id": "bigint",
+        "deploymentId": "bigint",
+        "timestamp": "time.Time",
+        "level": "LogLevel (enum: INFO, WARN, ERROR)",
+        "step": "string",
+        "message": "string"
+      }
+    },
+    {
+      "id": "DO-303",
+      "name": "DeploymentStatus",
+      "description": "部署状态枚举",
+      "values": [
+        "pending",
+        "running",
+        "success",
+        "failed",
+        "cancelled"
+      ]
+    },
+    {
+      "id": "DO-304",
+      "name": "LogLevel",
+      "description": "日志级别枚举",
+      "values": [
+        "INFO",
+        "WARN",
+        "ERROR"
+      ]
+    },
+    {
+      "id": "DO-305",
+      "name": "DeploymentFilter",
+      "description": "部署查询过滤条件值对象",
+      "properties": {
+        "projectId": "*bigint",
+        "environmentId": "*bigint",
+        "status": "*DeploymentStatus",
+        "page": "int (>=1)",
+        "pageSize": "int (1-100)"
+      }
+    },
+    {
+      "id": "DO-306",
+      "name": "DeploymentRepository",
+      "description": "部署仓储接口",
+      "methods": [
+        {
+          "name": "Save",
+          "parameters": "deployment *Deployment",
+          "return": "error"
+        },
+        {
+          "name": "FindByID",
+          "parameters": "id int64",
+          "return": "*Deployment, error"
+        },
+        {
+          "name": "List",
+          "parameters": "filter DeploymentFilter",
+          "return": "[]*Deployment, totalCount int64, error"
+        }
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "分层错误处理：API层将业务错误映射为HTTP状态码；领域层定义业务错误类型；仓储层将数据库错误转为业务错误。统一使用错误码和用户友好的错误消息。",
+    "errors": [
+      {
+        "code": "DEPLOYMENT_NOT_FOUND",
+        "http_status": 404,
+        "message": "部署记录未找到"
+      },
+      {
+        "code": "INVALID_PAGINATION",
+        "http_status": 400,
+        "message": "分页参数无效"
+      },
+      {
+        "code": "INVALID_STATUS_TRANSITION",
+        "http_status": 400,
+        "message": "无效的状态转换"
+      },
+      {
+        "code": "LOG_APPEND_DENIED",
+        "http_status": 400,
+        "message": "仅允许向正在运行的部署追加日志"
+      },
+      {
+        "code": "UNAUTHORIZED",
+        "http_status": 401,
+        "message": "未认证或令牌无效"
+      },
+      {
+        "code": "FORBIDDEN",
+        "http_status": 403,
+        "message": "无权限访问该资源"
+      },
+      {
+        "code": "INTERNAL_ERROR",
+        "http_status": 500,
+        "message": "内部服务器错误"
+      }
+    ],
+    "source_requirements": [
+      "REQ-005"
+    ],
+    "source_components": [
+      "CMP-007"
+    ],
+    "source_contracts": [
+      "CTR-008"
+    ]
+  }
+}
