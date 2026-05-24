@@ -1,0 +1,852 @@
+{
+  "meta": {
+    "doc_id": "sad-001",
+    "type": "sad",
+    "title": "System Architecture Design",
+    "author": "architect_agent",
+    "created": "2026-05-24 09:06",
+    "version": 1
+  },
+  "title": "System Architecture Design",
+  "source_prd": {
+    "doc_id": "prd-current",
+    "version": 1
+  },
+  "system_overview": {
+    "description": "DeployForge 是一款面向开发者的轻量级跨平台桌面工具（基于 Electron），用于本地管理多个项目并一键部署到远程服务器。系统提供直观的图形界面，允许用户配置多套环境（测试、灰度、生产），并进行安全的 SSH 连接、文件上传、版本化目录管理、启动脚本生成、部署历史追溯及回滚等操作。所有敏感数据在本地加密存储，部署过程提供实时进度反馈。",
+    "roles": [
+      {
+        "name": "用户",
+        "permissions": [
+          "项目管理",
+          "环境配置",
+          "密钥管理",
+          "一键部署",
+          "历史查看与回滚",
+          "脚本模板编辑"
+        ]
+      }
+    ]
+  },
+  "architecture": {
+    "style": "分层架构 + 微内核（Electron 桌面应用）",
+    "description": "整体分为表现层、通信层、核心服务层和存储层。表现层使用 React 构建，通过 Electron IPC 与主进程通信；核心服务层包含项目管理、环境管理、部署编排、SSH 客户端、脚本模板、历史版本、加密等服务；存储层使用 SQLite 和本地文件系统。",
+    "layers": [
+      {
+        "name": "表现层",
+        "components": [
+          "React 应用组件（项目管理面板、环境配置表单、部署面板、历史记录列表、模板编辑器等）"
+        ]
+      },
+      {
+        "name": "通信层",
+        "components": [
+          "Electron IPC（ipcRenderer/ipcMain）"
+        ]
+      },
+      {
+        "name": "核心服务层",
+        "components": [
+          "项目管理服务",
+          "环境管理服务",
+          "部署编排引擎",
+          "SSH客户端",
+          "脚本模板服务",
+          "历史版本服务",
+          "加密服务"
+        ]
+      },
+      {
+        "name": "存储层",
+        "components": [
+          "SQLite 数据库",
+          "文件系统（密钥库）"
+        ]
+      }
+    ],
+    "connections": [
+      {
+        "protocol": "异步 IPC 消息 (JSON)",
+        "description": "表现层与核心服务层通过主进程的 IPC 通道进行双向异步通信"
+      },
+      {
+        "protocol": "内部函数调用/事件总线",
+        "description": "通信层与核心服务层运行于同一 Node.js 主进程，通过直接函数调用和事件总线交互"
+      },
+      {
+        "protocol": "SQL / ORM",
+        "description": "核心服务层通过 better-sqlite3 同步 API 操作 SQLite 数据库"
+      },
+      {
+        "protocol": "SSH (22端口) / SFTP",
+        "description": "部署引擎和 SSH 客户端通过 SSH 协议与远程服务器通信，进行命令执行和文件传输"
+      }
+    ],
+    "features": [
+      "跨平台（Windows/macOS/Linux）",
+      "离线可用，本地优先",
+      "模块化、松耦合的服务设计",
+      "基于时间戳的版本化部署与软链接回滚",
+      "脚本模板可配置，支持多种语言/框架",
+      "敏感数据 AES-256-GCM 加密存储",
+      "SSH 加密隧道与主机密钥验证",
+      "Electron 桌面应用，打包体积可控"
+    ]
+  },
+  "tech_stack": {
+    "backend": {
+      "language": "TypeScript",
+      "framework": "Node.js 20"
+    },
+    "frontend": {
+      "framework": "React 18",
+      "ui_library": "Ant Design",
+      "state_management": "Zustand"
+    },
+    "database": "SQLite (better-sqlite3)",
+    "ssh_library": "ssh2",
+    "template_engine": "Handlebars",
+    "encryption": "Node.js crypto (AES-256-GCM)",
+    "logging": "winston",
+    "packaging": "electron-builder"
+  },
+  "components": [
+    {
+      "id": "CMP-001",
+      "name": "项目管理服务",
+      "type": "service",
+      "status": "active",
+      "version": 1,
+      "description": "负责项目实体的增删改查，维护当前激活项目标识，并在删除项目时级联清理环境配置与部署历史。",
+      "responsibilities": [
+        "创建、更新、删除项目",
+        "获取项目列表",
+        "切换当前激活项目",
+        "级联删除项目关联数据"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "contracts": [
+        "CTR-001",
+        "CTR-002"
+      ],
+      "depends_on_components": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CMP-002",
+      "name": "环境管理服务",
+      "type": "service",
+      "status": "active",
+      "version": 1,
+      "description": "在指定项目下管理多套环境配置，执行 SSH 连通性测试，调用加密服务处理敏感信息。",
+      "responsibilities": [
+        "新增、编辑、删除环境配置",
+        "执行 SSH 连通性测试",
+        "关联脚本模板的存储与读取",
+        "协调加密服务以安全存储密码和密钥"
+      ],
+      "source_requirements": [
+        "REQ-002",
+        "REQ-006"
+      ],
+      "contracts": [
+        "CTR-003",
+        "CTR-004"
+      ],
+      "depends_on_components": [
+        "CMP-007",
+        "CMP-004"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CMP-003",
+      "name": "部署编排引擎",
+      "type": "service",
+      "status": "active",
+      "version": 1,
+      "description": "接收部署指令，按步骤执行创建目录、上传文件、生成脚本、启动服务等流程，并通过事件向前端报告进度。",
+      "responsibilities": [
+        "编排一键部署全流程",
+        "创建远程版本目录",
+        "协调文件上传",
+        "调用脚本模板服务生成启停脚本",
+        "执行部署后自动启动（可选）",
+        "记录部署历史",
+        "失败时现场保留或回滚",
+        "发送进度事件到前端"
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "contracts": [
+        "CTR-005"
+      ],
+      "depends_on_components": [
+        "CMP-002",
+        "CMP-004",
+        "CMP-005",
+        "CMP-006"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CMP-004",
+      "name": "SSH客户端",
+      "type": "infrastructure",
+      "status": "active",
+      "version": 1,
+      "description": "封装 SSH 连接管理，支持密码和密钥认证，提供命令执行和 SFTP 文件上传功能，并确保安全与日志脱敏。",
+      "responsibilities": [
+        "建立/断开 SSH 连接",
+        "执行远程命令",
+        "通过 SFTP 上传文件",
+        "支持密码和密钥两种认证",
+        "主机密钥信任验证",
+        "连接池管理、超时与重连",
+        "日志输出脱敏"
+      ],
+      "source_requirements": [
+        "REQ-005"
+      ],
+      "contracts": [],
+      "depends_on_components": [
+        "CMP-007"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CMP-005",
+      "name": "脚本模板服务",
+      "type": "service",
+      "status": "active",
+      "version": 1,
+      "description": "管理预置和用户自定义的启动/停止脚本模板，解析占位变量并渲染生成最终脚本内容。",
+      "responsibilities": [
+        "提供内置模板示例（Go、Java、Node.js）",
+        "存储自定义模板",
+        "解析占位变量（如 {VERSION_DIR}、{BASE_PATH}）",
+        "渲染生成可执行脚本字符串"
+      ],
+      "source_requirements": [
+        "REQ-006"
+      ],
+      "contracts": [],
+      "depends_on_components": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CMP-006",
+      "name": "历史版本服务",
+      "type": "service",
+      "status": "active",
+      "version": 1,
+      "description": "记录每次部署信息，提供查询、清理和一键回滚功能，通过软链接切换当前版本。",
+      "responsibilities": [
+        "记录部署历史（版本号、时间、文件大小、状态、日志）",
+        "查询特定环境的历史记录",
+        "根据保留策略自动/手动清理旧版本",
+        "执行回滚操作（切换远程软链接至旧版本目录）",
+        "标记当前起效版本"
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "contracts": [
+        "CTR-006",
+        "CTR-007"
+      ],
+      "depends_on_components": [
+        "CMP-004",
+        "CMP-002"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CMP-007",
+      "name": "加密服务",
+      "type": "service",
+      "status": "active",
+      "version": 1,
+      "description": "提供 AES-256-GCM 加解密能力，用于安全存储和读取密码、私钥等敏感字段；可集成系统密钥链。",
+      "responsibilities": [
+        "生成/派生主密钥",
+        "加密任意明文字段",
+        "解密已加密字段",
+        "与存储层配合透明加解密"
+      ],
+      "source_requirements": [
+        "REQ-005"
+      ],
+      "contracts": [],
+      "depends_on_components": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CMP-008",
+      "name": "前端应用（React UI）",
+      "type": "frontend",
+      "status": "active",
+      "version": 1,
+      "description": "提供完整的用户界面，包括项目管理、环境配置、部署面板、历史记录等模块，通过 IPC 与主进程交互。",
+      "responsibilities": [
+        "渲染用户界面",
+        "处理用户交互（拖拽、表单、按钮）",
+        "通过 IPC 调用主进程服务",
+        "显示部署实时进度与日志",
+        "管理前端路由与状态"
+      ],
+      "source_requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004"
+      ],
+      "contracts": [],
+      "depends_on_components": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    }
+  ],
+  "contracts": [
+    {
+      "id": "CTR-001",
+      "interface": "project:list",
+      "provider_component_id": "CMP-001",
+      "provider": "项目管理服务",
+      "consumers": [
+        "前端应用"
+      ],
+      "type": "Event",
+      "status": "active",
+      "version": 1,
+      "endpoint": "ipc: project:list",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "projects": [
+            {
+              "id": "uuid",
+              "name": "string",
+              "code": "string",
+              "createdAt": "string",
+              "updatedAt": "string"
+            }
+          ]
+        }
+      },
+      "errors": [
+        {
+          "status": 500,
+          "code": "INTERNAL_ERROR",
+          "message": "获取项目列表失败"
+        }
+      ],
+      "description": "获取所有项目的列表",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-002",
+      "interface": "project:create",
+      "provider_component_id": "CMP-001",
+      "provider": "项目管理服务",
+      "consumers": [
+        "前端应用"
+      ],
+      "type": "Event",
+      "status": "active",
+      "version": 1,
+      "endpoint": "ipc: project:create",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "name": "string",
+          "code": "string"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "project": {
+            "id": "uuid",
+            "name": "string",
+            "code": "string",
+            "createdAt": "string",
+            "updatedAt": "string"
+          }
+        }
+      },
+      "errors": [
+        {
+          "status": 400,
+          "code": "DUPLICATE_CODE",
+          "message": "项目编码已存在"
+        }
+      ],
+      "description": "创建新项目",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-003",
+      "interface": "env:create",
+      "provider_component_id": "CMP-002",
+      "provider": "环境管理服务",
+      "consumers": [
+        "前端应用"
+      ],
+      "type": "Event",
+      "status": "active",
+      "version": 1,
+      "endpoint": "ipc: env:create",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "projectId": "uuid",
+          "name": "string",
+          "code": "string",
+          "host": "string",
+          "port": "number",
+          "username": "string",
+          "authType": "password|key",
+          "password": "string?",
+          "key": "string?",
+          "basePath": "string",
+          "startTemplate": "string?",
+          "stopTemplate": "string?"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "environment": "object"
+        }
+      },
+      "errors": [
+        {
+          "status": 400,
+          "code": "VALIDATION_ERROR",
+          "message": "参数验证失败"
+        }
+      ],
+      "description": "在指定项目下创建新环境配置",
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-004",
+      "interface": "env:test-connection",
+      "provider_component_id": "CMP-002",
+      "provider": "环境管理服务",
+      "consumers": [
+        "前端应用"
+      ],
+      "type": "Event",
+      "status": "active",
+      "version": 1,
+      "endpoint": "ipc: env:test-connection",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "envId": "uuid"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "message": "string"
+        }
+      },
+      "errors": [
+        {
+          "status": 408,
+          "code": "TIMEOUT",
+          "message": "连接超时"
+        },
+        {
+          "status": 401,
+          "code": "AUTH_FAILURE",
+          "message": "认证失败"
+        }
+      ],
+      "description": "测试指定环境的 SSH 连通性",
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-005",
+      "interface": "deploy:start",
+      "provider_component_id": "CMP-003",
+      "provider": "部署编排引擎",
+      "consumers": [
+        "前端应用"
+      ],
+      "type": "Event",
+      "status": "active",
+      "version": 1,
+      "endpoint": "ipc: deploy:start",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "projectId": "uuid",
+          "envId": "uuid",
+          "filePath": "string",
+          "options": {
+            "autoStart": "boolean"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "version": "string",
+          "remotePath": "string",
+          "log": "string"
+        }
+      },
+      "errors": [
+        {
+          "status": 500,
+          "code": "DEPLOY_FAILED",
+          "message": "部署失败，详情见日志"
+        }
+      ],
+      "description": "开始一键部署流程，逐步返回进度事件",
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-006",
+      "interface": "history:list",
+      "provider_component_id": "CMP-006",
+      "provider": "历史版本服务",
+      "consumers": [
+        "前端应用"
+      ],
+      "type": "Event",
+      "status": "active",
+      "version": 1,
+      "endpoint": "ipc: history:list",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "envId": "uuid",
+          "page": "number",
+          "pageSize": "number"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "records": [
+            {
+              "id": "uuid",
+              "version": "string",
+              "deployedAt": "string",
+              "fileSize": "number",
+              "status": "string",
+              "isCurrent": "boolean"
+            }
+          ],
+          "total": "number"
+        }
+      },
+      "errors": [
+        {
+          "status": 500,
+          "code": "INTERNAL_ERROR",
+          "message": "获取历史记录失败"
+        }
+      ],
+      "description": "分页查询指定环境的部署历史",
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-007",
+      "interface": "history:rollback",
+      "provider_component_id": "CMP-006",
+      "provider": "历史版本服务",
+      "consumers": [
+        "前端应用"
+      ],
+      "type": "Event",
+      "status": "active",
+      "version": 1,
+      "endpoint": "ipc: history:rollback",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "historyId": "uuid"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "newCurrentVersion": "string"
+        }
+      },
+      "errors": [
+        {
+          "status": 500,
+          "code": "ROLLBACK_FAILED",
+          "message": "回滚操作失败"
+        }
+      ],
+      "description": "回滚到指定历史版本",
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    }
+  ],
+  "data_flow": [
+    {
+      "name": "一键部署流程",
+      "steps": [
+        "用户在前端选择项目和环境，拖拽文件并点击部署",
+        "前端发送 IPC 'deploy:start' 到主进程",
+        "部署编排引擎调用环境管理服务获取解密后的 SSH 配置",
+        "部署编排引擎通过 SSH 客户端连接远程服务器",
+        "在远程基础路径下创建版本目录（如 20260524_1642）",
+        "通过 SFTP 上传本地文件至版本目录，并实时推送进度到前端",
+        "调用脚本模板服务渲染 start.sh 和 stop.sh",
+        "上传脚本文件并赋予执行权限",
+        "若启用自动启动，远程执行 start.sh 并获取 PID",
+        "部署编排引擎将结果（成功/失败、版本号、远程路径）记录到历史版本服务",
+        "向前端返回最终部署状态和日志"
+      ]
+    },
+    {
+      "name": "版本回滚流程",
+      "steps": [
+        "用户在前端历史记录中选择某个版本，点击回滚",
+        "前端发送 IPC 'history:rollback' 到主进程",
+        "历史版本服务根据历史记录 ID 获取部署详情和环境配置",
+        "通过 SSH 客户端连接远程服务器",
+        "修改 current 软链接：rm -f current && ln -s {版本目录} current",
+        "可选：执行新 current 目录下的 start.sh 重启服务",
+        "历史版本服务更新数据库中的 is_current 标记",
+        "向前端返回回滚结果"
+      ]
+    }
+  ],
+  "data_models": [],
+  "requirement_traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "coverage": "full",
+      "components": [
+        "CMP-001",
+        "CMP-008"
+      ],
+      "contracts": [
+        "CTR-001",
+        "CTR-002"
+      ],
+      "data_models": [],
+      "notes": "多项目管理功能由项目管理服务实现，前端提供项目面板"
+    },
+    {
+      "requirement_id": "REQ-002",
+      "coverage": "full",
+      "components": [
+        "CMP-002",
+        "CMP-008"
+      ],
+      "contracts": [
+        "CTR-003",
+        "CTR-004"
+      ],
+      "data_models": [],
+      "notes": "环境配置管理由环境管理服务实现，加密存储依赖加密服务"
+    },
+    {
+      "requirement_id": "REQ-003",
+      "coverage": "full",
+      "components": [
+        "CMP-003",
+        "CMP-004",
+        "CMP-005",
+        "CMP-008"
+      ],
+      "contracts": [
+        "CTR-005"
+      ],
+      "data_models": [],
+      "notes": "一键部署由部署编排引擎协调各组件完成"
+    },
+    {
+      "requirement_id": "REQ-004",
+      "coverage": "full",
+      "components": [
+        "CMP-006",
+        "CMP-008"
+      ],
+      "contracts": [
+        "CTR-006",
+        "CTR-007"
+      ],
+      "data_models": [],
+      "notes": "版本管理与部署历史由历史版本服务负责"
+    },
+    {
+      "requirement_id": "REQ-005",
+      "coverage": "full",
+      "components": [
+        "CMP-004",
+        "CMP-007"
+      ],
+      "contracts": [],
+      "data_models": [],
+      "notes": "安全连接与密钥管理由 SSH 客户端和加密服务共同保障"
+    },
+    {
+      "requirement_id": "REQ-006",
+      "coverage": "full",
+      "components": [
+        "CMP-002",
+        "CMP-005"
+      ],
+      "contracts": [],
+      "data_models": [],
+      "notes": "模板化启动脚本由脚本模板服务实现，并在环境配置中关联模板"
+    }
+  ],
+  "architecture_decisions": [],
+  "risks": [],
+  "open_questions": []
+}
