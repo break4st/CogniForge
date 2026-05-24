@@ -1,0 +1,647 @@
+{
+  "meta": {
+    "doc_id": "lld-deployment-service-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "deployment-service",
+    "title": "部署发起与校验服务详细设计",
+    "author": "design_agent",
+    "created": "2025-03-26T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-004"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-004"
+      ],
+      "contracts": [
+        "CTR-004",
+        "CTR-002"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "接收前端部署请求",
+      "校验项目、环境、文件有效性",
+      "预检查远程连接和写入权限",
+      "创建部署记录（状态：PENDING）",
+      "将部署任务消息推送到消息队列"
+    ],
+    "out_of_scope": [
+      "实际SSH连接与文件上传执行",
+      "项目/环境/SSH密钥的基础数据管理",
+      "部署历史与日志查询"
+    ],
+    "owned_components": [
+      "CMP-004"
+    ],
+    "owned_contracts": [],
+    "consumed_contracts": [
+      "CTR-002",
+      "CTR-999"
+    ],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "部署发起与校验服务，作为一键部署流程的入口，负责验证部署请求的合法性，创建PENDING状态的部署记录，并通过消息队列通知下游执行器开始工作。",
+    "dependencies": [
+      "project-service",
+      "environment-service",
+      "ssh-key-service",
+      "message-queue"
+    ],
+    "tech_stack": [
+      "Python 3.11+",
+      "FastAPI",
+      "PostgreSQL 15",
+      "RabbitMQ",
+      "paramiko",
+      "httpx"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-004",
+      "sad_component_ids": [
+        "CMP-004"
+      ],
+      "sad_contract_ids": [
+        "CTR-004",
+        "CTR-002"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002"
+        ],
+        "interfaces": [
+          "IF-001"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "DeploymentRecord",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "deployments"
+      },
+      "description": "引用中心数据库的部署记录表，本服务仅关心发起阶段所需的字段视图",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID",
+          "required": true,
+          "description": "部署记录唯一标识"
+        },
+        {
+          "name": "project_id",
+          "type": "UUID",
+          "required": true,
+          "description": "关联的项目ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "UUID",
+          "required": true,
+          "description": "关联的环境ID"
+        },
+        {
+          "name": "version",
+          "type": "String",
+          "required": false,
+          "description": "部署版本号，若不提供则自动生成"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "required": true,
+          "description": "部署状态，初始为 PENDING"
+        },
+        {
+          "name": "file_path",
+          "type": "String",
+          "required": true,
+          "description": "上传文件在共享存储的路径"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_deployments_project_id",
+          "unique": false,
+          "columns": [
+            "project_id"
+          ]
+        },
+        {
+          "name": "idx_deployments_status",
+          "unique": false,
+          "columns": [
+            "status"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "部署请求通过所有校验后创建",
+        "update": "状态变更由后续服务更新",
+        "delete": "不允许物理删除，仅软删除或归档",
+        "retention": "永久保留部署历史"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "DeployMessage",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "发送到消息队列的部署任务消息体",
+      "fields": [
+        {
+          "name": "deployment_id",
+          "type": "UUID",
+          "required": true,
+          "description": "部署记录ID"
+        },
+        {
+          "name": "project_id",
+          "type": "UUID",
+          "required": true,
+          "description": "项目ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "UUID",
+          "required": true,
+          "description": "环境ID"
+        },
+        {
+          "name": "file_path",
+          "type": "String",
+          "required": true,
+          "description": "可执行文件存储路径"
+        },
+        {
+          "name": "version",
+          "type": "String",
+          "required": false,
+          "description": "版本号"
+        }
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "消息发布时创建实例",
+        "update": "不适用",
+        "delete": "消息被消费后丢弃",
+        "retention": "不适用"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "DeploymentService",
+      "type": "REST API",
+      "method": "POST",
+      "endpoint": "/api/deployments",
+      "description": "发起新的部署请求",
+      "request": {
+        "body": {
+          "content_type": "application/json",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": { "type": "string", "format": "uuid" },
+              "environment_id": { "type": "string", "format": "uuid" },
+              "file_path": { "type": "string" },
+              "version": { "type": "string" }
+            },
+            "required": ["project_id", "environment_id", "file_path"]
+          }
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "deployment_id": "uuid",
+          "status": "PENDING"
+        }
+      },
+      "errors": [
+        {
+          "status": 400,
+          "description": "请求参数无效"
+        },
+        {
+          "status": 404,
+          "description": "项目或环境不存在"
+        },
+        {
+          "status": 502,
+          "description": "依赖服务不可用"
+        }
+      ],
+      "security": {
+        "authentication": "JWT",
+        "authorization": "基于角色的访问控制"
+      },
+      "source_requirements": [
+        "REQ-004"
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "DeploymentRequest",
+      "type": "entity",
+      "object_type": "entity",
+      "description": "表示一个部署请求的领域实体，包含验证后的部署参数",
+      "attributes": [
+        {
+          "name": "project_id",
+          "type": "UUID",
+          "required": true,
+          "description": "项目标识"
+        },
+        {
+          "name": "environment_id",
+          "type": "UUID",
+          "required": true,
+          "description": "环境标识"
+        },
+        {
+          "name": "file_path",
+          "type": "String",
+          "required": true,
+          "description": "文件路径"
+        },
+        {
+          "name": "version",
+          "type": "String",
+          "required": false,
+          "description": "部署版本号"
+        }
+      ],
+      "behavior": [],
+      "source_requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "ValidationResult",
+      "type": "value_object",
+      "object_type": "value_object",
+      "description": "表示校验结果的值对象",
+      "attributes": [
+        {
+          "name": "is_valid",
+          "type": "Boolean",
+          "required": true,
+          "description": "是否通过校验"
+        },
+        {
+          "name": "errors",
+          "type": "Array<String>",
+          "required": true,
+          "description": "错误信息列表"
+        },
+        {
+          "name": "checked_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "校验时间"
+        },
+        {
+          "name": "checker",
+          "type": "String",
+          "required": false,
+          "description": "执行校验的组件名"
+        },
+        {
+          "name": "details",
+          "type": "JSON",
+          "required": false,
+          "description": "附加详情"
+        },
+        {
+          "name": "duration_ms",
+          "type": "Integer",
+          "required": false,
+          "description": "校验耗时"
+        },
+        {
+          "name": "resource_id",
+          "type": "UUID",
+          "required": false,
+          "description": "被校验的资源ID"
+        },
+        {
+          "name": "context",
+          "type": "JSON",
+          "required": false,
+          "description": "校验上下文"
+        }
+      ],
+      "behavior": [],
+      "source_requirements": []
+    },
+    {
+      "id": "DO-003",
+      "name": "DeploymentRecord",
+      "type": "entity",
+      "object_type": "entity",
+      "description": "表示已创建的部署记录，包含持久化信息",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "UUID",
+          "required": true,
+          "description": "记录标识"
+        },
+        {
+          "name": "project_id",
+          "type": "UUID",
+          "required": true,
+          "description": "项目标识"
+        },
+        {
+          "name": "environment_id",
+          "type": "UUID",
+          "required": true,
+          "description": "环境标识"
+        },
+        {
+          "name": "version",
+          "type": "String",
+          "required": false,
+          "description": "版本号"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "required": true,
+          "description": "状态"
+        },
+        {
+          "name": "file_path",
+          "type": "String",
+          "required": true,
+          "description": "文件路径"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "更新时间"
+        }
+      ],
+      "behavior": [],
+      "source_requirements": [
+        "REQ-004"
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "DeploymentService",
+      "description": "部署服务契约，定义部署请求的发起、校验、记录创建和消息分发。",
+      "methods": [
+        {
+          "name": "initiateDeployment",
+          "description": "发起部署请求，执行校验，创建记录，发送消息",
+          "parameters": {
+            "request": "DeploymentRequest"
+          },
+          "return_type": "DeploymentRecord",
+          "preconditions": [
+            "请求参数格式正确",
+            "外部服务 project-service,environment-service,ssh-key-service 可用"
+          ],
+          "postconditions": [
+            "部署记录创建成功，状态为PENDING",
+            "部署消息已发送到队列"
+          ],
+          "invariants": [
+            "部署请求通过所有校验",
+            "文件路径有效"
+          ],
+          "errors": [
+            {
+              "code": 400,
+              "message": "Bad Request: Invalid parameters"
+            },
+            {
+              "code": 404,
+              "message": "Not Found: Project or Environment not found"
+            },
+            {
+              "code": 502,
+              "message": "Bad Gateway: Dependency service unavailable"
+            },
+            {
+              "code": 500,
+              "message": "Internal Server Error: Unexpected failure"
+            }
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ]
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "description": "部署请求必须经过项目和环境的有效性校验",
+      "invariants": [
+        "项目必须存在且处于活动状态",
+        "环境必须存在且属于该项目",
+        "文件路径必须指向有效的共享存储文件"
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "BR-002",
+      "description": "部署记录创建前必须进行远程连接预检查",
+      "invariants": [
+        "SSH密钥有效且具有目标环境访问权限",
+        "目标路径可写"
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "BR-003",
+      "description": "部署消息必须包含完整的部署上下文",
+      "invariants": [
+        "部署ID、项目ID、环境ID、文件路径不能为空",
+        "消息体符合schema"
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ]
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "ERR-001",
+      "strategy": "输入参数校验失败时，返回400错误及具体错误信息",
+      "source_requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "ERR-002",
+      "strategy": "依赖服务不可用或返回404时，向上层返回502或404并记录错误日志",
+      "source_requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "ERR-003",
+      "strategy": "数据库或消息队列操作失败时，回滚事务并返回500错误",
+      "source_requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "ERR-004",
+      "strategy": "所有异常需包装为统一错误响应格式 {'error': {'code': string, 'message': string}}",
+      "source_requirements": []
+    }
+  ],
+  "dependencies_management": {
+    "internal_dependencies": [],
+    "external_dependencies": [
+      {
+        "name": "project-service",
+        "type": "REST",
+        "endpoint": "/api/projects/{project_id}",
+        "method": "GET",
+        "timeout": 5,
+        "retry": 1
+      },
+      {
+        "name": "environment-service",
+        "type": "REST",
+        "endpoint": "/api/environments/{environment_id}",
+        "method": "GET",
+        "timeout": 5,
+        "retry": 1
+      },
+      {
+        "name": "ssh-key-service",
+        "type": "REST",
+        "endpoint": "/api/ssh-keys/{environment_id}",
+        "method": "GET",
+        "timeout": 5,
+        "retry": 1
+      },
+      {
+        "name": "message-queue",
+        "type": "AMQP",
+        "exchange": "deployment",
+        "routing_key": "deploy.initiate",
+        "timeout": 2,
+        "retry": 0
+      }
+    ]
+  },
+  "configurations": {
+    "deployment_version_prefix": "auto-",
+    "max_retry_attempts": 3,
+    "default_timeout_seconds": 30
+  },
+  "algorithms": [],
+  "operations": [],
+  "processing": [],
+  "testing": [],
+  "glossary": [],
+  "version_history": [
+    {
+      "version": 1,
+      "change_type": "created",
+      "summary": "Initial LLD creation for deployment-service",
+      "reason": "首次详细设计"
+    }
+  ]
+}
