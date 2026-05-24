@@ -1,0 +1,497 @@
+{
+  "meta": {
+    "doc_id": "lld-ssh-key-service-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "ssh-key-service",
+    "title": "SSH密钥管理服务详细设计",
+    "author": "design_agent",
+    "created": "2025-03-21T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-003"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-003"
+      ],
+      "contracts": [
+        "CTR-003"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "SSH私钥的接收与合法性校验",
+      "私钥加密存储（密文 + IV 分离）",
+      "内存解密接口（仅内部服务间调用）",
+      "远程SSH连接可达性测试"
+    ],
+    "out_of_scope": [
+      "公钥管理",
+      "密钥轮换策略",
+      "密钥明文导出",
+      "直接对外提供解密API"
+    ],
+    "owned_components": [
+      "CMP-003"
+    ],
+    "owned_contracts": [
+      "CTR-003"
+    ],
+    "consumed_contracts": [],
+    "owned_data_models": [
+      "DM-001",
+      "DM-002"
+    ],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "SSH密钥管理服务，负责SSH私钥的加密存储、解密并提供远程连接测试。用户通过API网关上传私钥，服务使用AES-256-GCM加密，将密文和IV分开存储。解密仅在内存中执行，供deployment-executor使用，不暴露明文。此外提供测试接口，验证目标主机SSH连通性。",
+    "dependencies": [
+      "PostgreSQL 15"
+    ],
+    "tech_stack": [
+      "Python 3.11+",
+      "FastAPI",
+      "PostgreSQL 15",
+      "cryptography",
+      "paramiko",
+      "Docker"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-003",
+      "sad_component_ids": [
+        "CMP-003"
+      ],
+      "sad_contract_ids": [
+        "CTR-003"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005",
+          "DO-006"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "ssh_keys",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "存储SSH私钥的加密密文、IV及元数据",
+      "fields": [
+        {"name": "id", "type": "UUID", "required": true, "description": "密钥唯一标识，由服务生成"},
+        {"name": "name", "type": "VARCHAR(255)", "required": true, "description": "用户自定义名称，可读标识，唯一"},
+        {"name": "encrypted_content", "type": "BYTEA", "required": true, "description": "私钥经AES-256-GCM加密后的密文"},
+        {"name": "iv", "type": "BYTEA", "required": true, "description": "加密使用的初始化向量"},
+        {"name": "fingerprint", "type": "VARCHAR(255)", "required": false, "description": "密钥的SSH指纹（可选）"},
+        {"name": "created_at", "type": "TIMESTAMP", "required": true, "description": "创建时间"},
+        {"name": "updated_at", "type": "TIMESTAMP", "required": true, "description": "更新时间"}
+      ],
+      "indexes": [
+        {"name": "idx_name_unique", "unique": true, "columns": ["name"]},
+        {"name": "idx_created_at", "unique": false, "columns": ["created_at"]}
+      ],
+      "source_requirements": ["REQ-003"],
+      "source_components": ["CMP-003"],
+      "source_contracts": ["CTR-003"],
+      "constraints": [
+        "名称必须唯一",
+        "encrypted_content和iv不可为空",
+        "id为主键"
+      ],
+      "lifecycle": {
+        "create": "通过上传接口插入记录",
+        "update": "不支持直接更新（更新需删除后新建）",
+        "delete": "硬删除记录",
+        "retention": "无限期保留，直到被删除"
+      },
+      "change_history": [
+        {"version": 1, "change_type": "created", "summary": "初始创建", "reason": "首次生成LLD"}
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "EncryptionConfig",
+      "type": "config",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "加密算法相关配置，在服务内部使用，不持久化",
+      "fields": [
+        {"name": "algorithm", "type": "String", "required": true, "description": "固定为「AES-256-GCM」"},
+        {"name": "key_derivation_salt", "type": "String", "required": true, "description": "盐值，从环境变量加载"},
+        {"name": "key_iterations", "type": "int", "required": true, "description": "PBKDF2迭代次数"}
+      ],
+      "source_requirements": ["REQ-003"],
+      "source_components": ["CMP-003"],
+      "source_contracts": ["CTR-003"],
+      "constraints": [
+        "algorithm不可更改",
+        "salt和iterations在服务生命周期内不可变"
+      ],
+      "lifecycle": {
+        "create": "从环境变量读取",
+        "update": "不更新",
+        "delete": "不删除",
+        "retention": "随服务实例生命周期"
+      },
+      "change_history": [
+        {"version": 1, "change_type": "created", "summary": "初始创建", "reason": "首次生成LLD"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "上传SSH密钥",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-003",
+      "provider_component_id": "CMP-003",
+      "method": "POST",
+      "endpoint": "/api/keys",
+      "description": "接收密钥名称和私钥文本，验证合法性，加密后存储，返回密钥ID",
+      "input": {
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "name": "string",
+          "private_key": "string"
+        }
+      },
+      "output": {
+        "success": {
+          "status": 201,
+          "body": {
+            "id": "UUID",
+            "name": "string",
+            "fingerprint": "string (optional)",
+            "created_at": "datetime"
+          }
+        },
+        "errors": [
+          {"status": 400, "body": {"detail": "Invalid key format"}},
+          {"status": 409, "body": {"detail": "Key name already exists"}},
+          {"status": 500, "body": {"detail": "Internal server error"}}
+        ]
+      },
+      "security": {
+        "authentication": "Bearer token",
+        "authorization": "admin or operator role required"
+      }
+    },
+    {
+      "id": "IF-002",
+      "name": "获取SSH密钥信息",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-003",
+      "provider_component_id": "CMP-003",
+      "method": "GET",
+      "endpoint": "/api/keys/{key_id}",
+      "description": "根据密钥ID查询密钥元数据（不含私钥内容）",
+      "input": {
+        "path": {
+          "key_id": "UUID"
+        }
+      },
+      "output": {
+        "success": {
+          "status": 200,
+          "body": {
+            "id": "UUID",
+            "name": "string",
+            "fingerprint": "string (optional)",
+            "created_at": "datetime",
+            "updated_at": "datetime"
+          }
+        },
+        "errors": [
+          {"status": 404, "body": {"detail": "Key not found"}},
+          {"status": 500, "body": {"detail": "Internal server error"}}
+        ]
+      },
+      "security": {
+        "authentication": "Bearer token",
+        "authorization": "any authenticated user"
+      }
+    },
+    {
+      "id": "IF-003",
+      "name": "测试SSH连接",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-003",
+      "provider_component_id": "CMP-003",
+      "method": "POST",
+      "endpoint": "/api/keys/{key_id}/test",
+      "description": "使用指定密钥测试到目标主机的SSH连接",
+      "input": {
+        "path": {
+          "key_id": "UUID"
+        },
+        "body": {
+          "hostname": "string",
+          "port": "integer (optional, default 22)",
+          "username": "string"
+        }
+      },
+      "output": {
+        "success": {
+          "status": 200,
+          "body": {
+            "status": "success",
+            "message": "Connection successful"
+          }
+        },
+        "errors": [
+          {"status": 400, "body": {"detail": "Invalid request"}},
+          {"status": 401, "body": {"detail": "Authentication failed"}},
+          {"status": 404, "body": {"detail": "Key not found"}},
+          {"status": 500, "body": {"detail": "Connection failed"}}
+        ]
+      },
+      "security": {
+        "authentication": "Bearer token",
+        "authorization": "admin or operator role required"
+      }
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "SshKey",
+      "object_type": "entity",
+      "description": "表示一个SSH密钥的聚合根，包含加密内容和元数据",
+      "fields": [
+        {"name": "id", "type": "UUID", "description": "唯一标识"},
+        {"name": "name", "type": "string", "description": "密钥名称"},
+        {"name": "encrypted_content", "type": "bytes", "description": "加密后的私钥"},
+        {"name": "iv", "type": "bytes", "description": "初始化向量"},
+        {"name": "fingerprint", "type": "string|null", "description": "SSH指纹"},
+        {"name": "created_at", "type": "datetime", "description": "创建时间"},
+        {"name": "updated_at", "type": "datetime", "description": "更新时间"}
+      ],
+      "used_in": ["SC-001", "IF-001", "IF-002"]
+    },
+    {
+      "id": "DO-002",
+      "name": "KeyUploadRequest",
+      "object_type": "value_object",
+      "description": "上传密钥请求体",
+      "fields": [
+        {"name": "name", "type": "string", "description": "密钥名称"},
+        {"name": "private_key", "type": "string", "description": "原始私钥文本"}
+      ],
+      "used_in": ["IF-001"]
+    },
+    {
+      "id": "DO-003",
+      "name": "KeyInfoResponse",
+      "object_type": "value_object",
+      "description": "密钥信息响应体",
+      "fields": [
+        {"name": "id", "type": "UUID", "description": "密钥ID"},
+        {"name": "name", "type": "string", "description": "名称"},
+        {"name": "fingerprint", "type": "string|null", "description": "指纹"},
+        {"name": "created_at", "type": "datetime", "description": "创建时间"},
+        {"name": "updated_at", "type": "datetime", "description": "更新时间"}
+      ],
+      "used_in": ["IF-002"]
+    },
+    {
+      "id": "DO-004",
+      "name": "TestConnectionRequest",
+      "object_type": "value_object",
+      "description": "测试连接请求体",
+      "fields": [
+        {"name": "hostname", "type": "string", "description": "目标主机"},
+        {"name": "port", "type": "int", "description": "SSH端口，默认22"},
+        {"name": "username", "type": "string", "description": "SSH用户名"}
+      ],
+      "used_in": ["IF-003"]
+    },
+    {
+      "id": "DO-005",
+      "name": "TestConnectionResponse",
+      "object_type": "value_object",
+      "description": "测试连接响应体",
+      "fields": [
+        {"name": "status", "type": "string", "description": "测试结果状态，如'success'"},
+        {"name": "message", "type": "string", "description": "状态消息"}
+      ],
+      "used_in": ["IF-003"]
+    },
+    {
+      "id": "DO-006",
+      "name": "DecryptedKey",
+      "object_type": "value_object",
+      "description": "解密后的私钥，仅在内存中使用",
+      "fields": [
+        {"name": "plaintext_key", "type": "string", "description": "解密后的私钥明文"},
+        {"name": "ownership_chain", "type": "string[]", "description": "调用链追踪"}
+      ],
+      "used_in": ["SC-001"]
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "SSHKeyService",
+      "description": "SSH密钥管理服务内部契约，定义核心业务方法",
+      "methods": [
+        {
+          "name": "create_key",
+          "signature": "async create_key(request: KeyUploadRequest) -> SshKey",
+          "precondition": "request 中 name 不为空且唯一，private_key 是合法SSH私钥格式",
+          "postcondition": "密钥被加密存储，返回创建的SshKey实体",
+          "parameters": [
+            {"name": "request", "type": "KeyUploadRequest", "description": "上传请求"}
+          ],
+          "returns": {"type": "SshKey", "description": "创建的密钥实体"},
+          "description": "验证并加密存储SSH私钥",
+          "errors": ["InvalidKeyFormatError", "DuplicateKeyNameError"]
+        },
+        {
+          "name": "get_key",
+          "signature": "async get_key(key_id: UUID) -> SshKey",
+          "precondition": "key_id 参数有效且对应记录存在",
+          "postcondition": "返回密钥实体（不含解密内容）",
+          "parameters": [
+            {"name": "key_id", "type": "UUID", "description": "密钥ID"}
+          ],
+          "returns": {"type": "SshKey", "description": "密钥实体"},
+          "description": "根据ID查询密钥元数据",
+          "errors": ["KeyNotFoundError"]
+        },
+        {
+          "name": "decrypt_key",
+          "signature": "async decrypt_key(key_id: UUID, caller_info: CallerInfo) -> DecryptedKey",
+          "precondition": "key_id 有效且记录存在，caller_info 包含合法的服务调用信息",
+          "postcondition": "返回内存中的解密密钥，不持久化",
+          "parameters": [
+            {"name": "key_id", "type": "UUID", "description": "密钥ID"},
+            {"name": "caller_info", "type": "CallerInfo", "description": "调用方信息，用于审计"}
+          ],
+          "returns": {"type": "DecryptedKey", "description": "解密后的密钥对象"},
+          "description": "在内存中解密私钥，仅限内部服务调用，记录审计日志",
+          "errors": ["KeyNotFoundError", "DecryptionFailedError", "UnauthorizedAccessError"]
+        },
+        {
+          "name": "test_connection",
+          "signature": "async test_connection(key_id: UUID, request: TestConnectionRequest) -> TestConnectionResponse",
+          "precondition": "key_id 有效且记录存在，request 包含目标主机信息",
+          "postcondition": "返回连接测试结果，不修改任何数据",
+          "parameters": [
+            {"name": "key_id", "type": "UUID", "description": "密钥ID"},
+            {"name": "request", "type": "TestConnectionRequest", "description": "连接测试请求"}
+          ],
+          "returns": {"type": "TestConnectionResponse", "description": "测试结果"},
+          "description": "使用指定密钥尝试连接远程主机，验证连通性",
+          "errors": ["KeyNotFoundError", "ConnectionTestFailedError"]
+        }
+      ],
+      "consumes": [],
+      "used_by": ["API Gateway", "deployment-executor"]
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "rule": "私钥加密存储",
+      "description": "所有SSH私钥必须使用AES-256-GCM加密，且IV与密文分离存储",
+      "enforcement": "在create_key方法中强制实施",
+      "invariants": [
+        "stored keys are always encrypted",
+        "private key plaintext never leaves memory or is logged",
+        "decryption is only allowed for specific internal services"
+      ]
+    },
+    {
+      "id": "BR-002",
+      "rule": "密钥名称唯一性",
+      "description": "用户定义的密钥名称在系统内必须保持唯一",
+      "enforcement": "数据库唯一索引 + 应用层检查"
+    },
+    {
+      "id": "BR-003",
+      "rule": "解密审计",
+      "description": "每次解密操作必须记录调用方信息和时间戳，用于安全审计",
+      "enforcement": "在decrypt_key中添加审计日志"
+    }
+  ],
+  "error_handling": {
+    "strategy": "统一异常映射到HTTP状态码",
+    "error_codes": [
+      {
+        "code": "INVALID_KEY_FORMAT",
+        "status": 400,
+        "message": "提供的私钥格式无效或不是合法的SSH私钥"
+      },
+      {
+        "code": "DUPLICATE_KEY_NAME",
+        "status": 409,
+        "message": "密钥名称已存在"
+      },
+      {
+        "code": "KEY_NOT_FOUND",
+        "status": 404,
+        "message": "指定的密钥不存在"
+      },
+      {
+        "code": "DECRYPTION_FAILED",
+        "status": 500,
+        "message": "解密失败，可能是密钥损坏或密码错误"
+      },
+      {
+        "code": "UNAUTHORIZED_ACCESS",
+        "status": 403,
+        "message": "不允许的调用方尝试解密"
+      },
+      {
+        "code": "CONNECTION_TEST_FAILED",
+        "status": 500,
+        "message": "SSH连接测试失败"
+      }
+    ]
+  }
+}
