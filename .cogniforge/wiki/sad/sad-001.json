@@ -2,161 +2,272 @@
   "meta": {
     "doc_id": "sad-001",
     "type": "sad",
-    "title": "系统架构方案",
+    "title": "DeployFlow 系统架构方案",
     "author": "architect_agent",
-    "created": "2026-05-23 22:38",
+    "created": "2026-05-24 08:39",
     "version": 1
   },
   "system_overview": {
-    "description": "本平台定位为本地运行的 Web 应用，旨在为开发、运维、发布等角色提供一站式的项目、环境与部署管理工具。用户通过浏览器访问本地服务，完成项目创建、多环境配置、基于 SSH 的自动化部署、版本历史追溯与一键回滚等操作。系统强调安全与溯源，所有 SSH 密钥加密存储且仅在内存中使用，部署过程全程留痕。",
+    "description": "DeployFlow 是轻量级自动化部署平台，采用前后端分离架构。前端为 React SPA，后端基于 FastAPI 提供 RESTful API 与 WebSocket 实时日志。部署任务通过消息队列异步执行，Worker 负责 SSH 连接与文件传输。数据持久化使用 PostgreSQL，Redis 用于缓存与消息传递。私钥等敏感信息经 AES-256 加密存储，确保安全性。",
     "roles": [
       {
-        "name": "管理员",
+        "name": "用户",
         "permissions": [
-          "项目管理（增删改查）",
-          "环境配置管理",
-          "密钥管理",
-          "部署执行",
-          "回滚操作",
-          "脚本模板管理",
-          "历史记录查看"
+          "创建、编辑、删除项目",
+          "创建、编辑、删除环境",
+          "测试服务器连接",
+          "触发部署",
+          "查看实时部署日志",
+          "查看部署历史",
+          "执行版本回滚",
+          "切换项目查看隔离数据"
         ]
       }
     ]
   },
   "architecture": {
-    "style": "本地 B/S 架构（前后端分离）",
-    "description": "前端负责交互与展示，后端负责业务逻辑、安全代理及持久化，两者通过 RESTful API 通信。接入层基于 React 的单页应用，服务层基于 Python FastAPI，数据层采用 SQLite 与本地文件系统。",
+    "style": "前后端分离分层架构 + 异步任务队列",
+    "description": "系统分为接入层、服务层、任务执行层和数据层。前端通过 HTTPS 请求 API，WebSocket 接收日志；服务层按业务模块划分，异步任务由 Worker 处理；层间通过 REST、WebSocket、消息队列和 SQL 进行通信。",
     "layers": [
       {
         "name": "接入层",
         "components": [
-          "Web 前端 UI",
-          "API 网关/认证"
+          "Frontend App",
+          "API Server"
         ]
       },
       {
         "name": "服务层",
         "components": [
-          "项目管理服务",
-          "环境配置服务",
-          "密钥管理服务",
-          "部署执行引擎",
-          "脚本模板服务",
-          "版本历史服务"
+          "Project Service",
+          "Environment Service",
+          "Deployment Service",
+          "Log Service",
+          "History Service"
         ]
       },
       {
-        "name": "基础设施层",
+        "name": "任务执行层",
         "components": [
-          "SSH 客户端模块",
-          "数据库访问层",
-          "文件存储管理"
+          "Deployment Worker"
+        ]
+      },
+      {
+        "name": "数据层",
+        "components": [
+          "Database",
+          "Cache",
+          "File Storage"
         ]
       }
     ],
     "connections": [
       {
-        "protocol": "HTTP/JSON REST API"
+        "protocol": "HTTPS / REST / WebSocket"
       },
       {
-        "protocol": "Python 函数调用 / SQL / 文件 I/O"
+        "protocol": "AMQP (Redis Streams / Celery)"
+      },
+      {
+        "protocol": "SQL / Redis Protocol / File I/O"
       }
     ],
     "features": [
-      "本地优先，单机存储",
-      "前后端分离，异步实时推送",
-      "密钥加密存储，内存解密使用",
-      "部署全步骤日志记录与回滚",
-      "脚本模板化，支持环境变量注入",
-      "轻量 SQLite，可扩展至 PostgreSQL"
+      "前后端分离",
+      "RESTful API",
+      "实时 WebSocket 日志推送",
+      "异步任务队列部署",
+      "AES-256 加密存储密钥",
+      "项目级数据隔离",
+      "版本软链接秒级回滚"
     ]
   },
   "tech_stack": {
     "backend": {
-      "language": "Python 3.10+",
-      "framework": "FastAPI",
-      "orm": "SQLAlchemy",
-      "ssh_lib": "asyncssh / paramiko"
+      "language": "Python 3.11",
+      "framework": "FastAPI"
     },
     "frontend": {
       "framework": "React 18",
-      "ui_library": "Ant Design 5",
-      "state_mgmt": "Zustand / React Context",
-      "build_tool": "Vite"
+      "ui_library": "Ant Design 5"
     },
-    "database": "SQLite",
+    "database": "PostgreSQL 15",
+    "cache": "Redis 7",
+    "mq": "Redis Streams (Celery/ARQ)",
     "file_storage": "本地文件系统",
-    "security": "cryptography (AES-256)",
-    "server": "Uvicorn"
+    "security": "AES-256-CBC (cryptography)"
   },
   "components": [
     {
       "id": "CMP-001",
-      "name": "部署执行与脚本管理",
-      "type": "service",
-      "description": "整合部署执行与脚本模板管理功能。接收部署请求，按步骤执行 SSH 连接、文件夹创建、文件上传、压缩包解压、脚本生成、钩子执行，并推动实时日志；同时管理默认及自定义的启动/停止/检查脚本模板，支持环境变量渲染。",
+      "name": "Frontend App",
+      "type": "frontend",
+      "description": "基于 React 的单页应用，使用 Ant Design 构建界面，提供项目管理、环境配置、部署操作、实时日志展示和历史回滚等交互功能。",
       "responsibilities": [
-        "解析部署请求",
-        "协调 SSH 客户端执行步骤",
-        "调用脚本模板服务渲染脚本",
-        "管理部署流程生命周期",
-        "推送实时日志",
-        "存储和检索模板",
-        "渲染模板（注入环境变量、端口等）",
-        "模板版本管理"
+        "渲染所有用户界面",
+        "发送 REST API 请求",
+        "建立 WebSocket 连接获取实时日志",
+        "上传文件"
       ]
     },
     {
       "id": "CMP-002",
-      "name": "版本历史与回滚",
-      "type": "service",
-      "description": "记录每次部署的元信息（版本、环境、时间、状态、校验码），提供回滚触发逻辑，并与 SSH 客户端协作完成回滚操作。",
+      "name": "API Server",
+      "type": "gateway",
+      "description": "FastAPI 后端入口，统一处理认证、路由转发和 WebSocket 协商，协调各个业务服务模块。",
       "responsibilities": [
-        "记录部署历史",
-        "查询部署历史",
-        "处理回滚请求",
-        "验证目标版本存在性",
-        "触发回滚并与 SSH 客户端交互",
-        "记录回滚历史"
+        "接收前端 HTTP 请求并进行路由分发",
+        "管理 WebSocket 连接与认证",
+        "协调 Project/Environment/Deployment 等服务"
       ]
     },
     {
       "id": "CMP-003",
-      "name": "SSH 与文件管理",
-      "type": "infrastructure",
-      "description": "封装 SSH 连接、命令执行、文件传输（SFTP）功能，供部署引擎和环境服务调用；同时管理密钥文件、部署包暂存区、模板文件的本地读写。",
+      "name": "Project Service",
+      "type": "service",
+      "description": "项目业务模块，负责项目的增删改查、名称唯一性校验以及删除时的级联操作。",
       "responsibilities": [
-        "建立 SSH 连接（密钥认证）",
-        "执行远程命令",
-        "SFTP 文件上传/下载",
-        "管理连接会话",
-        "安全读写加密密钥文件",
-        "暂存上传的部署包",
-        "清理过期文件",
-        "管理模板文件存储"
+        "创建、查询、更新、删除项目",
+        "确保项目名称唯一",
+        "删除项目时级联删除所属环境与历史"
+      ]
+    },
+    {
+      "id": "CMP-004",
+      "name": "Environment Service",
+      "type": "service",
+      "description": "环境配置模块，管理项目下的环境信息、SSH 认证凭据，提供连接测试功能。",
+      "responsibilities": [
+        "添加、修改、删除环境",
+        "上传私钥并加密存储 (AES-256)",
+        "测试远程连接并返回详细结果",
+        "加密存储密码和 passphrase"
+      ]
+    },
+    {
+      "id": "CMP-005",
+      "name": "Deployment Service",
+      "type": "service",
+      "description": "部署核心服务，接收部署请求，创建部署记录，并将任务推送到消息队列；管理部署历史与回滚。",
+      "responsibilities": [
+        "创建部署任务并保存到数据库",
+        "发布任务消息到队列",
+        "触发回滚流程",
+        "维护部署历史状态"
+      ]
+    },
+    {
+      "id": "CMP-006",
+      "name": "Log Service",
+      "type": "service",
+      "description": "实时日志服务，从消息队列消费 Worker 产生的日志事件，通过 WebSocket 推送给客户端。",
+      "responsibilities": [
+        "订阅日志 Topic",
+        "向关联的 WebSocket 连接推送日志",
+        "支持日志导出（可选）"
+      ]
+    },
+    {
+      "id": "CMP-007",
+      "name": "History Service",
+      "type": "service",
+      "description": "部署历史查询与回滚触发服务。",
+      "responsibilities": [
+        "按项目或环境查询部署历史列表",
+        "触发回滚（调用 Deployment Service）",
+        "清理旧版本（可选）"
+      ]
+    },
+    {
+      "id": "CMP-008",
+      "name": "Deployment Worker",
+      "type": "service",
+      "description": "独立的工作进程，消费部署任务，执行 SSH 连接、文件传输、脚本生成、软链接更新，并实时发送日志。",
+      "responsibilities": [
+        "从消息队列获取部署任务",
+        "通过 SFTP/SCP 上传文件",
+        "解压并放置到版本文件夹",
+        "生成 start.sh / stop.sh / restart.sh 并赋权",
+        "创建或更新 current 软链接",
+        "发送实时日志到 Log Service"
+      ]
+    },
+    {
+      "id": "CMP-009",
+      "name": "Database",
+      "type": "database",
+      "description": "PostgreSQL 数据库，存储项目、环境、部署历史、用户（未来）等数据。",
+      "responsibilities": [
+        "持久化所有业务数据",
+        "提供 ACID 事务支持",
+        "支持按项目隔离查询"
+      ]
+    },
+    {
+      "id": "CMP-010",
+      "name": "Cache",
+      "type": "infrastructure",
+      "description": "Redis 实例，同时充当缓存、消息队列和日志广播通道。",
+      "responsibilities": [
+        "缓存会话或频繁查询数据",
+        "作为消息队列传输部署任务",
+        "作为 PUB/SUB 通道广播日志"
+      ]
+    },
+    {
+      "id": "CMP-011",
+      "name": "File Storage",
+      "type": "infrastructure",
+      "description": "本地文件系统目录，用于存储上传的部署包、私钥文件。",
+      "responsibilities": [
+        "保存用户上传的部署文件",
+        "保存加密后的私钥文件",
+        "提供文件读取给 Worker"
       ]
     }
   ],
   "contracts": [
     {
       "id": "CTR-001",
-      "interface": "获取项目列表",
-      "provider": "项目管理服务",
+      "interface": "创建项目",
+      "provider": "API Server",
       "consumers": [
-        "Web 前端 UI"
+        "Frontend App"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/projects",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "name": "string (required, unique)",
+          "description": "string"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "integer",
+          "name": "string",
+          "description": "string",
+          "created_at": "datetime"
+        }
+      },
+      "description": "创建一个新项目，项目名称必须唯一。"
+    },
+    {
+      "id": "CTR-002",
+      "interface": "获取项目列表",
+      "provider": "API Server",
+      "consumers": [
+        "Frontend App"
       ],
       "type": "REST",
       "endpoint": "GET /api/projects",
       "request": {
         "path_params": [],
         "query_params": [
-          {
-            "name": "search",
-            "type": "string",
-            "required": false,
-            "desc": "按名称搜索"
-          }
+          "search (string, optional)"
         ],
         "body": {}
       },
@@ -165,199 +276,240 @@
         "body": {
           "projects": [
             {
-              "id": "int",
+              "id": "integer",
               "name": "string",
               "description": "string",
-              "created_at": "string"
+              "created_at": "datetime"
             }
           ]
         }
       },
-      "description": "返回所有项目列表，支持按名称模糊搜索"
-    },
-    {
-      "id": "CTR-002",
-      "interface": "创建项目",
-      "provider": "项目管理服务",
-      "consumers": [
-        "Web 前端 UI"
-      ],
-      "type": "REST",
-      "endpoint": "POST /api/projects",
-      "request": {
-        "path_params": [],
-        "query_params": [],
-        "body": {
-          "name": "string (必填)",
-          "description": "string (可选)"
-        }
-      },
-      "response": {
-        "status": 201,
-        "body": {
-          "id": "int",
-          "name": "string",
-          "description": "string",
-          "created_at": "string"
-        }
-      },
-      "description": "新建项目，名称不能重复"
+      "description": "获取所有项目列表，支持按名称搜索。"
     },
     {
       "id": "CTR-003",
-      "interface": "编辑项目",
-      "provider": "项目管理服务",
-      "consumers": [
-        "Web 前端 UI"
-      ],
-      "type": "REST",
-      "endpoint": "PUT /api/projects/{id}",
-      "request": {
-        "path_params": [
-          {
-            "name": "id",
-            "type": "int"
-          }
-        ],
-        "query_params": [],
-        "body": {
-          "name": "string",
-          "description": "string"
-        }
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "id": "int",
-          "name": "string",
-          "description": "string"
-        }
-      },
-      "description": "更新指定项目信息"
-    },
-    {
-      "id": "CTR-004",
-      "interface": "删除项目",
-      "provider": "项目管理服务",
-      "consumers": [
-        "Web 前端 UI"
-      ],
-      "type": "REST",
-      "endpoint": "DELETE /api/projects/{id}",
-      "request": {
-        "path_params": [
-          {
-            "name": "id",
-            "type": "int"
-          }
-        ],
-        "query_params": [],
-        "body": {}
-      },
-      "response": {
-        "status": 204
-      },
-      "description": "删除项目，若有关联环境返回 409 并要求确认"
-    },
-    {
-      "id": "CTR-005",
-      "interface": "获取环境列表",
-      "provider": "环境配置服务",
-      "consumers": [
-        "Web 前端 UI"
-      ],
-      "type": "REST",
-      "endpoint": "GET /api/projects/{project_id}/environments",
-      "request": {
-        "path_params": [
-          {
-            "name": "project_id",
-            "type": "int"
-          }
-        ],
-        "query_params": [],
-        "body": {}
-      },
-      "response": {
-        "status": 200,
-        "body": {
-          "environments": [
-            {
-              "id": "int",
-              "name": "string",
-              "host": "string",
-              "port": "int",
-              "auth_type": "string",
-              "deploy_root": "string",
-              "env_vars": "object"
-            }
-          ]
-        }
-      },
-      "description": "获取指定项目下的所有环境配置"
-    },
-    {
-      "id": "CTR-006",
       "interface": "创建环境",
-      "provider": "环境配置服务",
+      "provider": "API Server",
       "consumers": [
-        "Web 前端 UI"
+        "Frontend App"
       ],
       "type": "REST",
       "endpoint": "POST /api/projects/{project_id}/environments",
       "request": {
         "path_params": [
-          {
-            "name": "project_id",
-            "type": "int"
-          }
+          "project_id (integer)"
         ],
         "query_params": [],
         "body": {
-          "name": "string",
-          "host": "string",
-          "port": "int",
-          "auth_type": "string",
-          "key_id": "int?",
-          "password": "string?",
+          "name": "string (required)",
+          "ip": "string",
+          "port": "integer",
+          "auth_type": "string enum['key', 'password']",
+          "username": "string",
           "deploy_root": "string",
-          "env_vars": "object?"
+          "passphrase": "string (optional)",
+          "password": "string (optional, sent as text, will be encrypted)",
+          "private_key": "file (optional, multipart/form-data)"
         }
       },
       "response": {
         "status": 201,
         "body": {
-          "id": "int",
+          "id": "integer",
           "name": "string",
-          "host": "string"
+          "ip": "string",
+          "port": "integer"
         }
       },
-      "description": "在指定项目下新建环境"
+      "description": "在指定项目下创建新环境，私钥文件通过 multipart 上传，密码与 passphrase 加密存储。"
+    },
+    {
+      "id": "CTR-004",
+      "interface": "测试环境连接",
+      "provider": "API Server",
+      "consumers": [
+        "Frontend App"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/environments/{env_id}/test-connection",
+      "request": {
+        "path_params": [
+          "env_id (integer)"
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "message": "string (detailed log)"
+        }
+      },
+      "description": "使用环境中存储的凭据测试 SSH 连接是否可达。"
+    },
+    {
+      "id": "CTR-005",
+      "interface": "触发部署",
+      "provider": "API Server",
+      "consumers": [
+        "Frontend App"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/deploy",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "project_id": "integer (form-data)",
+          "environment_id": "integer (form-data)",
+          "version_name": "string (optional, form-data)",
+          "file": "binary (multipart/form-data)"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "task_id": "string (UUID)",
+          "status": "string 'pending'"
+        }
+      },
+      "description": "发起一次部署，上传部署文件并异步执行。"
+    },
+    {
+      "id": "CTR-006",
+      "interface": "部署日志 WebSocket",
+      "provider": "API Server",
+      "consumers": [
+        "Frontend App"
+      ],
+      "type": "WebSocket",
+      "endpoint": "ws://host/ws/logs/{task_id}?token=xxx",
+      "request": {
+        "path_params": [
+          "task_id (string)"
+        ],
+        "query_params": [
+          "token (JWT 认证令牌)"
+        ],
+        "body": {}
+      },
+      "response": {
+        "status": 101,
+        "body": {
+          "message_stream": [
+            {
+              "timestamp": "string ISO8601",
+              "type": "string enum['stdout', 'stderr', 'system']",
+              "message": "string"
+            }
+          ]
+        }
+      },
+      "description": "前端通过 WebSocket 连接订阅指定任务的实时日志流。"
     },
     {
       "id": "CTR-007",
-      "interface": "编辑环境",
-      "provider": "环境配置服务",
+      "interface": "获取部署历史",
+      "provider": "API Server",
       "consumers": [
-        "Web 前端 UI"
+        "Frontend App"
       ],
       "type": "REST",
-      "endpoint": "PUT /api/environments/{env_id}",
+      "endpoint": "GET /api/deployments",
+      "request": {
+        "path_params": [],
+        "query_params": [
+          "project_id",
+          "environment_id",
+          "page",
+          "page_size"
+        ],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "items": [
+            {
+              "id": "integer",
+              "version": "string",
+              "environment_name": "string",
+              "status": "string",
+              "created_at": "datetime",
+              "is_active": "boolean"
+            }
+          ],
+          "page": "integer",
+          "total": "integer"
+        }
+      },
+      "description": "分页查询部署历史记录。"
+    },
+    {
+      "id": "CTR-008",
+      "interface": "回滚版本",
+      "provider": "API Server",
+      "consumers": [
+        "Frontend App"
+      ],
+      "type": "REST",
+      "endpoint": "POST /api/deployments/{deploy_id}/rollback",
       "request": {
         "path_params": [
-          {
-            "name": "env_id",
-            "type": "int"
-          }
+          "deploy_id (integer)"
         ],
         "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
         "body": {
-          "name": "string",
-          "host": "string",
-          "port": "int",
-          "deploy_root": "string"
+          "task_id": "string",
+          "message": "rollback initiated"
         }
-      }
+      },
+      "description": "对指定的部署版本发起回滚操作，实际会创建新的回滚任务并由 Worker 执行。"
+    }
+  ],
+  "data_flow": [
+    {
+      "name": "部署流程",
+      "steps": [
+        "用户在前端选择项目、环境，上传部署文件，点击部署",
+        "前端调用 POST /api/deploy，API Server 接收请求",
+        "Deployment Service 创建部署记录（状态 pending），将任务消息（包含文件路径、环境配置）发布到 Redis 队列",
+        "Deployment Worker 从队列拉取任务，从 File Storage 读取部署文件",
+        "Worker 通过 SSH (SFTP/SCP) 连接到目标服务器，在 deploy_root 下创建版本文件夹并上传文件",
+        "Worker 解压文件（若为压缩包），生成 start.sh/stop.sh/restart.sh，并赋予可执行权限",
+        "Worker 更新或创建软链接 current 指向新版本文件夹",
+        "若配置了自动启动，Worker 执行 start.sh",
+        "Worker 实时发送日志（通过 Redis PUB/SUB 到 Log Service，再由 WebSocket 推送给前端）",
+        "部署完成后，Worker 更新部署记录状态为 success/failed",
+        "前端通过 WebSocket 收到完成通知，并刷新历史列表"
+      ]
+    },
+    {
+      "name": "回滚流程",
+      "steps": [
+        "用户在前端打开部署历史列表，选择一个历史版本，点击回滚",
+        "前端调用 POST /api/deployments/{id}/rollback",
+        "API Server 路由到 Deployment Service，后者创建回滚任务（类型标记为 rollback）并推送到消息队列",
+        "Deployment Worker 消费任务，通过 SSH 连接到目标服务器",
+        "Worker 修改 current 软链接指向目标版本文件夹",
+        "Worker 执行目标版本文件夹中的 restart.sh 或 start.sh 以重启服务",
+        "Worker 发送日志并更新部署历史记录，将当前活跃版本标记为目标版本",
+        "前端收到回滚完成通知，界面更新"
+      ]
+    },
+    {
+      "name": "项目切换数据加载",
+      "steps": [
+        "用户在前端顶部切换到另一个项目",
+        "前端发送 GET /api/projects/{new_project_id}/environments 获取环境列表",
+        "同时发送 GET /api/deployments?project_id={new_project_id} 获取关联的部署历史",
+        "前端更新环境选择器和历史记录视图，无需刷新页面"
+      ]
     }
   ]
 }
