@@ -1,0 +1,566 @@
+{
+  "meta": {
+    "doc_id": "lld-WebSocket 服务-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "WebSocket 服务",
+    "title": "WebSocket 服务详细设计",
+    "author": "design_agent",
+    "created": "2025-03-21T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-003",
+        "REQ-005"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-006"
+      ],
+      "contracts": [
+        "CTR-008"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "管理 WebSocket 长连接（建立、维持、断开）",
+      "根据 deployment_id 订阅 RabbitMQ 中的部署日志消息",
+      "将订阅到的日志消息实时推送给对应的 WebSocket 客户端",
+      "处理连接时的简单授权（依赖网关传递的用户上下文）"
+    ],
+    "out_of_scope": [
+      "生成部署日志（由部署执行服务负责）",
+      "日志持久化存储（由关系型数据库或文件存储负责）",
+      "用户认证与 token 签发（由 API Gateway 处理）",
+      "部署任务调度与状态管理"
+    ],
+    "owned_components": [
+      "CMP-006"
+    ],
+    "owned_contracts": [
+      "CTR-008"
+    ],
+    "consumed_contracts": [],
+    "owned_data_models": [
+      "DM-001",
+      "DM-002"
+    ],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "WebSocket 服务作为系统中实时日志推送的枢纽，通过 FastAPI 建立 WebSocket 终端，并作为 RabbitMQ 消费者订阅特定 deployment_id 的日志消息。当部署执行服务在远程执行命令时产生的日志发送到 RabbitMQ，本服务接收后立即转发给已建立连接的前端客户端，实现用户实时查看部署过程的效果。",
+    "dependencies": [
+      "RabbitMQ",
+      "API Gateway",
+      "部署执行服务（约定消息格式）"
+    ],
+    "tech_stack": [
+      "Python",
+      "FastAPI",
+      "aio-pika",
+      "Docker"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-003",
+      "sad_component_ids": [
+        "CMP-006"
+      ],
+      "sad_contract_ids": [
+        "CTR-008"
+      ],
+      "lld_objects": {
+        "data_models": [],
+        "interfaces": [
+          "IF-001"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": "实时日志推送 WebSocket 连接与消息推送全部覆盖"
+    },
+    {
+      "requirement_id": "REQ-005",
+      "sad_component_ids": [
+        "CMP-006"
+      ],
+      "sad_contract_ids": [
+        "CTR-008"
+      ],
+      "lld_objects": {
+        "data_models": [],
+        "interfaces": [
+          "IF-001"
+        ],
+        "domain_objects": [],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": "错误处理、权限校验等非功能需求由接口错误码和服务方法实现覆盖"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "WebSocketConnection",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "表示一个活跃的 WebSocket 连接及其绑定信息。",
+      "fields": [
+        {
+          "name": "connection_id",
+          "type": "string",
+          "required": true,
+          "description": "唯一连接标识，生成自 UUID"
+        },
+        {
+          "name": "deployment_id",
+          "type": "string",
+          "required": true,
+          "description": "当前连接订阅的部署 ID"
+        },
+        {
+          "name": "user_id",
+          "type": "string",
+          "required": true,
+          "description": "从请求头获取的已认证用户 ID"
+        },
+        {
+          "name": "connected_at",
+          "type": "datetime",
+          "required": true,
+          "description": "连接建立时间"
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-006"
+      ],
+      "source_contracts": [
+        "CTR-008"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "WebSocket 握手成功时创建",
+        "update": "无更新操作",
+        "delete": "连接断开或异常关闭时销毁",
+        "retention": "内存驻留，无持久化"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "LogMessage",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "从 RabbitMQ 消费到的单条日志消息，与 WebSocket 推送格式对应。",
+      "fields": [
+        {
+          "name": "message_type",
+          "type": "string",
+          "required": true,
+          "description": "消息类型，当前固定为 log"
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "required": true,
+          "description": "日志文本"
+        },
+        {
+          "name": "timestamp",
+          "type": "datetime",
+          "required": true,
+          "description": "消息产生时间（由部署执行服务设置）"
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-006"
+      ],
+      "source_contracts": [
+        "CTR-008"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "从消息队列接收到消息时创建",
+        "update": "否",
+        "delete": "推送后丢弃",
+        "retention": "内存暂存，推送后释放"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "WebSocketConnection",
+      "object_type": "entity",
+      "description": "WebSocket 连接实体，代表一个活跃的 WebSocket 客户端连接，关联用户和部署订阅。",
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-006"
+      ],
+      "source_contracts": [
+        "CTR-008"
+      ],
+      "status": "active",
+      "version": 1,
+      "attributes": [
+        {
+          "name": "connection_id",
+          "type": "string",
+          "required": true,
+          "description": "唯一连接标识"
+        },
+        {
+          "name": "deployment_id",
+          "type": "string",
+          "required": true,
+          "description": "订阅的部署 ID"
+        },
+        {
+          "name": "user_id",
+          "type": "string",
+          "required": true,
+          "description": "认证用户 ID"
+        },
+        {
+          "name": "connected_at",
+          "type": "datetime",
+          "required": true,
+          "description": "连接建立时间"
+        }
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "LogMessage",
+      "object_type": "value_object",
+      "description": "日志消息值对象，从 RabbitMQ 接收并推送给客户端的不可变数据。",
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-006"
+      ],
+      "source_contracts": [
+        "CTR-008"
+      ],
+      "status": "active",
+      "version": 1,
+      "attributes": [
+        {
+          "name": "message_type",
+          "type": "string",
+          "required": true,
+          "description": "消息类型"
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "required": true,
+          "description": "日志内容"
+        },
+        {
+          "name": "timestamp",
+          "type": "datetime",
+          "required": true,
+          "description": "消息时间戳"
+        }
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "ConnectionManager",
+      "object_type": "service",
+      "description": "连接管理器服务，负责维护活跃的 WebSocket 连接集合，处理连接注册、注销和消息路由。",
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-006"
+      ],
+      "source_contracts": [
+        "CTR-008"
+      ],
+      "status": "active",
+      "version": 1,
+      "attributes": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "RabbitMQConsumer",
+      "object_type": "service",
+      "description": "RabbitMQ 消费者服务，负责从队列订阅日志消息并转发给连接管理器。",
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-006"
+      ],
+      "source_contracts": [
+        "CTR-008"
+      ],
+      "status": "active",
+      "version": 1,
+      "attributes": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "部署日志推送",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-008",
+      "provider_component_id": "CMP-006",
+      "method": "WS",
+      "endpoint": "/deployments/{deployment_id}/log",
+      "description": "前端通过 WebSocket 与服务建立长连接，订阅部署日志，服务端实时推送日志消息。",
+      "parameters": [
+        {
+          "name": "deployment_id",
+          "type": "string",
+          "in": "path",
+          "required": true,
+          "description": "部署任务 ID，用于过滤日志"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 101,
+        "body": {
+          "message_type": "log",
+          "content": "string",
+          "timestamp": "datetime"
+        },
+        "description": "WebSocket 协议升级成功，后续帧携带 JSON 格式日志消息"
+      },
+      "errors": [],
+      "source_requirements": [
+        "REQ-003"
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "WebSocketHandler",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-008",
+      "description": "WebSocket 服务核心契约，定义连接生命周期和消息推送的标准方法。",
+      "methods": [
+        {
+          "name": "connect",
+          "description": "处理 WebSocket 连接建立请求，验证用户权限，注册连接，并启动 RabbitMQ 订阅。",
+          "signature": "connect(deployment_id: string, user_id: string) -> WebSocket",
+          "parameters": [
+            {
+              "name": "deployment_id",
+              "type": "string",
+              "required": true,
+              "description": "路径中的部署 ID"
+            },
+            {
+              "name": "user_id",
+              "type": "string",
+              "required": true,
+              "description": "从请求头获取的用户 ID"
+            }
+          ],
+          "returns": {
+            "type": "WebSocket",
+            "description": "建立的 WebSocket 连接对象"
+          },
+          "precondition": "用户已通过 API Gateway 认证，deployment_id 有效且用户有权限访问",
+          "postcondition": "连接注册到 ConnectionManager，RabbitMQ 订阅该 deployment_id 的日志队列",
+          "source_requirements": [
+            "REQ-003",
+            "REQ-005"
+          ]
+        },
+        {
+          "name": "disconnect",
+          "description": "处理 WebSocket 连接断开，清理连接资源，取消 RabbitMQ 订阅。",
+          "signature": "disconnect(connection: WebSocket) -> void",
+          "parameters": [
+            {
+              "name": "connection",
+              "type": "WebSocket",
+              "required": true,
+              "description": "要断开的 WebSocket 连接"
+            }
+          ],
+          "returns": {
+            "type": "void",
+            "description": "无返回值"
+          },
+          "precondition": "连接在 ConnectionManager 中已存在",
+          "postcondition": "连接从 ConnectionManager 移除，RabbitMQ 订阅取消",
+          "source_requirements": [
+            "REQ-003"
+          ]
+        },
+        {
+          "name": "push_log",
+          "description": "向指定连接推送日志消息。",
+          "signature": "push_log(connection: WebSocket, message: LogMessage) -> void",
+          "parameters": [
+            {
+              "name": "connection",
+              "type": "WebSocket",
+              "required": true,
+              "description": "目标 WebSocket 连接"
+            },
+            {
+              "name": "message",
+              "type": "LogMessage",
+              "required": true,
+              "description": "要推送的日志消息"
+            }
+          ],
+          "returns": {
+            "type": "void",
+            "description": "无返回值"
+          },
+          "precondition": "连接处于打开状态",
+          "postcondition": "消息以 JSON 格式通过 WebSocket 发送给客户端",
+          "source_requirements": [
+            "REQ-003"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-006"
+      ]
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "description": "一个用户同时只能有一个 WebSocket 连接订阅同一部署日志。",
+      "type": "invariant",
+      "scope": "连接管理",
+      "rule": "同一 user_id 和 deployment_id 组合在 ConnectionManager 中唯一",
+      "source_requirements": [
+        "REQ-005"
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "全局异常捕获，分类返回标准错误码",
+    "errors": [
+      {
+        "code": 4001,
+        "name": "InvalidDeploymentID",
+        "description": "deployment_id 格式无效或不存在",
+        "handling": "连接建立阶段拒绝连接，返回 400 状态码并附带错误消息",
+        "source_requirements": [
+          "REQ-005"
+        ]
+      },
+      {
+        "code": 4003,
+        "name": "Forbidden",
+        "description": "用户无权访问该部署日志",
+        "handling": "连接建立阶段拒绝连接，返回 403 状态码",
+        "source_requirements": [
+          "REQ-005"
+        ]
+      },
+      {
+        "code": 5001,
+        "name": "RabbitMQConnectionError",
+        "description": "无法连接到 RabbitMQ 或订阅失败",
+        "handling": "连接建立阶段拒绝连接，返回 503 状态码；运行中推送失败则记录日志并尝试重连",
+        "source_requirements": [
+          "REQ-005"
+        ]
+      }
+    ]
+  }
+}
