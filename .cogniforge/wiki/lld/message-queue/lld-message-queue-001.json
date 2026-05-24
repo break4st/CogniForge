@@ -1,0 +1,246 @@
+{
+  "meta": {
+    "doc_id": "lld-message-queue-001",
+    "type": "lld",
+    "module_type": "infrastructure",
+    "module": "message-queue",
+    "title": "消息队列模块详细设计文档",
+    "author": "design_agent",
+    "created": "2025-03-27T12:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-001"
+      ],
+      "contracts": [
+        "CTR-001"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "定义RabbitMQ交换器、队列及绑定",
+      "接收并暂存部署任务消息",
+      "将任务可靠地分发给deployment-executor",
+      "保证消息持久化和至少一次投递"
+    ],
+    "out_of_scope": [
+      "部署任务的业务执行逻辑",
+      "任务进度跟踪与历史记录",
+      "文件传输与SSH连接管理",
+      "业务数据库表定义"
+    ],
+    "owned_components": [
+      "CMP-001"
+    ],
+    "owned_contracts": [],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "基于RabbitMQ的消息队列基础设施，为deployment-service与deployment-executor提供异步任务分发通道。支持任务持久化、发布确认、手动应答和死信处理，保障消息不丢失。",
+    "dependencies": [],
+    "tech_stack": [
+      "RabbitMQ",
+      "Docker"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [
+        "CTR-001"
+      ],
+      "lld_objects": {
+        "data_models": [],
+        "interfaces": [],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": "作为基础设施模块，通过拓扑定义和消息契约支撑部署任务的异步分发需求"
+    }
+  ],
+  "data_models": [],
+  "interfaces": [],
+  "error_handling": {
+    "strategy": "利用RabbitMQ持久化和确认机制保证消息不丢失；对处理失败引入死信和重试；连接错误自动恢复并告警。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "MQ_CONNECTION_ERROR",
+        "name": "连接错误",
+        "description": "客户端与Broker断连时，进行指数退避重连，重连期间消息由生产者端缓存或依赖持久化"
+      },
+      {
+        "code": "MQ_AUTH_ERROR",
+        "name": "认证/授权错误",
+        "description": "凭证无效或权限不足时终止连接并记录严重日志，需人工介入"
+      },
+      {
+        "code": "MQ_CONSUMER_PROCESS_ERROR",
+        "name": "消费者处理失败",
+        "description": "消费者Nack消息，消息重回队列或依据重试策略进入死信，避免无限循环"
+      },
+      {
+        "code": "MQ_RESOURCE_LIMIT",
+        "name": "资源耗尽",
+        "description": "队列满或内存/磁盘告警时触发告警，并实施流控限制生产者发送速率"
+      }
+    ]
+  },
+  "workflow": {
+    "name": "部署任务可靠分派流程",
+    "description": "从生产者发送消息到消费者成功处理并确认的完整流程，包含失败重试与死信机制",
+    "steps": [
+      {
+        "order": 1,
+        "name": "任务入队",
+        "action": "deployment-service生成消息并通过发布确认模式发送到deployment.topic交换器，路由键deployment.task.create，若超时则重试最多3次",
+        "timeout_seconds": 60,
+        "on_failure": "记录错误日志并触发告警，消息不丢失（已持久化）"
+      },
+      {
+        "order": 2,
+        "name": "Broker持久化",
+        "action": "RabbitMQ将消息写入磁盘持久队列，在确认收到生产者的发布确认前不会从队列移除",
+        "timeout_seconds": 0,
+        "on_failure": "依赖Broker自身高可用机制恢复"
+      },
+      {
+        "order": 3,
+        "name": "任务出队与执行",
+        "action": "deployment-executor监听deployment.task.queue，采用手动Ack模式消费消息并执行部署任务",
+        "timeout_seconds": 0,
+        "on_failure": "若业务处理失败，消费者Nack (requeue=false)并将消息投递至死信交换器"
+      },
+      {
+        "order": 4,
+        "name": "处理结束或死信",
+        "action": "执行成功则Ack消息；若超过最大投递次数(x-delivery-limit=3)则自动转入deployment.task.dlq死信队列",
+        "timeout_seconds": 0,
+        "on_failure": "死信队列消息触发告警，等待人工处理"
+      }
+    ],
+    "retry_strategy": {
+      "max_retries": 3,
+      "retry_interval_seconds": 30,
+      "retryable_errors": [
+        "MQ_CONNECTION_ERROR",
+        "MQ_CONSUMER_PROCESS_ERROR"
+      ],
+      "non_retryable_errors": [
+        "MQ_AUTH_ERROR",
+        "MQ_RESOURCE_LIMIT"
+      ]
+    }
+  },
+  "topology": {
+    "exchanges": [
+      {
+        "name": "deployment.topic",
+        "type": "topic",
+        "durable": true,
+        "bindings": [
+          {
+            "queue": "deployment.task.queue",
+            "routing_key": "deployment.task.#"
+          }
+        ]
+      },
+      {
+        "name": "deployment.dlx",
+        "type": "fanout",
+        "durable": true,
+        "bindings": [
+          {
+            "queue": "deployment.task.dlq",
+            "routing_key": ""
+          }
+        ]
+      }
+    ],
+    "queues": [
+      {
+        "name": "deployment.task.queue",
+        "durable": true,
+        "ttl_seconds": 86400,
+        "max_length": 10000,
+        "arguments": {
+          "x-dead-letter-exchange": "deployment.dlx",
+          "x-delivery-limit": 3
+        }
+      },
+      {
+        "name": "deployment.task.dlq",
+        "durable": true,
+        "ttl_seconds": null,
+        "max_length": null
+      }
+    ],
+    "producer_consumer_map": [
+      {
+        "producer": "deployment-service",
+        "consumer": "deployment-executor",
+        "exchange": "deployment.topic"
+      }
+    ]
+  },
+  "message_contracts": [
+    {
+      "name": "deployment.task.create",
+      "exchange": "deployment.topic",
+      "routing_key": "deployment.task.create",
+      "schema": {
+        "task_id": "string (UUID)",
+        "deployment_id": "string (UUID)",
+        "project_id": "integer",
+        "environment_id": "integer",
+        "file_path": "string",
+        "user_id": "integer",
+        "timestamp": "string (ISO8601)"
+      },
+      "required_fields": [
+        "task_id",
+        "deployment_id",
+        "environment_id",
+        "file_path"
+      ],
+      "max_size_bytes": 1048576
+    }
+  ],
+  "reliability_strategy": {
+    "ack_mode": "manual",
+    "retry": {
+      "max_retries": 3,
+      "backoff": "exponential"
+    },
+    "dead_letter": "deployment.task.dlq",
+    "idempotency": "由deployment-executor根据task_id检查部署记录状态，已完成或进行中则直接Ack，保证至少一次投递下的安全重复消费"
+  }
+}
