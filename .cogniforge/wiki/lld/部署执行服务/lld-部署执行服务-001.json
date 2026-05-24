@@ -4,9 +4,9 @@
     "type": "lld",
     "module_type": "service",
     "module": "部署执行服务",
-    "title": "部署执行服务详细设计",
+    "title": "部署执行服务详细设计文档",
     "author": "design_agent",
-    "created": "2025-01-18T00:00:00Z",
+    "created": "2025-04-07T10:00:00Z",
     "version": 1,
     "status": "active"
   },
@@ -15,16 +15,17 @@
       "doc_id": "prd-current",
       "version": 1,
       "requirements": [
-        "REQ-003"
+        "REQ-004"
       ]
     },
     "sad": {
       "doc_id": "sad-001",
       "version": 1,
       "components": [
-        "CMP-002"
+        "CMP-005"
       ],
       "contracts": [
+        "CTR-006",
         "CTR-007"
       ],
       "data_models": []
@@ -34,410 +35,1064 @@
   },
   "module_boundary": {
     "in_scope": [
-      "消费RabbitMQ部署任务队列消息",
-      "SSH连接到远程服务器",
-      "创建版本化目录",
-      "通过SFTP上传部署文件",
-      "动态生成启停脚本并赋权",
-      "执行启动脚本并捕获输出",
-      "实时推送部署日志到消息队列",
-      "向管理服务回传部署最终状态",
-      "处理回滚请求覆盖旧版本"
+      "接收前端发起的部署请求，生成部署任务记录",
+      "从环境服务获取SSH连接信息，从安全服务解密私钥",
+      "建立SSH连接，按固定流程执行部署步骤（创建目录、上传文件、生成脚本、执行脚本）",
+      "将部署过程中每一步的详细日志实时推送到Redis Pub/Sub",
+      "通过WebSocket向前端实时推送日志",
+      "支持取消正在执行的部署任务",
+      "部署结束后更新任务状态，并通知部署历史与日志服务记录最终结果"
     ],
     "out_of_scope": [
-      "部署任务的创建与参数校验",
-      "项目/环境/服务器配置的CRUD",
-      "WebSocket推送与前端实时展示",
-      "脚本模板的编辑与管理",
-      "用户认证与授权",
-      "部署历史归档与检索"
+      "用户身份认证与授权（由API网关或用户权限服务处理）",
+      "文件的上传与元数据管理（由文件管理服务负责）",
+      "项目、环境、SSH密钥等配置信息的增删改查",
+      "部署记录的长期存储与查询界面"
     ],
     "owned_components": [
-      "CMP-002"
+      "CMP-005"
     ],
-    "owned_contracts": [],
-    "consumed_contracts": [
+    "owned_contracts": [
+      "CTR-006",
       "CTR-007"
     ],
+    "consumed_contracts": [
+      "CTR-001",
+      "CTR-002",
+      "CTR-003",
+      "CTR-004"
+    ],
     "owned_data_models": [],
-    "consumed_data_models": []
+    "consumed_data_models": [
+      "DM-001",
+      "DM-002"
+    ]
   },
   "overview": {
-    "description": "实际执行部署任务的后台服务，负责SSH连接、文件传输、脚本生成、命令执行，并发布部署日志",
+    "description": "核心部署执行组件，接收前端发起的部署请求并异步执行，包括建立SSH连接、远程命令执行、文件上传、脚本生成与执行，并通过Redis和WebSocket提供实时日志推送。",
     "dependencies": [
-      "管理服务（消息队列交互）",
-      "RabbitMQ消息队列",
-      "远程目标服务器"
+      "项目与环境服务",
+      "安全与密钥服务",
+      "文件管理服务",
+      "部署历史与日志服务"
     ],
     "tech_stack": [
-      "Python 3.10+",
-      "pika (RabbitMQ客户端)",
-      "paramiko (SSH/SFTP)",
-      "FastAPI (仅内部健康检查)",
-      "Docker"
+      "Go",
+      "Gin",
+      "PostgreSQL",
+      "Redis",
+      "SSH/SFTP (golang.org/x/crypto/ssh)",
+      "MinIO (间接)"
     ]
   },
   "traceability": [
     {
-      "requirement_id": "REQ-003",
+      "requirement_id": "REQ-004",
       "sad_component_ids": [
-        "CMP-002"
+        "CMP-005"
       ],
       "sad_contract_ids": [
+        "CTR-006",
         "CTR-007"
       ],
       "lld_objects": {
-        "data_models": [],
-        "interfaces": [],
+        "data_models": [
+          "DM-001",
+          "DM-002"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002"
+        ],
         "domain_objects": [
           "DO-001",
           "DO-002",
           "DO-003",
           "DO-004",
-          "DO-005"
+          "DO-005",
+          "DO-006",
+          "DO-007",
+          "DO-008",
+          "DO-009",
+          "DO-010"
         ],
         "service_contracts": [
           "SC-001"
         ]
       },
       "coverage": "full",
-      "notes": "通过领域对象、服务方法和业务流程完整实现部署执行与日志回传"
+      "notes": "覆盖一键部署执行的完整流程，包括任务创建、SSH连接、步骤执行、日志流和取消功能。"
     }
   ],
-  "data_models": [],
-  "interfaces": [],
-  "error_handling": {
-    "strategy": "采用带错误分类的健壮消费模式，所有远程操作与文件操作均包裹异常捕获，错误信息通过日志队列推送，并最终标记任务状态为失败",
-    "response_format": {
-      "body": {
-        "status": "string",
-        "deployment_id": "string",
-        "error": {
-          "code": "string",
-          "message": "string"
-        }
-      }
-    },
-    "categories": [
-      {
-        "code": "CONNECTION_ERROR",
-        "name": "连接错误",
-        "description": "SSH连接超时、认证失败、网络不可达等，任务状态标记为FAILED"
-      },
-      {
-        "code": "TRANSFER_ERROR",
-        "name": "传输错误",
-        "description": "SFTP上传中断或磁盘空间不足等，任务状态标记为FAILED"
-      },
-      {
-        "code": "SCRIPT_GENERATION_ERROR",
-        "name": "脚本生成错误",
-        "description": "模板语法错误或变量缺失，任务状态标记为FAILED"
-      },
-      {
-        "code": "SCRIPT_EXECUTION_ERROR",
-        "name": "脚本执行错误",
-        "description": "启动或停止脚本返回非零退出码，任务状态标记为FAILED"
-      },
-      {
-        "code": "QUEUE_PUBLISH_ERROR",
-        "name": "队列投递错误",
-        "description": "日志或状态推送失败，重试有限次数并记录本地"
-      }
-    ]
-  },
-  "domain_objects": [
+  "data_models": [
     {
-      "name": "DeploymentTask",
-      "object_type": "entity",
-      "description": "一次部署任务的上下文实体，从队列消息解析而来",
-      "attributes": [
+      "id": "DM-001",
+      "name": "deployments",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "deployments"
+      },
+      "description": "部署任务主表，记录每次部署的元信息和最终状态。本服务视角关心的字段子集。",
+      "fields": [
         {
-          "name": "task_id",
-          "type": "String",
+          "name": "deployment_id",
+          "type": "UUID",
           "required": true,
-          "source": "input",
-          "description": "对应消息中的deployment_id"
-        },
-        {
-          "name": "environment_id",
-          "type": "String",
-          "required": true,
-          "source": "input",
-          "description": "目标环境标识"
+          "description": "部署任务唯一标识"
         },
         {
           "name": "project_id",
-          "type": "String",
+          "type": "UUID",
           "required": true,
-          "source": "input",
-          "description": "所属项目标识"
+          "description": "关联项目ID"
         },
         {
-          "name": "file_path",
-          "type": "String",
+          "name": "environment_id",
+          "type": "UUID",
           "required": true,
-          "source": "input",
-          "description": "部署文件在文件存储上的路径"
+          "description": "目标环境ID"
         },
         {
-          "name": "version",
-          "type": "String",
+          "name": "file_id",
+          "type": "UUID",
           "required": true,
-          "source": "input",
-          "description": "目标版本号"
+          "description": "部署使用的文件ID"
         },
         {
-          "name": "start_after_deploy",
-          "type": "boolean",
+          "name": "version_tag",
+          "type": "VARCHAR",
           "required": true,
-          "source": "input",
-          "description": "部署后是否启动服务"
+          "description": "用户指定的版本标签"
         },
         {
-          "name": "callback_url",
-          "type": "String",
-          "required": true,
-          "source": "input",
-          "description": "保留字段，状态回报通过队列"
-        },
-        {
-          "name": "is_rollback",
-          "type": "boolean",
+          "name": "notes",
+          "type": "TEXT",
           "required": false,
-          "source": "derived",
-          "description": "是否为回滚任务，由扩展字段task_type派生"
-        }
-      ]
-    },
-    {
-      "name": "SSHConnectionConfig",
-      "object_type": "value_object",
-      "description": "远程服务器的连接参数值对象",
-      "attributes": [
-        {
-          "name": "host",
-          "type": "String",
-          "required": true,
-          "source": "input",
-          "description": "远程主机地址"
-        },
-        {
-          "name": "port",
-          "type": "integer",
-          "required": false,
-          "source": "input",
-          "description": "SSH端口，默认22"
-        },
-        {
-          "name": "username",
-          "type": "String",
-          "required": true,
-          "source": "input",
-          "description": "登录用户名"
-        },
-        {
-          "name": "password",
-          "type": "String",
-          "required": false,
-          "source": "input",
-          "description": "加密后的密码"
-        },
-        {
-          "name": "private_key",
-          "type": "String",
-          "required": false,
-          "source": "input",
-          "description": "私钥内容"
-        }
-      ]
-    },
-    {
-      "name": "DeploymentLogEntry",
-      "object_type": "value_object",
-      "description": "部署过程中产生的一条日志记录",
-      "attributes": [
-        {
-          "name": "deployment_id",
-          "type": "String",
-          "required": true,
-          "source": "derived",
-          "description": "关联的部署ID"
-        },
-        {
-          "name": "timestamp",
-          "type": "datetime",
-          "required": true,
-          "source": "derived",
-          "description": "日志产生时间"
-        },
-        {
-          "name": "log_level",
-          "type": "String",
-          "required": true,
-          "source": "derived",
-          "description": "日志级别(INFO, WARNING, ERROR等)"
-        },
-        {
-          "name": "message",
-          "type": "String",
-          "required": true,
-          "source": "derived",
-          "description": "日志内容"
-        }
-      ]
-    },
-    {
-      "name": "ScriptTemplate",
-      "object_type": "value_object",
-      "description": "用于生成启停脚本的模板对象",
-      "attributes": [
-        {
-          "name": "template_type",
-          "type": "String",
-          "required": true,
-          "source": "input",
-          "description": "模板类型(start, stop, restart等)"
-        },
-        {
-          "name": "content",
-          "type": "String",
-          "required": true,
-          "source": "input",
-          "description": "模板内容，支持变量替换"
-        }
-      ]
-    },
-    {
-      "name": "DeploymentStatus",
-      "object_type": "value_object",
-      "description": "部署最终状态报告",
-      "attributes": [
-        {
-          "name": "deployment_id",
-          "type": "String",
-          "required": true,
-          "source": "derived",
-          "description": "部署ID"
+          "description": "部署备注"
         },
         {
           "name": "status",
-          "type": "String",
+          "type": "VARCHAR",
           "required": true,
-          "source": "derived",
-          "description": "最终状态(SUCCESS, FAILED)"
+          "description": "当前状态：pending/running/success/failed/cancelled"
         },
         {
-          "name": "error_code",
-          "type": "String",
+          "name": "started_at",
+          "type": "TIMESTAMP",
           "required": false,
-          "source": "derived",
-          "description": "错误码，仅在失败时存在"
+          "description": "开始执行时间"
+        },
+        {
+          "name": "finished_at",
+          "type": "TIMESTAMP",
+          "required": false,
+          "description": "完成或取消时间"
         },
         {
           "name": "error_message",
-          "type": "String",
+          "type": "TEXT",
           "required": false,
-          "source": "derived",
-          "description": "错误信息"
+          "description": "失败时的错误信息"
+        },
+        {
+          "name": "created_by",
+          "type": "UUID",
+          "required": true,
+          "description": "发起部署的用户ID"
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMP",
+          "required": true,
+          "description": "记录创建时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_deployments_project_env",
+          "unique": false,
+          "columns": [
+            "project_id",
+            "environment_id"
+          ]
+        },
+        {
+          "name": "idx_deployments_status",
+          "unique": false,
+          "columns": [
+            "status"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [],
+      "constraints": [],
+      "lifecycle": {
+        "create": "POST /api/deployments 时插入 status=pending",
+        "update": "执行过程中更新 status、started_at 等；完成后更新 finished_at、error_message",
+        "delete": "不直接删除，定期归档至历史表（由历史服务管理）",
+        "retention": "永久存在于在线库，由部署历史服务提供查询"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建，引用主数据库的 deployments 表定义",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "deployment_steps",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "deployment_steps"
+      },
+      "description": "部署步骤记录表，记录部署过程中每个步骤的执行状态和日志。",
+      "fields": [
+        {
+          "name": "step_id",
+          "type": "UUID",
+          "required": true,
+          "description": "步骤唯一标识"
+        },
+        {
+          "name": "deployment_id",
+          "type": "UUID",
+          "required": true,
+          "description": "关联的部署ID"
+        },
+        {
+          "name": "step_name",
+          "type": "VARCHAR",
+          "required": true,
+          "description": "步骤名称，如 create_dir、upload_file"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR",
+          "required": true,
+          "description": "步骤状态：pending/running/success/failed"
+        },
+        {
+          "name": "started_at",
+          "type": "TIMESTAMP",
+          "required": false,
+          "description": "步骤开始时间"
+        },
+        {
+          "name": "finished_at",
+          "type": "TIMESTAMP",
+          "required": false,
+          "description": "步骤结束时间"
+        },
+        {
+          "name": "log",
+          "type": "TEXT",
+          "required": false,
+          "description": "步骤的详细输出日志"
+        },
+        {
+          "name": "error_message",
+          "type": "TEXT",
+          "required": false,
+          "description": "步骤失败的错误信息"
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMP",
+          "required": true,
+          "description": "记录创建时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_deployment_steps_deployment",
+          "unique": false,
+          "columns": [
+            "deployment_id"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [],
+      "constraints": [],
+      "lifecycle": {
+        "create": "部署步骤开始时插入 status=running",
+        "update": "步骤完成时更新 status、finished_at、log 等",
+        "delete": "不单独删除，随部署任务归档至历史表",
+        "retention": "与部署任务同步归档"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建，引用主数据库的 deployment_steps 表定义",
+          "reason": "首次生成 LLD"
         }
       ]
     }
   ],
-  "business_rules": {
-    "invariants": [
-      {
-        "rule_id": "BR-001",
-        "description": "部署任务必须包含有效的task_id、environment_id、project_id、file_path和version",
-        "scope": "DeploymentTask",
-        "type": "invariant",
-        "expression": "task_id != null && environment_id != null && project_id != null && file_path != null && version != null",
-        "severity": "error",
-        "message": "部署任务缺少必要字段"
-      },
-      {
-        "rule_id": "BR-002",
-        "description": "SSH连接配置必须提供密码或私钥两者之一",
-        "scope": "SSHConnectionConfig",
-        "type": "invariant",
-        "expression": "password != null || private_key != null",
-        "severity": "error",
-        "message": "SSH连接配置中必须提供密码或私钥"
-      },
-      {
-        "rule_id": "BR-003",
-        "description": "部署日志条目的日志级别必须为预定义级别之一",
-        "scope": "DeploymentLogEntry",
-        "type": "invariant",
-        "expression": "log_level in ['INFO', 'WARNING', 'ERROR', 'DEBUG']",
-        "severity": "error",
-        "message": "无效的日志级别"
-      },
-      {
-        "rule_id": "BR-004",
-        "description": "脚本模板类型必须是预定义类型之一",
-        "scope": "ScriptTemplate",
-        "type": "invariant",
-        "expression": "template_type in ['start', 'stop', 'restart']",
-        "severity": "error",
-        "message": "无效的模板类型"
-      }
-    ]
-  },
-  "service_contracts": [
+  "domain_objects": [
     {
-      "sc_id": "SC-001",
-      "name": "DeploymentExecutorService",
-      "description": "执行部署任务的核心服务接口",
+      "id": "DO-001",
+      "entity_name": "Deployment",
+      "description": "部署任务聚合根，封装一次部署的完整生命周期。",
+      "object_type": "aggregate",
+      "fields": [
+        {
+          "name": "DeploymentID",
+          "type": "string",
+          "description": "唯一标识"
+        },
+        {
+          "name": "ProjectID",
+          "type": "string",
+          "description": "关联项目"
+        },
+        {
+          "name": "EnvironmentID",
+          "type": "string",
+          "description": "目标环境"
+        },
+        {
+          "name": "FileID",
+          "type": "string",
+          "description": "部署文件"
+        },
+        {
+          "name": "Status",
+          "type": "DeploymentStatus",
+          "description": "状态"
+        },
+        {
+          "name": "Steps",
+          "type": "[]DeploymentStep",
+          "description": "步骤列表"
+        },
+        {
+          "name": "CreatedBy",
+          "type": "string",
+          "description": "发起用户"
+        }
+      ],
       "methods": [
         {
-          "name": "execute_deployment",
-          "signature": "execute_deployment(task: DeploymentTask) -> DeploymentStatus",
-          "description": "执行完整的部署流程",
-          "precondition": "task参数非null且所有必要字段已填充，task已通过BR-001规则验证",
-          "postcondition": "返回DeploymentStatus对象，指示部署成功或失败；若成功，文件已传输到目标服务器并完成指定操作；若失败，已记录错误信息并发布日志",
-          "is_async": true,
-          "notes": "该方法将消耗消息队列中的部署任务，异步执行部署流程，并通过队列发布日志和状态",
+          "name": "Start",
+          "description": "将状态设置为 running，记录开始时间",
+          "parameters": [],
+          "returns": "error"
+        },
+        {
+          "name": "Cancel",
+          "description": "将状态设置为 cancelled，记录结束时间",
+          "parameters": [],
+          "returns": "error"
+        },
+        {
+          "name": "Complete",
+          "description": "根据成功/失败设置状态并记录结束时间",
           "parameters": [
             {
-              "name": "task",
-              "type": "DeploymentTask",
-              "required": true,
-              "description": "待执行的部署任务"
+              "name": "success",
+              "type": "bool"
+            },
+            {
+              "name": "errorMsg",
+              "type": "string"
             }
           ],
-          "return_type": "DeploymentStatus",
-          "exceptions": [
+          "returns": "error"
+        }
+      ],
+      "invariants": [
+        "状态只能由 pending → running → success/failed/cancelled",
+        "Steps 非空"
+      ],
+      "business_rules": [
+        "取消只能针对 pending 或 running 状态的部署"
+      ],
+      "states": [
+        "pending",
+        "running",
+        "success",
+        "failed",
+        "cancelled"
+      ],
+      "owned_entities": [
+        "DeploymentStep"
+      ],
+      "value_objects": [],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "DO-002",
+      "entity_name": "DeploymentStep",
+      "description": "部署步骤实体，记录每个步骤的详细信息。",
+      "object_type": "entity",
+      "fields": [
+        {
+          "name": "StepID",
+          "type": "string",
+          "description": "唯一标识"
+        },
+        {
+          "name": "StepName",
+          "type": "string",
+          "description": "步骤名称"
+        },
+        {
+          "name": "Status",
+          "type": "StepStatus",
+          "description": "步骤状态"
+        },
+        {
+          "name": "Log",
+          "type": "string",
+          "description": "日志"
+        },
+        {
+          "name": "Error",
+          "type": "string",
+          "description": "错误信息"
+        }
+      ],
+      "methods": [
+        {
+          "name": "MarkRunning",
+          "description": "标记步骤开始执行",
+          "parameters": [],
+          "returns": "error"
+        },
+        {
+          "name": "MarkCompleted",
+          "description": "标记步骤完成并记录日志",
+          "parameters": [
             {
-              "name": "ConnectionError",
-              "trigger": "SSH连接失败",
-              "exception": "自定义异常，包含错误码CONNECTION_ERROR"
+              "name": "log",
+              "type": "string"
             },
             {
-              "name": "TransferError",
-              "trigger": "文件传输失败",
-              "exception": "自定义异常，包含错误码TRANSFER_ERROR"
+              "name": "err",
+              "type": "string"
+            }
+          ],
+          "returns": "error"
+        }
+      ],
+      "invariants": [
+        "状态只能由 pending → running → success/failed"
+      ],
+      "business_rules": [],
+      "states": [
+        "pending",
+        "running",
+        "success",
+        "failed"
+      ],
+      "owned_entities": [],
+      "value_objects": [],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "DO-003",
+      "entity_name": "DeploymentStatus",
+      "description": "部署状态值对象。",
+      "object_type": "value_object",
+      "fields": [
+        {
+          "name": "Value",
+          "type": "string",
+          "description": "状态值"
+        }
+      ],
+      "methods": [],
+      "invariants": [
+        "必须是预定义枚举之一"
+      ],
+      "business_rules": [],
+      "states": [
+        "pending",
+        "running",
+        "success",
+        "failed",
+        "cancelled"
+      ],
+      "owned_entities": [],
+      "value_objects": [],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "DO-004",
+      "entity_name": "StepStatus",
+      "description": "步骤状态值对象。",
+      "object_type": "value_object",
+      "fields": [
+        {
+          "name": "Value",
+          "type": "string",
+          "description": "状态值"
+        }
+      ],
+      "methods": [],
+      "invariants": [
+        "必须是预定义枚举之一"
+      ],
+      "business_rules": [],
+      "states": [
+        "pending",
+        "running",
+        "success",
+        "failed"
+      ],
+      "owned_entities": [],
+      "value_objects": [],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "DO-005",
+      "entity_name": "SSHConnection",
+      "description": "SSH 连接信息值对象，包含主机、端口、认证等。",
+      "object_type": "value_object",
+      "fields": [
+        {
+          "name": "Host",
+          "type": "string"
+        },
+        {
+          "name": "Port",
+          "type": "int"
+        },
+        {
+          "name": "Username",
+          "type": "string"
+        },
+        {
+          "name": "PrivateKey",
+          "type": "string"
+        }
+      ],
+      "methods": [],
+      "invariants": [
+        "Port 范围 1-65535"
+      ],
+      "business_rules": [],
+      "states": [],
+      "owned_entities": [],
+      "value_objects": [],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "DO-006",
+      "entity_name": "DeploymentScript",
+      "description": "部署脚本领域服务，负责生成部署步骤的脚本。",
+      "object_type": "domain_service",
+      "fields": [],
+      "methods": [
+        {
+          "name": "GenerateScript",
+          "description": "根据部署步骤生成可执行的 shell 脚本",
+          "parameters": [
+            {
+              "name": "steps",
+              "type": "[]DeploymentStep"
+            }
+          ],
+          "returns": "string, error"
+        }
+      ],
+      "invariants": [],
+      "business_rules": [],
+      "states": [],
+      "owned_entities": [],
+      "value_objects": [],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "DO-007",
+      "entity_name": "DeploymentLogger",
+      "description": "日志服务，负责将日志推送到 Redis 和 WebSocket。",
+      "object_type": "domain_service",
+      "fields": [],
+      "methods": [
+        {
+          "name": "LogStep",
+          "description": "记录步骤日志并推送",
+          "parameters": [
+            {
+              "name": "deploymentID",
+              "type": "string"
             },
             {
-              "name": "ScriptGenerationError",
-              "trigger": "脚本生成失败",
-              "exception": "自定义异常，包含错误码SCRIPT_GENERATION_ERROR"
+              "name": "stepName",
+              "type": "string"
             },
             {
-              "name": "ScriptExecutionError",
-              "trigger": "脚本执行返回非零退出码",
-              "exception": "自定义异常，包含错误码SCRIPT_EXECUTION_ERROR"
+              "name": "message",
+              "type": "string"
+            }
+          ],
+          "returns": "error"
+        }
+      ],
+      "invariants": [],
+      "business_rules": [],
+      "states": [],
+      "owned_entities": [],
+      "value_objects": [],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "DO-008",
+      "entity_name": "DeploymentRepository",
+      "description": "部署仓库接口，封装数据库操作。",
+      "object_type": "repository",
+      "fields": [],
+      "methods": [
+        {
+          "name": "Create",
+          "description": "创建部署记录",
+          "parameters": [
+            {
+              "name": "deployment",
+              "type": "*Deployment"
+            }
+          ],
+          "returns": "error"
+        },
+        {
+          "name": "GetByID",
+          "description": "根据 ID 获取部署",
+          "parameters": [
+            {
+              "name": "id",
+              "type": "string"
+            }
+          ],
+          "returns": "*Deployment, error"
+        },
+        {
+          "name": "Update",
+          "description": "更新部署记录",
+          "parameters": [
+            {
+              "name": "deployment",
+              "type": "*Deployment"
+            }
+          ],
+          "returns": "error"
+        }
+      ],
+      "invariants": [],
+      "business_rules": [],
+      "states": [],
+      "owned_entities": [],
+      "value_objects": [],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "DO-009",
+      "entity_name": "EnvironmentService",
+      "description": "环境服务接口，获取 SSH 连接信息。",
+      "object_type": "domain_service",
+      "fields": [],
+      "methods": [
+        {
+          "name": "GetSSHConfig",
+          "description": "获取指定环境的 SSH 配置",
+          "parameters": [
+            {
+              "name": "environmentID",
+              "type": "string"
+            }
+          ],
+          "returns": "SSHConnection, error"
+        }
+      ],
+      "invariants": [],
+      "business_rules": [],
+      "states": [],
+      "owned_entities": [],
+      "value_objects": [],
+      "source_components": [],
+      "source_requirements": [
+        "REQ-004"
+      ]
+    },
+    {
+      "id": "DO-010",
+      "entity_name": "SecurityService",
+      "description": "安全服务接口，解密私钥。",
+      "object_type": "domain_service",
+      "fields": [],
+      "methods": [
+        {
+          "name": "DecryptPrivateKey",
+          "description": "解密私钥",
+          "parameters": [
+            {
+              "name": "encryptedKey",
+              "type": "string"
+            }
+          ],
+          "returns": "string, error"
+        }
+      ],
+      "invariants": [],
+      "business_rules": [],
+      "states": [],
+      "owned_entities": [],
+      "value_objects": [],
+      "source_components": [],
+      "source_requirements": [
+        "REQ-004"
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "interface_type": "REST",
+      "endpoint": "/api/deployments",
+      "method": "POST",
+      "name": "createDeployment",
+      "description": "接收部署请求，创建部署任务并异步执行。",
+      "request": {
+        "headers": {
+          "Authorization": "string"
+        },
+        "body": {
+          "project_id": "string",
+          "environment_id": "string",
+          "file_id": "string",
+          "version_tag": "string",
+          "notes": "string (optional)"
+        }
+      },
+      "response": {
+        "status_codes": {
+          "201": {
+            "description": "部署任务已创建",
+            "body": {
+              "deployment_id": "string",
+              "status": "string"
+            }
+          },
+          "400": {
+            "description": "请求参数错误"
+          },
+          "401": {
+            "description": "未授权"
+          },
+          "500": {
+            "description": "服务器内部错误"
+          }
+        }
+      },
+      "authentication": {
+        "type": "JWT",
+        "required": true
+      },
+      "rate_limiting": {
+        "requests_per_second": 5
+      },
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [
+        "CTR-006"
+      ],
+      "errors": [
+        {
+          "code": "INVALID_REQUEST",
+          "message": "请求参数不合法"
+        },
+        {
+          "code": "ENVIRONMENT_NOT_FOUND",
+          "message": "环境不存在"
+        },
+        {
+          "code": "FILE_NOT_FOUND",
+          "message": "部署文件不存在"
+        }
+      ]
+    },
+    {
+      "id": "IF-002",
+      "interface_type": "REST",
+      "endpoint": "/api/deployments/{deployment_id}/cancel",
+      "method": "POST",
+      "name": "cancelDeployment",
+      "description": "取消正在进行的部署任务。",
+      "request": {
+        "headers": {
+          "Authorization": "string"
+        },
+        "path_params": {
+          "deployment_id": "string"
+        }
+      },
+      "response": {
+        "status_codes": {
+          "200": {
+            "description": "取消成功",
+            "body": {
+              "deployment_id": "string",
+              "status": "cancelled"
+            }
+          },
+          "400": {
+            "description": "请求参数错误"
+          },
+          "404": {
+            "description": "部署任务不存在"
+          },
+          "409": {
+            "description": "任务状态不可取消"
+          },
+          "500": {
+            "description": "服务器内部错误"
+          }
+        }
+      },
+      "authentication": {
+        "type": "JWT",
+        "required": true
+      },
+      "rate_limiting": {
+        "requests_per_second": 5
+      },
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [
+        "CTR-006"
+      ],
+      "errors": [
+        {
+          "code": "DEPLOYMENT_NOT_FOUND",
+          "message": "部署任务不存在"
+        },
+        {
+          "code": "CANCEL_NOT_ALLOWED",
+          "message": "只有 pending 或 running 状态的任务可以取消"
+        }
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "DeploymentService",
+      "description": "部署执行服务对外提供的服务契约。",
+      "type": "service",
+      "version": 1,
+      "status": "active",
+      "methods": [
+        {
+          "name": "CreateDeployment",
+          "description": "创建并启动部署任务",
+          "signature": "CreateDeployment(ctx context.Context, req CreateDeploymentRequest) (CreateDeploymentResponse, error)",
+          "precondition": "请求参数合法，用户已认证，项目/环境/文件存在且有效",
+          "postcondition": "部署记录已创建，状态为 pending 并立即转为 running，部署步骤开始异步执行",
+          "parameters": [
+            {
+              "name": "req",
+              "type": "CreateDeploymentRequest",
+              "required": true,
+              "description": "创建部署请求参数"
+            }
+          ],
+          "returns": {
+            "type": "CreateDeploymentResponse",
+            "description": "包含部署 ID 和初始状态"
+          },
+          "errors": [
+            {
+              "code": "INVALID_REQUEST",
+              "message": "请求参数不合法"
+            },
+            {
+              "code": "ENVIRONMENT_NOT_FOUND",
+              "message": "环境不存在"
+            },
+            {
+              "code": "FILE_NOT_FOUND",
+              "message": "文件不存在"
+            },
+            {
+              "code": "SSH_CONNECTION_FAILED",
+              "message": "SSH 连接失败"
+            }
+          ]
+        },
+        {
+          "name": "CancelDeployment",
+          "description": "取消正在进行的部署",
+          "signature": "CancelDeployment(ctx context.Context, deploymentID string) error",
+          "precondition": "部署存在且状态为 pending 或 running",
+          "postcondition": "部署状态更新为 cancelled，中断执行并记录日志",
+          "parameters": [
+            {
+              "name": "deploymentID",
+              "type": "string",
+              "required": true,
+              "description": "部署 ID"
+            }
+          ],
+          "returns": {
+            "type": "void",
+            "description": "无返回值"
+          },
+          "errors": [
+            {
+              "code": "DEPLOYMENT_NOT_FOUND",
+              "message": "部署任务不存在"
+            },
+            {
+              "code": "CANCEL_NOT_ALLOWED",
+              "message": "不允许取消当前状态的部署"
             }
           ]
         }
       ],
       "dependencies": [
-        "SSHConnectionService",
-        "FileTransferService",
-        "ScriptGenerationService",
-        "LogPublisher"
+        "EnvironmentService",
+        "SecurityService",
+        "DeploymentRepository",
+        "DeploymentLogger"
       ],
-      "notes": "实现DeploymentService接口，作为后台部署执行者"
+      "sla": {
+        "response_time_ms": 2000,
+        "availability": "99.9%"
+      },
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ]
     }
-  ]
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "rule": "部署任务状态机规则",
+      "description": "部署状态只能由 pending 变为 running，再由 running 变为 success/failed/cancelled。取消操作只能针对 pending 或 running 状态。",
+      "type": "invariant",
+      "enforcement": "在 Deployment 实体的状态变更方法中校验"
+    },
+    {
+      "id": "BR-002",
+      "rule": "部署步骤顺序执行",
+      "description": "部署步骤必须按照预定义的顺序执行：创建目录 -> 上传文件 -> 生成脚本 -> 执行脚本。前一步骤失败则立即终止。",
+      "type": "action_rule",
+      "enforcement": "由 DeploymentExecutor 领域服务控制流程"
+    },
+    {
+      "id": "BR-003",
+      "rule": "SSH 连接参数校验",
+      "description": "主机名非空，端口号 1-65535，用户名非空，私钥非空且格式有效。",
+      "type": "invariant",
+      "enforcement": "在 SSHConnection 值对象构造时校验"
+    }
+  ],
+  "error_handling": {
+    "strategy": "集中式错误处理",
+    "categories": [
+      {
+        "category": "Business",
+        "description": "业务逻辑错误，如状态不可取消",
+        "http_code": 409,
+        "retry_policy": "不可重试"
+      },
+      {
+        "category": "Validation",
+        "description": "输入参数校验失败",
+        "http_code": 400,
+        "retry_policy": "不可重试"
+      },
+      {
+        "category": "External",
+        "description": "依赖服务或 SSH 连接错误",
+        "http_code": 502,
+        "retry_policy": "可重试 3 次，指数退避"
+      },
+      {
+        "category": "Internal",
+        "description": "服务器内部错误",
+        "http_code": 500,
+        "retry_policy": "不可重试"
+      }
+    ],
+    "logging": {
+      "level": "error",
+      "details": "记录完整错误堆栈和上下文信息到日志收集系统"
+    }
+  }
 }
