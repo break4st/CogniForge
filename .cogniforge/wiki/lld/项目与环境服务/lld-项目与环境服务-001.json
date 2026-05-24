@@ -1,0 +1,1028 @@
+{
+  "meta": {
+    "doc_id": "lld-Project Environment Service-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "项目与环境服务",
+    "title": "项目与环境服务详细设计文档",
+    "author": "design_agent",
+    "created": "2025-04-12T00:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-006"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-003"
+      ],
+      "contracts": [
+        "CTR-001",
+        "CTR-002",
+        "CTR-003",
+        "CTR-004"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "项目的创建与列表查询",
+      "项目名称在同一用户下的唯一性校验",
+      "环境的创建与关联管理",
+      "环境名称在同一项目下的唯一性校验",
+      "为项目清单提供脚本模板占位符管理（版本标识替换）",
+      "通过SSH测试目标环境的连通性，需消费安全服务的私钥解密能力"
+    ],
+    "out_of_scope": [
+      "项目的编辑与删除（SAD未定义对应契约）",
+      "环境的修改与删除",
+      "用户身份创建与认证（依赖Gateway传递的JWT声明）",
+      "SSH私钥的生成、存储、轮换（属于安全与密钥服务）",
+      "实际部署任务的分发与执行",
+      "文件上传与管理"
+    ],
+    "owned_components": [
+      "CMP-003"
+    ],
+    "owned_contracts": [],
+    "consumed_contracts": [
+      "CTR-005"
+    ],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "项目与环境服务是部署平台的核心配置管理模块，提供项目和环境两个核心资源的CRUD子集。它保证名称唯一性约束，关联环境到项目，并代理SSH连通性测试，测试过程中依赖安全服务获取解密私钥。所有持久化数据存储在PostgreSQL中。",
+    "dependencies": [
+      "安全与密钥服务（获取解密私钥）",
+      "PostgreSQL（主数据库）"
+    ],
+    "tech_stack": [
+      "Go",
+      "Gin",
+      "PostgreSQL"
+    ]
+  },
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "ListProjects",
+      "endpoint": "GET /api/v1/projects",
+      "description": "获取当前用户的项目列表",
+      "request": {
+        "headers": [
+          {
+            "name": "Authorization",
+            "required": true,
+            "description": "Bearer JWT令牌"
+          }
+        ],
+        "query_params": [],
+        "body_schema": null
+      },
+      "response": {
+        "status_codes": [
+          200,
+          401
+        ],
+        "body_schema": {
+          "type": "object",
+          "properties": {
+            "projects": {
+              "type": "array",
+              "items": {
+                "$ref": "#/domain_objects/DO-001"
+              }
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "UNAUTHORIZED",
+          "status": 401,
+          "message": "无效或过期的令牌"
+        }
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "CreateProject",
+      "endpoint": "POST /api/v1/projects",
+      "description": "创建新项目",
+      "request": {
+        "headers": [
+          {
+            "name": "Authorization",
+            "required": true,
+            "description": "Bearer JWT令牌"
+          }
+        ],
+        "query_params": [],
+        "body_schema": {
+          "type": "object",
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "description": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "response": {
+        "status_codes": [
+          201,
+          400,
+          401,
+          409
+        ],
+        "body_schema": {
+          "$ref": "#/domain_objects/DO-002"
+        }
+      },
+      "errors": [
+        {
+          "code": "VALIDATION_ERROR",
+          "status": 400,
+          "message": "输入校验失败"
+        },
+        {
+          "code": "UNAUTHORIZED",
+          "status": 401,
+          "message": "无效或过期的令牌"
+        },
+        {
+          "code": "CONFLICT",
+          "status": 409,
+          "message": "项目名称在当前用户下已存在"
+        }
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-002"
+      ]
+    },
+    {
+      "id": "IF-003",
+      "name": "AddEnvironment",
+      "endpoint": "POST /api/v1/projects/{project_id}/environments",
+      "description": "在指定项目中创建环境",
+      "request": {
+        "headers": [
+          {
+            "name": "Authorization",
+            "required": true,
+            "description": "Bearer JWT令牌"
+          }
+        ],
+        "path_params": [
+          {
+            "name": "project_id",
+            "type": "string",
+            "format": "uuid",
+            "required": true,
+            "description": "项目ID"
+          }
+        ],
+        "query_params": [],
+        "body_schema": {
+          "type": "object",
+          "required": [
+            "name",
+            "host",
+            "ssh_user",
+            "private_key_id",
+            "script_template"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "description": {
+              "type": "string"
+            },
+            "host": {
+              "type": "string"
+            },
+            "port": {
+              "type": "integer",
+              "default": 22
+            },
+            "ssh_user": {
+              "type": "string"
+            },
+            "private_key_id": {
+              "type": "string"
+            },
+            "script_template": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "response": {
+        "status_codes": [
+          201,
+          400,
+          401,
+          404,
+          409
+        ],
+        "body_schema": {
+          "$ref": "#/domain_objects/DO-003"
+        }
+      },
+      "errors": [
+        {
+          "code": "VALIDATION_ERROR",
+          "status": 400,
+          "message": "输入校验失败"
+        },
+        {
+          "code": "UNAUTHORIZED",
+          "status": 401,
+          "message": "无效或过期的令牌"
+        },
+        {
+          "code": "NOT_FOUND",
+          "status": 404,
+          "message": "项目不存在"
+        },
+        {
+          "code": "CONFLICT",
+          "status": 409,
+          "message": "环境名称在同一项目下已存在"
+        }
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-003"
+      ]
+    },
+    {
+      "id": "IF-004",
+      "name": "TestEnvironmentConnection",
+      "endpoint": "POST /api/v1/environments/{environment_id}/test-connection",
+      "description": "测试指定环境的SSH连通性",
+      "request": {
+        "headers": [
+          {
+            "name": "Authorization",
+            "required": true,
+            "description": "Bearer JWT令牌"
+          }
+        ],
+        "path_params": [
+          {
+            "name": "environment_id",
+            "type": "string",
+            "format": "uuid",
+            "required": true,
+            "description": "环境ID"
+          }
+        ],
+        "query_params": [],
+        "body_schema": null
+      },
+      "response": {
+        "status_codes": [
+          200,
+          401,
+          404,
+          502
+        ],
+        "body_schema": {
+          "type": "object",
+          "properties": {
+            "success": {
+              "type": "boolean"
+            },
+            "message": {
+              "type": "string"
+            },
+            "duration_ms": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "UNAUTHORIZED",
+          "status": 401,
+          "message": "无效或过期的令牌"
+        },
+        {
+          "code": "NOT_FOUND",
+          "status": 404,
+          "message": "环境不存在"
+        },
+        {
+          "code": "CONNECTION_FAILED",
+          "status": 502,
+          "message": "SSH连接测试失败"
+        }
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-004"
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "object_type": "data_transfer_object",
+      "name": "ProjectSummary",
+      "description": "项目摘要，用于列表展示",
+      "properties": [
+        {
+          "name": "id",
+          "type": "string",
+          "format": "uuid"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "description",
+          "type": "string"
+        },
+        {
+          "name": "created_at",
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "name": "environment_count",
+          "type": "integer"
+        }
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ]
+    },
+    {
+      "id": "DO-002",
+      "object_type": "data_transfer_object",
+      "name": "ProjectFull",
+      "description": "完整项目信息，用于创建响应",
+      "properties": [
+        {
+          "name": "id",
+          "type": "string",
+          "format": "uuid"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "description",
+          "type": "string"
+        },
+        {
+          "name": "created_by",
+          "type": "string"
+        },
+        {
+          "name": "created_at",
+          "type": "string",
+          "format": "date-time"
+        }
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-002"
+      ]
+    },
+    {
+      "id": "DO-003",
+      "object_type": "data_transfer_object",
+      "name": "EnvironmentFull",
+      "description": "完整环境信息",
+      "properties": [
+        {
+          "name": "id",
+          "type": "string",
+          "format": "uuid"
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "format": "uuid"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "description",
+          "type": "string"
+        },
+        {
+          "name": "host",
+          "type": "string"
+        },
+        {
+          "name": "port",
+          "type": "integer"
+        },
+        {
+          "name": "ssh_user",
+          "type": "string"
+        },
+        {
+          "name": "private_key_id",
+          "type": "string"
+        },
+        {
+          "name": "script_template",
+          "type": "string"
+        },
+        {
+          "name": "created_at",
+          "type": "string",
+          "format": "date-time"
+        }
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-003"
+      ]
+    },
+    {
+      "id": "DO-004",
+      "object_type": "data_transfer_object",
+      "name": "TestConnectionRequest",
+      "description": "测试连接请求参数（内部使用）",
+      "properties": [
+        {
+          "name": "environment_id",
+          "type": "string",
+          "format": "uuid"
+        }
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": []
+    },
+    {
+      "id": "DO-005",
+      "object_type": "data_transfer_object",
+      "name": "TestConnectionResponse",
+      "description": "测试连接结果",
+      "properties": [
+        {
+          "name": "success",
+          "type": "boolean"
+        },
+        {
+          "name": "message",
+          "type": "string"
+        },
+        {
+          "name": "duration_ms",
+          "type": "integer"
+        }
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-004"
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "ListProjectsContract",
+      "description": "获取项目列表的业务逻辑",
+      "methods": [
+        {
+          "name": "ListProjects",
+          "parameters": [
+            {
+              "name": "userId",
+              "type": "string",
+              "required": true,
+              "description": "从JWT中提取的用户ID"
+            }
+          ],
+          "return_type": "[]ProjectSummary",
+          "description": "根据用户ID查询其所有项目，返回项目摘要列表",
+          "exceptions": [
+            "DatabaseError"
+          ]
+        }
+      ],
+      "interface_id": "IF-001",
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ]
+    },
+    {
+      "id": "SC-002",
+      "name": "CreateProjectContract",
+      "description": "创建项目的业务逻辑",
+      "methods": [
+        {
+          "name": "CreateProject",
+          "parameters": [
+            {
+              "name": "input",
+              "type": "CreateProjectInput",
+              "required": true,
+              "description": "项目创建输入，包含name和可选的description"
+            },
+            {
+              "name": "userId",
+              "type": "string",
+              "required": true,
+              "description": "创建者用户ID"
+            }
+          ],
+          "return_type": "ProjectFull",
+          "description": "创建新项目，检查用户下的名称唯一性，返回完整项目信息",
+          "exceptions": [
+            "ValidationError",
+            "DuplicateNameError",
+            "DatabaseError"
+          ]
+        }
+      ],
+      "interface_id": "IF-002",
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-002"
+      ]
+    },
+    {
+      "id": "SC-003",
+      "name": "AddEnvironmentContract",
+      "description": "添加环境的业务逻辑",
+      "methods": [
+        {
+          "name": "AddEnvironment",
+          "parameters": [
+            {
+              "name": "projectId",
+              "type": "string",
+              "format": "uuid",
+              "required": true,
+              "description": "项目ID"
+            },
+            {
+              "name": "input",
+              "type": "AddEnvironmentInput",
+              "required": true,
+              "description": "环境创建输入"
+            }
+          ],
+          "return_type": "EnvironmentFull",
+          "description": "在指定项目下创建环境，检查项目存在性和名称唯一性，返回完整环境信息",
+          "exceptions": [
+            "ProjectNotFoundError",
+            "ValidationError",
+            "DuplicateNameError",
+            "DatabaseError"
+          ]
+        }
+      ],
+      "interface_id": "IF-003",
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-003"
+      ]
+    },
+    {
+      "id": "SC-004",
+      "name": "TestEnvironmentConnectionContract",
+      "description": "测试环境SSH连接的业务逻辑",
+      "methods": [
+        {
+          "name": "TestEnvironmentConnection",
+          "parameters": [
+            {
+              "name": "environmentId",
+              "type": "string",
+              "format": "uuid",
+              "required": true,
+              "description": "环境ID"
+            }
+          ],
+          "return_type": "TestConnectionResponse",
+          "description": "根据环境配置测试SSH连接，需从安全服务获取解密私钥，测量连接耗时",
+          "exceptions": [
+            "EnvironmentNotFoundError",
+            "KeyDecryptionError",
+            "ConnectionError",
+            "TimeOutError"
+          ]
+        }
+      ],
+      "interface_id": "IF-004",
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-004"
+      ]
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "Project",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "projects"
+      },
+      "description": "项目表，存储用户创建的项目。同一用户下项目名称唯一。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID",
+          "required": true,
+          "description": "项目主键"
+        },
+        {
+          "name": "name",
+          "type": "varchar(100)",
+          "required": true,
+          "description": "项目名称，最大100字符"
+        },
+        {
+          "name": "description",
+          "type": "text",
+          "required": false,
+          "description": "项目描述"
+        },
+        {
+          "name": "created_by",
+          "type": "varchar(50)",
+          "required": true,
+          "description": "创建者用户标识"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "required": true,
+          "description": "创建时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_projects__user_name",
+          "unique": true,
+          "columns": [
+            "created_by",
+            "name"
+          ]
+        },
+        {
+          "name": "pk_projects_id",
+          "unique": true,
+          "columns": [
+            "id"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-001",
+        "CTR-002"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "创建时填入 id, name, created_by, created_at",
+        "update": "本服务不执行更新操作",
+        "delete": "本服务不执行删除操作",
+        "retention": "永久保留"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "Environment",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "environments"
+      },
+      "description": "环境表，存储部署环境的连接配置和模板信息。同一项目下环境名称唯一。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID",
+          "required": true,
+          "description": "环境主键"
+        },
+        {
+          "name": "project_id",
+          "type": "UUID",
+          "required": true,
+          "description": "所属项目ID"
+        },
+        {
+          "name": "name",
+          "type": "varchar(100)",
+          "required": true,
+          "description": "环境名称，同一项目下唯一"
+        },
+        {
+          "name": "description",
+          "type": "text",
+          "required": false,
+          "description": "环境描述"
+        },
+        {
+          "name": "host",
+          "type": "varchar(255)",
+          "required": true,
+          "description": "目标主机地址"
+        },
+        {
+          "name": "port",
+          "type": "integer",
+          "required": false,
+          "default": 22,
+          "description": "SSH端口"
+        },
+        {
+          "name": "ssh_user",
+          "type": "varchar(50)",
+          "required": true,
+          "description": "SSH登录用户"
+        },
+        {
+          "name": "private_key_id",
+          "type": "varchar(255)",
+          "required": true,
+          "description": "关联的私钥标识"
+        },
+        {
+          "name": "script_template",
+          "type": "text",
+          "required": false,
+          "description": "部署脚本模板，包含占位符 {{version}}"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "required": true,
+          "description": "创建时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_environments__project_name",
+          "unique": true,
+          "columns": [
+            "project_id",
+            "name"
+          ]
+        },
+        {
+          "name": "pk_environments_id",
+          "unique": true,
+          "columns": [
+            "id"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-002",
+        "REQ-006"
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-003",
+        "CTR-004"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "创建时填入所有必填字段",
+        "update": "本服务不执行更新操作",
+        "delete": "本服务不执行删除操作",
+        "retention": "永久保留"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "name": "UniqueProjectNamePerUser",
+      "description": "同一用户下的项目名称必须唯一",
+      "type": "invariant",
+      "context": "CreateProject",
+      "expression": "NOT EXISTS (SELECT 1 FROM projects WHERE created_by = :userId AND name = :projectName)",
+      "enforcement": "database",
+      "error_code": "CONFLICT",
+      "message": "项目名称在当前用户下已存在"
+    },
+    {
+      "id": "BR-002",
+      "name": "UniqueEnvironmentNamePerProject",
+      "description": "同一项目下的环境名称必须唯一",
+      "type": "invariant",
+      "context": "AddEnvironment",
+      "expression": "NOT EXISTS (SELECT 1 FROM environments WHERE project_id = :projectId AND name = :envName)",
+      "enforcement": "database",
+      "error_code": "CONFLICT",
+      "message": "环境名称在同一项目下已存在"
+    }
+  ],
+  "error_handling": {
+    "strategy": "每个服务方法都使用统一的错误处理中间件，将领域错误映射到HTTP状态码，并记录错误日志",
+    "error_codes": [
+      {
+        "code": "VALIDATION_ERROR",
+        "status": 400,
+        "message": "输入验证失败"
+      },
+      {
+        "code": "UNAUTHORIZED",
+        "status": 401,
+        "message": "认证失败"
+      },
+      {
+        "code": "NOT_FOUND",
+        "status": 404,
+        "message": "资源未找到"
+      },
+      {
+        "code": "CONFLICT",
+        "status": 409,
+        "message": "资源冲突"
+      },
+      {
+        "code": "CONNECTION_FAILED",
+        "status": 502,
+        "message": "外部服务连接失败"
+      }
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-003"
+      ],
+      "sad_contract_ids": [
+        "CTR-001",
+        "CTR-002"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002"
+        ],
+        "service_contracts": [
+          "SC-001",
+          "SC-002"
+        ]
+      },
+      "coverage": "full",
+      "notes": ""
+    },
+    {
+      "requirement_id": "REQ-002",
+      "sad_component_ids": [
+        "CMP-003"
+      ],
+      "sad_contract_ids": [
+        "CTR-003",
+        "CTR-004"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-002"
+        ],
+        "interfaces": [
+          "IF-003",
+          "IF-004"
+        ],
+        "domain_objects": [
+          "DO-003",
+          "DO-004",
+          "DO-005"
+        ],
+        "service_contracts": [
+          "SC-003",
+          "SC-004"
+        ]
+      },
+      "coverage": "full",
+      "notes": ""
+    },
+    {
+      "requirement_id": "REQ-006",
+      "sad_component_ids": [
+        "CMP-003"
+      ],
+      "sad_contract_ids": [
+        "CTR-004"
+      ],
+      "lld_objects": {
+        "data_models": [],
+        "interfaces": [
+          "IF-004"
+        ],
+        "domain_objects": [
+          "DO-005"
+        ],
+        "service_contracts": [
+          "SC-004"
+        ]
+      },
+      "coverage": "full",
+      "notes": "REQ-006 涉及密钥使用，通过测试连接接口间接覆盖"
+    }
+  ]
+}
