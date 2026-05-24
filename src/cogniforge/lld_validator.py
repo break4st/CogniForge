@@ -196,7 +196,8 @@ def validate_lld_json(json_path: Path) -> dict:
         if not iface.get("endpoint"):
             violations.append(_v("interfaces", f"{iface.get('name','?')}.endpoint",
                                  f"接口 '{iface.get('name','?')}' 缺少 endpoint"))
-        resp_body = iface.get("response", {}).get("body", {})
+        resp = iface.get("response")
+        resp_body = resp.get("body", {}) if isinstance(resp, dict) else {}
         if isinstance(resp_body, dict) and not resp_body:
             if module_type != "frontend":  # frontend interfaces may not have response bodies
                 warnings.append(_v("interfaces", f"{iface.get('name','?')}.response.body",

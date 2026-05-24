@@ -1620,7 +1620,8 @@ def _render_contracts_section_enhanced(contracts: list) -> str:
                 )
 
             # Response body table
-            resp_body = c.get("response", {}).get("body", {})
+            resp = c.get("response")
+            resp_body = resp.get("body", {}) if isinstance(resp, dict) else {}
             resp_html = ""
             if isinstance(resp_body, dict) and resp_body:
                 rows = ""
@@ -2153,7 +2154,8 @@ def _render_contracts_section(contracts: list) -> str:
                 )
 
             # Build response body table
-            resp_body = c.get("response", {}).get("body", {})
+            resp = c.get("response")
+            resp_body = resp.get("body", {}) if isinstance(resp, dict) else {}
             resp_html = ""
             if isinstance(resp_body, dict) and resp_body:
                 rows = ""
