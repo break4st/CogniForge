@@ -1,5 +1,7 @@
 """Git storage - persistent storage layer using Git"""
 
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
@@ -18,10 +20,17 @@ class GitStorage:
 
     def __init__(self, repo_path: Path):
         self.repo_path = Path(repo_path)
+        self._write_lock = threading.Lock()
         try:
             self.repo = Repo(self.repo_path)
         except (GitCommandError, InvalidGitRepositoryError):
             self.repo = Repo.init(self.repo_path)
+
+    @contextmanager
+    def atomic_write(self):
+        """Context manager serializing index.add() + commit() across threads."""
+        with self._write_lock:
+            yield
 
     def read_file(self, relative_path: str) -> Optional[str]:
         """Read file content from Git working directory"""
@@ -70,11 +79,9 @@ class GitStorage:
             raise GitStorageError(f"Failed to delete {relative_path}: {e}")
 
     def commit(self, message: str, author: str = "system") -> str:
-        """Commit staged changes"""
+        """Commit staged changes (thread-safe when used inside atomic_write())."""
         try:
-            # Format: system <system@local>
-            repo = self.repo
-            commit = repo.index.commit(message)
+            commit = self.repo.index.commit(message)
             return commit.hexsha
         except GitCommandError as e:
             raise GitStorageError(f"Failed to commit: {e}")

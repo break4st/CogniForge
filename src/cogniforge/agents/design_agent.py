@@ -815,17 +815,18 @@ class DesignAgent(BaseAgent):
                                        message=f"Claude Code did not produce {json_path}")
 
         rel_json = json_abs.relative_to(self.config.repo_path).as_posix()
-        self.wiki_system.git_storage.repo.index.add([rel_json])
 
         _progress("渲染 HTML")
         from cogniforge.wiki.wiki_renderer import render_file
         html_path = render_file(json_abs)
         rel_html = html_path.relative_to(self.config.repo_path).as_posix() if html_path else ""
-        if rel_html:
-            self.wiki_system.git_storage.repo.index.add([rel_html])
 
         _progress("Git 提交")
-        self.wiki_system.git_storage.commit(f"feat: add LLD - {title}", "design_agent")
+        with self.wiki_system.git_storage.atomic_write():
+            self.wiki_system.git_storage.repo.index.add([rel_json])
+            if rel_html:
+                self.wiki_system.git_storage.repo.index.add([rel_html])
+            self.wiki_system.git_storage.commit(f"feat: add LLD - {title}", "design_agent")
 
         artifacts = [rel_json]
         if rel_html:
@@ -974,17 +975,18 @@ class DesignAgent(BaseAgent):
             lld_path.write_text(
                 json.dumps(updated_lld, ensure_ascii=False, indent=2), encoding="utf-8")
             rel_lld = lld_path.relative_to(self.config.repo_path).as_posix()
-            self.wiki_system.git_storage.repo.index.add([rel_lld])
 
             from cogniforge.wiki.wiki_renderer import render_file
             html_path = render_file(lld_path)
-            if html_path:
-                rel_html = html_path.relative_to(self.config.repo_path).as_posix()
-                self.wiki_system.git_storage.repo.index.add([rel_html])
+            rel_html = html_path.relative_to(self.config.repo_path).as_posix() if html_path else ""
 
             operation = turn_data.get("operation", "modify")
-            self.wiki_system.git_storage.commit(
-                f"docs: update LLD {module} - {operation}", "design_agent")
+            with self.wiki_system.git_storage.atomic_write():
+                self.wiki_system.git_storage.repo.index.add([rel_lld])
+                if rel_html:
+                    self.wiki_system.git_storage.repo.index.add([rel_html])
+                self.wiki_system.git_storage.commit(
+                    f"docs: update LLD {module} - {operation}", "design_agent")
 
             artifacts = [rel_lld]
             if html_path:

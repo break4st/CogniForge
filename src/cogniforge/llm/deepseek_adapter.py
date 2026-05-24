@@ -198,6 +198,25 @@ class DeepSeekAdapter(BaseLLMAdapter):
 
         self._client = OpenAI(api_key=self.api_key, base_url=self.api_base)
 
+    def _chat_completion(self, **kwargs) -> object:
+        """Wrapper around the API call with error context."""
+        try:
+            response = self._client.chat.completions.create(**kwargs)
+        except Exception as e:
+            model = kwargs.get("model", self.model)
+            raise RuntimeError(
+                f"DeepSeek API 调用失败 (model={model}): {e}\n"
+                f"请检查 API Key 是否有效、网络是否可达、账户余额是否充足。"
+            ) from e
+        if response is None:
+            raise RuntimeError("DeepSeek API 返回空响应，请重试")
+        if not getattr(response, "choices", None):
+            raise RuntimeError(
+                f"DeepSeek API 响应缺少 choices 字段，可能是模型不支持或请求格式错误。"
+                f"响应: {str(response)[:300]}"
+            )
+        return response
+
     # ------------------------------------------------------------------
     # Text mode
     # ------------------------------------------------------------------
@@ -214,7 +233,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
     ) -> LLMResponse:
         full_prompt = self._build_prompt(prompt, context)
         model = kwargs.pop("model", self.model)
-        response = self._client.chat.completions.create(
+        response = self._chat_completion(
             model=model,
             messages=[{"role": "user", "content": full_prompt}],
             max_tokens=kwargs.pop("max_tokens", self.max_tokens),
@@ -228,7 +247,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
     ) -> LLMResponse:
         api_messages = [{"role": m.role, "content": m.content} for m in messages]
         model = kwargs.pop("model", self.model)
-        response = self._client.chat.completions.create(
+        response = self._chat_completion(
             model=model,
             messages=api_messages,
             max_tokens=kwargs.pop("max_tokens", self.max_tokens),
@@ -262,7 +281,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
         messages = self._build_agentic_messages(think_prompt, role)
 
         t1_start = time.time()
-        resp1 = self._client.chat.completions.create(
+        resp1 = self._chat_completion(
             model=model,
             messages=messages,
             max_tokens=max_toks,
@@ -285,7 +304,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
         })
 
         t2_start = time.time()
-        resp2 = self._client.chat.completions.create(
+        resp2 = self._chat_completion(
             model=model,
             messages=messages,
             max_tokens=max_toks,
@@ -323,7 +342,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
         for _turn in range(max_turns):
             if cb and _turn == 0:
                 cb("正在分析需求...")
-            response = self._client.chat.completions.create(
+            response = self._chat_completion(
                 model=model,
                 messages=messages,
                 tools=tool_defs,
@@ -446,7 +465,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
             ),
         })
         model = kwargs.pop("model", self.model)
-        response = self._client.chat.completions.create(
+        response = self._chat_completion(
             model=model,
             messages=messages,
             max_tokens=kwargs.pop("max_tokens", self.max_tokens),
@@ -487,7 +506,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
 
         # Step 1: thinking
         t1_start = time.time()
-        resp1 = self._client.chat.completions.create(
+        resp1 = self._chat_completion(
             model=model,
             messages=messages,
             max_tokens=max_toks,
@@ -512,7 +531,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
         })
 
         t2_start = time.time()
-        resp2 = self._client.chat.completions.create(
+        resp2 = self._chat_completion(
             model=model,
             messages=messages,
             max_tokens=max_toks,

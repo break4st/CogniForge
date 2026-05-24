@@ -1808,7 +1808,7 @@ def _render_traceability_section(traces: list) -> str:
 # ---------------------------------------------------------------------------
 
 def _render_adr_list(adrs: list) -> str:
-    """Render architecture decision records."""
+    """Render architecture decision records. Accepts dicts or plain strings."""
     if not adrs:
         return "<p>暂无架构决策</p>"
     schemes = [
@@ -1819,11 +1819,18 @@ def _render_adr_list(adrs: list) -> str:
     ]
     cards = []
     for idx, adr in enumerate(adrs):
-        adr_id = _esc(adr.get("id", ""))
-        title = _esc(adr.get("title", ""))
-        decision = _esc(adr.get("decision", ""))
-        reason = _esc(adr.get("reason", ""))
-        impacts = adr.get("impacts", [])
+        if isinstance(adr, str):
+            adr_id = f"ADR-{idx + 1:03d}"
+            title = _esc(adr)
+            decision = ""
+            reason = ""
+            impacts = []
+        else:
+            adr_id = _esc(adr.get("id", f"ADR-{idx + 1:03d}"))
+            title = _esc(adr.get("title", str(adr)))
+            decision = _esc(adr.get("decision", ""))
+            reason = _esc(adr.get("reason", ""))
+            impacts = adr.get("impacts", [])
         bg, color = schemes[idx % len(schemes)]
         imp_html = ""
         if impacts:
@@ -1850,7 +1857,7 @@ def _render_adr_list(adrs: list) -> str:
 # ---------------------------------------------------------------------------
 
 def _render_risks_section(risks: list) -> str:
-    """Render technical risks table."""
+    """Render technical risks table. Accepts dicts or plain strings."""
     if not risks:
         return "<p>暂无技术风险</p>"
     level_colors = {
@@ -1859,16 +1866,22 @@ def _render_risks_section(risks: list) -> str:
         "低": ("rgba(107,115,148,0.15)", "#9ca3af"),
     }
     rows = []
-    for r in risks:
-        rid = _esc(r.get("id", ""))
-        desc = _esc(r.get("description", ""))
-        level = r.get("level", "中")
+    for i, r in enumerate(risks, 1):
+        if isinstance(r, str):
+            rid = f"RSK-{i:03d}"
+            desc = _esc(r)
+            level = "中"
+            mitigation = ""
+        else:
+            rid = _esc(r.get("id", f"RSK-{i:03d}"))
+            desc = _esc(r.get("description", str(r)))
+            level = r.get("level", "中")
+            mitigation = _esc(r.get("mitigation", ""))
         lv_bg, lv_color = level_colors.get(level, level_colors["中"])
         level_badge = (
             f'<span style="font-size:0.82em;padding:2px 10px;border-radius:10px;'
             f'background:{lv_bg};color:{lv_color};font-weight:600;">{_esc(level)}</span>'
         )
-        mitigation = _esc(r.get("mitigation", ""))
         rows.append(
             f'<tr>'
             f'<td style="font-family:monospace">{rid}</td>'
@@ -1892,14 +1905,19 @@ def _render_risks_section(risks: list) -> str:
 # ---------------------------------------------------------------------------
 
 def _render_open_questions_section(questions: list) -> str:
-    """Render open architecture questions."""
+    """Render open architecture questions. Accepts dicts or plain strings."""
     if not questions:
         return "<p>暂无待澄清问题</p>"
     items = []
-    for q in questions:
-        qid = _esc(q.get("id", ""))
-        question = _esc(q.get("question", ""))
-        status = q.get("status", "open")
+    for i, q in enumerate(questions, 1):
+        if isinstance(q, str):
+            qid = f"Q-{i:03d}"
+            question = _esc(q)
+            status = "open"
+        else:
+            qid = _esc(q.get("id", f"Q-{i:03d}"))
+            question = _esc(q.get("question", str(q)))
+            status = q.get("status", "open")
         status_color = "var(--c-amber)" if status == "open" else "var(--c-green)"
         status_bg = "rgba(251,191,36,0.1)" if status == "open" else "rgba(52,211,153,0.1)"
         status_badge = (

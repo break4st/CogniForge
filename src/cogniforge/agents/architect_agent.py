@@ -404,7 +404,6 @@ class ArchitectAgent(BaseAgent):
             json.loads(sad_path.read_text(encoding="utf-8"))
 
             rel_sad = sad_path.relative_to(self.config.repo_path).as_posix()
-            self.wiki_system.git_storage.repo.index.add([rel_sad])
 
             # Render HTML
             from cogniforge.wiki.wiki_renderer import render_file
@@ -415,13 +414,15 @@ class ArchitectAgent(BaseAgent):
                     message="SAD HTML 渲染失败",
                 )
             rel_html = html_path.relative_to(self.config.repo_path).as_posix()
-            self.wiki_system.git_storage.repo.index.add([rel_html])
 
             operation = turn_data.get("operation", "modify")
-            self.wiki_system.git_storage.commit(
-                f"docs: update SAD - {operation}",
-                "architect_agent",
-            )
+            with self.wiki_system.git_storage.atomic_write():
+                self.wiki_system.git_storage.repo.index.add([rel_sad])
+                self.wiki_system.git_storage.repo.index.add([rel_html])
+                self.wiki_system.git_storage.commit(
+                    f"docs: update SAD - {operation}",
+                    "architect_agent",
+                )
 
             artifacts = [rel_sad]
             if html_path:
@@ -594,7 +595,6 @@ class ArchitectAgent(BaseAgent):
                                 encoding="utf-8")
 
         rel_sad = sad_path.relative_to(self.config.repo_path).as_posix()
-        self.wiki_system.git_storage.repo.index.add([rel_sad])
 
         from cogniforge.wiki.wiki_renderer import render_file
         html_path = render_file(sad_path)
@@ -602,9 +602,11 @@ class ArchitectAgent(BaseAgent):
             return self.format_result(status="failed",
                                        message="SAD HTML 渲染失败，JSON 可能损坏")
         rel_html = html_path.relative_to(self.config.repo_path).as_posix()
-        self.wiki_system.git_storage.repo.index.add([rel_html])
 
-        self.wiki_system.git_storage.commit(f"feat: add SAD - {title}", "architect_agent")
+        with self.wiki_system.git_storage.atomic_write():
+            self.wiki_system.git_storage.repo.index.add([rel_sad])
+            self.wiki_system.git_storage.repo.index.add([rel_html])
+            self.wiki_system.git_storage.commit(f"feat: add SAD - {title}", "architect_agent")
 
         artifacts = [rel_sad]
         if rel_html:
