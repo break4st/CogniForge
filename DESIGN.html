@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CogniForge 设计文档 v2.4</title>
+<title>CogniForge 设计文档 v2.5</title>
 <style>
   /* ═══════════════ Variables ═══════════════ */
   :root {
@@ -496,7 +496,7 @@
 <nav class="sidebar">
   <div class="sidebar-logo">
     <div class="name"><span>CogniForge</span> Design</div>
-    <div class="ver">Version 2.4</div>
+    <div class="ver">Version 2.5</div>
   </div>
   <div class="sidebar-nav">
     <a href="#s1"><span class="num">01</span>系统概述</a>
@@ -543,7 +543,7 @@
   <h1>CogniForge <span>设计文档</span></h1>
   <div class="tagline">Agentic &middot; Document-Driven &middot; Multi-Provider LLM Development System</div>
   <div class="badges">
-    <span class="badge accent">v2.4</span>
+    <span class="badge accent">v2.5</span>
     <span class="badge">System Design</span>
     <span class="badge">8 Agent Roles</span>
     <span class="badge">Multi-Provider</span>
@@ -1170,9 +1170,50 @@ CogniForge: Schema 校验（jsonschema）+ wiki_renderer 渲染 HTML
   ↓
 CogniForge: git add + git commit
   ↓
-REPL: 显示文件链接 + 审批菜单</code></pre>
+REPL: 显示文件链接 + 耗时明细（⏱ 分析 Xs | 生成 Ys | 文档 Zs | 总计 Ts）+ 审批菜单</code></pre>
 
-    <h3>8.5 Role System Prompt & 约束系统</h3>
+    <h3>8.5 阶段级耗时追踪 (v2.5)</h3>
+
+    <div class="callout good">
+      <strong>核心设计 (v2.5)：</strong><code>LLMResponse</code> 新增 <code>timings</code> 字段（<code>list[{phase, duration_s}]</code>），
+      各 adapter 在两步生成和 agent 执行阶段自动计时。Agent 层汇总 LLM + 本地操作耗时，CLI 统一展示。
+    </div>
+
+    <h4>计时数据流</h4>
+    <pre><code>LLMResponse.timings = [
+      {"phase": "PM分析",      "duration_s": 12.3},   <span class="hl-comment"># Step 1 thinking</span>
+      {"phase": "PM生成",      "duration_s": 4.5},    <span class="hl-comment"># Step 2 JSON output</span>
+    ]
+      ↓ Agent 汇总
+    timings = [*llm_timings,
+               {"phase": "创建文档", "duration_s": 1.2},  <span class="hl-comment"># write + validate + render + commit</span>
+               {"phase": "总计",     "duration_s": 18.0}]  <span class="hl-comment"># total wall-clock</span>
+      ↓ CLI 展示
+    ⏱ PM分析 12.3s  |  PM生成 4.5s  |  创建文档 1.2s  |  总计 18.0s</code></pre>
+
+    <h4>Adapter 层计时</h4>
+    <table>
+      <thead><tr><th>Adapter</th><th>方法</th><th>计时粒度</th><th>标签规则</th></tr></thead>
+      <tbody>
+        <tr><td>DeepSeekAdapter</td><td><code>generate_think_then_json()</code></td><td>Step 1 (thinking API call) + Step 2 (JSON API call)</td><td>{角色}分析 / {角色}生成 — pm→"PM分析", architect→"架构分析", design→"设计分析"</td></tr>
+        <tr><td>ClaudeCodeAdapter</td><td><code>generate_think_then_json()</code></td><td>Step 1 (claude -p CLI) + Step 2 (claude -p CLI)</td><td>同上标签规则</td></tr>
+        <tr><td>DeepSeekAdapter</td><td><code>generate_interactive_patch()</code></td><td>Step 1 (thinking API) + Step 2 (structured API)</td><td>"PM分析" / "PM生成"（固定 pm 角色）</td></tr>
+      </tbody>
+    </table>
+
+    <h4>Agent 层计时汇总</h4>
+    <table>
+      <thead><tr><th>Agent</th><th>操作</th><th>额外阶段</th></tr></thead>
+      <tbody>
+        <tr><td>PMAgent</td><td>创建 PRD</td><td>"创建文档" (schema 校验 + 写入 + 渲染 + git commit) + "总计"</td></tr>
+        <tr><td>PMAgent</td><td>修改 PRD</td><td>"应用变更" (JSON Patch + schema 校验 + 写入 + 渲染 + git commit) + "总计"</td></tr>
+      </tbody>
+    </table>
+
+    <h4>CLI 展示</h4>
+    <p><code>cogniforge agent pm</code> 执行后，耗时信息以独立行显示，与产出文件、执行状态明确分离。REPL 中同样展示耗时。Agent 层通过 <code>data.timings</code> 传递，CLI 将 <code>timings</code> 与 <code>data</code> 其他字段分离展示。</p>
+
+    <h3>8.6 Role System Prompt & 约束系统</h3>
     <p><code>ROLE_PROMPTS</code> 仅包含身份和职责（"你是 X Agent，职责: Y"）。行为约束外置为 <code>.cogniforge/constraints/{role}.md</code> 文件，由 <code>ConstraintLoader</code> 加载后注入 system prompt。文件不存在时使用内置默认值，确保系统在任何项目都能运行。</p>
     <p>用户可编辑约束文件定制各角色行为，无需修改源码。<code>cogniforge init</code> 会自动生成全部默认约束文件。</p>
 
@@ -1186,7 +1227,7 @@ REPL: 显示文件链接 + 审批菜单</code></pre>
       </tbody>
     </table>
 
-    <h3>8.6 三层接口一致性保障</h3>
+    <h3>8.7 三层接口一致性保障</h3>
     <p>多模块 LLD 生成时，模块间的接口契约必须一致。本系统通过<strong>三层防护</strong>确保接口对齐：</p>
 
     <table>
@@ -1226,7 +1267,7 @@ REPL: 显示文件链接 + 审批菜单</code></pre>
       </tbody>
     </table>
 
-    <h3 id="s8-6">8.7 LLD 校验门禁 (lld_validator.py)</h3>
+    <h3 id="s8-6">8.8 LLD 校验门禁 (lld_validator.py)</h3>
     <p>DesignAgent 在委托 Claude Code 生成 LLD 后，<strong>自动运行校验</strong>。校验不通过时带反馈重试（最多 2 次修正循环），确保 LLD JSON 的完整性和正确性。</p>
 
     <h4>校验流程</h4>
@@ -1251,7 +1292,7 @@ lld_validator.validate_lld_json(json_path)
     <h4>校验报告</h4>
     <p><code>format_validation_report()</code> 将校验失败项格式化为人类可读的反馈，直接注入修正 prompt，形成<strong>自动修正闭环</strong>。</p>
 
-    <h3 id="s8-7">8.8 模块类型与专属 LLD Schema</h3>
+    <h3 id="s8-7">8.9 模块类型与专属 LLD Schema</h3>
     <p>DesignAgent 从 SAD 读取模块的 <code>module_type</code>，按类型注入专属 JSON Schema 片段，确保每种模块类型的 LLD 包含正确的设计细节。</p>
 
     <table>
@@ -1275,7 +1316,7 @@ lld_validator.validate_lld_json(json_path)
       </tbody>
     </table>
 
-    <h3 id="s8-8">8.9 Wiki 分支隔离</h3>
+    <h3 id="s8-8">8.10 Wiki 分支隔离</h3>
     <p><code>GitStorage.commit_to_wiki_branch()</code> 确保 wiki 文档提交进入独立 <code>wiki</code> 分支，与开发分支完全隔离：</p>
     <ul>
       <li>创建临时 worktree → 复制文件 → 提交到 wiki 分支 → 清理 worktree</li>
@@ -1287,7 +1328,7 @@ lld_validator.validate_lld_json(json_path)
       <strong>多层防护：</strong>① <code>.gitignore</code> 忽略 <code>.cogniforge/</code> ② git hooks 拒绝含 wiki 文件的提交 ③ wiki 产物通过 worktree 直接写入 wiki 分支 ④ index 清理确保不残留跟踪状态。
     </div>
 
-    <h3 id="s8-9">8.10 WBS 系统 — MDE→DEV 结构化翻译层 (v2.1)</h3>
+    <h3 id="s8-9">8.11 WBS 系统 — MDE→DEV 结构化翻译层 (v2.1)</h3>
     <p>WBS（Work Breakdown Structure）子系统将结构化的 LLD JSON 翻译为可追踪、可验证的 Task 单元，让 Dev Agent 无需重新阅读完整 LLD 即可直接消费任务定义。流程为<strong>机械推导 + 批处理 LLM 丰富 + 覆盖率校验</strong>。</p>
 
     <h4>核心模块（7 个文件）</h4>
@@ -1340,7 +1381,7 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
       <strong>设计原则：</strong>WBS 系统遵循「机械推导 + LLM 丰富」分层架构。LLDArtifactRegistry 和 DecompositionRules 是确定性的（零 LLM），LLM 仅在 EnrichedWBSAssembler 层做批处理丰富（descriptions / estimates / deps 确认），且覆盖率校验自动触发重试（max 2 rounds），确保 MDE（设计）与 DEV（实现）之间无信息丢失。
     </div>
 
-    <h3 id="s8-10">8.11 PM Agent — 双 JSON 迭代体系 (v2.3)</h3>
+    <h3 id="s8-10">8.12 PM Agent — 双 JSON 迭代体系 (v2.3)</h3>
 
     <div class="callout good">
       <strong>核心设计 (v2.3)：</strong>PM Agent 升级为双 JSON 体系，支持长期 PRD 迭代管理。
@@ -1458,7 +1499,7 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
       </tbody>
     </table>
 
-    <h3 id="s8-11">8.12 Architect Agent — 架构设计详细流程</h3>
+    <h3 id="s8-11">8.13 Architect Agent — 架构设计详细流程</h3>
 
     <h4>执行流程</h4>
     <div class="dag-flow">
@@ -1500,7 +1541,7 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
       </tbody>
     </table>
 
-    <h3 id="s8-12">8.13 Design Agent (MDE) — 详细设计流程</h3>
+    <h3 id="s8-12">8.14 Design Agent (MDE) — 详细设计流程</h3>
 
     <h4>执行流程</h4>
     <div class="dag-flow">
@@ -1547,7 +1588,7 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
       </tbody>
     </table>
 
-    <h3 id="s8-13">8.14 Tech Lead Agent — WBS 调度详细流程</h3>
+    <h3 id="s8-13">8.15 Tech Lead Agent — WBS 调度详细流程</h3>
 
     <h4>执行流程</h4>
     <div class="dag-flow">
@@ -1594,7 +1635,7 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
       </tbody>
     </table>
 
-    <h3 id="s8-14">8.15 Dev Agent — 编码实现详细流程</h3>
+    <h3 id="s8-14">8.16 Dev Agent — 编码实现详细流程</h3>
 
     <h4>执行流程</h4>
     <div class="dag-flow">
@@ -1639,7 +1680,7 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
       </tbody>
     </table>
 
-    <h3 id="s8-15">8.16 Reviewer Agent — 代码评审详细流程</h3>
+    <h3 id="s8-15">8.17 Reviewer Agent — 代码评审详细流程</h3>
 
     <h4>执行流程</h4>
     <div class="dag-flow">
@@ -1674,7 +1715,7 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
       </tbody>
     </table>
 
-    <h3 id="s8-16">8.17 QA Agent — 测试验证详细流程</h3>
+    <h3 id="s8-16">8.18 QA Agent — 测试验证详细流程</h3>
 
     <h4>执行流程</h4>
     <div class="dag-flow">
@@ -1711,7 +1752,7 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
       </tbody>
     </table>
 
-    <h3 id="s8-17">8.18 DevOps Agent — 部署运维详细流程</h3>
+    <h3 id="s8-17">8.19 DevOps Agent — 部署运维详细流程</h3>
 
     <h4>执行流程</h4>
     <div class="dag-flow">
@@ -1748,7 +1789,7 @@ EnrichedWBSAssembler 总装 → wiki/tasks/enriched_wbs.json</code></pre>
       </tbody>
     </table>
 
-    <h3 id="s8-18">8.19 角色流程总览</h3>
+    <h3 id="s8-18">8.20 角色流程总览</h3>
 
     <table>
       <thead><tr><th>角色</th><th>输入</th><th>核心方法</th><th>验证机制</th><th>输出</th></tr></thead>
@@ -2175,7 +2216,7 @@ cogniforge <span class="hl-keyword">pending_reviews</span>   <span class="hl-com
 </div>
 
 <div class="footer">
-  CogniForge Design Document &middot; Version 2.4 &middot; Agentic + Document-Driven + Multi-Provider LLM
+  CogniForge Design Document &middot; Version 2.5 &middot; Agentic + Document-Driven + Multi-Provider LLM
 </div>
 
 </div>
