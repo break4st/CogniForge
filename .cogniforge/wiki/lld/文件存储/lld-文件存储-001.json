@@ -1,0 +1,492 @@
+{
+  "meta": {
+    "doc_id": "lld-文件存储-001",
+    "type": "lld",
+    "module_type": "infrastructure",
+    "module": "文件存储",
+    "title": "文件存储模块详细设计",
+    "author": "design_agent",
+    "created": "2025-04-16T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-001"
+      ],
+      "contracts": [
+        "CTR-001"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "安全存储部署包和SSH私钥文件",
+      "按项目隔离文件组织",
+      "提供文件上传、下载、删除及预签名URL生成接口",
+      "抽象底层MinIO对象存储"
+    ],
+    "out_of_scope": [
+      "管理部署记录、项目或用户元数据",
+      "执行文件内容格式验证或病毒扫描",
+      "管理密钥加密存储的加密密钥"
+    ],
+    "owned_components": [
+      "CMP-001"
+    ],
+    "owned_contracts": [],
+    "consumed_contracts": [],
+    "owned_data_models": [
+      "DM-001",
+      "DM-002"
+    ],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "存储用户上传的部署包和私钥文件，基于MinIO提供安全、隔离的文件存取服务，为管理服务和部署执行服务提供内部REST API。",
+    "dependencies": [
+      "MinIO"
+    ],
+    "tech_stack": [
+      "Python",
+      "Flask / FastAPI",
+      "MinIO",
+      "Docker"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [
+        "CTR-001"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003",
+          "IF-004"
+        ],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "topology": {
+    "exchanges": [],
+    "namespaces": [],
+    "buckets": [
+      {
+        "name": "cogniforge-deployments",
+        "type": "storage",
+        "description": "存储部署包文件",
+        "retention": "permanent",
+        "owner_component": "CMP-001"
+      },
+      {
+        "name": "cogniforge-ssh-keys",
+        "type": "storage",
+        "description": "存储SSH私钥文件",
+        "retention": "permanent",
+        "owner_component": "CMP-001"
+      }
+    ]
+  },
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "MinIO连接配置",
+      "type": "config",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "MinIO对象存储的连接参数，敏感字段加密存储。",
+      "fields": [
+        {
+          "name": "endpoint",
+          "type": "string",
+          "required": true,
+          "description": "MinIO服务地址，如 minio:9000"
+        },
+        {
+          "name": "access_key",
+          "type": "string",
+          "required": true,
+          "description": "访问密钥，运行时从加密配置中解密"
+        },
+        {
+          "name": "secret_key",
+          "type": "string",
+          "required": true,
+          "description": "私有密钥，运行时从加密配置中解密"
+        },
+        {
+          "name": "use_ssl",
+          "type": "boolean",
+          "required": true,
+          "description": "是否启用SSL，默认为false"
+        },
+        {
+          "name": "bucket_deployments",
+          "type": "string",
+          "required": true,
+          "description": "部署文件bucket名称：cogniforge-deployments"
+        },
+        {
+          "name": "bucket_ssh_keys",
+          "type": "string",
+          "required": true,
+          "description": "私钥文件bucket名称：cogniforge-ssh-keys"
+        },
+        {
+          "name": "region",
+          "type": "string",
+          "required": false,
+          "description": "区域标识，可设为us-east-1"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [],
+      "constraints": [],
+      "lifecycle": {
+        "create": "",
+        "update": "",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "文件对象抽象",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "接口交互使用的文件描述结构，不持久化存储。",
+      "fields": [
+        {
+          "name": "file_id",
+          "type": "string",
+          "required": true,
+          "description": "上传时生成的唯一标识（UUID）"
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "required": true,
+          "description": "所属项目ID"
+        },
+        {
+          "name": "file_type",
+          "type": "string",
+          "required": true,
+          "description": "文件类别：deployment 或 ssh_key"
+        },
+        {
+          "name": "original_filename",
+          "type": "string",
+          "required": true,
+          "description": "客户端提供的原始文件名"
+        },
+        {
+          "name": "storage_path",
+          "type": "string",
+          "required": true,
+          "description": "MinIO中的对象完整路径"
+        },
+        {
+          "name": "size",
+          "type": "integer",
+          "required": false,
+          "description": "文件大小（字节）"
+        },
+        {
+          "name": "uploaded_at",
+          "type": "string",
+          "required": false,
+          "description": "上传时间（ISO8601）"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [],
+      "constraints": [],
+      "lifecycle": {
+        "create": "",
+        "update": "",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "文件上传",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "POST",
+      "endpoint": "/api/files/upload",
+      "description": "接收文件内容并存储到MinIO对应bucket，按项目/文件类型组织。",
+      "parameters": [
+        {
+          "name": "file",
+          "type": "file",
+          "in": "body",
+          "required": true,
+          "description": "上传的文件内容"
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "in": "query",
+          "required": true,
+          "description": "项目ID"
+        },
+        {
+          "name": "file_type",
+          "type": "string",
+          "in": "query",
+          "required": true,
+          "description": "文件类型，deployment 或 ssh_key"
+        }
+      ],
+      "response": {
+        "status_codes": [201, 400, 401, 403, 500],
+        "body": {
+          "type": "object",
+          "description": "上传成功返回文件元数据",
+          "example": {
+            "file_id": "uuid",
+            "project_id": "proj-123",
+            "file_type": "deployment",
+            "original_filename": "app.zip",
+            "storage_path": "projects/proj-123/deployments/uuid.zip",
+            "size": 1024,
+            "uploaded_at": "2025-04-16T10:00:00Z"
+          }
+        }
+      },
+      "error_handling": {
+        "strategy": "标准REST错误响应",
+        "responses": {
+          "400": "缺少必填参数或文件类型不合法",
+          "401": "未认证",
+          "403": "无权限",
+          "500": "MinIO连接失败或磁盘错误"
+        }
+      }
+    },
+    {
+      "id": "IF-002",
+      "name": "文件下载",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "GET",
+      "endpoint": "/api/files/download/{file_id}",
+      "description": "通过file_id下载单个文件。",
+      "parameters": [
+        {
+          "name": "file_id",
+          "type": "string",
+          "in": "path",
+          "required": true,
+          "description": "文件唯一标识"
+        }
+      ],
+      "response": {
+        "status_codes": [200, 404, 500],
+        "body": {
+          "type": "binary",
+          "description": "文件二进制流",
+          "example": "(binary data)"
+        }
+      },
+      "error_handling": {
+        "strategy": "标准REST错误响应",
+        "responses": {
+          "404": "文件不存在",
+          "500": "MinIO读取失败"
+        }
+      }
+    },
+    {
+      "id": "IF-003",
+      "name": "文件删除",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "DELETE",
+      "endpoint": "/api/files/delete/{file_id}",
+      "description": "删除指定文件。",
+      "parameters": [
+        {
+          "name": "file_id",
+          "type": "string",
+          "in": "path",
+          "required": true,
+          "description": "文件唯一标识"
+        }
+      ],
+      "response": {
+        "status_codes": [204, 404, 500],
+        "body": {
+          "type": "object",
+          "description": "删除成功无返回体，或返回错误信息",
+          "example": {}
+        }
+      },
+      "error_handling": {
+        "strategy": "标准REST错误响应",
+        "responses": {
+          "404": "文件不存在",
+          "500": "MinIO删除失败"
+        }
+      }
+    },
+    {
+      "id": "IF-004",
+      "name": "预签名URL生成",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "POST",
+      "endpoint": "/api/files/presign",
+      "description": "生成有时效的预签名URL以供客户端直接上传或下载。",
+      "parameters": [
+        {
+          "name": "project_id",
+          "type": "string",
+          "in": "query",
+          "required": true,
+          "description": "项目ID"
+        },
+        {
+          "name": "file_type",
+          "type": "string",
+          "in": "query",
+          "required": true,
+          "description": "文件类型，deployment 或 ssh_key"
+        },
+        {
+          "name": "original_filename",
+          "type": "string",
+          "in": "query",
+          "required": true,
+          "description": "原始文件名"
+        },
+        {
+          "name": "action",
+          "type": "string",
+          "in": "query",
+          "required": true,
+          "description": "操作类型，upload 或 download"
+        },
+        {
+          "name": "expiry",
+          "type": "integer",
+          "in": "query",
+          "required": false,
+          "description": "URL有效秒数，默认3600"
+        }
+      ],
+      "response": {
+        "status_codes": [200, 400, 500],
+        "body": {
+          "type": "object",
+          "description": "返回预签名URL及文件元数据",
+          "example": {
+            "url": "https://minio.example.com/bucket/...",
+            "file_id": "uuid",
+            "storage_path": "projects/proj-123/deployments/uuid.zip",
+            "expires_at": "2025-04-16T11:00:00Z"
+          }
+        }
+      },
+      "error_handling": {
+        "strategy": "标准REST错误响应",
+        "responses": {
+          "400": "参数不合法",
+          "500": "MinIO预签名生成失败"
+        }
+      }
+    }
+  ],
+  "connection_contracts": [
+    {
+      "id": "CTR-001",
+      "name": "文件存储服务REST契约",
+      "type": "REST",
+      "description": "文件上传、下载、删除和预签名URL生成接口规范",
+      "config": {
+        "authentication": "Bearer Token",
+        "rate_limit": "100 req/min",
+        "encryption": "TLS"
+      },
+      "source": "CMP-001",
+      "target": "consumers",
+      "protocol": "HTTP/1.1",
+      "interfaces": [
+        "IF-001",
+        "IF-002",
+        "IF-003",
+        "IF-004"
+      ]
+    }
+  ],
+  "domain_objects": [],
+  "service_contracts": []
+}
