@@ -2,134 +2,177 @@
   "meta": {
     "doc_id": "sad-001",
     "type": "sad",
-    "title": "System Architecture Design",
+    "title": "系统架构方案",
     "author": "architect_agent",
-    "created": "2026-05-24 09:06",
+    "created": "2026-05-24 12:18",
     "version": 1
   },
-  "title": "System Architecture Design",
+  "title": "系统架构方案",
   "source_prd": {
     "doc_id": "prd-current",
     "version": 1
   },
   "system_overview": {
-    "description": "DeployForge 是一款面向开发者的轻量级跨平台桌面工具（基于 Electron），用于本地管理多个项目并一键部署到远程服务器。系统提供直观的图形界面，允许用户配置多套环境（测试、灰度、生产），并进行安全的 SSH 连接、文件上传、版本化目录管理、启动脚本生成、部署历史追溯及回滚等操作。所有敏感数据在本地加密存储，部署过程提供实时进度反馈。",
+    "description": "DeployFlow 是一款面向开发与运维人员的轻量级自动化部署客户端，运行于用户本地计算机。它提供图形化界面，支持多项目管理、多环境配置、SSH 安全连接、一键自动化部署、实时日志输出、部署历史追溯与一键回滚，以及部署脚本模板定制等功能。系统采用单体本地应用架构，通过内置后端服务与前端 SPA 配合，直接操作本地数据库和远程服务器，无需中心化服务端。",
     "roles": [
       {
-        "name": "用户",
+        "name": "运维工程师",
         "permissions": [
-          "项目管理",
-          "环境配置",
-          "密钥管理",
-          "一键部署",
-          "历史查看与回滚",
-          "脚本模板编辑"
+          "管理项目下的环境配置",
+          "测试连接",
+          "执行部署",
+          "查看实时日志"
+        ]
+      },
+      {
+        "name": "开发人员",
+        "permissions": [
+          "执行包体部署",
+          "查看部署日志"
+        ]
+      },
+      {
+        "name": "技术经理",
+        "permissions": [
+          "创建/编辑/删除项目",
+          "导入导出项目配置",
+          "项目级管理权限"
+        ]
+      },
+      {
+        "name": "安全审计人员",
+        "permissions": [
+          "管理 SSH 密钥",
+          "设置主密码",
+          "查看密钥使用记录"
+        ]
+      },
+      {
+        "name": "SRE",
+        "permissions": [
+          "查看部署历史",
+          "执行回滚操作",
+          "清理过期版本"
         ]
       }
     ]
   },
   "architecture": {
-    "style": "分层架构 + 微内核（Electron 桌面应用）",
-    "description": "整体分为表现层、通信层、核心服务层和存储层。表现层使用 React 构建，通过 Electron IPC 与主进程通信；核心服务层包含项目管理、环境管理、部署编排、SSH 客户端、脚本模板、历史版本、加密等服务；存储层使用 SQLite 和本地文件系统。",
+    "style": "分层单体架构",
+    "description": "系统将表现层、接入层、业务服务层和基础设施层进行分层设计，整体打包为桌面可执行程序。层间通过内部函数调用或本地 HTTP/WebSocket 通信，各业务模块独立成服务，通过依赖注入协作。",
     "layers": [
       {
         "name": "表现层",
         "components": [
-          "React 应用组件（项目管理面板、环境配置表单、部署面板、历史记录列表、模板编辑器等）"
+          "前端管理界面"
         ]
       },
       {
-        "name": "通信层",
+        "name": "接入层",
         "components": [
-          "Electron IPC（ipcRenderer/ipcMain）"
+          "API网关/路由"
         ]
       },
       {
-        "name": "核心服务层",
+        "name": "业务服务层",
         "components": [
           "项目管理服务",
           "环境管理服务",
-          "部署编排引擎",
-          "SSH客户端",
-          "脚本模板服务",
-          "历史版本服务",
-          "加密服务"
+          "部署引擎服务",
+          "密钥管理服务",
+          "部署历史与回滚服务",
+          "脚本模板服务"
         ]
       },
       {
-        "name": "存储层",
+        "name": "基础设施层",
         "components": [
-          "SQLite 数据库",
-          "文件系统（密钥库）"
+          "数据库层",
+          "SSH客户端封装",
+          "加密服务",
+          "文件打包与解压工具"
         ]
       }
     ],
     "connections": [
       {
-        "protocol": "异步 IPC 消息 (JSON)",
-        "description": "表现层与核心服务层通过主进程的 IPC 通道进行双向异步通信"
+        "protocol": "HTTP REST + WebSocket",
+        "description": "表现层与接入层之间的通信，通过本地 HTTP（127.0.0.1）的 REST API 调用与 WebSocket 长连接推送部署日志。"
       },
       {
-        "protocol": "内部函数调用/事件总线",
-        "description": "通信层与核心服务层运行于同一 Node.js 主进程，通过直接函数调用和事件总线交互"
+        "protocol": "Python函数调用",
+        "description": "接入层与业务服务层之间通过 FastAPI 路由分发，业务服务之间采用直接的 Python 类方法调用。"
       },
       {
-        "protocol": "SQL / ORM",
-        "description": "核心服务层通过 better-sqlite3 同步 API 操作 SQLite 数据库"
+        "protocol": "SQLAlchemy ORM",
+        "description": "业务服务层通过 SQLAlchemy session 访问基础设施层的 SQLite 数据库，ORM 模型定义在数据库层组件中。"
       },
       {
-        "protocol": "SSH (22端口) / SFTP",
-        "description": "部署引擎和 SSH 客户端通过 SSH 协议与远程服务器通信，进行命令执行和文件传输"
+        "protocol": "SSH/SFTP",
+        "description": "业务服务层通过基础设施层的 SSH 客户端封装，使用 Paramiko 实现的 SSH2 协议连接远程服务器。"
       }
     ],
     "features": [
-      "跨平台（Windows/macOS/Linux）",
-      "离线可用，本地优先",
-      "模块化、松耦合的服务设计",
-      "基于时间戳的版本化部署与软链接回滚",
-      "脚本模板可配置，支持多种语言/框架",
-      "敏感数据 AES-256-GCM 加密存储",
-      "SSH 加密隧道与主机密钥验证",
-      "Electron 桌面应用，打包体积可控"
+      "前后端分离的单体本地应用架构",
+      "基于 FastAPI 的异步后端，高并发处理 WebSocket 连接",
+      "使用 SQLite 嵌入式数据库，无需额外服务进程",
+      "SSH 连接异步管理，支持多环境并发测试与部署",
+      "主密码+AES-256-CBC 加密保护密钥库，满足本地离线安全需求",
+      "Jinja2 模板引擎动态生成服务器端脚本",
+      "部署过程实时日志推送，任务异步执行，失败自动回滚",
+      "整体通过 PyInstaller 打包为单一可执行文件，跨平台分发"
     ]
   },
   "tech_stack": {
     "backend": {
-      "language": "TypeScript",
-      "framework": "Node.js 20"
+      "language": "Python 3.10+",
+      "framework": "FastAPI"
     },
     "frontend": {
-      "framework": "React 18",
-      "ui_library": "Ant Design",
-      "state_management": "Zustand"
+      "framework": "Vue 3 + TypeScript",
+      "ui_library": "Element Plus"
     },
-    "database": "SQLite (better-sqlite3)",
-    "ssh_library": "ssh2",
-    "template_engine": "Handlebars",
-    "encryption": "Node.js crypto (AES-256-GCM)",
-    "logging": "winston",
-    "packaging": "electron-builder"
+    "database": "SQLite (通过 SQLAlchemy ORM)",
+    "ssh_library": "Paramiko",
+    "encryption": "AES-256-CBC + PBKDF2",
+    "template_engine": "Jinja2",
+    "packaging": "PyInstaller"
   },
   "components": [
     {
       "id": "CMP-001",
-      "name": "项目管理服务",
-      "type": "service",
+      "name": "前端管理界面",
+      "type": "frontend",
       "status": "active",
       "version": 1,
-      "description": "负责项目实体的增删改查，维护当前激活项目标识，并在删除项目时级联清理环境配置与部署历史。",
+      "description": "基于 Vue 3 和 Element Plus 构建的用户界面，提供项目管理、环境配置、部署操作、历史追溯等全部图形功能。",
       "responsibilities": [
-        "创建、更新、删除项目",
-        "获取项目列表",
-        "切换当前激活项目",
-        "级联删除项目关联数据"
+        "展示和交互所有功能模块的 UI",
+        "调用后端 REST API 和建立 WebSocket 连接",
+        "接收并展示实时部署日志和进度",
+        "处理用户输入和表单验证"
       ],
       "source_requirements": [
-        "REQ-001"
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
+        "REQ-005",
+        "REQ-006"
       ],
       "contracts": [
         "CTR-001",
-        "CTR-002"
+        "CTR-002",
+        "CTR-003",
+        "CTR-004",
+        "CTR-005",
+        "CTR-006",
+        "CTR-007",
+        "CTR-008",
+        "CTR-009",
+        "CTR-010",
+        "CTR-011",
+        "CTR-012"
       ],
       "depends_on_components": [],
       "change_history": [
@@ -143,29 +186,20 @@
     },
     {
       "id": "CMP-002",
-      "name": "环境管理服务",
-      "type": "service",
+      "name": "API网关/路由",
+      "type": "gateway",
       "status": "active",
       "version": 1,
-      "description": "在指定项目下管理多套环境配置，执行 SSH 连通性测试，调用加密服务处理敏感信息。",
+      "description": "基于 FastAPI 的路由层，负责注册所有 API 路由、WebSocket 入口，分发请求到业务服务层，暂不实现复杂鉴权但保留扩展点。",
       "responsibilities": [
-        "新增、编辑、删除环境配置",
-        "执行 SSH 连通性测试",
-        "关联脚本模板的存储与读取",
-        "协调加密服务以安全存储密码和密钥"
+        "注册和管理所有 REST API 端点",
+        "管理 WebSocket 连接生命周期",
+        "将客户端请求路由到对应的业务服务",
+        "提供自动生成的 OpenAPI 文档"
       ],
-      "source_requirements": [
-        "REQ-002",
-        "REQ-006"
-      ],
-      "contracts": [
-        "CTR-003",
-        "CTR-004"
-      ],
-      "depends_on_components": [
-        "CMP-007",
-        "CMP-004"
-      ],
+      "source_requirements": [],
+      "contracts": [],
+      "depends_on_components": [],
       "change_history": [
         {
           "version": 1,
@@ -177,32 +211,25 @@
     },
     {
       "id": "CMP-003",
-      "name": "部署编排引擎",
+      "name": "项目管理服务",
       "type": "service",
       "status": "active",
       "version": 1,
-      "description": "接收部署指令，按步骤执行创建目录、上传文件、生成脚本、启动服务等流程，并通过事件向前端报告进度。",
+      "description": "处理项目的创建、编辑、删除、导入导出（JSON/YAML）以及项目切换时的相关缓存更新。",
       "responsibilities": [
-        "编排一键部署全流程",
-        "创建远程版本目录",
-        "协调文件上传",
-        "调用脚本模板服务生成启停脚本",
-        "执行部署后自动启动（可选）",
-        "记录部署历史",
-        "失败时现场保留或回滚",
-        "发送进度事件到前端"
+        "CRUD 操作管理项目数据",
+        "从文件导入或导出项目配置",
+        "保证项目切换时前端显示的环境列表正确更新",
+        "项目级元数据维护"
       ],
       "source_requirements": [
         "REQ-003"
       ],
       "contracts": [
-        "CTR-005"
+        "CTR-001"
       ],
       "depends_on_components": [
-        "CMP-002",
-        "CMP-004",
-        "CMP-005",
-        "CMP-006"
+        "CMP-009"
       ],
       "change_history": [
         {
@@ -215,26 +242,27 @@
     },
     {
       "id": "CMP-004",
-      "name": "SSH客户端",
-      "type": "infrastructure",
+      "name": "环境管理服务",
+      "type": "service",
       "status": "active",
       "version": 1,
-      "description": "封装 SSH 连接管理，支持密码和密钥认证，提供命令执行和 SFTP 文件上传功能，并确保安全与日志脱敏。",
+      "description": "管理项目下的多套部署环境，支持配置服务器信息、认证方式、远程路径，并可测试 SSH 连接有效性。",
       "responsibilities": [
-        "建立/断开 SSH 连接",
-        "执行远程命令",
-        "通过 SFTP 上传文件",
-        "支持密码和密钥两种认证",
-        "主机密钥信任验证",
-        "连接池管理、超时与重连",
-        "日志输出脱敏"
+        "环境的增删改查",
+        "与密钥服务交互以绑定密钥",
+        "执行 SSH 连接测试并返回详细结果",
+        "提供环境配置的验证逻辑"
       ],
       "source_requirements": [
-        "REQ-005"
+        "REQ-001"
       ],
-      "contracts": [],
+      "contracts": [
+        "CTR-002",
+        "CTR-003"
+      ],
       "depends_on_components": [
-        "CMP-007"
+        "CMP-009",
+        "CMP-010"
       ],
       "change_history": [
         {
@@ -247,22 +275,34 @@
     },
     {
       "id": "CMP-005",
-      "name": "脚本模板服务",
+      "name": "部署引擎服务",
       "type": "service",
       "status": "active",
       "version": 1,
-      "description": "管理预置和用户自定义的启动/停止脚本模板，解析占位变量并渲染生成最终脚本内容。",
+      "description": "核心部署逻辑：异步执行部署任务，负责 SSH 连接、版本目录创建、文件上传解压、脚本生成与执行、后置命令处理，以及失败时的自动回滚。",
       "responsibilities": [
-        "提供内置模板示例（Go、Java、Node.js）",
-        "存储自定义模板",
-        "解析占位变量（如 {VERSION_DIR}、{BASE_PATH}）",
-        "渲染生成可执行脚本字符串"
+        "接收部署任务并异步执行",
+        "建立 SSH 连接，验证远程环境",
+        "上传包体并实时推送进度和日志",
+        "调用脚本模板服务渲染并生成服务器脚本",
+        "执行用户自定义的后置命令",
+        "在部署失败时自动清理远程版本目录（回滚）",
+        "通知部署历史服务记录部署结果"
       ],
       "source_requirements": [
+        "REQ-002",
         "REQ-006"
       ],
-      "contracts": [],
-      "depends_on_components": [],
+      "contracts": [
+        "CTR-004",
+        "CTR-005"
+      ],
+      "depends_on_components": [
+        "CMP-010",
+        "CMP-008",
+        "CMP-012",
+        "CMP-007"
+      ],
       "change_history": [
         {
           "version": 1,
@@ -274,17 +314,17 @@
     },
     {
       "id": "CMP-006",
-      "name": "历史版本服务",
+      "name": "密钥管理服务",
       "type": "service",
       "status": "active",
       "version": 1,
-      "description": "记录每次部署信息，提供查询、清理和一键回滚功能，通过软链接切换当前版本。",
+      "description": "负责 SSH 密钥的生成、导入、加密持久化存储，以及主密码的设置、验证和密钥解密操作。",
       "responsibilities": [
-        "记录部署历史（版本号、时间、文件大小、状态、日志）",
-        "查询特定环境的历史记录",
-        "根据保留策略自动/手动清理旧版本",
-        "执行回滚操作（切换远程软链接至旧版本目录）",
-        "标记当前起效版本"
+        "生成 SSH 密钥对",
+        "导入外部密钥文件",
+        "使用加密服务安全存储私钥和密码短语",
+        "提供解密后的密钥供其他服务使用",
+        "设置和验证主密码"
       ],
       "source_requirements": [
         "REQ-004"
@@ -294,8 +334,7 @@
         "CTR-007"
       ],
       "depends_on_components": [
-        "CMP-004",
-        "CMP-002"
+        "CMP-011"
       ],
       "change_history": [
         {
@@ -308,19 +347,136 @@
     },
     {
       "id": "CMP-007",
-      "name": "加密服务",
+      "name": "部署历史与回滚服务",
       "type": "service",
       "status": "active",
       "version": 1,
-      "description": "提供 AES-256-GCM 加解密能力，用于安全存储和读取密码、私钥等敏感字段；可集成系统密钥链。",
+      "description": "记录每次部署的详细信息，提供按项目、环境筛选的历史查询，以及一键回滚到指定版本的功能。",
       "responsibilities": [
-        "生成/派生主密钥",
-        "加密任意明文字段",
-        "解密已加密字段",
-        "与存储层配合透明加解密"
+        "保存部署任务的结果记录",
+        "根据条件查询部署历史",
+        "执行回滚操作：切换远程版本目录，调用启动脚本（若需要）",
+        "提供版本目录清理功能（保留最近N个版本）"
       ],
       "source_requirements": [
         "REQ-005"
+      ],
+      "contracts": [
+        "CTR-008",
+        "CTR-009",
+        "CTR-010"
+      ],
+      "depends_on_components": [
+        "CMP-005",
+        "CMP-009",
+        "CMP-010"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CMP-008",
+      "name": "脚本模板服务",
+      "type": "service",
+      "status": "active",
+      "version": 1,
+      "description": "管理部署脚本模板，支持用户自定义全局、项目级或环境级模板，通过 Jinja2 渲染动态内容。",
+      "responsibilities": [
+        "模板的 CRUD 操作",
+        "提供模板语法校验和预览接口",
+        "根据上下文变量动态渲染模板生成最终脚本",
+        "将模板与项目或环境关联"
+      ],
+      "source_requirements": [
+        "REQ-006"
+      ],
+      "contracts": [
+        "CTR-011",
+        "CTR-012"
+      ],
+      "depends_on_components": [
+        "CMP-009"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CMP-009",
+      "name": "数据库层",
+      "type": "infrastructure",
+      "status": "active",
+      "version": 1,
+      "description": "基于 SQLAlchemy ORM 的数据库抽象层，负责模型定义、Session 管理、事务协调和数据库初始化与迁移。",
+      "responsibilities": [
+        "定义所有数据模型",
+        "提供数据库会话工厂",
+        "执行数据库 CRUD 操作的事务管理",
+        "数据库 schema 自动创建与简单迁移"
+      ],
+      "source_requirements": [],
+      "contracts": [],
+      "depends_on_components": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CMP-010",
+      "name": "SSH客户端封装",
+      "type": "infrastructure",
+      "status": "active",
+      "version": 1,
+      "description": "封装 Paramiko 库，提供统一的 SSH 连接管理、命令执行、SFTP 文件传输接口，并支持连接健康检查。",
+      "responsibilities": [
+        "创建和关闭 SSH 连接",
+        "执行远程命令并返回 stdout/stderr",
+        "通过 SFTP 上传、下载文件",
+        "测试 SSH 连接是否可用"
+      ],
+      "source_requirements": [],
+      "contracts": [],
+      "depends_on_components": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CMP-011",
+      "name": "加密服务",
+      "type": "infrastructure",
+      "status": "active",
+      "version": 1,
+      "description": "负责对称加密/解密操作、主密码哈希和密钥派生，保障本地敏感数据的存储安全。",
+      "responsibilities": [
+        "提供 AES-256-CBC 加密与解密功能",
+        "使用 PBKDF2 从主密码派生加密密钥",
+        "存储主密码的哈希用于验证",
+        "对密钥文件进行加密持久化"
+      ],
+      "source_requirements": [
+        "REQ-004"
       ],
       "contracts": [],
       "depends_on_components": [],
@@ -334,24 +490,19 @@
       ]
     },
     {
-      "id": "CMP-008",
-      "name": "前端应用（React UI）",
-      "type": "frontend",
+      "id": "CMP-012",
+      "name": "文件打包与解压工具",
+      "type": "infrastructure",
       "status": "active",
       "version": 1,
-      "description": "提供完整的用户界面，包括项目管理、环境配置、部署面板、历史记录等模块，通过 IPC 与主进程交互。",
+      "description": "处理本地打包文件的识别判断，以及在远程服务器上执行解压操作的命令行生成。",
       "responsibilities": [
-        "渲染用户界面",
-        "处理用户交互（拖拽、表单、按钮）",
-        "通过 IPC 调用主进程服务",
-        "显示部署实时进度与日志",
-        "管理前端路由与状态"
+        "检测本地包体格式（如 .jar, .zip, .tar.gz）",
+        "生成符合远程服务器环境的解压命令",
+        "为部署引擎提供解压前环境检查建议"
       ],
       "source_requirements": [
-        "REQ-001",
-        "REQ-002",
-        "REQ-003",
-        "REQ-004"
+        "REQ-002"
       ],
       "contracts": [],
       "depends_on_components": [],
@@ -368,16 +519,16 @@
   "contracts": [
     {
       "id": "CTR-001",
-      "interface": "project:list",
-      "provider_component_id": "CMP-001",
+      "interface": "项目管理 API",
+      "provider_component_id": "CMP-003",
       "provider": "项目管理服务",
       "consumers": [
-        "前端应用"
+        "前端管理界面"
       ],
-      "type": "Event",
+      "type": "REST",
       "status": "active",
       "version": 1,
-      "endpoint": "ipc: project:list",
+      "endpoint": "GET/POST/PUT/DELETE /api/projects",
       "request": {
         "path_params": [],
         "query_params": [],
@@ -385,28 +536,23 @@
       },
       "response": {
         "status": 200,
-        "body": {
-          "projects": [
-            {
-              "id": "uuid",
-              "name": "string",
-              "code": "string",
-              "createdAt": "string",
-              "updatedAt": "string"
-            }
-          ]
-        }
+        "body": {}
       },
       "errors": [
         {
-          "status": 500,
-          "code": "INTERNAL_ERROR",
-          "message": "获取项目列表失败"
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "项目不存在"
+        },
+        {
+          "status": 422,
+          "code": "VALIDATION_ERROR",
+          "message": "请求参数无效"
         }
       ],
-      "description": "获取所有项目的列表",
+      "description": "提供项目的增删改查及列表功能。",
       "source_requirements": [
-        "REQ-001"
+        "REQ-003"
       ],
       "change_history": [
         {
@@ -419,44 +565,44 @@
     },
     {
       "id": "CTR-002",
-      "interface": "project:create",
-      "provider_component_id": "CMP-001",
-      "provider": "项目管理服务",
+      "interface": "环境管理 API",
+      "provider_component_id": "CMP-004",
+      "provider": "环境管理服务",
       "consumers": [
-        "前端应用"
+        "前端管理界面"
       ],
-      "type": "Event",
+      "type": "REST",
       "status": "active",
       "version": 1,
-      "endpoint": "ipc: project:create",
+      "endpoint": "GET/POST/PUT/DELETE /api/projects/{pid}/environments",
       "request": {
-        "path_params": [],
+        "path_params": [
+          {
+            "name": "pid",
+            "type": "integer",
+            "description": "项目ID"
+          }
+        ],
         "query_params": [],
-        "body": {
-          "name": "string",
-          "code": "string"
-        }
+        "body": {}
       },
       "response": {
         "status": 200,
-        "body": {
-          "project": {
-            "id": "uuid",
-            "name": "string",
-            "code": "string",
-            "createdAt": "string",
-            "updatedAt": "string"
-          }
-        }
+        "body": {}
       },
       "errors": [
         {
-          "status": 400,
-          "code": "DUPLICATE_CODE",
-          "message": "项目编码已存在"
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "环境不存在"
+        },
+        {
+          "status": 422,
+          "code": "VALIDATION_ERROR",
+          "message": "请求参数无效"
         }
       ],
-      "description": "创建新项目",
+      "description": "管理某个项目下的环境配置，支持增删改查。",
       "source_requirements": [
         "REQ-001"
       ],
@@ -471,50 +617,49 @@
     },
     {
       "id": "CTR-003",
-      "interface": "env:create",
-      "provider_component_id": "CMP-002",
+      "interface": "环境连接测试 API",
+      "provider_component_id": "CMP-004",
       "provider": "环境管理服务",
       "consumers": [
-        "前端应用"
+        "前端管理界面"
       ],
-      "type": "Event",
+      "type": "REST",
       "status": "active",
       "version": 1,
-      "endpoint": "ipc: env:create",
+      "endpoint": "POST /api/environments/{eid}/test-connection",
       "request": {
-        "path_params": [],
+        "path_params": [
+          {
+            "name": "eid",
+            "type": "integer",
+            "description": "环境ID"
+          }
+        ],
         "query_params": [],
-        "body": {
-          "projectId": "uuid",
-          "name": "string",
-          "code": "string",
-          "host": "string",
-          "port": "number",
-          "username": "string",
-          "authType": "password|key",
-          "password": "string?",
-          "key": "string?",
-          "basePath": "string",
-          "startTemplate": "string?",
-          "stopTemplate": "string?"
-        }
+        "body": {}
       },
       "response": {
         "status": 200,
         "body": {
-          "environment": "object"
+          "success": true,
+          "message": "连接成功"
         }
       },
       "errors": [
         {
           "status": 400,
-          "code": "VALIDATION_ERROR",
-          "message": "参数验证失败"
+          "code": "TEST_FAILED",
+          "message": "SSH 连接测试失败"
+        },
+        {
+          "status": 404,
+          "code": "ENV_NOT_FOUND",
+          "message": "环境不存在"
         }
       ],
-      "description": "在指定项目下创建新环境配置",
+      "description": "对指定环境执行 SSH 连接测试，返回测试结果。",
       "source_requirements": [
-        "REQ-002"
+        "REQ-001"
       ],
       "change_history": [
         {
@@ -527,43 +672,47 @@
     },
     {
       "id": "CTR-004",
-      "interface": "env:test-connection",
-      "provider_component_id": "CMP-002",
-      "provider": "环境管理服务",
+      "interface": "部署操作 API",
+      "provider_component_id": "CMP-005",
+      "provider": "部署引擎服务",
       "consumers": [
-        "前端应用"
+        "前端管理界面"
       ],
-      "type": "Event",
+      "type": "REST",
       "status": "active",
       "version": 1,
-      "endpoint": "ipc: env:test-connection",
+      "endpoint": "POST /api/deploy",
       "request": {
         "path_params": [],
         "query_params": [],
         "body": {
-          "envId": "uuid"
+          "project_id": "integer",
+          "environment_id": "integer",
+          "package_path": "string",
+          "execute_post_commands": ["string"],
+          "description": "string"
         }
       },
       "response": {
-        "status": 200,
+        "status": 202,
         "body": {
-          "success": "boolean",
-          "message": "string"
+          "task_id": "string",
+          "websocket_url": "string"
         }
       },
       "errors": [
         {
-          "status": 408,
-          "code": "TIMEOUT",
-          "message": "连接超时"
+          "status": 400,
+          "code": "INVALID_PACKAGE",
+          "message": "包体文件无效"
         },
         {
-          "status": 401,
-          "code": "AUTH_FAILURE",
-          "message": "认证失败"
+          "status": 404,
+          "code": "ENV_NOT_FOUND",
+          "message": "环境不存在"
         }
       ],
-      "description": "测试指定环境的 SSH 连通性",
+      "description": "提交异步部署任务，返回任务ID和用于监听日志的 WebSocket 地址。",
       "source_requirements": [
         "REQ-002"
       ],
@@ -578,47 +727,41 @@
     },
     {
       "id": "CTR-005",
-      "interface": "deploy:start",
-      "provider_component_id": "CMP-003",
-      "provider": "部署编排引擎",
+      "interface": "部署日志 WebSocket",
+      "provider_component_id": "CMP-005",
+      "provider": "部署引擎服务",
       "consumers": [
-        "前端应用"
+        "前端管理界面"
       ],
-      "type": "Event",
+      "type": "WebSocket",
       "status": "active",
       "version": 1,
-      "endpoint": "ipc: deploy:start",
+      "endpoint": "ws://localhost:port/ws/deploy/log?task_id={task_id}",
       "request": {
         "path_params": [],
-        "query_params": [],
-        "body": {
-          "projectId": "uuid",
-          "envId": "uuid",
-          "filePath": "string",
-          "options": {
-            "autoStart": "boolean"
+        "query_params": [
+          {
+            "name": "task_id",
+            "type": "string",
+            "description": "部署任务ID"
           }
-        }
+        ],
+        "body": {}
       },
       "response": {
         "status": 200,
-        "body": {
-          "success": "boolean",
-          "version": "string",
-          "remotePath": "string",
-          "log": "string"
-        }
+        "body": {}
       },
       "errors": [
         {
-          "status": 500,
-          "code": "DEPLOY_FAILED",
-          "message": "部署失败，详情见日志"
+          "status": 400,
+          "code": "INVALID_TASK",
+          "message": "任务ID无效"
         }
       ],
-      "description": "开始一键部署流程，逐步返回进度事件",
+      "description": "通过 WebSocket 实时推送部署过程中的日志、进度和最终结果。支持 JSON 格式消息。",
       "source_requirements": [
-        "REQ-003"
+        "REQ-002"
       ],
       "change_history": [
         {
@@ -631,49 +774,48 @@
     },
     {
       "id": "CTR-006",
-      "interface": "history:list",
+      "interface": "密钥管理 API",
       "provider_component_id": "CMP-006",
-      "provider": "历史版本服务",
+      "provider": "密钥管理服务",
       "consumers": [
-        "前端应用"
+        "前端管理界面"
       ],
-      "type": "Event",
+      "type": "REST",
       "status": "active",
       "version": 1,
-      "endpoint": "ipc: history:list",
+      "endpoint": "GET/POST/DELETE /api/keys",
       "request": {
         "path_params": [],
         "query_params": [],
         "body": {
-          "envId": "uuid",
-          "page": "number",
-          "pageSize": "number"
+          "name": "string",
+          "key_type": "string",
+          "private_key": "string (optional for import)",
+          "passphrase": "string (optional)"
         }
       },
       "response": {
         "status": 200,
         "body": {
-          "records": [
-            {
-              "id": "uuid",
-              "version": "string",
-              "deployedAt": "string",
-              "fileSize": "number",
-              "status": "string",
-              "isCurrent": "boolean"
-            }
-          ],
-          "total": "number"
+          "id": "integer",
+          "name": "string",
+          "key_type": "string",
+          "created_at": "string"
         }
       },
       "errors": [
         {
-          "status": 500,
-          "code": "INTERNAL_ERROR",
-          "message": "获取历史记录失败"
+          "status": 400,
+          "code": "KEY_IMPORT_ERROR",
+          "message": "密钥文件无效"
+        },
+        {
+          "status": 404,
+          "code": "KEY_NOT_FOUND",
+          "message": "密钥不存在"
         }
       ],
-      "description": "分页查询指定环境的部署历史",
+      "description": "管理 SSH 密钥的生成、导入和删除，密钥内容加密存储。",
       "source_requirements": [
         "REQ-004"
       ],
@@ -688,40 +830,312 @@
     },
     {
       "id": "CTR-007",
-      "interface": "history:rollback",
+      "interface": "主密码设置与验证 API",
       "provider_component_id": "CMP-006",
-      "provider": "历史版本服务",
+      "provider": "密钥管理服务",
       "consumers": [
-        "前端应用"
+        "前端管理界面"
       ],
-      "type": "Event",
+      "type": "REST",
       "status": "active",
       "version": 1,
-      "endpoint": "ipc: history:rollback",
+      "endpoint": "POST /api/master-password",
       "request": {
         "path_params": [],
         "query_params": [],
         "body": {
-          "historyId": "uuid"
+          "action": "set | verify",
+          "password": "string"
         }
       },
       "response": {
         "status": 200,
         "body": {
-          "success": "boolean",
-          "newCurrentVersion": "string"
+          "valid": true
         }
       },
       "errors": [
         {
-          "status": 500,
+          "status": 400,
+          "code": "INVALID_PASSWORD",
+          "message": "密码验证失败"
+        },
+        {
+          "status": 400,
+          "code": "ALREADY_SET",
+          "message": "主密码已经设置"
+        }
+      ],
+      "description": "设置或验证用于解锁密钥库的主密码。",
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-008",
+      "interface": "部署历史查询 API",
+      "provider_component_id": "CMP-007",
+      "provider": "部署历史与回滚服务",
+      "consumers": [
+        "前端管理界面"
+      ],
+      "type": "REST",
+      "status": "active",
+      "version": 1,
+      "endpoint": "GET /api/deploy-history?project={pid}&environment={eid}",
+      "request": {
+        "path_params": [],
+        "query_params": [
+          {
+            "name": "project",
+            "type": "integer",
+            "description": "项目ID"
+          },
+          {
+            "name": "environment",
+            "type": "integer",
+            "description": "环境ID"
+          }
+        ],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "items": [
+            {
+              "id": "integer",
+              "version_dir": "string",
+              "status": "string",
+              "created_at": "string"
+            }
+          ]
+        }
+      },
+      "errors": [
+        {
+          "status": 400,
+          "code": "BAD_REQUEST",
+          "message": "筛选参数无效"
+        }
+      ],
+      "description": "根据项目和环境筛选查询部署历史记录。",
+      "source_requirements": [
+        "REQ-005"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-009",
+      "interface": "回滚操作 API",
+      "provider_component_id": "CMP-007",
+      "provider": "部署历史与回滚服务",
+      "consumers": [
+        "前端管理界面"
+      ],
+      "type": "REST",
+      "status": "active",
+      "version": 1,
+      "endpoint": "POST /api/deploy-history/{id}/rollback",
+      "request": {
+        "path_params": [
+          {
+            "name": "id",
+            "type": "integer",
+            "description": "历史记录ID"
+          }
+        ],
+        "query_params": [],
+        "body": {
+          "restart_service": true
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "message": "回滚成功",
+          "new_version_dir": "string"
+        }
+      },
+      "errors": [
+        {
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "历史记录不存在"
+        },
+        {
+          "status": 400,
           "code": "ROLLBACK_FAILED",
           "message": "回滚操作失败"
         }
       ],
-      "description": "回滚到指定历史版本",
+      "description": "将服务回滚到指定的历史版本，可选是否重启服务。",
       "source_requirements": [
-        "REQ-004"
+        "REQ-005"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-010",
+      "interface": "版本目录清理 API",
+      "provider_component_id": "CMP-007",
+      "provider": "部署历史与回滚服务",
+      "consumers": [
+        "前端管理界面"
+      ],
+      "type": "REST",
+      "status": "active",
+      "version": 1,
+      "endpoint": "POST /api/deploy-history/cleanup",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "project_id": "integer",
+          "environment_id": "integer",
+          "keep_count": "integer"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "deleted_dirs": ["string"]
+        }
+      },
+      "errors": [
+        {
+          "status": 400,
+          "code": "BAD_REQUEST",
+          "message": "参数无效"
+        }
+      ],
+      "description": "清理指定环境下的旧版本目录，保留最近的 N 个版本。",
+      "source_requirements": [
+        "REQ-005"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-011",
+      "interface": "脚本模板管理 API",
+      "provider_component_id": "CMP-008",
+      "provider": "脚本模板服务",
+      "consumers": [
+        "前端管理界面"
+      ],
+      "type": "REST",
+      "status": "active",
+      "version": 1,
+      "endpoint": "GET/POST/PUT/DELETE /api/templates",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "name": "string",
+          "scope": "string",
+          "scope_id": "integer",
+          "content_template": "string",
+          "variables_definition": "object"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "integer",
+          "name": "string",
+          "content": "string"
+        }
+      },
+      "errors": [
+        {
+          "status": 404,
+          "code": "TEMPLATE_NOT_FOUND",
+          "message": "模板不存在"
+        },
+        {
+          "status": 422,
+          "code": "VALIDATION_ERROR",
+          "message": "模板语法错误"
+        }
+      ],
+      "description": "管理部署脚本模板的增删改查。",
+      "source_requirements": [
+        "REQ-006"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-012",
+      "interface": "模板预览 API",
+      "provider_component_id": "CMP-008",
+      "provider": "脚本模板服务",
+      "consumers": [
+        "前端管理界面"
+      ],
+      "type": "REST",
+      "status": "active",
+      "version": 1,
+      "endpoint": "POST /api/templates/preview",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "template_content": "string",
+          "variables": "object"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "rendered": "string"
+        }
+      },
+      "errors": [
+        {
+          "status": 400,
+          "code": "RENDER_ERROR",
+          "message": "模板渲染失败"
+        }
+      ],
+      "description": "预览模板渲染后的内容，用于用户检查语法。",
+      "source_requirements": [
+        "REQ-006"
       ],
       "change_history": [
         {
@@ -737,116 +1151,22 @@
     {
       "name": "一键部署流程",
       "steps": [
-        "用户在前端选择项目和环境，拖拽文件并点击部署",
-        "前端发送 IPC 'deploy:start' 到主进程",
-        "部署编排引擎调用环境管理服务获取解密后的 SSH 配置",
-        "部署编排引擎通过 SSH 客户端连接远程服务器",
-        "在远程基础路径下创建版本目录（如 20260524_1642）",
-        "通过 SFTP 上传本地文件至版本目录，并实时推送进度到前端",
-        "调用脚本模板服务渲染 start.sh 和 stop.sh",
-        "上传脚本文件并赋予执行权限",
-        "若启用自动启动，远程执行 start.sh 并获取 PID",
-        "部署编排引擎将结果（成功/失败、版本号、远程路径）记录到历史版本服务",
-        "向前端返回最终部署状态和日志"
+        "用户在前端选择项目、环境、本地包体路径，点击部署。",
+        "前端调用 POST /api/deploy，提交部署任务。",
+        "部署引擎生成 task_id 并立即返回 202。",
+        "引擎从环境服务获取环境配置及解密后的 SSH 密钥。",
+        "通过 SSH 客户端连接远程服务器，验证可写性。",
+        "生成唯一版本目录名，在远程创建目录。",
+        "通过 SFTP 分块上传包体文件，同时通过 WebSocket 推送进度。",
+        "在远端解压（如果需要）并设置文件权限。",
+        "从脚本模板服务获取渲染后的启停脚本并上传至远程目录，添加执行权限。",
+        "可选地执行用户自定义的后置命令。",
+        "全部成功后，记录部署历史（成功状态）。",
+        "若任何步骤失败，自动执行回滚：删除已创建的远程版本目录，推送失败结果并记录失败历史。"
       ]
     },
     {
-      "name": "版本回滚流程",
+      "name": "回滚流程",
       "steps": [
-        "用户在前端历史记录中选择某个版本，点击回滚",
-        "前端发送 IPC 'history:rollback' 到主进程",
-        "历史版本服务根据历史记录 ID 获取部署详情和环境配置",
-        "通过 SSH 客户端连接远程服务器",
-        "修改 current 软链接：rm -f current && ln -s {版本目录} current",
-        "可选：执行新 current 目录下的 start.sh 重启服务",
-        "历史版本服务更新数据库中的 is_current 标记",
-        "向前端返回回滚结果"
-      ]
-    }
-  ],
-  "data_models": [],
-  "requirement_traceability": [
-    {
-      "requirement_id": "REQ-001",
-      "coverage": "full",
-      "components": [
-        "CMP-001",
-        "CMP-008"
-      ],
-      "contracts": [
-        "CTR-001",
-        "CTR-002"
-      ],
-      "data_models": [],
-      "notes": "多项目管理功能由项目管理服务实现，前端提供项目面板"
-    },
-    {
-      "requirement_id": "REQ-002",
-      "coverage": "full",
-      "components": [
-        "CMP-002",
-        "CMP-008"
-      ],
-      "contracts": [
-        "CTR-003",
-        "CTR-004"
-      ],
-      "data_models": [],
-      "notes": "环境配置管理由环境管理服务实现，加密存储依赖加密服务"
-    },
-    {
-      "requirement_id": "REQ-003",
-      "coverage": "full",
-      "components": [
-        "CMP-003",
-        "CMP-004",
-        "CMP-005",
-        "CMP-008"
-      ],
-      "contracts": [
-        "CTR-005"
-      ],
-      "data_models": [],
-      "notes": "一键部署由部署编排引擎协调各组件完成"
-    },
-    {
-      "requirement_id": "REQ-004",
-      "coverage": "full",
-      "components": [
-        "CMP-006",
-        "CMP-008"
-      ],
-      "contracts": [
-        "CTR-006",
-        "CTR-007"
-      ],
-      "data_models": [],
-      "notes": "版本管理与部署历史由历史版本服务负责"
-    },
-    {
-      "requirement_id": "REQ-005",
-      "coverage": "full",
-      "components": [
-        "CMP-004",
-        "CMP-007"
-      ],
-      "contracts": [],
-      "data_models": [],
-      "notes": "安全连接与密钥管理由 SSH 客户端和加密服务共同保障"
-    },
-    {
-      "requirement_id": "REQ-006",
-      "coverage": "full",
-      "components": [
-        "CMP-002",
-        "CMP-005"
-      ],
-      "contracts": [],
-      "data_models": [],
-      "notes": "模板化启动脚本由脚本模板服务实现，并在环境配置中关联模板"
-    }
-  ],
-  "architecture_decisions": [],
-  "risks": [],
-  "open_questions": []
-}
+        "用户在历史界面筛选目标版本，点击回滚并二次确认。",
+        "前端调用 POST /api/deploy-history/{id}
