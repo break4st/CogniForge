@@ -84,11 +84,26 @@ def repair_truncated_json(text: str) -> tuple[dict, bool]:
     # 2. Repair unescaped quotes in string values
     repaired = _repair_json_text(text)
 
-    # 3. Close missing brackets — common in LLM token-limit truncation
+    # 3. Close missing brackets — common in LLM token-limit truncation.
+    # Use a stack-based approach to determine correct closing order instead of
+    # a fixed "]…" + "}…" sequence which fails when truncation happens inside
+    # a nested object (e.g. {"interfaces": [{"request": {} → needs }]}, not ]}}).
     open_braces = repaired.count("{") - repaired.count("}")
     open_brackets = repaired.count("[") - repaired.count("]")
     if open_braces > 0 or open_brackets > 0:
-        suffix = "\n" + "]" * open_brackets + "}" * open_braces
+        suffix_parts = []
+        # Replay the repaired text to build the correct closing stack
+        stack = []
+        for ch in repaired:
+            if ch == "{":
+                stack.append("}")
+            elif ch == "[":
+                stack.append("]")
+            elif ch in ("}", "]"):
+                if stack and stack[-1] == ch:
+                    stack.pop()
+        # Remaining stack items (in reverse order) are the correct closers
+        suffix = "".join(reversed(stack))
         repaired += suffix
 
     try:
@@ -2796,6 +2811,9 @@ def _render_lld(d: dict) -> str:
         if key_patterns:
             kp_rows = ""
             for kp in key_patterns:
+                if isinstance(kp, str):
+                    kp_rows += f'<tr><td colspan="2">{_esc(kp)}</td></tr>'
+                    continue
                 kp_rows += (
                     f'<tr><td style="font-family:monospace">{_esc(kp.get("pattern",""))}</td>'
                     f'<td>{_esc(kp.get("description",""))}</td></tr>'
@@ -3355,6 +3373,10 @@ def _render_lld(d: dict) -> str:
                 continue
             endpoint = iface.get("endpoint", "")
             method = iface.get("method", "")
+            if isinstance(method, list):
+                method = method[0] if method else ""
+            elif not isinstance(method, str):
+                method = ""
 
             method_cls = method.lower() if method else ""
 
