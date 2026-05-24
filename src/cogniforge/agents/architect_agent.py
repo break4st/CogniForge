@@ -201,13 +201,34 @@ class ArchitectAgent(BaseAgent):
             f"已批准的 PRD 文档:\n{prd_context}\n"
         )
 
-        response = self.agent.generate_think_then_json(
-            prompt, role="architect", max_tokens=8192,
-        )
-
-        json_text = _extract_json(response.content)
-
-        data, incomplete = repair_truncated_json(json_text)
+        max_retries = 2
+        last_error = None
+        for attempt in range(max_retries + 1):
+            if attempt > 0:
+                if cb:
+                    cb(f"JSON 解析失败，正在重试 ({attempt}/{max_retries})...")
+                prompt = (
+                    f"你上一次输出的 JSON 有语法错误，无法解析：\n"
+                    f"错误: {last_error}\n\n"
+                    f"请重新生成。确保 JSON 格式正确，所有字符串内的双引号已转义，\n"
+                    f"所有括号匹配，逗号位置正确。输出纯 JSON，不要包含 markdown 代码块。\n\n"
+                    f"原始任务:\n{prompt}"
+                )
+            response = self.agent.generate_think_then_json(
+                prompt, role="architect", max_tokens=8192,
+            )
+            json_text = _extract_json(response.content)
+            try:
+                data, incomplete = repair_truncated_json(json_text)
+                break
+            except ValueError as e:
+                last_error = str(e)
+                if attempt == max_retries:
+                    return self.format_result(
+                        status="failed",
+                        message=f"JSON 解析失败（已重试 {max_retries} 次）: {last_error}",
+                        reasoning=response.content,
+                    )
         if incomplete and cb:
             cb("警告: LLM 输出被截断，已自动修复 JSON 结构")
 

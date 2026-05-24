@@ -540,14 +540,36 @@ class DesignAgent(BaseAgent):
             )
 
             _progress("LLM 生成中")
-            response = self.agent.generate_think_then_json(
-                prompt, role="design", max_tokens=8192,
-                progress_callback=_progress,
-            )
-            json_text = _extract_json(response.content)
+            max_retries = 2
+            last_error = None
+            for attempt in range(max_retries + 1):
+                if attempt > 0:
+                    _progress(f"JSON 解析失败，正在重试 ({attempt}/{max_retries})...")
+                    prompt = (
+                        f"你上一次输出的 JSON 有语法错误，无法解析：\n"
+                        f"错误: {last_error}\n\n"
+                        f"请重新生成。确保 JSON 格式正确，输出纯 JSON。\n\n"
+                        f"原始任务:\n{prompt}"
+                    )
+                response = self.agent.generate_think_then_json(
+                    prompt, role="design", max_tokens=8192,
+                    progress_callback=_progress,
+                )
+                json_text = _extract_json(response.content)
+                try:
+                    data, incomplete = repair_truncated_json(json_text)
+                    break
+                except ValueError as e:
+                    last_error = str(e)
+                    if attempt == max_retries:
+                        return self.format_result(
+                            status="failed",
+                            message=f"JSON 解析失败（已重试 {max_retries} 次）: {last_error}",
+                            reasoning=response.content,
+                        )
 
             # Assign stable IDs to data_models and interfaces
-            data, incomplete = repair_truncated_json(json_text)
+            # (data already assigned by repair_truncated_json inside the loop)
             if incomplete and _progress:
                 _progress("警告: LLM 输出被截断，已自动修复 JSON 结构")
             data["data_models"] = self._assign_ids(data.get("data_models", []), "DM")
