@@ -1,0 +1,946 @@
+{
+  "meta": {
+    "doc_id": "lld-api-gateway-001",
+    "type": "lld",
+    "module_type": "gateway",
+    "module": "API Gateway",
+    "title": "API Gateway 详细设计文档",
+    "author": "design_agent",
+    "created": "2025-03-28T00:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-001"
+      ],
+      "contracts": [
+        "CTR-001"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "HTTP 请求路由与反向代理",
+      "请求/响应转换与透传",
+      "JWT 令牌验证及用户信息注入请求头",
+      "基于 IP 和用户粒度的多级限流",
+      "WebSocket 代理（长连接转发）",
+      "统一错误响应格式",
+      "访问日志记录"
+    ],
+    "out_of_scope": [
+      "用户身份认证的业务逻辑（由 Auth Service 实现）",
+      "业务数据管理（由 Business Service 实现）",
+      "部署任务执行与文件传输（由 Deploy Engine 实现）",
+      "数据持久化（不直接操作 MySQL）",
+      "前端页面渲染"
+    ],
+    "owned_components": [
+      "CMP-001"
+    ],
+    "owned_contracts": [],
+    "consumed_contracts": [
+      "CTR-001"
+    ],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "系统统一入口，负责路由请求到后端服务，提供限流、认证预处理、WebSocket代理等功能。",
+    "dependencies": [
+      "Auth Service",
+      "Business Service",
+      "Deploy Engine",
+      "Redis"
+    ],
+    "tech_stack": [
+      "Python 3.11",
+      "FastAPI",
+      "Redis 7",
+      "Docker + Docker Compose"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [
+        "CTR-001"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002",
+          "DM-003"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003",
+          "IF-004",
+          "IF-005",
+          "IF-006",
+          "IF-007",
+          "IF-008",
+          "IF-009"
+        ],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "路由规则",
+      "type": "config",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "source": {
+        "prd_requirements": [
+          "REQ-001"
+        ],
+        "sad_components": [
+          "CMP-001"
+        ],
+        "sad_contracts": [
+          "CTR-001"
+        ]
+      },
+      "description": "定义一条 HTTP 路由的匹配模式、上游服务地址与关联角色。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "description": "唯一标识"
+        },
+        {
+          "name": "path_pattern",
+          "type": "string",
+          "required": true,
+          "description": "路径模式，支持 /** 通配"
+        },
+        {
+          "name": "upstream_service",
+          "type": "string",
+          "required": true,
+          "description": "上游服务名，如 auth-service"
+        },
+        {
+          "name": "upstream_url",
+          "type": "string",
+          "required": true,
+          "description": "实际转发地址，如 http://auth-service:8000"
+        },
+        {
+          "name": "method",
+          "type": "string",
+          "required": true,
+          "description": "HTTP 方法"
+        },
+        {
+          "name": "is_public",
+          "type": "boolean",
+          "required": true,
+          "description": "是否公开端点无需认证"
+        },
+        {
+          "name": "required_roles",
+          "type": "array[string]",
+          "required": false,
+          "description": "访问所需角色列表"
+        },
+        {
+          "name": "rate_limit_rule_id",
+          "type": "string",
+          "required": false,
+          "description": "关联的限流规则ID，可选"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "",
+        "update": "",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "限流规则",
+      "type": "config",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "source": {
+        "prd_requirements": [],
+        "sad_components": [
+          "CMP-001"
+        ],
+        "sad_contracts": []
+      },
+      "description": "定义限流策略的配置参数。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "description": "唯一标识"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "规则名称"
+        },
+        {
+          "name": "scope",
+          "type": "string",
+          "required": true,
+          "description": "枚举: global|per_user|endpoint"
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": true,
+          "description": "时间窗口内最大请求数"
+        },
+        {
+          "name": "window_seconds",
+          "type": "integer",
+          "required": true,
+          "description": "时间窗口长度，秒"
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "required": false,
+          "description": "说明"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": [],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [],
+      "constraints": [],
+      "lifecycle": {
+        "create": "",
+        "update": "",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-003",
+      "name": "访问日志记录",
+      "type": "log",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "source": {
+        "prd_requirements": [],
+        "sad_components": [
+          "CMP-001"
+        ],
+        "sad_contracts": []
+      },
+      "description": "记录网关处理的每次请求的关键信息。",
+      "fields": [
+        {
+          "name": "timestamp",
+          "type": "datetime",
+          "required": true,
+          "description": "请求时间"
+        },
+        {
+          "name": "method",
+          "type": "string",
+          "required": true,
+          "description": "HTTP 方法"
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "description": "请求路径"
+        },
+        {
+          "name": "status_code",
+          "type": "integer",
+          "required": true,
+          "description": "响应状态码"
+        },
+        {
+          "name": "client_ip",
+          "type": "string",
+          "required": true,
+          "description": "客户端 IP"
+        },
+        {
+          "name": "user_id",
+          "type": "string",
+          "required": false,
+          "description": "用户ID（如果已认证）"
+        },
+        {
+          "name": "duration_ms",
+          "type": "number",
+          "required": true,
+          "description": "处理耗时（毫秒）"
+        },
+        {
+          "name": "error_message",
+          "type": "string",
+          "required": false,
+          "description": "错误信息"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": [],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [],
+      "constraints": [],
+      "lifecycle": {
+        "create": "",
+        "update": "",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "rule": "所有非公开端点必须携带有效JWT令牌",
+      "category": "auth",
+      "severity": "critical",
+      "related_interfaces": [
+        "IF-004",
+        "IF-005",
+        "IF-006",
+        "IF-007",
+        "IF-008",
+        "IF-009"
+      ]
+    },
+    {
+      "id": "BR-002",
+      "rule": "限流计数器基于Redis原子操作，滑动窗口精度±1秒",
+      "category": "rate_limit",
+      "severity": "high",
+      "related_interfaces": []
+    },
+    {
+      "id": "BR-003",
+      "rule": "WebSocket连接超过5分钟无消息则主动关闭",
+      "category": "websocket",
+      "severity": "medium",
+      "related_interfaces": [
+        "IF-002"
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "HTTP 反向代理路由",
+      "type": "http",
+      "endpoint": "/api/{path}",
+      "method": ["GET", "POST", "PUT", "DELETE", "PATCH"],
+      "auth_required": false,
+      "request": {
+        "headers": {
+          "Authorization": "string (optional)"
+        },
+        "body": "透传原始请求体"
+      },
+      "response": {
+        "status_code": 200,
+        "body": "透传上游服务响应"
+      },
+      "errors": [
+        {
+          "code": 502,
+          "message": "上游服务不可达"
+        },
+        {
+          "code": 504,
+          "message": "上游服务超时"
+        }
+      ],
+      "rate_limit": "global 1000/min",
+      "description": "网关核心路由，根据路径匹配转发请求到上游微服务。",
+      "related_sad_contracts": [
+        "CTR-001"
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "WebSocket 部署日志代理",
+      "type": "websocket",
+      "endpoint": "/ws/deploy-logs",
+      "method": ["WEBSOCKET"],
+      "auth_required": true,
+      "request": {
+        "headers": {
+          "Authorization": "Bearer <jwt>"
+        },
+        "query": {
+          "taskId": "string"
+        }
+      },
+      "response": {
+        "status_code": 101,
+        "body": "Upgrade to WebSocket"
+      },
+      "errors": [
+        {
+          "code": 401,
+          "message": "未提供有效令牌"
+        }
+      ],
+      "rate_limit": "per_user 5 connections/min",
+      "description": "建立WebSocket连接以实时接收部署日志。",
+      "related_sad_contracts": []
+    },
+    {
+      "id": "IF-003",
+      "name": "健康检查接口",
+      "type": "http",
+      "endpoint": "/health",
+      "method": ["GET"],
+      "auth_required": false,
+      "request": {
+        "headers": {},
+        "body": ""
+      },
+      "response": {
+        "status_code": 200,
+        "body": {
+          "status": "OK"
+        }
+      },
+      "errors": [],
+      "rate_limit": "global 30/min",
+      "description": "负载均衡器/K8s 探活检查。",
+      "related_sad_contracts": []
+    },
+    {
+      "id": "IF-004",
+      "name": "用户登录代理",
+      "type": "http",
+      "endpoint": "/api/auth/login",
+      "method": ["POST"],
+      "auth_required": false,
+      "request": {
+        "headers": {},
+        "body": {
+          "username": "string",
+          "password": "string"
+        }
+      },
+      "response": {
+        "status_code": 200,
+        "body": {
+          "token": "string"
+        }
+      },
+      "errors": [
+        {
+          "code": 401,
+          "message": "凭证错误"
+        }
+      ],
+      "rate_limit": "per_user 5/min",
+      "description": "代理用户登录请求到 Auth Service。",
+      "related_sad_contracts": [
+        "CTR-001"
+      ]
+    },
+    {
+      "id": "IF-005",
+      "name": "用户注册代理",
+      "type": "http",
+      "endpoint": "/api/auth/register",
+      "method": ["POST"],
+      "auth_required": false,
+      "request": {
+        "headers": {},
+        "body": {
+          "username": "string",
+          "password": "string",
+          "email": "string"
+        }
+      },
+      "response": {
+        "status_code": 201,
+        "body": {
+          "message": "User created"
+        }
+      },
+      "errors": [
+        {
+          "code": 409,
+          "message": "用户已存在"
+        }
+      ],
+      "rate_limit": "per_user 3/min",
+      "description": "代理用户注册请求到 Auth Service。",
+      "related_sad_contracts": [
+        "CTR-001"
+      ]
+    },
+    {
+      "id": "IF-006",
+      "name": "项目列表代理",
+      "type": "http",
+      "endpoint": "/api/projects",
+      "method": ["GET"],
+      "auth_required": true,
+      "request": {
+        "headers": {
+          "Authorization": "Bearer <jwt>"
+        },
+        "body": ""
+      },
+      "response": {
+        "status_code": 200,
+        "body": "[]"
+      },
+      "errors": [
+        {
+          "code": 401,
+          "message": "未授权"
+        }
+      ],
+      "rate_limit": "per_user 30/min",
+      "description": "获取项目列表，代理到 Business Service。",
+      "related_sad_contracts": [
+        "CTR-001"
+      ]
+    },
+    {
+      "id": "IF-007",
+      "name": "创建项目代理",
+      "type": "http",
+      "endpoint": "/api/projects",
+      "method": ["POST"],
+      "auth_required": true,
+      "request": {
+        "headers": {
+          "Authorization": "Bearer <jwt>",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "name": "string",
+          "description": "string"
+        }
+      },
+      "response": {
+        "status_code": 201,
+        "body": {
+          "id": "string"
+        }
+      },
+      "errors": [
+        {
+          "code": 400,
+          "message": "参数错误"
+        },
+        {
+          "code": 401,
+          "message": "未授权"
+        }
+      ],
+      "rate_limit": "per_user 10/min",
+      "description": "创建新项目，代理到 Business Service。",
+      "related_sad_contracts": [
+        "CTR-001"
+      ]
+    },
+    {
+      "id": "IF-008",
+      "name": "部署任务触发代理",
+      "type": "http",
+      "endpoint": "/api/deploy/trigger",
+      "method": ["POST"],
+      "auth_required": true,
+      "request": {
+        "headers": {
+          "Authorization": "Bearer <jwt>"
+        },
+        "body": {
+          "projectId": "string",
+          "version": "string"
+        }
+      },
+      "response": {
+        "status_code": 202,
+        "body": {
+          "taskId": "string"
+        }
+      },
+      "errors": [
+        {
+          "code": 401,
+          "message": "未授权"
+        },
+        {
+          "code": 409,
+          "message": "冲突，已有部署进行中"
+        }
+      ],
+      "rate_limit": "per_user 5/min",
+      "description": "触发部署任务，代理到 Deploy Engine。",
+      "related_sad_contracts": [
+        "CTR-001"
+      ]
+    },
+    {
+      "id": "IF-009",
+      "name": "部署状态查询代理",
+      "type": "http",
+      "endpoint": "/api/deploy/status/{taskId}",
+      "method": ["GET"],
+      "auth_required": true,
+      "request": {
+        "headers": {
+          "Authorization": "Bearer <jwt>"
+        },
+        "body": ""
+      },
+      "response": {
+        "status_code": 200,
+        "body": {
+          "status": "string",
+          "progress": "number"
+        }
+      },
+      "errors": [
+        {
+          "code": 401,
+          "message": "未授权"
+        },
+        {
+          "code": 404,
+          "message": "任务不存在"
+        }
+      ],
+      "rate_limit": "per_user 10/min",
+      "description": "查询部署任务状态，代理到 Deploy Engine。",
+      "related_sad_contracts": [
+        "CTR-001"
+      ]
+    }
+  ],
+  "route_table": [
+    {
+      "path_pattern": "/health",
+      "method": "GET",
+      "upstream_service": "gateway_self",
+      "upstream_url": "http://localhost:8000/health",
+      "auth_required": false,
+      "roles": [],
+      "rate_limit_rule_id": "RL-003"
+    },
+    {
+      "path_pattern": "/api/auth/**",
+      "method": "ANY",
+      "upstream_service": "auth-service",
+      "upstream_url": "http://auth-service:8000",
+      "auth_required": false,
+      "roles": [],
+      "rate_limit_rule_id": "RL-001"
+    },
+    {
+      "path_pattern": "/api/projects/**",
+      "method": "ANY",
+      "upstream_service": "business-service",
+      "upstream_url": "http://business-service:8000",
+      "auth_required": true,
+      "roles": [
+        "user",
+        "admin"
+      ],
+      "rate_limit_rule_id": "RL-001"
+    },
+    {
+      "path_pattern": "/api/deploy/**",
+      "method": "ANY",
+      "upstream_service": "deploy-engine",
+      "upstream_url": "http://deploy-engine:8000",
+      "auth_required": true,
+      "roles": [
+        "user",
+        "admin"
+      ],
+      "rate_limit_rule_id": "RL-002"
+    },
+    {
+      "path_pattern": "/ws/deploy-logs",
+      "method": "WEBSOCKET",
+      "upstream_service": "deploy-engine",
+      "upstream_url": "ws://deploy-engine:8000",
+      "auth_required": true,
+      "roles": [
+        "user",
+        "admin"
+      ],
+      "rate_limit_rule_id": "RL-004"
+    }
+  ],
+  "middleware_chain": [
+    {
+      "name": "request_logger",
+      "type": "logging",
+      "order": 1,
+      "enabled": true,
+      "description": "记录所有进入的请求基本信息"
+    },
+    {
+      "name": "rate_limiter",
+      "type": "rate_limit",
+      "order": 2,
+      "enabled": true,
+      "description": "执行请求限流检查"
+    },
+    {
+      "name": "jwt_authenticator",
+      "type": "auth",
+      "order": 3,
+      "enabled": true,
+      "description": "验证 JWT 令牌并注入用户信息头"
+    },
+    {
+      "name": "router",
+      "type": "routing",
+      "order": 4,
+      "enabled": true,
+      "description": "匹配路由规则并转发请求"
+    },
+    {
+      "name": "error_handler",
+      "type": "error",
+      "order": 5,
+      "enabled": true,
+      "description": "统一捕获异常并返回标准错误 JSON"
+    }
+  ],
+  "auth_policy": {
+    "provider": "jwt",
+    "token_location": "header:Authorization",
+    "public_key_url": "http://auth-service:8000/.well-known/jwks.json",
+    "claims_mapping": {
+      "user_id": "sub",
+      "roles": "roles"
+    },
+    "role_path_map": {
+      "admin": [
+        "/api/**"
+      ],
+      "user": [
+        "/api/projects/**",
+        "/api/deploy/**"
+      ]
+    }
+  },
+  "rate_limiting": {
+    "algorithm": "sliding_window",
+    "counter_type": "redis",
+    "rules": [
+      {
+        "id": "RL-001",
+        "name": "api_global",
+        "scope": "global",
+        "limit": 100,
+        "window_seconds": 60
+      },
+      {
+        "id": "RL-002",
+        "name": "deploy_endpoint",
+        "scope": "endpoint",
+        "limit": 10,
+        "window_seconds": 60
+      },
+      {
+        "id": "RL-003",
+        "name": "health_check",
+        "scope": "endpoint",
+        "limit": 30,
+        "window_seconds": 60
+      },
+      {
+        "id": "RL-004",
+        "name": "ws_connect",
+        "scope": "per_user",
+        "limit": 5,
+        "window_seconds": 60
+      }
+    ]
+  },
+  "error_handling": {
+    "strategy": "uniform_json_response",
+    "standard_codes": [
+      {
+        "status": 400,
+        "code": "BAD_REQUEST",
+        "message": "请求参数错误"
+      },
+      {
+        "status": 401,
+        "code": "UNAUTHORIZED",
+        "message": "未认证或令牌无效"
+      },
+      {
+        "status": 403,
+        "code": "FORBIDDEN",
+        "message": "权限不足"
+      },
+      {
+        "status": 404,
+        "code": "NOT_FOUND",
+        "message": "资源未找到"
+      },
+      {
+        "status": 429,
+        "code": "RATE_LIMITED",
+        "message": "请求过于频繁，请稍后再试"
+      },
+      {
+        "status": 502,
+        "code": "BAD_GATEWAY",
+        "message": "上游服务无效响应"
+      },
+      {
+        "status": 504,
+        "code": "GATEWAY_TIMEOUT",
+        "message": "上游服务响应超时"
+      }
+    ],
+    "fallback_status": 500,
+    "fallback_message": "内部网关错误"
+  },
+  "workflow": {
+    "trigger": "HTTP/WebSocket 请求到达",
+    "entry_point": "request_logger",
+    "steps": [
+      {
+        "id": "WFS-001",
+        "name": "请求日志记录",
+        "type": "middleware",
+        "implemented_by": "request_logger",
+        "description": "记录请求方法、路径、客户端IP"
+      },
+      {
+        "id": "WFS-002",
+        "name": "限流检查",
+        "type": "decision",
+        "implemented_by": "rate_limiter",
+        "description": "基于IP和用户检查剩余配额，超出返回429"
+      },
+      {
+        "id": "WFS-003",
+        "name": "JWT认证",
+        "type": "action",
+        "implemented_by": "jwt_authenticator",
+        "description": "解析验证JWT，提取用户信息注入请求头"
+      },
+      {
+        "id": "WFS-004",
+        "name": "路由匹配",
+        "type": "decision",
+        "implemented_by": "router",
+        "description": "查找匹配的路由规则"
+      },
+      {
+        "id": "WFS-005",
+        "name": "请求转发",
+        "type": "action",
+        "implemented_by": "router",
+        "description": "转发请求到上游服务"
+      },
+      {
+        "id": "WFS-006",
+        "name": "响应接收与转发",
+        "type": "action",
+        "implemented_by": "router",
+        "description": "接收上游响应并回传客户端"
+      },
+      {
+        "id": "WFS-007",
+        "name": "错误处理",
+        "type": "action",
+        "implemented_by": "error_handler",
+        "description": "捕获任何异常，转换为统一错误响应"
+      },
+      {
+        "id": "WFS-008",
+        "name": "结束",
+        "type": "end",
+        "implemented_by": "",
+        "description": "请求结束"
+      }
+    ],
+    "exit_points": [
+      "WFS-008"
+    ]
+  }
+}
