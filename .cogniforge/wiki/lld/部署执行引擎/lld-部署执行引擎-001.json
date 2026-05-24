@@ -1,0 +1,848 @@
+{
+  "meta": {
+    "doc_id": "lld-部署执行引擎-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "部署执行引擎",
+    "title": "部署执行引擎 详细设计文档",
+    "author": "design_agent",
+    "created": "2026-01-01T00:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-001"
+      ],
+      "contracts": [
+        "CTR-001"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "接收部署任务ID，根据该ID查询部署记录与关联的项目、环境信息",
+      "校验部署所需的前置条件（项目存在、环境配置有效、版本标签不冲突等）",
+      "通过 SSH 连接模块与远程主机交互：上传压缩包、创建版本目录、解压",
+      "调用脚本模板管理器生成启动/停止脚本并上传至远程版本目录",
+      "根据部署记录的 auto_start 字段决定是否远程执行启动脚本",
+      "管理部署任务的状态流转（queued → deploying → success/failed）",
+      "更新任务进度（0% ~ 100%）到持久化存储，供前端轮询或 WebSocket 推送",
+      "捕获并处理每一步的异常，统一写入错误信息和状态"
+    ],
+    "out_of_scope": [
+      "直接处理 HTTP 请求（由 Flask API 核心服务负责）",
+      "用户身份认证与权限校验（由 API 层完成）",
+      "前端 WebSocket 连接的建立与管理（由 API 层或网关负责）",
+      "项目、环境的 CRUD 管理",
+      "脚本模板的编辑与版本管理（由脚本模板管理器负责）",
+      "SSH 连接池的低层实现（由 SSH 连接模块提供）"
+    ],
+    "owned_components": [
+      "CMP-001"
+    ],
+    "owned_contracts": [
+      "CTR-001"
+    ],
+    "consumed_contracts": [
+      "CTR-002",
+      "CTR-003"
+    ],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "核心业务组件，负责编排完整的部署流程：接收部署请求后，依次执行上传文件、创建版本目录、解压、生成脚本、（可选）启动应用，并将进度反馈给前端。流程原子化，失败时不影响已有版本。",
+    "dependencies": [
+      "Flask API 核心服务",
+      "SSH 连接模块",
+      "脚本模板管理器"
+    ],
+    "tech_stack": [
+      "Python 3.10+",
+      "Flask",
+      "SQLAlchemy",
+      "paramiko"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [
+        "CTR-001"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005",
+          "DO-006"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "DeploymentRecord",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "Deployment"
+      },
+      "description": "代表一次部署任务的所有信息，贯穿整个流程。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键，部署任务唯一标识"
+        },
+        {
+          "name": "project_id",
+          "type": "Integer",
+          "required": true,
+          "description": "外键，关联的项目ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "Integer",
+          "required": true,
+          "description": "外键，关联的环境ID"
+        },
+        {
+          "name": "version_label",
+          "type": "String",
+          "required": true,
+          "description": "用户自定义版本标签（如 \"v1.0-20260524\"）或自动生成"
+        },
+        {
+          "name": "package_local_path",
+          "type": "String",
+          "required": true,
+          "description": "上传到服务器的压缩包绝对路径（或临时文件路径）"
+        },
+        {
+          "name": "remote_base_path",
+          "type": "String",
+          "required": true,
+          "description": "远程主机部署根路径，从环境配置中获取"
+        },
+        {
+          "name": "remote_version_path",
+          "type": "String",
+          "required": false,
+          "description": "远程版本目录完整路径（部署过程中填充）"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "required": true,
+          "description": "当前状态：QUEUED / DEPLOYING / SUCCESS / FAILED"
+        },
+        {
+          "name": "progress",
+          "type": "Integer",
+          "required": false,
+          "description": "进度百分比（0-100），执行中更新"
+        },
+        {
+          "name": "auto_start",
+          "type": "Boolean",
+          "required": true,
+          "description": "部署完成后是否自动启动应用"
+        },
+        {
+          "name": "error_message",
+          "type": "Text",
+          "required": false,
+          "description": "失败时的错误详细信息"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "记录创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "记录最后更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_deployments_project_status",
+          "unique": false,
+          "columns": [
+            "project_id",
+            "status"
+          ]
+        },
+        {
+          "name": "idx_deployments_environment",
+          "unique": false,
+          "columns": [
+            "environment_id"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "由 API 层创建（status=QUEUED）",
+        "update": "引擎在领任务时更新为 DEPLOYING，结束时置为 SUCCESS/FAILED",
+        "delete": "",
+        "retention": "记录不物理删除"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "TaskQueue",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "TaskQueue"
+      },
+      "description": "部署任务队列，存储待处理的部署任务ID。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "deployment_id",
+          "type": "Integer",
+          "required": true,
+          "description": "关联的部署记录ID"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "required": true,
+          "description": "队列项状态：PENDING / PROCESSING / COMPLETED"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "入队时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_taskqueue_status",
+          "unique": false,
+          "columns": [
+            "status"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "API 层创建部署记录同时入队",
+        "update": "引擎领任务时更新状态为 PROCESSING",
+        "delete": "任务完成后可归档或删除",
+        "retention": "保留最近30天记录"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "部署任务执行接口",
+      "type": "internal",
+      "endpoint": "execute_deployment",
+      "description": "触发部署任务执行的入口，由队列消费者调用。",
+      "provider_component_id": "CMP-001",
+      "consumer_component_ids": [
+        "QueueConsumer"
+      ],
+      "request": {
+        "parameters": {
+          "deployment_id": {
+            "type": "integer",
+            "required": true,
+            "description": "部署任务ID"
+          }
+        }
+      },
+      "response": {
+        "success": {
+          "type": "object",
+          "properties": {
+            "status": "string",
+            "message": "string"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "TASK_NOT_FOUND",
+          "message": "指定的部署任务不存在",
+          "description": "deployment_id 无效"
+        },
+        {
+          "code": "DEPLOYMENT_FAILED",
+          "message": "部署执行失败",
+          "description": "部署流程中发生异常"
+        }
+      ],
+      "pseudocode": "function execute_deployment(deployment_id): load deployment record; validate preconditions; update status to DEPLOYING; try: upload package; extract package; generate scripts; if auto_start: start application; update status to SUCCESS; catch exception: update status to FAILED; record error;",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "部署状态查询接口",
+      "type": "internal",
+      "endpoint": "get_deployment_status",
+      "description": "查询指定部署任务的当前状态和进度。",
+      "provider_component_id": "CMP-001",
+      "consumer_component_ids": [
+        "APIService"
+      ],
+      "request": {
+        "parameters": {
+          "deployment_id": {
+            "type": "integer",
+            "required": true,
+            "description": "部署任务ID"
+          }
+        }
+      },
+      "response": {
+        "success": {
+          "type": "object",
+          "properties": {
+            "status": "string",
+            "progress": "integer",
+            "error_message": "string"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "TASK_NOT_FOUND",
+          "message": "指定的部署任务不存在",
+          "description": "deployment_id 无效"
+        }
+      ],
+      "pseudocode": "function get_deployment_status(deployment_id): query deployment record by id; return status, progress, error_message;",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-003",
+      "name": "部署回调接口",
+      "type": "internal",
+      "endpoint": "deployment_callback",
+      "description": "部署完成后的回调处理（如清理资源、发送通知）。",
+      "provider_component_id": "CMP-001",
+      "consumer_component_ids": [
+        "DeploymentOrchestrator"
+      ],
+      "request": {
+        "parameters": {
+          "deployment_id": {
+            "type": "integer",
+            "required": true,
+            "description": "部署任务ID"
+          },
+          "result": {
+            "type": "string",
+            "required": true,
+            "description": "部署结果：SUCCESS / FAILED"
+          }
+        }
+      },
+      "response": {
+        "success": {
+          "type": "object",
+          "properties": {
+            "status": "string"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "CALLBACK_ERROR",
+          "message": "回调处理异常",
+          "description": "清理或通知失败"
+        }
+      ],
+      "pseudocode": "function deployment_callback(deployment_id, result): if result == 'SUCCESS': clean temp files; send notification; update queue item status;",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "DeploymentTask",
+      "object_type": "entity",
+      "description": "表示一个部署任务实例，包含执行所需的所有信息和状态。",
+      "behaviors": [
+        "execute",
+        "cancel",
+        "updateProgress"
+      ],
+      "fields": [
+        {
+          "name": "deploymentRecord",
+          "type": "DeploymentRecord",
+          "required": true,
+          "description": "持久化的部署记录"
+        }
+      ],
+      "ownership": "transient",
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "SSHConnector",
+      "object_type": "service",
+      "description": "封装与远程主机 SSH 连接操作的服务对象。",
+      "behaviors": [
+        "connect",
+        "uploadFile",
+        "executeCommand",
+        "disconnect"
+      ],
+      "fields": [
+        {
+          "name": "host",
+          "type": "string",
+          "required": true,
+          "description": "主机IP"
+        },
+        {
+          "name": "port",
+          "type": "integer",
+          "required": true,
+          "description": "SSH端口"
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "required": true,
+          "description": "SSH用户名"
+        },
+        {
+          "name": "key_path",
+          "type": "string",
+          "required": true,
+          "description": "SSH私钥路径"
+        }
+      ],
+      "ownership": "transient",
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-002"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "ScriptGenerator",
+      "object_type": "service",
+      "description": "根据应用类型生成启动/停止脚本。",
+      "behaviors": [
+        "generateStartScript",
+        "generateStopScript"
+      ],
+      "fields": [
+        {
+          "name": "templateEngine",
+          "type": "object",
+          "required": true,
+          "description": "模板引擎实例"
+        }
+      ],
+      "ownership": "transient",
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-003"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "DeploymentPreconditionValidator",
+      "object_type": "service",
+      "description": "验证部署执行所需的各项前置条件。",
+      "behaviors": [
+        "validate"
+      ],
+      "fields": [
+        {
+          "name": "rules",
+          "type": "list",
+          "required": true,
+          "description": "前置校验规则列表"
+        }
+      ],
+      "ownership": "transient",
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-005",
+      "name": "ProgressTracker",
+      "object_type": "value_object",
+      "description": "跟踪部署进度，并提供进度更新。",
+      "behaviors": [
+        "setProgress",
+        "getProgress"
+      ],
+      "fields": [
+        {
+          "name": "currentProgress",
+          "type": "integer",
+          "required": true,
+          "description": "当前进度百分比"
+        }
+      ],
+      "ownership": "transient",
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-006",
+      "name": "DeploymentCallback",
+      "object_type": "value_object",
+      "description": "部署完成后的回调动作集合。",
+      "behaviors": [
+        "invoke"
+      ],
+      "fields": [
+        {
+          "name": "actions",
+          "type": "list",
+          "required": true,
+          "description": "回调动作列表"
+        }
+      ],
+      "ownership": "transient",
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "DeploymentExecutor",
+      "description": "部署执行器核心服务契约，定义部署任务的执行、状态查询等操作。",
+      "dependencies": [
+        "SSHConnector",
+        "ScriptGenerator"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "methods": [
+        {
+          "name": "executeDeployment",
+          "signature": "executeDeployment(deployment_id: int) -> DeploymentResult",
+          "description": "执行一个部署任务。",
+          "precondition": "deployment_id 对应的部署记录存在且状态为 QUEUED，环境配置有效。",
+          "postcondition": "部署记录状态变更为 SUCCESS 或 FAILED，远程主机版本目录创建并填充文件。",
+          "input": {
+            "deployment_id": "int"
+          },
+          "output": {
+            "status": "string",
+            "message": "string"
+          },
+          "exceptions": [
+            {
+              "name": "SSHConnectionException",
+              "description": "SSH 连接失败时抛出",
+              "handling": "记录日志，标记部署失败"
+            },
+            {
+              "name": "DeploymentFailedException",
+              "description": "部署流程中任一步骤失败时抛出",
+              "handling": "记录错误信息，更新状态为 FAILED"
+            }
+          ],
+          "pseudocode": "load deployment record; validate preconditions; update status to DEPLOYING; try: connect SSH; upload package; extract; generate scripts; if auto_start: start app; update status to SUCCESS; catch SSHConnectionException as e: set status FAILED; log e; raise; catch DeploymentFailedException as e: set status FAILED; log e;",
+          "change_history": [
+            {
+              "version": 1,
+              "change_type": "created",
+              "summary": "初始创建",
+              "reason": "首次生成 LLD"
+            }
+          ]
+        },
+        {
+          "name": "getDeploymentStatus",
+          "signature": "getDeploymentStatus(deployment_id: int) -> DeploymentStatus",
+          "description": "查询部署任务状态。",
+          "precondition": "deployment_id 对应的部署记录存在。",
+          "postcondition": "返回最新状态。",
+          "input": {
+            "deployment_id": "int"
+          },
+          "output": {
+            "status": "string",
+            "progress": "int",
+            "error_message": "string"
+          },
+          "exceptions": [
+            {
+              "name": "TaskNotFoundException",
+              "description": "部署任务不存在时抛出",
+              "handling": "返回错误信息"
+            }
+          ],
+          "pseudocode": "find deployment by id; if not found: raise TaskNotFoundException; return status, progress, error_message;",
+          "change_history": [
+            {
+              "version": 1,
+              "change_type": "created",
+              "summary": "初始创建",
+              "reason": "首次生成 LLD"
+            }
+          ]
+        }
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "type": "invariant",
+      "description": "同一项目在同一环境下不能有两个状态为 QUEUED 或 DEPLOYING 的部署任务。",
+      "validation": "在创建部署任务前检查"
+    },
+    {
+      "id": "BR-002",
+      "type": "constraint",
+      "description": "部署失败时，远程主机上创建的版本目录不能删除，以便问题排查。",
+      "validation": "异常处理中确保不执行删除操作"
+    },
+    {
+      "id": "BR-003",
+      "type": "invariant",
+      "description": "部署进度更新必须保证原子性，进度值只能递增。",
+      "validation": "进度更新时校验新值大于旧值"
+    }
+  ],
+  "error_handling": {
+    "strategy": "所有部署步骤异常均捕获并记录到 deployment 记录 error_message 字段，状态置为 FAILED。SSH 连接异常进行重试（最多3次）。对于可恢复的错误（如网络超时）进行有限重试；对于不可恢复的错误（如命令执行失败）立即失败。",
+    "retry_policies": [
+      {
+        "exception": "SSHConnectionException",
+        "max_retries": 3,
+        "backoff": "exponential"
+      }
+    ],
+    "fallback_actions": [
+      "记录完整错误堆栈到日志",
+      "发送管理员通知",
+      "清理临时文件"
+    ]
+  }
+}
