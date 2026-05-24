@@ -2497,6 +2497,9 @@ def _render_lld(d: dict) -> str:
                                       "rgba(52,211,153,0.12)", "route-design"))
         rows_html = ""
         for r in route_design:
+            if isinstance(r, str):
+                rows_html += f'<div class="route-row"><span>{_esc(r)}</span></div>'
+                continue
             auth = r.get("auth", "")
             auth_tag = f'<span class="role-tag">{_esc(auth)}</span>' if auth else ""
             rows_html += (
@@ -2519,6 +2522,9 @@ def _render_lld(d: dict) -> str:
         parts.append(_section_header("🔄", f"交互流程 ({len(interaction_flows)})",
                                       "rgba(124,111,247,0.12)", "interaction-flows"))
         for flow in interaction_flows:
+            if isinstance(flow, str):
+                parts.append(f'<div class="flow-timeline"><div class="ft-title">{_esc(flow)}</div></div>')
+                continue
             ft_steps = ""
             for i, step in enumerate(flow.get("steps", [])):
                 ft_steps += (
@@ -2542,6 +2548,9 @@ def _render_lld(d: dict) -> str:
                                       "rgba(34,211,238,0.12)", "api-integration"))
         api_rows = ""
         for a in api_integration:
+            if isinstance(a, str):
+                api_rows += f'<tr><td colspan="3">{_esc(a)}</td></tr>'
+                continue
             api_rows += (
                 f'<tr><td><strong>{_esc(a.get("page",""))}</strong></td>'
                 f'<td style="font-family:monospace;font-size:0.85em">{_esc(a.get("endpoint",""))}</td>'
@@ -2559,6 +2568,9 @@ def _render_lld(d: dict) -> str:
                                       "rgba(124,111,247,0.12)", "route-table"))
         rt_rows = ""
         for rt in d["route_table"]:
+            if isinstance(rt, str):
+                rt_rows += f'<tr><td colspan="3">{_esc(rt)}</td></tr>'
+                continue
             rt_rows += (
                 f'<tr><td style="font-family:monospace">{_esc(rt.get("path_pattern",""))}</td>'
                 f'<td><strong>{_esc(rt.get("upstream",""))}</strong></td>'
@@ -2606,6 +2618,9 @@ def _render_lld(d: dict) -> str:
         if role_map:
             rows = ""
             for r in role_map:
+                if isinstance(r, str):
+                    rows += f'<tr><td colspan="2">{_esc(r)}</td></tr>'
+                    continue
                 roles_html = " ".join(f'<span class="role-tag">{_esc(role)}</span>' for role in r.get("roles", []))
                 rows += f'<tr><td style="font-family:monospace;font-size:0.85em">{_esc(r.get("path",""))}</td><td>{roles_html}</td></tr>'
             parts.append(
@@ -2628,6 +2643,9 @@ def _render_lld(d: dict) -> str:
         if special:
             sp_rows = ""
             for s in special:
+                if isinstance(s, str):
+                    sp_rows += f'<tr><td colspan="2">{_esc(s)}</td></tr>'
+                    continue
                 sp_rows += f'<tr><td style="font-family:monospace">{_esc(s.get("endpoint",""))}</td><td>{_esc(s.get("limit",""))}</td></tr>'
             parts.append(
                 f'<table class="body-table"><thead><tr><th>端点</th><th>限制</th></tr></thead><tbody>{sp_rows}</tbody></table>'
@@ -2648,8 +2666,14 @@ def _render_lld(d: dict) -> str:
             parts.append('<div class="body-label">Exchanges</div>')
             ex_rows = ""
             for ex in exchanges:
+                if isinstance(ex, str):
+                    ex_rows += f'<tr><td colspan="4">{_esc(ex)}</td></tr>'
+                    continue
                 bindings = ex.get("bindings", [])
-                bind_str = ", ".join(f'{b.get("queue","")} (rk: {b.get("routing_key","")})' for b in bindings)
+                bind_str = ", ".join(
+                    (f'{b.get("queue","")} (rk: {b.get("routing_key","")})' if isinstance(b, dict) else _esc(str(b)))
+                    for b in bindings
+                )
                 ex_rows += (
                     f'<tr><td style="font-family:monospace">{_esc(ex.get("name",""))}</td>'
                     f'<td>{_esc(ex.get("type",""))}</td>'
@@ -2833,6 +2857,9 @@ def _render_lld(d: dict) -> str:
                 # Fields table
                 rows = ""
                 for f in dm.get("fields", []):
+                    if isinstance(f, str):
+                        rows += f"<tr><td>{_esc(f)}</td><td></td><td></td></tr>"
+                        continue
                     required = f.get("required", False)
                     req_mark = ' <span style="color:var(--c-red);font-size:0.75em">*</span>' if required else ""
                     rows += (
@@ -3256,6 +3283,9 @@ def _render_lld(d: dict) -> str:
     if ifaces:
         parts.append(_section_header("🔌", f"接口定义 ({len(ifaces)})", "rgba(34,211,238,0.12)", "interfaces"))
         for iface in ifaces:
+            if isinstance(iface, str):
+                parts.append(f'<div class="contract-card" style="border-top:none"><p>{_esc(iface)}</p></div>')
+                continue
             endpoint = iface.get("endpoint", "")
             method = iface.get("method", "")
 
@@ -3388,6 +3418,12 @@ def _render_component_nodes(nodes: list, depth: int = 0) -> list:
     """Recursively render component tree nodes as HTML."""
     parts = []
     for node in nodes:
+        if isinstance(node, str):
+            parts.append(
+                f'<div class="comp-node{" child" if depth > 0 else ""}">'
+                f'<span style="color:var(--c-muted)">{_esc(node)}</span></div>'
+            )
+            continue
         child_cls = " child" if depth > 0 else ""
 
         # Props
