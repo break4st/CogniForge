@@ -15,6 +15,7 @@ from pathlib import Path
 from cogniforge.agents.base import BaseAgent
 from cogniforge.core.constants import AgentRole, DocumentType
 from cogniforge.core.exceptions import AgentError
+from cogniforge.wiki.wiki_renderer import repair_truncated_json
 
 
 class ArchitectAgent(BaseAgent):
@@ -194,18 +195,21 @@ class ArchitectAgent(BaseAgent):
 
         json_text = _extract_json(response.content)
 
-        try:
-            data = json.loads(json_text)
-            data["components"] = self._assign_ids(data.get("components", []), "CMP")
-            data["contracts"] = self._assign_ids(data.get("contracts", []), "CTR")
-            data["data_models"] = self._assign_ids(data.get("data_models", []), "DM")
-            json_text = json.dumps(data, ensure_ascii=False, indent=2)
-        except json.JSONDecodeError:
-            pass
+        data, incomplete = repair_truncated_json(json_text)
+        if incomplete and cb:
+            cb("警告: LLM 输出被截断，已自动修复 JSON 结构")
+
+        data["components"] = self._assign_ids(data.get("components", []), "CMP")
+        data["contracts"] = self._assign_ids(data.get("contracts", []), "CTR")
+        data["data_models"] = self._assign_ids(data.get("data_models", []), "DM")
+        json_text = json.dumps(data, ensure_ascii=False, indent=2)
 
         # Write JSON file
         sad_path.parent.mkdir(parents=True, exist_ok=True)
         sad_path.write_text(json_text, encoding="utf-8")
+
+        # Validate written JSON
+        json.loads(sad_path.read_text(encoding="utf-8"))
 
         return self._commit_and_result(
             sad_path, title, response.content,
@@ -395,15 +399,23 @@ class ArchitectAgent(BaseAgent):
                 json.dumps(updated_sad, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+
+            # Validate written JSON
+            json.loads(sad_path.read_text(encoding="utf-8"))
+
             rel_sad = sad_path.relative_to(self.config.repo_path).as_posix()
             self.wiki_system.git_storage.repo.index.add([rel_sad])
 
             # Render HTML
             from cogniforge.wiki.wiki_renderer import render_file
             html_path = render_file(sad_path)
-            if html_path:
-                rel_html = html_path.relative_to(self.config.repo_path).as_posix()
-                self.wiki_system.git_storage.repo.index.add([rel_html])
+            if not html_path:
+                return self.format_result(
+                    status="failed",
+                    message="SAD HTML 渲染失败",
+                )
+            rel_html = html_path.relative_to(self.config.repo_path).as_posix()
+            self.wiki_system.git_storage.repo.index.add([rel_html])
 
             operation = turn_data.get("operation", "modify")
             self.wiki_system.git_storage.commit(
@@ -565,28 +577,32 @@ class ArchitectAgent(BaseAgent):
         # Normalize component types
         try:
             data = json.loads(sad_path.read_text(encoding="utf-8"))
-            components = data.get("components", [])
-            fixed = 0
-            for c in components:
-                raw = c.get("type", "service")
-                canonical = self._normalize_component_type(raw)
-                if canonical != raw:
-                    c["type"] = canonical
-                    fixed += 1
-            if fixed:
-                sad_path.write_text(json.dumps(data, ensure_ascii=False, indent=2),
-                                    encoding="utf-8")
-        except Exception:
-            pass
+        except json.JSONDecodeError as e:
+            return self.format_result(status="failed",
+                                       message=f"SAD JSON 写入验证失败: {e}")
+
+        components = data.get("components", [])
+        fixed = 0
+        for c in components:
+            raw = c.get("type", "service")
+            canonical = self._normalize_component_type(raw)
+            if canonical != raw:
+                c["type"] = canonical
+                fixed += 1
+        if fixed:
+            sad_path.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                                encoding="utf-8")
 
         rel_sad = sad_path.relative_to(self.config.repo_path).as_posix()
         self.wiki_system.git_storage.repo.index.add([rel_sad])
 
         from cogniforge.wiki.wiki_renderer import render_file
         html_path = render_file(sad_path)
-        rel_html = html_path.relative_to(self.config.repo_path).as_posix() if html_path else ""
-        if rel_html:
-            self.wiki_system.git_storage.repo.index.add([rel_html])
+        if not html_path:
+            return self.format_result(status="failed",
+                                       message="SAD HTML 渲染失败，JSON 可能损坏")
+        rel_html = html_path.relative_to(self.config.repo_path).as_posix()
+        self.wiki_system.git_storage.repo.index.add([rel_html])
 
         self.wiki_system.git_storage.commit(f"feat: add SAD - {title}", "architect_agent")
 

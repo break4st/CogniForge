@@ -12,6 +12,7 @@ from pathlib import Path
 from cogniforge.agents.base import BaseAgent
 from cogniforge.core.constants import AgentRole, DocumentType, ModuleType
 from cogniforge.core.exceptions import AgentError
+from cogniforge.wiki.wiki_renderer import repair_truncated_json
 
 
 # ---------------------------------------------------------------------------
@@ -546,17 +547,19 @@ class DesignAgent(BaseAgent):
             json_text = _extract_json(response.content)
 
             # Assign stable IDs to data_models and interfaces
-            try:
-                data = json.loads(json_text)
-                data["data_models"] = self._assign_ids(data.get("data_models", []), "DM")
-                data["interfaces"] = self._assign_ids(data.get("interfaces", []), "IF")
-                json_text = json.dumps(data, ensure_ascii=False, indent=2)
-            except json.JSONDecodeError:
-                pass
+            data, incomplete = repair_truncated_json(json_text)
+            if incomplete and _progress:
+                _progress("警告: LLM 输出被截断，已自动修复 JSON 结构")
+            data["data_models"] = self._assign_ids(data.get("data_models", []), "DM")
+            data["interfaces"] = self._assign_ids(data.get("interfaces", []), "IF")
+            json_text = json.dumps(data, ensure_ascii=False, indent=2)
 
             json_abs = Path(self.config.repo_path) / json_path
             json_abs.parent.mkdir(parents=True, exist_ok=True)
             json_abs.write_text(json_text, encoding="utf-8")
+
+            # Validate written JSON
+            json.loads(json_abs.read_text(encoding="utf-8"))
 
             # ── Validation loop (max 2 retries) ──
             correction_attempts = 0

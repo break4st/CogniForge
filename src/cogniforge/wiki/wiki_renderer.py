@@ -65,11 +65,38 @@ def _repair_json_text(text: str) -> str:
 def load_json_with_repair(file_path: Path) -> dict:
     """Read a JSON file, attempting repair if the initial parse fails."""
     raw = file_path.read_text(encoding="utf-8")
+    data, _ = repair_truncated_json(raw)
+    return data
+
+
+def repair_truncated_json(text: str) -> tuple[dict, bool]:
+    """Attempt to repair truncated LLM-generated JSON by closing missing brackets.
+
+    Returns (data, incomplete): parsed dict and whether truncation was repaired.
+    Raises ValueError when repair fails completely.
+    """
+    # 1. Try direct parse first
     try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        repaired = _repair_json_text(raw)
-        return json.loads(repaired)
+        return json.loads(text), False
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Repair unescaped quotes in string values
+    repaired = _repair_json_text(text)
+
+    # 3. Close missing brackets — common in LLM token-limit truncation
+    open_braces = repaired.count("{") - repaired.count("}")
+    open_brackets = repaired.count("[") - repaired.count("]")
+    if open_braces > 0 or open_brackets > 0:
+        suffix = "\n" + "]" * open_brackets + "}" * open_braces
+        repaired += suffix
+
+    try:
+        data = json.loads(repaired)
+        data.setdefault("meta", {})["incomplete"] = True
+        return data, True
+    except json.JSONDecodeError as e:
+        raise ValueError(f"JSON 自修复失败: {e}") from e
 
 
 # ---------------------------------------------------------------------------
