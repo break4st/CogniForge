@@ -1714,13 +1714,16 @@ def _render_sad_data_models(models: list) -> str:
     for dm in models:
         rows = ""
         for f in dm.get("fields", []):
-            required = f.get("required", False)
-            req_mark = ' <span style="color:var(--c-red);font-size:0.75em">*</span>' if required else ""
-            rows += (
-                f"<tr><td>{_esc(f.get('name',''))}{req_mark}</td>"
-                f"<td class=\"field-type\">{_esc(f.get('type',''))}</td>"
-                f"<td>{_esc(f.get('description',''))}</td></tr>"
-            )
+            if isinstance(f, str):
+                rows += f"<tr><td>{_esc(f)}</td><td></td><td></td></tr>"
+            else:
+                required = f.get("required", False)
+                req_mark = ' <span style="color:var(--c-red);font-size:0.75em">*</span>' if required else ""
+                rows += (
+                    f"<tr><td>{_esc(f.get('name',''))}{req_mark}</td>"
+                    f"<td class=\"field-type\">{_esc(f.get('type',''))}</td>"
+                    f"<td>{_esc(f.get('description',''))}</td></tr>"
+                )
         src_reqs = dm.get("source_requirements", [])
         src_html = ""
         if src_reqs:
