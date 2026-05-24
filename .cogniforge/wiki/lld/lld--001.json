@@ -1,0 +1,846 @@
+{
+  "meta": {
+    "doc_id": "lld-Deployment Service-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "Deployment Service",
+    "title": "部署服务组件详细设计",
+    "author": "design_agent",
+    "created": "2025-04-07T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-004"
+      ],
+      "contracts": [
+        "CTR-004",
+        "CTR-005",
+        "CTR-006"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "部署任务的创建、执行与状态管理",
+      "部署前的本地文件、远程连接权限预检查",
+      "通过SFTP上传文件至远程服务器",
+      "在远程服务器上创建版本目录并执行部署脚本",
+      "部署过程实时日志记录"
+    ],
+    "out_of_scope": [
+      "SSH连接的建立与管理（由SSH客户端组件提供）",
+      "凭证的加解密（由加密服务组件提供）",
+      "部署历史的持久化存储（由历史与日志服务组件提供）",
+      "项目与环境的配置管理（由项目服务组件和环境服务组件提供）"
+    ],
+    "owned_components": [
+      "CMP-004"
+    ],
+    "owned_contracts": [
+      "CTR-004"
+    ],
+    "consumed_contracts": [
+      "CTR-005",
+      "CTR-006",
+      "CTR-007",
+      "CTR-008"
+    ],
+    "owned_data_models": [],
+    "consumed_data_models": [
+      "DM-001",
+      "DM-002"
+    ]
+  },
+  "overview": {
+    "description": "本模块负责执行「一键部署」的核心业务流程。它接收来自前端的部署请求，协调SSH客户端、加密服务等组件，完成从文件上传到远程脚本执行的完整部署流水线，并对整个生命周期进行状态管理和日志记录。",
+    "dependencies": [
+      "SSH Client Service",
+      "Encryption Service",
+      "Project Service",
+      "Environment Service",
+      "History & Log Service"
+    ],
+    "tech_stack": [
+      "Python 3.10+",
+      "FastAPI",
+      "SQLite 3"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-004"
+      ],
+      "sad_contract_ids": [
+        "CTR-004",
+        "CTR-005",
+        "CTR-006"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "Deployment",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "deployments"
+      },
+      "description": "部署记录表，存储每次部署任务的元数据和状态。本服务仅关注此表的部署执行相关字段视图。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "部署记录主键"
+        },
+        {
+          "name": "project_id",
+          "type": "Integer",
+          "required": true,
+          "description": "关联的项目ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "Integer",
+          "required": true,
+          "description": "关联的环境ID"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "required": true,
+          "description": "部署状态。枚举值：PENDING, UPLOADING, RUNNING, SUCCESS, FAILED, CANCELLED"
+        },
+        {
+          "name": "file_path",
+          "type": "String",
+          "required": true,
+          "description": "要部署的本地文件路径"
+        },
+        {
+          "name": "version",
+          "type": "String",
+          "required": true,
+          "description": "部署版本号"
+        },
+        {
+          "name": "log",
+          "type": "String",
+          "required": false,
+          "description": "部署过程产生的实时日志文本"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "记录创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "记录最后更新时间"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [],
+      "constraints": [],
+      "lifecycle": {
+        "create": "",
+        "update": "",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "Environment",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Environment Service-001",
+        "model_name": "environments"
+      },
+      "description": "环境配置表，本服务仅引用环境和凭证相关字段用于获取远程连接信息。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "环境ID"
+        },
+        {
+          "name": "name",
+          "type": "String",
+          "required": false,
+          "description": "环境名称"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [],
+      "constraints": [],
+      "lifecycle": {
+        "create": "",
+        "update": "",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "创建并开始部署",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-004",
+      "provider_component_id": "CMP-004",
+      "method": "POST",
+      "endpoint": "/api/deployments",
+      "description": "接收前端部署请求，创建部署记录并异步执行部署流水线。",
+      "parameters": [],
+      "request_body": {
+        "environment_id": "Integer",
+        "file_path": "String",
+        "version": "String"
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "id": "Integer",
+          "project_id": "Integer",
+          "environment_id": "Integer",
+          "status": "String",
+          "file_path": "String",
+          "version": "String",
+          "log": "String",
+          "created_at": "String",
+          "updated_at": "String"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "INVALID_PARAMETER",
+          "message": "请求参数格式错误"
+        },
+        {
+          "status": 404,
+          "code": "ENVIRONMENT_NOT_FOUND",
+          "message": "指定的环境不存在"
+        },
+        {
+          "status": 409,
+          "code": "DEPLOYMENT_IN_PROGRESS",
+          "message": "该环境已有部署任务正在执行中"
+        },
+        {
+          "status": 500,
+          "code": "INTERNAL_ERROR",
+          "message": "启动部署任务时发生内部错误"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "查询部署状态",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-005",
+      "provider_component_id": "CMP-004",
+      "method": "GET",
+      "endpoint": "/api/deployments/{deployment_id}",
+      "description": "根据部署ID查询单次部署的详细信息与当前状态。",
+      "parameters": [
+        {
+          "name": "deployment_id",
+          "type": "Integer",
+          "in": "path",
+          "required": true,
+          "description": "部署记录ID"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "Integer",
+          "project_id": "Integer",
+          "environment_id": "Integer",
+          "status": "String",
+          "file_path": "String",
+          "version": "String",
+          "log": "String",
+          "created_at": "String",
+          "updated_at": "String"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 404,
+          "code": "DEPLOYMENT_NOT_FOUND",
+          "message": "指定的部署记录不存在"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-003",
+      "name": "取消部署任务",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-006",
+      "provider_component_id": "CMP-004",
+      "method": "POST",
+      "endpoint": "/api/deployments/{deployment_id}/cancel",
+      "description": "尝试取消一个尚未结束的部署任务。",
+      "parameters": [
+        {
+          "name": "deployment_id",
+          "type": "Integer",
+          "in": "path",
+          "required": true,
+          "description": "要取消的部署记录ID"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "Integer",
+          "status": "String",
+          "message": "String"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 404,
+          "code": "DEPLOYMENT_NOT_FOUND",
+          "message": "指定的部署记录不存在"
+        },
+        {
+          "status": 409,
+          "code": "DEPLOYMENT_NOT_CANCELLABLE",
+          "message": "该部署任务当前状态不可取消"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "所有API层错误通过FastAPI异常处理器统一捕获，转换为标准错误响应格式。业务逻辑层异常向上抛出自定义异常，由控制器层映射为对应的HTTP错误码。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "4xx",
+        "name": "客户端错误",
+        "description": "包含参数校验失败(400)、资源未找到(404)、业务规则冲突(409)等。"
+      },
+      {
+        "code": "5xx",
+        "name": "服务端错误",
+        "description": "包含SSH连接失败、文件I/O错误等内部处理异常，统一返回500，具体原因记录日志。"
+      }
+    ]
+  },
+  "domain_objects": [
+    {
+      "name": "Deployment",
+      "object_type": "entity",
+      "description": "部署任务实体，代表一次完整的部署流程及其状态。",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "Long",
+          "required": true,
+          "source": "db",
+          "description": "唯一标识"
+        },
+        {
+          "name": "projectId",
+          "type": "Long",
+          "required": true,
+          "source": "db",
+          "description": "关联项目ID"
+        },
+        {
+          "name": "environmentId",
+          "type": "Long",
+          "required": true,
+          "source": "db",
+          "description": "关联环境ID"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "required": true,
+          "source": "db",
+          "description": "部署状态"
+        },
+        {
+          "name": "filePath",
+          "type": "String",
+          "required": true,
+          "source": "db",
+          "description": "本地待部署文件路径"
+        },
+        {
+          "name": "version",
+          "type": "String",
+          "required": true,
+          "source": "db",
+          "description": "部署版本号"
+        },
+        {
+          "name": "log",
+          "type": "String",
+          "required": false,
+          "source": "db",
+          "description": "累积日志输出"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime",
+          "required": true,
+          "source": "db",
+          "description": "创建时间"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DateTime",
+          "required": true,
+          "source": "db",
+          "description": "更新时间"
+        }
+      ]
+    },
+    {
+      "name": "DeployRequest",
+      "object_type": "dto",
+      "description": "创建部署的请求DTO",
+      "attributes": [
+        {
+          "name": "environmentId",
+          "type": "Long",
+          "required": true,
+          "source": "input",
+          "description": "目标环境ID"
+        },
+        {
+          "name": "filePath",
+          "type": "String",
+          "required": true,
+          "source": "input",
+          "description": "要部署的本地文件绝对路径"
+        },
+        {
+          "name": "version",
+          "type": "String",
+          "required": true,
+          "source": "input",
+          "description": "部署版本号"
+        }
+      ],
+      "maps_to_entity": "Deployment"
+    },
+    {
+      "name": "DeploymentResponse",
+      "object_type": "dto",
+      "description": "查询部署状态的响应DTO",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "Long",
+          "required": true,
+          "source": "db",
+          "description": "部署记录ID"
+        },
+        {
+          "name": "projectId",
+          "type": "Long",
+          "required": true,
+          "source": "db",
+          "description": "项目ID"
+        },
+        {
+          "name": "environmentId",
+          "type": "Long",
+          "required": true,
+          "source": "db",
+          "description": "环境ID"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "required": true,
+          "source": "db",
+          "description": "当前状态"
+        },
+        {
+          "name": "filePath",
+          "type": "String",
+          "required": true,
+          "source": "db",
+          "description": "文件路径"
+        },
+        {
+          "name": "version",
+          "type": "String",
+          "required": true,
+          "source": "db",
+          "description": "版本号"
+        },
+        {
+          "name": "log",
+          "type": "String",
+          "required": false,
+          "source": "db",
+          "description": "日志"
+        },
+        {
+          "name": "createdAt",
+          "type": "String",
+          "required": true,
+          "source": "db",
+          "description": "创建时间"
+        },
+        {
+          "name": "updatedAt",
+          "type": "String",
+          "required": true,
+          "source": "db",
+          "description": "更新时间"
+        }
+      ],
+      "maps_to_entity": "Deployment"
+    },
+    {
+      "name": "RemoteServerInfo",
+      "object_type": "value_object",
+      "description": "解密后的远程服务器连接信息，不可变。",
+      "attributes": [
+        {
+          "name": "host",
+          "type": "String",
+          "required": true,
+          "source": "derived",
+          "description": "IP或域名"
+        },
+        {
+          "name": "port",
+          "type": "Integer",
+          "required": false,
+          "source": "derived",
+          "description": "SSH端口"
+        },
+        {
+          "name": "username",
+          "type": "String",
+          "required": true,
+          "source": "derived",
+          "description": "SSH用户名"
+        },
+        {
+          "name": "password",
+          "type": "String",
+          "required": false,
+          "source": "derived",
+          "description": "SSH密码，与密钥二选一"
+        },
+        {
+          "name": "privateKey",
+          "type": "String",
+          "required": false,
+          "source": "derived",
+          "description": "SSH私钥，与密码二选一"
+        }
+      ]
+    },
+    {
+      "name": "DeploymentStatus",
+      "object_type": "enum",
+      "description": "部署任务所有可能的状态常量",
+      "values": [
+        "PENDING",
+        "UPLOADING",
+        "RUNNING",
+        "SUCCESS",
+        "FAILED",
+        "CANCELLED"
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "name": "DeploymentService",
+      "description": "负责执行部署流水线的核心业务逻辑。",
+      "methods": [
+        {
+          "name": "execute_deployment",
+          "signature": "(deployRequest: DeployRequest) -> Deployment",
+          "precondition": "deployRequest 中的 environmentId 对应的环境已通过连接测试且未被其他部署任务占用；本地 filePath 路径存在且可读。",
+          "postcondition": "数据库中生成一条部署记录，其状态为终态(SUCCESS/FAILED/CANCELLED)；若成功，远程服务器目标路径下存在新部署的文件。",
+          "description": "异步执行完整的部署流水线：预检查 -> SFTP上传 -> 远程执行部署脚本 -> 记录日志与更新状态。",
+          "exceptions": [
+            {
+              "name": "EnvironmentNotFoundException",
+              "trigger": "environmentId 在数据库中不存在",
+              "http_status": 404
+            },
+            {
+              "name": "FileNotFoundForUpload",
+              "trigger": "filePath 对应的文件不存在",
+              "http_status": 400
+            },
+            {
+              "name": "DeploymentInProgressException",
+              "trigger": "同一环境已有非终态的部署任务",
+              "http_status": 409
+            },
+            {
+              "name": "SshConnectionException",
+              "trigger": "创建SSH连接或认证失败",
+              "http_status": 500
+            },
+            {
+              "name": "DeploymentExecutionException",
+              "trigger": "远程执行部署脚本返回非零退出码",
+              "http_status": 500
+            }
+          ]
+        },
+        {
+          "name": "get_deployment_status",
+          "signature": "(deploymentId: Long) -> Deployment",
+          "precondition": "deploymentId 对应的部署记录存在。",
+          "postcondition": "返回该部署记录的当前状态信息。",
+          "description": "根据ID查询部署任务的详细状态。",
+          "exceptions": [
+            {
+              "name": "DeploymentNotFoundException",
+              "trigger": "deploymentId 对应的记录不存在",
+              "http_status": 404
+            }
+          ]
+        },
+        {
+          "name": "cancel_deployment",
+          "signature": "(deploymentId: Long) -> Deployment",
+          "precondition": "deploymentId 对应的部署记录存在且状态为 PENDING。",
+          "postcondition": "该部署记录的状态更新为 CANCELLED，且异步任务被中止。",
+          "description": "取消一个尚未开始执行的部署任务。",
+          "exceptions": [
+            {
+              "name": "DeploymentNotFoundException",
+              "trigger": "deploymentId 对应的记录不存在",
+              "http_status": 404
+            },
+            {
+              "name": "DeploymentNotCancellableException",
+              "trigger": "部署状态不为 PENDING，无法取消",
+              "http_status": 409
+            }
+          ]
+        }
+      ],
+      "repository_dependencies": [
+        "DeploymentRepository.findById(deploymentId) -> Deployment?",
+        "DeploymentRepository.save(deployment) -> Deployment",
+        "DeploymentRepository.existsActiveByEnvironmentId(environmentId) -> boolean"
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "一个环境同一时间只能有一个部署任务处于非终态（PENDING， UPLOADING， RUNNING）。",
+      "部署任务的生命周期只能向前推进，终态（SUCCESS， FAILED， CANCELLED）不可逆转。"
+    ],
+    "state_machines": [
+      {
+        "entity": "Deployment",
+        "states": [
+          "PENDING",
+          "UPLOADING",
+          "RUNNING",
+          "SUCCESS",
+          "FAILED",
+          "CANCELLED"
+        ],
+        "transitions": [
+          {
+            "from": "PENDING",
+            "to": "CANCELLED",
+            "trigger": "用户发起取消操作",
+            "actor": "User"
+          },
+          {
+            "from": "PENDING",
+            "to": "UPLOADING",
+            "trigger": "预检查通过，开始上传文件",
+            "actor": "System"
+          },
+          {
+            "from": "UPLOADING",
+            "to": "RUNNING",
+            "trigger": "文件上传完成，开始执行远程脚本",
+            "actor": "System"
+          },
+          {
+            "from": "UPLOADING",
+            "to": "FAILED",
+            "trigger": "文件上传过程中发生错误",
+            "actor": "System"
+          },
+          {
+            "from": "RUNNING",
+            "to": "SUCCESS",
+            "trigger": "远程脚本执行成功（退出码0）",
+            "actor": "System"
+          },
+          {
+            "from": "RUNNING",
+            "to": "FAILED",
+            "trigger": "远程脚本执行失败（退出码非0）或执行过程异常",
+            "actor": "System"
+          }
+        ],
+        "irreversible_rules": [
+          "状态一旦变为 CANCELLED， SUCCESS 或 FAILED，则不可再变更为其他状态。"
+        ],
+        "concurrency": "创建部署时，需在数据库层面检查同一环境是否已有非终态记录，并利用唯一约束或乐观锁防止并发创建。"
+      }
+    ],
+    "cross_service_rules": [
+      "在部署开始前，必须调用「环境服务组件」的 testConnection 接口（或复用其逻辑）对目标环境进行连接性预检查。",
+      "所有部署过程的日志输出，应通过调用「历史与日志服务组件」的 log 接口进行追加记录，实现日志的持久化和实时推送。"
+    ]
+  }
+}
