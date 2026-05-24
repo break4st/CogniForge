@@ -114,13 +114,15 @@ def validate_lld_json(json_path: Path) -> dict:
 
     # 4a. data_models — ownership rules
     if module_type == "database":
-        canonical_tables = [m for m in data.get("data_models", [])
+        canonical_tables = [m for m in data.get("data_models", []) if isinstance(m, dict)
                            if m.get("ownership") == "canonical" and m.get("type") == "table"]
         if not canonical_tables:
             violations.append(_v("data_models", "ownership",
                                  "database 模块必须至少有一个 ownership=canonical 的 table"))
 
     for dm in data.get("data_models", []):
+        if not isinstance(dm, dict):
+            continue
         ownership = dm.get("ownership", "")
         if ownership == "derived":
             source = dm.get("source")
@@ -133,6 +135,8 @@ def validate_lld_json(json_path: Path) -> dict:
 
     # 4b. domain_objects (service only)
     for dobj in data.get("domain_objects", []):
+        if not isinstance(dobj, dict):
+            continue
         ot = dobj.get("object_type", "")
         if ot in ("entity", "value_object", "dto"):
             attrs = dobj.get("attributes", [])
@@ -140,6 +144,8 @@ def validate_lld_json(json_path: Path) -> dict:
                 violations.append(_v("domain_objects", f"{dobj.get('name','?')}.attributes",
                                      f"领域对象 '{dobj.get('name','?')}' ({ot}) 缺少 attributes"))
             for a in attrs:
+                if not isinstance(a, dict):
+                    continue
                 if ot == "entity" and not a.get("source"):
                     warnings.append(_v("domain_objects", f"{dobj.get('name','?')}.{a.get('name','?')}.source",
                                        f"entity '{dobj.get('name','?')}' 的属性 '{a.get('name','?')}' 未标注 source"))
@@ -150,11 +156,15 @@ def validate_lld_json(json_path: Path) -> dict:
 
     # 4c. service_contracts (service only)
     for svc in data.get("service_contracts", []):
+        if not isinstance(svc, dict):
+            continue
         methods = svc.get("methods", [])
         if not methods:
             violations.append(_v("service_contracts", f"{svc.get('name','?')}.methods",
                                  f"服务 '{svc.get('name','?')}' 没有任何方法"))
         for m in methods:
+            if not isinstance(m, dict):
+                continue
             meth_name = m.get("name", "?")
             if not m.get("precondition"):
                 warnings.append(_v("service_contracts", f"{svc.get('name','?')}.{meth_name}.precondition",
@@ -168,12 +178,18 @@ def validate_lld_json(json_path: Path) -> dict:
 
     # 4d. business_rules (service only)
     br = data.get("business_rules", {})
-    if isinstance(br, dict):
+    if isinstance(br, list):
+        # LLM may output list of {id, type, description}; treat non-empty as sufficient
+        if not br:
+            warnings.append(_v("business_rules", "invariants", "business_rules 为空列表"))
+    elif isinstance(br, dict):
         if not br.get("invariants"):
             warnings.append(_v("business_rules", "invariants", "business_rules 缺少 invariants"))
 
     # 4e. interfaces — method field required
     for iface in data.get("interfaces", []):
+        if not isinstance(iface, dict):
+            continue
         if not iface.get("method"):
             violations.append(_v("interfaces", f"{iface.get('name','?')}.method",
                                  f"接口 '{iface.get('name','?')}' 缺少 method 字段"))
@@ -188,12 +204,16 @@ def validate_lld_json(json_path: Path) -> dict:
 
     # 4f. component_tree (frontend only)
     for comp in data.get("component_tree", []):
+        if not isinstance(comp, dict):
+            continue
         if not comp.get("props") and not comp.get("events") and not comp.get("state"):
             warnings.append(_v("component_tree", f"{comp.get('name','?')}",
                                f"组件 '{comp.get('name','?')}' 没有定义 props/events/state"))
 
     # 4g. route_table (gateway only)
     for rt in data.get("route_table", []):
+        if not isinstance(rt, dict):
+            continue
         if not rt.get("path_pattern") or not rt.get("upstream"):
             violations.append(_v("route_table", f"{rt.get('path_pattern','?')}",
                                  f"路由条目缺少 path_pattern 或 upstream"))
@@ -222,8 +242,16 @@ def validate_lld_json(json_path: Path) -> dict:
                                              f"消息队列类型基础设施缺少必需章节 '{sec}'"))
 
     # 4j. index_strategy (database only)
-    for table in data.get("index_strategy", []):
-        if not table.get("table") or not table.get("indexes"):
+    idx_strat = data.get("index_strategy", [])
+    # Normalize: LLM may output dict {description, indexes} or list of tables
+    if isinstance(idx_strat, dict):
+        idx_strat = idx_strat.get("indexes", [])
+    elif not isinstance(idx_strat, list):
+        idx_strat = []
+    for table in idx_strat:
+        if not isinstance(table, dict):
+            continue
+        if not table.get("table") and not table.get("indexes"):
             violations.append(_v("index_strategy", "table",
                                  f"index_strategy 条目缺少 table 名或 indexes"))
 
@@ -251,6 +279,8 @@ def validate_lld_json(json_path: Path) -> dict:
     # ── 7. Traceability checks ──
     traces = data.get("traceability", [])
     for t in traces:
+        if not isinstance(t, dict):
+            continue
         req_id = t.get("requirement_id", "")
         if not t.get("sad_component_ids") and not t.get("sad_contract_ids"):
             warnings.append(_v("traceability", req_id,
