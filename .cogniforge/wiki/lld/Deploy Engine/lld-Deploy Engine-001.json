@@ -1,0 +1,933 @@
+{
+  "meta": {
+    "doc_id": "lld-Deploy Engine-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "Deploy Engine",
+    "title": "Deploy Engine 详细设计",
+    "author": "design_agent",
+    "created": "2025-03-27",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-003"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-005"
+      ],
+      "contracts": [
+        "CTR-007"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "从 RabbitMQ 消费部署任务消息",
+      "通过 SFTP/SCP 传输部署文件到远程服务器",
+      "远程执行 Shell 命令（创建目录、解压、生成脚本、赋予权限）",
+      "原子更新 current 符号链接",
+      "实时捕获命令输出并通过 WebSocket 推送日志",
+      "部署失败时执行回滚操作",
+      "更新部署记录状态"
+    ],
+    "out_of_scope": [
+      "用户认证与鉴权",
+      "部署记录创建、文件上传、任务入队",
+      "WebSocket 的网关代理实现",
+      "前端界面展示"
+    ],
+    "owned_components": [
+      "CMP-005"
+    ],
+    "owned_contracts": [
+      "CTR-007"
+    ],
+    "consumed_contracts": [],
+    "owned_data_models": [
+      "DM-002",
+      "DM-003",
+      "DM-004"
+    ],
+    "consumed_data_models": [
+      "DM-001"
+    ]
+  },
+  "overview": {
+    "description": "部署执行引擎，消费 RabbitMQ 中的部署任务消息，通过 SSH 连接远程服务器执行文件上传、解压、脚本生成、符号链接更新等步骤，并实时推送日志。",
+    "dependencies": [
+      "Business Service",
+      "API Gateway",
+      "MySQL",
+      "RabbitMQ"
+    ],
+    "tech_stack": [
+      "Python 3.11",
+      "FastAPI",
+      "RabbitMQ 3.12",
+      "MySQL 8.0",
+      "AsyncSSH"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-003",
+      "sad_component_ids": [
+        "CMP-005"
+      ],
+      "sad_contract_ids": [
+        "CTR-007"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002",
+          "DM-003",
+          "DM-004"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005",
+          "DO-006"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "Deployment",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "deployment"
+      },
+      "description": "部署记录表，存储每次部署任务的详细信息",
+      "fields": [
+        {
+          "name": "id",
+          "type": "String",
+          "required": true,
+          "description": "部署记录 ID"
+        },
+        {
+          "name": "task_id",
+          "type": "String",
+          "required": true,
+          "description": "任务唯一标识"
+        },
+        {
+          "name": "project_id",
+          "type": "String",
+          "required": true,
+          "description": "项目 ID"
+        },
+        {
+          "name": "environment",
+          "type": "String",
+          "required": true,
+          "description": "目标环境"
+        },
+        {
+          "name": "file_path",
+          "type": "String",
+          "required": true,
+          "description": "构建产物存储路径"
+        },
+        {
+          "name": "version",
+          "type": "String",
+          "required": true,
+          "description": "版本号"
+        },
+        {
+          "name": "target_server_ip",
+          "type": "String",
+          "required": true,
+          "description": "目标服务器 IP"
+        },
+        {
+          "name": "target_server_user",
+          "type": "String",
+          "required": true,
+          "description": "SSH 用户名"
+        },
+        {
+          "name": "target_auth_method",
+          "type": "String",
+          "required": true,
+          "description": "认证方式（key/password）"
+        },
+        {
+          "name": "target_auth_secret_path",
+          "type": "String",
+          "required": true,
+          "description": "认证密钥路径或密文引用"
+        },
+        {
+          "name": "deploy_dir",
+          "type": "String",
+          "required": true,
+          "description": "远程部署根目录"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "required": true,
+          "description": "部署状态（PENDING/RUNNING/SUCCESS/FAILED/ROLLING_BACK/ROLLED_BACK）"
+        },
+        {
+          "name": "log_file_path",
+          "type": "String",
+          "required": false,
+          "description": "远程日志文件路径"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "更新时间"
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [
+        "CTR-007"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "",
+        "update": "Deploy Engine 更新 status 字段",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "SSHConnectionConfig",
+      "type": "config",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "SSH 连接配置，由部署任务动态生成",
+      "fields": [
+        {
+          "name": "host",
+          "type": "String",
+          "required": true,
+          "description": "远程主机 IP"
+        },
+        {
+          "name": "port",
+          "type": "Integer",
+          "required": true,
+          "description": "SSH 端口，默认 22"
+        },
+        {
+          "name": "user",
+          "type": "String",
+          "required": true,
+          "description": "SSH 用户名"
+        },
+        {
+          "name": "auth_method",
+          "type": "String",
+          "required": true,
+          "description": "认证方式：password 或 key"
+        },
+        {
+          "name": "auth_secret_path",
+          "type": "String",
+          "required": true,
+          "description": "密钥文件路径或密码"
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [
+        "CTR-007"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "从 Deployment 记录创建",
+        "update": "",
+        "delete": "",
+        "retention": "部署任务结束即丢弃"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-003",
+      "name": "DeployTaskMessage",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "从 RabbitMQ 接收的部署任务消息结构",
+      "fields": [
+        {
+          "name": "task_id",
+          "type": "String",
+          "required": true,
+          "description": "任务 ID"
+        },
+        {
+          "name": "project_id",
+          "type": "String",
+          "required": true,
+          "description": "项目 ID"
+        },
+        {
+          "name": "version",
+          "type": "String",
+          "required": true,
+          "description": "版本号"
+        },
+        {
+          "name": "environment",
+          "type": "String",
+          "required": true,
+          "description": "部署环境"
+        },
+        {
+          "name": "file_path",
+          "type": "String",
+          "required": true,
+          "description": "构建产物文件路径"
+        },
+        {
+          "name": "target_server_ip",
+          "type": "String",
+          "required": true,
+          "description": "目标服务器 IP"
+        },
+        {
+          "name": "target_server_user",
+          "type": "String",
+          "required": true,
+          "description": "SSH 用户名"
+        },
+        {
+          "name": "target_auth_method",
+          "type": "String",
+          "required": true,
+          "description": "认证方式"
+        },
+        {
+          "name": "target_auth_secret_path",
+          "type": "String",
+          "required": true,
+          "description": "密钥路径/密码密文"
+        },
+        {
+          "name": "deploy_dir",
+          "type": "String",
+          "required": true,
+          "description": "远程部署根目录"
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [
+        "CTR-007"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "从 RabbitMQ 消息反序列化",
+        "update": "",
+        "delete": "",
+        "retention": "部署处理完成后可丢弃"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-004",
+      "name": "DeployLogMessage",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "推送至 WebSocket 的日志消息结构",
+      "fields": [
+        {
+          "name": "task_id",
+          "type": "String",
+          "required": true,
+          "description": "关联的部署任务 ID"
+        },
+        {
+          "name": "timestamp",
+          "type": "DateTime",
+          "required": true,
+          "description": "日志时间戳"
+        },
+        {
+          "name": "level",
+          "type": "String",
+          "required": true,
+          "description": "日志级别（INFO/WARNING/ERROR）"
+        },
+        {
+          "name": "message",
+          "type": "String",
+          "required": true,
+          "description": "日志内容"
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [
+        "CTR-007"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "由部署步骤生成",
+        "update": "",
+        "delete": "",
+        "retention": "临时，推送后丢弃"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "DeploymentOrchestrator",
+      "object_type": "service",
+      "description": "部署流程编排器，负责执行整个部署流水线：连接建立、文件上传、远程命令执行、符号链接更新、回滚等",
+      "methods": [
+        {
+          "name": "execute_deploy",
+          "visibility": "public",
+          "parameters": [
+            {
+              "name": "message",
+              "type": "DeployTaskMessage"
+            }
+          ],
+          "returns": "None",
+          "description": "执行完整部署流水线"
+        }
+      ],
+      "dependencies": [
+        "SSHService",
+        "DeploymentRepository",
+        "WebSocketService",
+        "ConfigRepository"
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": []
+    },
+    {
+      "id": "DO-002",
+      "name": "SSHService",
+      "object_type": "service",
+      "description": "SSH 服务，封装 AsyncSSH 连接、文件上传、远程命令执行、输出捕获，支持自动重连",
+      "methods": [
+        {
+          "name": "connect",
+          "visibility": "public",
+          "parameters": [
+            {
+              "name": "config",
+              "type": "SSHConnectionConfig"
+            }
+          ],
+          "returns": "None",
+          "description": "建立 SSH 连接"
+        },
+        {
+          "name": "upload_file",
+          "visibility": "public",
+          "parameters": [
+            {
+              "name": "local_path",
+              "type": "string"
+            },
+            {
+              "name": "remote_path",
+              "type": "string"
+            }
+          ],
+          "returns": "None",
+          "description": "通过 SFTP 上传文件"
+        },
+        {
+          "name": "execute_command",
+          "visibility": "public",
+          "parameters": [
+            {
+              "name": "command",
+              "type": "string"
+            }
+          ],
+          "returns": "CommandResult",
+          "description": "执行远程命令并返回结果"
+        },
+        {
+          "name": "disconnect",
+          "visibility": "public",
+          "parameters": [],
+          "returns": "None",
+          "description": "断开连接"
+        }
+      ],
+      "dependencies": [],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": []
+    },
+    {
+      "id": "DO-003",
+      "name": "DeploymentRepository",
+      "object_type": "repository",
+      "description": "部署记录持久化层，封装对 Deployment 表的 CRUD 操作",
+      "methods": [
+        {
+          "name": "update_status",
+          "visibility": "public",
+          "parameters": [
+            {
+              "name": "task_id",
+              "type": "string"
+            },
+            {
+              "name": "status",
+              "type": "string"
+            }
+          ],
+          "returns": "None",
+          "description": "更新部署记录状态"
+        },
+        {
+          "name": "get_by_task_id",
+          "visibility": "public",
+          "parameters": [
+            {
+              "name": "task_id",
+              "type": "string"
+            }
+          ],
+          "returns": "Deployment",
+          "description": "根据 task_id 查询部署记录"
+        }
+      ],
+      "dependencies": [],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": []
+    },
+    {
+      "id": "DO-004",
+      "name": "WebSocketService",
+      "object_type": "service",
+      "description": "日志推送服务，封装向指定 task_id 的 WebSocket 连接发送结构化日志消息",
+      "methods": [
+        {
+          "name": "send_log",
+          "visibility": "public",
+          "parameters": [
+            {
+              "name": "log",
+              "type": "DeployLogMessage"
+            }
+          ],
+          "returns": "None",
+          "description": "发送日志到对应 WebSocket 连接"
+        }
+      ],
+      "dependencies": [
+        "API Gateway WebSocket 路由"
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": []
+    },
+    {
+      "id": "DO-005",
+      "name": "CommandResult",
+      "object_type": "value_object",
+      "description": "命令执行结果值对象，包含退出码、标准输出、标准错误",
+      "methods": [],
+      "dependencies": [],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [],
+      "fields": [
+        {
+          "name": "exit_code",
+          "type": "Integer",
+          "required": true,
+          "description": "命令退出码"
+        },
+        {
+          "name": "stdout",
+          "type": "String",
+          "required": true,
+          "description": "标准输出"
+        },
+        {
+          "name": "stderr",
+          "type": "String",
+          "required": true,
+          "description": "标准错误"
+        }
+      ]
+    },
+    {
+      "id": "DO-006",
+      "name": "RollbackHandler",
+      "object_type": "service",
+      "description": "回滚处理器，在部署失败时负责将符号链接回切到上一个版本，或执行自定义回滚脚本",
+      "methods": [
+        {
+          "name": "rollback",
+          "visibility": "public",
+          "parameters": [
+            {
+              "name": "ssh_service",
+              "type": "SSHService"
+            },
+            {
+              "name": "deploy_dir",
+              "type": "string"
+            },
+            {
+              "name": "previous_version_path",
+              "type": "string"
+            }
+          ],
+          "returns": "None",
+          "description": "执行回滚操作"
+        }
+      ],
+      "dependencies": [
+        "SSHService"
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": []
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "DeployService",
+      "methods": [
+        {
+          "name": "consume_deploy_message",
+          "signature": "consume_deploy_message(message: DeployTaskMessage) -> None",
+          "precondition": "消息格式有效，且部署记录存在",
+          "postcondition": "部署流水线完成（成功或失败），部署记录状态更新，日志已推送",
+          "parameters": [
+            {
+              "name": "message",
+              "type": "DeployTaskMessage",
+              "required": true,
+              "description": "消费到的部署任务消息"
+            }
+          ],
+          "returns": {
+            "type": "None"
+          },
+          "description": "处理从 RabbitMQ 消费的部署任务消息，执行完整部署流程",
+          "errors": [
+            "SSHConnectionError",
+            "FileUploadError",
+            "CommandExecutionError",
+            "RollbackError"
+          ]
+        },
+        {
+          "name": "cancel_deployment",
+          "signature": "cancel_deployment(task_id: str) -> bool",
+          "precondition": "部署任务正在运行中 (status=RUNNING)",
+          "postcondition": "部署任务被标记为取消，远程执行清理操作（如删除临时文件），状态置为 CANCELLED",
+          "parameters": [
+            {
+              "name": "task_id",
+              "type": "str",
+              "required": true,
+              "description": "要取消的部署任务 ID"
+            }
+          ],
+          "returns": {
+            "type": "bool",
+            "description": "是否成功取消"
+          },
+          "description": "取消一个正在运行的部署任务",
+          "errors": [
+            "TaskNotFoundError",
+            "CancelNotAllowedError"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": []
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "部署任务消费",
+      "endpoint": "RabbitMQ Queue: deploy.tasks",
+      "type": "message_consumer",
+      "description": "消费 RabbitMQ 中的部署任务消息，触发部署流水线",
+      "protocol": "AMQP 0-9-1",
+      "request": {
+        "body": {
+          "schema": "DeployTaskMessage",
+          "example": {
+            "task_id": "abc-123",
+            "project_id": "proj-xyz",
+            "version": "1.2.3",
+            "environment": "production",
+            "file_path": "/builds/package.tar.gz",
+            "target_server_ip": "10.0.0.5",
+            "target_server_user": "deployer",
+            "target_auth_method": "key",
+            "target_auth_secret_path": "/etc/secrets/deploy_key",
+            "deploy_dir": "/var/www/app"
+          }
+        }
+      },
+      "response": {
+        "ack": "basic_ack 或 basic_nack，成功则 ack，失败则 nack 加死信处理",
+        "body": {
+          "description": "无响应体，仅通过 RabbitMQ 的 ack/nack 机制反馈处理结果"
+        }
+      },
+      "errors": [
+        {
+          "code": "MESSAGE_PARSE_ERROR",
+          "message": "消息格式无效",
+          "http_status": null,
+          "description": "无法解析消息体"
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [
+        "CTR-007"
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "推送部署日志",
+      "endpoint": "WebSocket: /ws/logs/{task_id}",
+      "type": "websocket",
+      "description": "通过 WebSocket 向客户端推送部署过程的实时日志",
+      "protocol": "WebSocket (RFC 6455)",
+      "request": {
+        "description": "客户端需连接至该路径，并通过 task_id 标识任务"
+      },
+      "response": {
+        "body": {
+          "schema": "DeployLogMessage",
+          "example": {
+            "task_id": "abc-123",
+            "timestamp": "2025-03-27T10:30:00Z",
+            "level": "INFO",
+            "message": "Starting file upload..."
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "WS_CONNECTION_FAILED",
+          "message": "WebSocket 连接失败",
+          "http_status": null,
+          "description": "无法建立连接，可能因认证或网络问题"
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [
+        "CTR-007"
+      ]
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "name": "原子符号链接更新",
+      "invariants": [
+        "current 符号链接必须指向一个有效的目录，且该目录属于本次部署的 releases/ 子目录",
+        "符号链接的创建或更新必须是原子操作，即通过 ln -sfn 完成"
+      ],
+      "description": "更新 current 符号链接时，必须确保其原子性，避免出现中间状态导致服务不可用"
+    },
+    {
+      "id": "BR-002",
+      "name": "部署目录结构规范",
+      "invariants": [
+        "releases/ 目录存放各版本",
+        "current 符号链接指向当前版本",
+        "shared/ 目录存放共享文件（如日志、配置）"
+      ],
+      "description": "服务器上的部署目录必须遵循约定的目录结构，以保证回滚和共享文件正确"
+    }
+  ],
+  "error_handling": {
+    "strategy": "每个部署步骤失败时需记录详细错误日志，更新部署状态为 FAILED，并触发回滚流程；若回滚失败，进入 ROLLING_BACK 状态并告警",
+    "errors": [
+      {
+        "code": "SSH_CONNECTION_ERROR",
+        "message": "无法建立 SSH 连接",
+        "http_status": null,
+        "description": "SSH 连接失败，可能是网络不通、认证失败或配置错误"
+      },
+      {
+        "code": "FILE_UPLOAD_ERROR",
+        "message": "文件上传失败",
+        "http_status": null,
+        "description": "SFTP 上传过程中出错，如磁盘空间不足或权限问题"
+      },
+      {
+        "code": "COMMAND_EXECUTION_ERROR",
+        "message": "远程命令执行失败",
+        "http_status": null,
+        "description": "远程执行的 Shell 命令返回非零退出码"
+      },
+      {
+        "code": "ROLLBACK_ERROR",
+        "message": "回滚操作失败",
+        "http_status": null,
+        "description": "回滚过程中出现错误，可能需人工介入"
+      },
+      {
+        "code": "TASK_NOT_FOUND_ERROR",
+        "message": "部署任务不存在",
+        "http_status": null,
+        "description": "无法找到对应的部署记录"
+      },
+      {
+        "code": "CANCEL_NOT_ALLOWED_ERROR",
+        "message": "取消操作不被允许",
+        "http_status": null,
+        "description": "请求取消的任务不在运行状态"
+      },
+      {
+        "code": "MESSAGE_PARSE_ERROR",
+        "message": "消息解析失败",
+        "http_status": null,
+        "description": "从 RabbitMQ 消费的消息不符合 DeployTaskMessage 结构"
+      }
+    ]
+  }
+}
