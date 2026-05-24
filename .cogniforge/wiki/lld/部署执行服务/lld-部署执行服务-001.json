@@ -1,0 +1,443 @@
+{
+  "meta": {
+    "doc_id": "lld-部署执行服务-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "部署执行服务",
+    "title": "部署执行服务详细设计",
+    "author": "design_agent",
+    "created": "2025-01-18T00:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-003"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-002"
+      ],
+      "contracts": [
+        "CTR-007"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "消费RabbitMQ部署任务队列消息",
+      "SSH连接到远程服务器",
+      "创建版本化目录",
+      "通过SFTP上传部署文件",
+      "动态生成启停脚本并赋权",
+      "执行启动脚本并捕获输出",
+      "实时推送部署日志到消息队列",
+      "向管理服务回传部署最终状态",
+      "处理回滚请求覆盖旧版本"
+    ],
+    "out_of_scope": [
+      "部署任务的创建与参数校验",
+      "项目/环境/服务器配置的CRUD",
+      "WebSocket推送与前端实时展示",
+      "脚本模板的编辑与管理",
+      "用户认证与授权",
+      "部署历史归档与检索"
+    ],
+    "owned_components": [
+      "CMP-002"
+    ],
+    "owned_contracts": [],
+    "consumed_contracts": [
+      "CTR-007"
+    ],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "实际执行部署任务的后台服务，负责SSH连接、文件传输、脚本生成、命令执行，并发布部署日志",
+    "dependencies": [
+      "管理服务（消息队列交互）",
+      "RabbitMQ消息队列",
+      "远程目标服务器"
+    ],
+    "tech_stack": [
+      "Python 3.10+",
+      "pika (RabbitMQ客户端)",
+      "paramiko (SSH/SFTP)",
+      "FastAPI (仅内部健康检查)",
+      "Docker"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-003",
+      "sad_component_ids": [
+        "CMP-002"
+      ],
+      "sad_contract_ids": [
+        "CTR-007"
+      ],
+      "lld_objects": {
+        "data_models": [],
+        "interfaces": [],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": "通过领域对象、服务方法和业务流程完整实现部署执行与日志回传"
+    }
+  ],
+  "data_models": [],
+  "interfaces": [],
+  "error_handling": {
+    "strategy": "采用带错误分类的健壮消费模式，所有远程操作与文件操作均包裹异常捕获，错误信息通过日志队列推送，并最终标记任务状态为失败",
+    "response_format": {
+      "body": {
+        "status": "string",
+        "deployment_id": "string",
+        "error": {
+          "code": "string",
+          "message": "string"
+        }
+      }
+    },
+    "categories": [
+      {
+        "code": "CONNECTION_ERROR",
+        "name": "连接错误",
+        "description": "SSH连接超时、认证失败、网络不可达等，任务状态标记为FAILED"
+      },
+      {
+        "code": "TRANSFER_ERROR",
+        "name": "传输错误",
+        "description": "SFTP上传中断或磁盘空间不足等，任务状态标记为FAILED"
+      },
+      {
+        "code": "SCRIPT_GENERATION_ERROR",
+        "name": "脚本生成错误",
+        "description": "模板语法错误或变量缺失，任务状态标记为FAILED"
+      },
+      {
+        "code": "SCRIPT_EXECUTION_ERROR",
+        "name": "脚本执行错误",
+        "description": "启动或停止脚本返回非零退出码，任务状态标记为FAILED"
+      },
+      {
+        "code": "QUEUE_PUBLISH_ERROR",
+        "name": "队列投递错误",
+        "description": "日志或状态推送失败，重试有限次数并记录本地"
+      }
+    ]
+  },
+  "domain_objects": [
+    {
+      "name": "DeploymentTask",
+      "object_type": "entity",
+      "description": "一次部署任务的上下文实体，从队列消息解析而来",
+      "attributes": [
+        {
+          "name": "task_id",
+          "type": "String",
+          "required": true,
+          "source": "input",
+          "description": "对应消息中的deployment_id"
+        },
+        {
+          "name": "environment_id",
+          "type": "String",
+          "required": true,
+          "source": "input",
+          "description": "目标环境标识"
+        },
+        {
+          "name": "project_id",
+          "type": "String",
+          "required": true,
+          "source": "input",
+          "description": "所属项目标识"
+        },
+        {
+          "name": "file_path",
+          "type": "String",
+          "required": true,
+          "source": "input",
+          "description": "部署文件在文件存储上的路径"
+        },
+        {
+          "name": "version",
+          "type": "String",
+          "required": true,
+          "source": "input",
+          "description": "目标版本号"
+        },
+        {
+          "name": "start_after_deploy",
+          "type": "boolean",
+          "required": true,
+          "source": "input",
+          "description": "部署后是否启动服务"
+        },
+        {
+          "name": "callback_url",
+          "type": "String",
+          "required": true,
+          "source": "input",
+          "description": "保留字段，状态回报通过队列"
+        },
+        {
+          "name": "is_rollback",
+          "type": "boolean",
+          "required": false,
+          "source": "derived",
+          "description": "是否为回滚任务，由扩展字段task_type派生"
+        }
+      ]
+    },
+    {
+      "name": "SSHConnectionConfig",
+      "object_type": "value_object",
+      "description": "远程服务器的连接参数值对象",
+      "attributes": [
+        {
+          "name": "host",
+          "type": "String",
+          "required": true,
+          "source": "input",
+          "description": "远程主机地址"
+        },
+        {
+          "name": "port",
+          "type": "integer",
+          "required": false,
+          "source": "input",
+          "description": "SSH端口，默认22"
+        },
+        {
+          "name": "username",
+          "type": "String",
+          "required": true,
+          "source": "input",
+          "description": "登录用户名"
+        },
+        {
+          "name": "password",
+          "type": "String",
+          "required": false,
+          "source": "input",
+          "description": "加密后的密码"
+        },
+        {
+          "name": "private_key",
+          "type": "String",
+          "required": false,
+          "source": "input",
+          "description": "私钥内容"
+        }
+      ]
+    },
+    {
+      "name": "DeploymentLogEntry",
+      "object_type": "value_object",
+      "description": "部署过程中产生的一条日志记录",
+      "attributes": [
+        {
+          "name": "deployment_id",
+          "type": "String",
+          "required": true,
+          "source": "derived",
+          "description": "关联的部署ID"
+        },
+        {
+          "name": "timestamp",
+          "type": "datetime",
+          "required": true,
+          "source": "derived",
+          "description": "日志产生时间"
+        },
+        {
+          "name": "log_level",
+          "type": "String",
+          "required": true,
+          "source": "derived",
+          "description": "日志级别(INFO, WARNING, ERROR等)"
+        },
+        {
+          "name": "message",
+          "type": "String",
+          "required": true,
+          "source": "derived",
+          "description": "日志内容"
+        }
+      ]
+    },
+    {
+      "name": "ScriptTemplate",
+      "object_type": "value_object",
+      "description": "用于生成启停脚本的模板对象",
+      "attributes": [
+        {
+          "name": "template_type",
+          "type": "String",
+          "required": true,
+          "source": "input",
+          "description": "模板类型(start, stop, restart等)"
+        },
+        {
+          "name": "content",
+          "type": "String",
+          "required": true,
+          "source": "input",
+          "description": "模板内容，支持变量替换"
+        }
+      ]
+    },
+    {
+      "name": "DeploymentStatus",
+      "object_type": "value_object",
+      "description": "部署最终状态报告",
+      "attributes": [
+        {
+          "name": "deployment_id",
+          "type": "String",
+          "required": true,
+          "source": "derived",
+          "description": "部署ID"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "required": true,
+          "source": "derived",
+          "description": "最终状态(SUCCESS, FAILED)"
+        },
+        {
+          "name": "error_code",
+          "type": "String",
+          "required": false,
+          "source": "derived",
+          "description": "错误码，仅在失败时存在"
+        },
+        {
+          "name": "error_message",
+          "type": "String",
+          "required": false,
+          "source": "derived",
+          "description": "错误信息"
+        }
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      {
+        "rule_id": "BR-001",
+        "description": "部署任务必须包含有效的task_id、environment_id、project_id、file_path和version",
+        "scope": "DeploymentTask",
+        "type": "invariant",
+        "expression": "task_id != null && environment_id != null && project_id != null && file_path != null && version != null",
+        "severity": "error",
+        "message": "部署任务缺少必要字段"
+      },
+      {
+        "rule_id": "BR-002",
+        "description": "SSH连接配置必须提供密码或私钥两者之一",
+        "scope": "SSHConnectionConfig",
+        "type": "invariant",
+        "expression": "password != null || private_key != null",
+        "severity": "error",
+        "message": "SSH连接配置中必须提供密码或私钥"
+      },
+      {
+        "rule_id": "BR-003",
+        "description": "部署日志条目的日志级别必须为预定义级别之一",
+        "scope": "DeploymentLogEntry",
+        "type": "invariant",
+        "expression": "log_level in ['INFO', 'WARNING', 'ERROR', 'DEBUG']",
+        "severity": "error",
+        "message": "无效的日志级别"
+      },
+      {
+        "rule_id": "BR-004",
+        "description": "脚本模板类型必须是预定义类型之一",
+        "scope": "ScriptTemplate",
+        "type": "invariant",
+        "expression": "template_type in ['start', 'stop', 'restart']",
+        "severity": "error",
+        "message": "无效的模板类型"
+      }
+    ]
+  },
+  "service_contracts": [
+    {
+      "sc_id": "SC-001",
+      "name": "DeploymentExecutorService",
+      "description": "执行部署任务的核心服务接口",
+      "methods": [
+        {
+          "name": "execute_deployment",
+          "signature": "execute_deployment(task: DeploymentTask) -> DeploymentStatus",
+          "description": "执行完整的部署流程",
+          "precondition": "task参数非null且所有必要字段已填充，task已通过BR-001规则验证",
+          "postcondition": "返回DeploymentStatus对象，指示部署成功或失败；若成功，文件已传输到目标服务器并完成指定操作；若失败，已记录错误信息并发布日志",
+          "is_async": true,
+          "notes": "该方法将消耗消息队列中的部署任务，异步执行部署流程，并通过队列发布日志和状态",
+          "parameters": [
+            {
+              "name": "task",
+              "type": "DeploymentTask",
+              "required": true,
+              "description": "待执行的部署任务"
+            }
+          ],
+          "return_type": "DeploymentStatus",
+          "exceptions": [
+            {
+              "name": "ConnectionError",
+              "trigger": "SSH连接失败",
+              "exception": "自定义异常，包含错误码CONNECTION_ERROR"
+            },
+            {
+              "name": "TransferError",
+              "trigger": "文件传输失败",
+              "exception": "自定义异常，包含错误码TRANSFER_ERROR"
+            },
+            {
+              "name": "ScriptGenerationError",
+              "trigger": "脚本生成失败",
+              "exception": "自定义异常，包含错误码SCRIPT_GENERATION_ERROR"
+            },
+            {
+              "name": "ScriptExecutionError",
+              "trigger": "脚本执行返回非零退出码",
+              "exception": "自定义异常，包含错误码SCRIPT_EXECUTION_ERROR"
+            }
+          ]
+        }
+      ],
+      "dependencies": [
+        "SSHConnectionService",
+        "FileTransferService",
+        "ScriptGenerationService",
+        "LogPublisher"
+      ],
+      "notes": "实现DeploymentService接口，作为后台部署执行者"
+    }
+  ]
+}
