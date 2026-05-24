@@ -51,6 +51,7 @@ class ArchitectAgent(BaseAgent):
 
             return self._generate_initial(
                 title, system_overview, architecture, components, data_flow,
+                progress_callback=cb,
             )
 
         except Exception as e:
@@ -63,7 +64,9 @@ class ArchitectAgent(BaseAgent):
     def _generate_initial(
         self, title: str, system_overview: str, architecture: str,
         components: list, data_flow: str,
+        progress_callback: callable = None,
     ) -> dict:
+        cb = progress_callback
         t0 = time.time()
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         prd_context = self._load_latest_prd()

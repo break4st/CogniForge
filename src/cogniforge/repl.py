@@ -562,7 +562,7 @@ class Repl:
         if not files:
             return []
         try:
-            with open(files[-1], "r") as f:
+            with open(files[-1], "r", encoding="utf-8") as f:
                 data = json.load(f)
             return data.get("components", [])
         except Exception:
