@@ -1,13 +1,13 @@
 {
   "meta": {
-    "doc_id": "lld-项目管理服务-001",
+    "doc_id": "lld-project-management-service-001",
     "type": "lld",
     "module_type": "service",
     "module": "项目管理服务",
-    "title": "项目管理服务 详细设计文档",
+    "title": "项目管理服务详细设计",
     "author": "design_agent",
-    "created": "2025-03-27T10:00:00Z",
-    "version": 1,
+    "created": "2025-01-01T00:00:00Z",
+    "version": 3,
     "status": "active"
   },
   "source": {
@@ -22,14 +22,16 @@
       "doc_id": "sad-001",
       "version": 1,
       "components": [
-        "CMP-003"
+        "CMP-300"
       ],
       "contracts": [
         "CTR-001",
         "CTR-002",
         "CTR-003",
         "CTR-004",
-        "CTR-005"
+        "CTR-005",
+        "CTR-006",
+        "CTR-007"
       ],
       "data_models": []
     },
@@ -38,51 +40,63 @@
   },
   "module_boundary": {
     "in_scope": [
-      "项目 CRUD 操作（创建、查询列表、查询详情、更新、删除）",
-      "项目名称唯一性校验",
-      "维护当前活跃项目上下文（设置/获取活跃项目 ID）"
+      "项目新建、修改、删除",
+      "项目列表查询与全文搜索",
+      "当前激活项目的设置与查询",
+      "删除项目时触发关联环境配置的清理",
+      "数据校验与错误统一封装"
     ],
     "out_of_scope": [
-      "数据库表结构的实际定义与迁移",
-      "前端界面的交互逻辑",
-      "部署执行、环境管理等业务",
-      "用户认证与授权"
+      "项目内部的环境配置、部署任务、版本历史的具体管理",
+      "前端页面的渲染与路由",
+      "用户认证/授权机制",
+      "SSH/SFTP 连接管理、密钥加密存储"
     ],
     "owned_components": [
-      "CMP-003"
+      "CMP-300"
     ],
-    "owned_contracts": [],
+    "owned_contracts": [
+      "CTR-001",
+      "CTR-002",
+      "CTR-003",
+      "CTR-004",
+      "CTR-005",
+      "CTR-006",
+      "CTR-007"
+    ],
     "consumed_contracts": [],
     "owned_data_models": [],
     "consumed_data_models": [
-      "DM-001"
+      "DM-001",
+      "DM-002"
     ]
   },
   "overview": {
-    "description": "项目管理服务负责项目实体的完整生命周期管理，包括创建、编辑、删除、查询，以及维护当前活跃项目的上下文信息。对外提供 RESTful API，内部通过数据访问层与 SQLite 交互。",
+    "description": "后端服务，提供项目的CRUD操作，并管理项目切换状态。",
     "dependencies": [
-      "数据访问层"
+      "环境配置服务"
     ],
     "tech_stack": [
-      "TypeScript",
-      "Node.js",
-      "Express",
-      "SQLite 3",
-      "winston"
+      "Python 3.11",
+      "FastAPI",
+      "SQLAlchemy",
+      "SQLite"
     ]
   },
   "traceability": [
     {
       "requirement_id": "REQ-001",
       "sad_component_ids": [
-        "CMP-003"
+        "CMP-300"
       ],
       "sad_contract_ids": [
         "CTR-001",
         "CTR-002",
         "CTR-003",
         "CTR-004",
-        "CTR-005"
+        "CTR-005",
+        "CTR-006",
+        "CTR-007"
       ],
       "lld_objects": {
         "data_models": [
@@ -103,443 +117,540 @@
           "DO-002",
           "DO-003",
           "DO-004",
-          "DO-005"
+          "DO-005",
+          "DO-006",
+          "DO-007"
         ],
         "service_contracts": [
           "SC-001"
         ]
       },
       "coverage": "full",
-      "notes": "新增内部接口 IF-006, IF-007 用于活跃项目上下文管理"
+      "notes": ""
     }
   ],
-  "domain_objects": [
+  "data_models": [
     {
-      "id": "DO-001",
-      "object_type": "entity",
+      "id": "DM-001",
       "name": "Project",
-      "description": "项目实体对象，映射数据库 projects 表",
-      "attributes": [
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "projects"
+      },
+      "description": "项目基本信息表，存放项目名称与描述。",
+      "fields": [
         {
           "name": "id",
-          "type": "string",
-          "description": "项目唯一标识"
+          "type": "TEXT/UUID",
+          "required": true,
+          "description": "主键，唯一标识"
         },
         {
           "name": "name",
-          "type": "string",
-          "description": "项目名称，全局唯一"
-        },
-        {
-          "name": "build_directory",
-          "type": "string",
-          "description": "构建产物输出目录"
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "description": "项目描述"
-        },
-        {
-          "name": "template_id",
-          "type": "string",
-          "description": "关联的模板 ID"
-        },
-        {
-          "name": "created_at",
-          "type": "datetime",
-          "description": "创建时间"
-        },
-        {
-          "name": "updated_at",
-          "type": "datetime",
-          "description": "最后更新时间"
-        }
-      ]
-    },
-    {
-      "id": "DO-002",
-      "object_type": "dto",
-      "name": "CreateProjectDTO",
-      "description": "创建项目数据传输对象",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "description": "项目名称（必填，全局唯一）"
-        },
-        {
-          "name": "build_directory",
-          "type": "string",
-          "description": "构建目录（可选）"
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "description": "项目描述（可选）"
-        },
-        {
-          "name": "template_id",
-          "type": "string",
-          "description": "模板 ID（可选）"
-        }
-      ]
-    },
-    {
-      "id": "DO-003",
-      "object_type": "dto",
-      "name": "UpdateProjectDTO",
-      "description": "更新项目数据传输对象",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "description": "项目名称（必填，全局唯一）"
-        },
-        {
-          "name": "build_directory",
-          "type": "string",
-          "description": "构建目录（可选）"
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "description": "项目描述（可选）"
-        },
-        {
-          "name": "template_id",
-          "type": "string",
-          "description": "模板 ID（可选）"
-        }
-      ]
-    },
-    {
-      "id": "DO-004",
-      "object_type": "dto",
-      "name": "ProjectSummaryDTO",
-      "description": "项目摘要数据传输对象，用于列表展示",
-      "attributes": [
-        {
-          "name": "id",
-          "type": "string",
-          "description": "项目 ID"
-        },
-        {
-          "name": "name",
-          "type": "string",
+          "type": "TEXT",
+          "required": true,
           "description": "项目名称"
         },
         {
           "name": "description",
-          "type": "string",
+          "type": "TEXT",
+          "required": false,
           "description": "项目描述"
         },
         {
           "name": "created_at",
-          "type": "datetime",
+          "type": "DATETIME",
+          "required": true,
           "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME",
+          "required": true,
+          "description": "最后更新时间"
         }
-      ]
+      ],
+      "indexes": [
+        {
+          "name": "idx_projects_name",
+          "unique": false,
+          "columns": [
+            "name"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-300"
+      ],
+      "source_contracts": [],
+      "constraints": [
+        "name 长度不超过 255 字符",
+        "id 遵循 UUID4 格式"
+      ],
+      "lifecycle": {
+        "create": "创建项目时插入",
+        "update": "name 或 description 变化时更新",
+        "delete": "项目删除时级联删除",
+        "retention": "永久保存"
+      }
     },
     {
-      "id": "DO-005",
-      "object_type": "dto",
-      "name": "ActiveProject",
-      "description": "活跃项目上下文对象，存储当前选中的项目 ID",
-      "attributes": [
+      "id": "DM-002",
+      "name": "ActiveProjectConfig",
+      "type": "config",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "存储当前激活的项目 ID，全局唯一。",
+      "fields": [
         {
-          "name": "projectId",
-          "type": "string",
-          "description": "当前活跃的项目标识"
+          "name": "project_id",
+          "type": "TEXT",
+          "required": false,
+          "description": "当前激活的项目 ID，外键引用 projects.id"
         }
-      ]
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-300"
+      ],
+      "source_contracts": [],
+      "constraints": [
+        "全局仅一条记录",
+        "可为空值"
+      ],
+      "lifecycle": {
+        "create": "服务初始化时创建",
+        "update": "设置激活项目时更新",
+        "delete": "不允许删除",
+        "retention": "永久保存"
+      }
     }
   ],
   "interfaces": [
     {
       "id": "IF-001",
       "name": "创建项目",
-      "description": "创建一个新项目，校验名称唯一性",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-300",
       "method": "POST",
-      "path": "/api/projects",
+      "endpoint": "/api/projects",
+      "description": "新建一个项目，返回项目信息",
+      "parameters": [],
       "request_body": {
-        "content_type": "application/json",
-        "schema": {
-          "$ref": "#/domain_objects/DO-002"
-        },
-        "required": true
+        "name": "string",
+        "description": "string"
       },
-      "responses": {
-        "201": {
-          "description": "创建成功",
-          "body": {
-            "content_type": "application/json",
-            "schema": {
-              "$ref": "#/domain_objects/DO-001"
-            }
-          }
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string",
+          "name": "string",
+          "description": "string",
+          "created_at": "datetime"
         }
-      }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "VALIDATION_ERROR",
+          "message": "请求参数校验失败"
+        }
+      ]
     },
     {
       "id": "IF-002",
-      "name": "查询项目列表",
-      "description": "获取所有项目的摘要列表",
+      "name": "获取项目列表",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-002",
+      "provider_component_id": "CMP-300",
       "method": "GET",
-      "path": "/api/projects",
-      "request_body": null,
-      "responses": {
-        "200": {
-          "description": "成功返回项目摘要列表",
-          "body": {
-            "content_type": "application/json",
-            "schema": {
-              "type": "array",
-              "items": {
-                "$ref": "#/domain_objects/DO-004"
-              }
-            }
-          }
+      "endpoint": "/api/projects",
+      "description": "获取所有项目列表，支持搜索和分页",
+      "parameters": [
+        {
+          "name": "search",
+          "type": "string",
+          "required": false,
+          "description": "搜索关键词",
+          "location": "query"
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": false,
+          "description": "每页数量",
+          "location": "query"
+        },
+        {
+          "name": "offset",
+          "type": "integer",
+          "required": false,
+          "description": "偏移量",
+          "location": "query"
         }
-      }
+      ],
+      "response": {
+        "status": 200,
+        "body": {
+          "projects": "array",
+          "total": "integer",
+          "limit": "integer",
+          "offset": "integer"
+        }
+      },
+      "error_codes": []
     },
     {
       "id": "IF-003",
-      "name": "查询项目详情",
-      "description": "根据 ID 查询单个项目详情",
+      "name": "获取单个项目",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-003",
+      "provider_component_id": "CMP-300",
       "method": "GET",
-      "path": "/api/projects/{id}",
+      "endpoint": "/api/projects/{project_id}",
+      "description": "获取指定项目的详细信息",
       "parameters": [
         {
-          "name": "id",
-          "in": "path",
-          "required": true,
+          "name": "project_id",
           "type": "string",
-          "description": "项目 ID"
+          "required": true,
+          "description": "项目ID",
+          "location": "path"
         }
       ],
-      "request_body": null,
-      "responses": {
-        "200": {
-          "description": "成功返回项目详情",
-          "body": {
-            "content_type": "application/json",
-            "schema": {
-              "$ref": "#/domain_objects/DO-001"
-            }
-          }
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string",
+          "name": "string",
+          "description": "string",
+          "created_at": "datetime"
         }
-      }
+      },
+      "error_codes": [
+        {
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "项目不存在"
+        }
+      ]
     },
     {
       "id": "IF-004",
-      "name": "更新项目",
-      "description": "更新指定项目的信息，需校验名称唯一性",
+      "name": "修改项目",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-004",
+      "provider_component_id": "CMP-300",
       "method": "PUT",
-      "path": "/api/projects/{id}",
+      "endpoint": "/api/projects/{project_id}",
+      "description": "修改项目名称或描述",
       "parameters": [
         {
-          "name": "id",
-          "in": "path",
-          "required": true,
+          "name": "project_id",
           "type": "string",
-          "description": "项目 ID"
+          "required": true,
+          "description": "项目ID",
+          "location": "path"
         }
       ],
       "request_body": {
-        "content_type": "application/json",
-        "schema": {
-          "$ref": "#/domain_objects/DO-003"
-        },
-        "required": true
+        "name": "string",
+        "description": "string"
       },
-      "responses": {
-        "200": {
-          "description": "更新成功",
-          "body": {
-            "content_type": "application/json",
-            "schema": {
-              "$ref": "#/domain_objects/DO-001"
-            }
-          }
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string",
+          "name": "string",
+          "description": "string",
+          "updated_at": "datetime"
         }
-      }
+      },
+      "error_codes": [
+        {
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "项目不存在"
+        },
+        {
+          "status": 400,
+          "code": "VALIDATION_ERROR",
+          "message": "请求参数校验失败"
+        }
+      ]
     },
     {
       "id": "IF-005",
       "name": "删除项目",
-      "description": "删除指定项目",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-005",
+      "provider_component_id": "CMP-300",
       "method": "DELETE",
-      "path": "/api/projects/{id}",
+      "endpoint": "/api/projects/{project_id}",
+      "description": "删除项目，并触发关联环境配置清理",
       "parameters": [
         {
-          "name": "id",
-          "in": "path",
-          "required": true,
+          "name": "project_id",
           "type": "string",
-          "description": "项目 ID"
+          "required": true,
+          "description": "项目ID",
+          "location": "path"
         }
       ],
-      "request_body": null,
-      "responses": {
-        "200": {
-          "description": "删除成功",
-          "body": {
-            "content_type": "application/json",
-            "schema": {
-              "type": "object",
-              "properties": {
-                "message": {
-                  "type": "string"
-                }
-              }
-            }
-          }
+      "response": {
+        "status": 204
+      },
+      "error_codes": [
+        {
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "项目不存在"
         }
-      }
+      ]
     },
     {
       "id": "IF-006",
-      "name": "设置活跃项目",
-      "description": "设置当前活跃的项目上下文",
-      "method": "POST",
-      "path": "/api/context/active-project",
-      "request_body": {
-        "content_type": "application/json",
-        "schema": {
-          "$ref": "#/domain_objects/DO-005"
-        },
-        "required": true
-      },
-      "responses": {
-        "200": {
-          "description": "设置成功",
-          "body": {
-            "content_type": "application/json",
-            "schema": {
-              "$ref": "#/domain_objects/DO-005"
-            }
-          }
+      "name": "获取当前激活项目",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-006",
+      "provider_component_id": "CMP-300",
+      "method": "GET",
+      "endpoint": "/api/projects/active",
+      "description": "获取当前激活的项目",
+      "parameters": [],
+      "response": {
+        "status": 200,
+        "body": {
+          "project_id": "string"
         }
-      }
+      },
+      "error_codes": [
+        {
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "未设置激活项目"
+        }
+      ]
     },
     {
       "id": "IF-007",
-      "name": "获取活跃项目",
-      "description": "获取当前活跃项目上下文",
-      "method": "GET",
-      "path": "/api/context/active-project",
-      "request_body": null,
-      "responses": {
-        "200": {
-          "description": "成功返回活跃项目信息",
-          "body": {
-            "content_type": "application/json",
-            "schema": {
-              "$ref": "#/domain_objects/DO-005"
-            }
-          }
+      "name": "设置当前激活项目",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-007",
+      "provider_component_id": "CMP-300",
+      "method": "PUT",
+      "endpoint": "/api/projects/active",
+      "description": "设置当前激活的项目",
+      "parameters": [],
+      "request_body": {
+        "project_id": "string"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "project_id": "string"
         }
-      }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "VALIDATION_ERROR",
+          "message": "无效的项目ID"
+        }
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "Project",
+      "description": "项目实体",
+      "responsibilities": [
+        "封装项目数据",
+        "提供业务校验（如名称非空）"
+      ],
+      "interfaces": [],
+      "business_rules": [
+        "名称不能为空",
+        "名称长度不超过255字符"
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "ProjectService",
+      "description": "项目业务逻辑服务",
+      "responsibilities": [
+        "协调项目CRUD操作",
+        "删除项目时通知环境配置服务"
+      ],
+      "interfaces": [
+        "IF-001",
+        "IF-002",
+        "IF-003",
+        "IF-004",
+        "IF-005"
+      ],
+      "business_rules": [
+        "删除项目前需确认没有关联的关键数据",
+        "项目名称在同级下应唯一（暂不强制）"
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "ActiveProjectManager",
+      "description": "管理当前激活项目的服务",
+      "responsibilities": [
+        "读取和更新激活项目标识",
+        "确保激活项目ID存在（若设置）"
+      ],
+      "interfaces": [
+        "IF-006",
+        "IF-007"
+      ],
+      "business_rules": [
+        "只能设置一个激活项目",
+        "设置的ID必须存在于projects表"
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "ValidationUtils",
+      "description": "请求参数校验工具",
+      "responsibilities": [
+        "校验项目名称、描述长度等",
+        "提供统一的错误格式"
+      ],
+      "interfaces": [],
+      "business_rules": [
+        "名称不能为纯空格",
+        "描述允许空字符串"
+      ]
+    },
+    {
+      "id": "DO-005",
+      "name": "ErrorHandler",
+      "description": "统一错误处理",
+      "responsibilities": [
+        "捕获异常并转换为标准错误响应",
+        "记录错误日志"
+      ],
+      "interfaces": [],
+      "business_rules": [
+        "不泄露敏感信息"
+      ]
+    },
+    {
+      "id": "DO-006",
+      "name": "ProjectRepository",
+      "description": "项目数据访问对象",
+      "responsibilities": [
+        "封装数据库CRUD",
+        "提供搜索和分页"
+      ],
+      "interfaces": [],
+      "business_rules": [
+        "使用参数化查询防止注入"
+      ]
+    },
+    {
+      "id": "DO-007",
+      "name": "EnvironmentClient",
+      "description": "环境配置服务客户端",
+      "responsibilities": [
+        "调用环境配置服务删除项目下的配置"
+      ],
+      "interfaces": [],
+      "business_rules": [
+        "处理远程调用失败"
+      ]
     }
   ],
   "service_contracts": [
     {
       "id": "SC-001",
-      "name": "ProjectService",
-      "description": "项目服务接口，定义项目管理相关操作契约",
-      "methods": [
-        {
-          "name": "createProject",
-          "description": "创建项目",
-          "signature": "createProject(dto: CreateProjectDTO): Promise<Project>",
-          "precondition": "项目名称全局唯一，所有必填字段满足约束",
-          "postcondition": "数据库新增一条项目记录，返回完整项目对象"
-        },
-        {
-          "name": "listProjects",
-          "description": "查询项目列表",
-          "signature": "listProjects(): Promise<ProjectSummaryDTO[]>",
-          "precondition": "无",
-          "postcondition": "返回所有项目的摘要列表"
-        },
-        {
-          "name": "getProject",
-          "description": "查询项目详情",
-          "signature": "getProject(id: string): Promise<Project>",
-          "precondition": "提供的 ID 对应的项目存在",
-          "postcondition": "返回完整的项目对象"
-        },
-        {
-          "name": "updateProject",
-          "description": "更新项目",
-          "signature": "updateProject(id: string, dto: UpdateProjectDTO): Promise<Project>",
-          "precondition": "提供的 ID 对应的项目存在，且更新后的名称全局唯一",
-          "postcondition": "更新数据库中对应项目记录，返回更新后的完整项目对象"
-        },
-        {
-          "name": "deleteProject",
-          "description": "删除项目",
-          "signature": "deleteProject(id: string): Promise<void>",
-          "precondition": "提供的 ID 对应的项目存在",
-          "postcondition": "从数据库中删除对应项目记录"
-        },
-        {
-          "name": "setActiveProject",
-          "description": "设置活跃项目",
-          "signature": "setActiveProject(projectId: string): Promise<ActiveProject>",
-          "precondition": "提供的 projectId 对应的项目存在",
-          "postcondition": "活跃项目上下文被更新为指定项目 ID"
-        },
-        {
-          "name": "getActiveProject",
-          "description": "获取活跃项目",
-          "signature": "getActiveProject(): Promise<ActiveProject>",
-          "precondition": "无",
-          "postcondition": "返回当前活跃项目上下文，如果未设置则返回空或默认值"
-        }
-      ]
-    }
-  ],
-  "business_rules": [
-    {
-      "id": "BR-001",
-      "description": "项目名称全局唯一",
-      "type": "invariant",
-      "expression": "在创建或更新项目时，项目名称不能与已存在的项目名称重复（不区分大小写）"
-    },
-    {
-      "id": "BR-002",
-      "description": "项目名称必填",
-      "type": "constraint",
-      "expression": "项目名称字段不能为空"
-    },
-    {
-      "id": "BR-003",
-      "description": "删除项目前的关联检查",
-      "type": "precondition",
-      "expression": "删除项目时，需确保没有活跃的构建或部署关联到该项目（当前版本暂不考虑，但预留扩展）"
-    }
-  ],
-  "error_handling": {
-    "strategy": "统一错误处理中间件捕获异常，将错误映射为适当的 HTTP 状态码和错误响应体。错误响应体包含错误码、错误信息。",
-    "errors": {
-      "NotFoundError": {
-        "http_status": 404,
-        "message": "请求的资源不存在"
+      "name": "项目管理服务契约",
+      "description": "定义项目管理服务的内部接口契约和调用方式",
+      "provider": "项目管理服务",
+      "consumers": [
+        "前端",
+        "环境配置服务（消费删除事件）"
+      ],
+      "interfaces": [
+        "IF-001",
+        "IF-002",
+        "IF-003",
+        "IF-004",
+        "IF-005",
+        "IF-006",
+        "IF-007"
+      ],
+      "error_handling": {
+        "strategy": "统一使用FastAPI异常处理，返回JSON格式错误",
+        "error_codes": [
+          {
+            "status": 400,
+            "code": "VALIDATION_ERROR",
+            "description": "请求参数校验失败"
+          },
+          {
+            "status": 404,
+            "code": "NOT_FOUND",
+            "description": "资源未找到"
+          },
+          {
+            "status": 500,
+            "code": "INTERNAL_ERROR",
+            "description": "服务器内部错误"
+          }
+        ]
       },
-      "ConflictError": {
-        "http_status": 409,
-        "message": "资源冲突，如项目名称重复"
-      },
-      "ValidationError": {
-        "http_status": 400,
-        "message": "输入数据验证失败"
-      },
-      "InternalError": {
-        "http_status": 500,
-        "message": "服务器内部错误"
+      "policies": {
+        "rate_limit": "每IP 100次/分钟",
+        "authentication": "不需要（后续扩展）",
+        "authorization": "无"
       }
     }
+  ],
+  "business_rules": {
+    "invariants": [
+      "项目名称不能为空且长度不超过255字符",
+      "激活项目ID必须存在或为空",
+      "删除项目时级联删除环境配置（通过服务间调用）"
+    ],
+    "constraints": [
+      "项目ID格式为UUID4",
+      "全局只有一个激活项目"
+    ],
+    "validation_rules": [
+      "名称去除首尾空格后不为空",
+      "搜索关键词支持项目名称和描述的模糊匹配"
+    ]
+  },
+  "error_handling": {
+    "strategy": "使用FastAPI的异常处理中间件，所有未捕获异常返回500，业务异常返回对应HTTP状态码和JSON消息，确保不泄露系统敏感信息。",
+    "error_mapping": {
+      "400": "请求参数校验失败",
+      "404": "项目不存在",
+      "500": "服务器内部错误"
+    },
+    "logging_policy": "所有错误记录至日志文件，包含请求ID、时间戳和错误堆栈（仅调试模式）"
   }
 }
