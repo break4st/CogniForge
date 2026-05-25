@@ -1,0 +1,580 @@
+{
+  "meta": {
+    "doc_id": "lld-文件存储-001",
+    "type": "lld",
+    "module_type": "infrastructure",
+    "module": "文件存储（密钥、日志缓存）",
+    "title": "文件存储详细设计",
+    "author": "design_agent",
+    "created": "2025-03-21T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-001"
+      ],
+      "contracts": [],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "维护两个独立的存储目录：keys/ 和 logs/",
+      "将加密后的私钥按项目+环境维度写入文件，并支持读取",
+      "将部署日志流追加写入文件，支持分页读取历史日志",
+      "保证文件写入的原子性（临时文件+重命名）",
+      "定期清理过期日志"
+    ],
+    "out_of_scope": [
+      "私钥的加解密（由凭证加密存储服务负责）",
+      "日志的实时推送（由 WebSocket 服务处理）",
+      "数据库存储、网络传输、UI 展现"
+    ],
+    "owned_components": [
+      "CMP-001"
+    ],
+    "owned_contracts": [],
+    "consumed_contracts": [],
+    "owned_data_models": [
+      "DM-001",
+      "DM-002"
+    ],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "本地文件系统，用于存储加密后的私钥文件（备用方案）及部署日志缓存文件。提供可靠的文件读写能力，保障数据落盘与并发控制。",
+    "dependencies": [],
+    "tech_stack": [
+      "Python 3.11",
+      "pathlib",
+      "os",
+      "io",
+      "fcntl/msvcrt"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003",
+          "IF-004",
+          "IF-005",
+          "IF-006"
+        ],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": "本模块实现所有与文件存储相关的功能，覆盖需求 REQ-001。"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "密钥文件存储",
+      "type": "store",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "用于存储由主密码加密后的私钥文件，作为主数据库之外的备用恢复方案。目录结构：{BASE_DIR}/keys/{project_id}/{environment_id}.key，文件内容为加密 PEM 二进制。",
+      "fields": [
+        {
+          "name": "project_id",
+          "type": "string (目录名)",
+          "required": true,
+          "description": "项目 ID，作为第二级目录名"
+        },
+        {
+          "name": "environment_id",
+          "type": "string (文件名前缀)",
+          "required": true,
+          "description": "环境 ID，用于构成文件名 {environment_id}.key"
+        },
+        {
+          "name": "encrypted_data",
+          "type": "bytes",
+          "required": true,
+          "description": "加密后的私钥数据，写入文件内容"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [],
+      "constraints": [
+        "文件权限 600",
+        "原子写入（临时文件+重命名）"
+      ],
+      "lifecycle": {
+        "create": "保存环境私钥时创建",
+        "update": "私钥变更时更新",
+        "delete": "环境删除或项目移除时删除",
+        "retention": "永久保留，无自动过期"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "日志缓存文件存储",
+      "type": "store",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "存放部署任务执行过程中产生的控制台输出，用于历史查看。目录结构：{BASE_DIR}/logs/{deploy_id}.log，UTF-8 文本，每行一条日志记录（含时间戳）。",
+      "fields": [
+        {
+          "name": "deploy_id",
+          "type": "string (文件名)",
+          "required": true,
+          "description": "部署任务 ID，用于构成日志文件名"
+        },
+        {
+          "name": "log_content",
+          "type": "string",
+          "required": true,
+          "description": "追加写入的日志行文本"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [],
+      "constraints": [
+        "文件权限 600",
+        "追加写入后刷新缓冲区",
+        "并发控制（文件锁）"
+      ],
+      "lifecycle": {
+        "create": "部署开始时创建",
+        "update": "持续追加日志直到部署结束",
+        "delete": "由清理任务删除过期日志",
+        "retention": "保留最近 N 次部署日志，或基于容量自动清理"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "存储加密私钥",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "save_key(project_id: str, env_id: str, encrypted_key: bytes) -> bool",
+      "description": "将加密后的私钥写入对应路径，若目录不存在则创建。采用先写临时文件、再重命名的原子操作。",
+      "parameters": [
+        {
+          "name": "project_id",
+          "type": "str",
+          "in": "body",
+          "required": true,
+          "description": "项目标识"
+        },
+        {
+          "name": "env_id",
+          "type": "str",
+          "in": "body",
+          "required": true,
+          "description": "环境标识"
+        },
+        {
+          "name": "encrypted_key",
+          "type": "bytes",
+          "in": "body",
+          "required": true,
+          "description": "加密私钥数据"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 0,
+        "body": {
+          "success": "bool"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 0,
+          "code": "KEY_STORE_PERMISSION_ERROR",
+          "message": "目录不可写"
+        },
+        {
+          "status": 0,
+          "code": "KEY_STORE_IO_ERROR",
+          "message": "磁盘满或 I/O 错误"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [
+        "project_id 和 env_id 不能为空字符串",
+        "encrypted_key 不能为空"
+      ],
+      "idempotency": "NOT_IDEMPOTENT",
+      "circuit_breaker": {
+        "enabled": false
+      },
+      "deprecated": false
+    },
+    {
+      "id": "IF-002",
+      "name": "读取加密私钥",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-002",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "read_key(project_id: str, env_id: str) -> Optional[bytes]",
+      "description": "根据项目和环境读取存储的加密私钥文件。",
+      "parameters": [
+        {
+          "name": "project_id",
+          "type": "str",
+          "in": "path",
+          "required": true,
+          "description": "项目标识"
+        },
+        {
+          "name": "env_id",
+          "type": "str",
+          "in": "path",
+          "required": true,
+          "description": "环境标识"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 0,
+        "body": {
+          "encrypted_key": "bytes"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 0,
+          "code": "KEY_NOT_FOUND",
+          "message": "密钥文件不存在"
+        },
+        {
+          "status": 0,
+          "code": "KEY_READ_ERROR",
+          "message": "文件读取错误"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [
+        "project_id 和 env_id 不能为空"
+      ],
+      "idempotency": "IDEMPOTENT",
+      "circuit_breaker": {
+        "enabled": false
+      },
+      "deprecated": false
+    },
+    {
+      "id": "IF-003",
+      "name": "删除密钥文件",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-003",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "delete_key(project_id: str, env_id: str) -> bool",
+      "description": "删除指定项目环境的私钥文件及空目录。",
+      "parameters": [
+        {
+          "name": "project_id",
+          "type": "str",
+          "in": "path",
+          "required": true,
+          "description": "项目标识"
+        },
+        {
+          "name": "env_id",
+          "type": "str",
+          "in": "path",
+          "required": true,
+          "description": "环境标识"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 0,
+        "body": {
+          "success": "bool"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 0,
+          "code": "KEY_DELETE_ERROR",
+          "message": "文件删除失败"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [
+        "project_id 和 env_id 不能为空"
+      ],
+      "idempotency": "IDEMPOTENT",
+      "circuit_breaker": {
+        "enabled": false
+      },
+      "deprecated": false
+    },
+    {
+      "id": "IF-004",
+      "name": "追加日志行",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-004",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "append_log(deploy_id: str, line: str) -> bool",
+      "description": "将一行日志追加到指定部署的日志文件，自动添加时间戳前缀，写入后刷新缓冲区。",
+      "parameters": [
+        {
+          "name": "deploy_id",
+          "type": "str",
+          "in": "path",
+          "required": true,
+          "description": "部署任务 ID"
+        },
+        {
+          "name": "line",
+          "type": "str",
+          "in": "body",
+          "required": true,
+          "description": "日志行内容"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 0,
+        "body": {
+          "success": "bool"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 0,
+          "code": "LOG_WRITE_ERROR",
+          "message": "日志写入失败"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [
+        "deploy_id 不能为空",
+        "line 可以为空字符串"
+      ],
+      "idempotency": "NOT_IDEMPOTENT",
+      "circuit_breaker": {
+        "enabled": false
+      },
+      "deprecated": false
+    },
+    {
+      "id": "IF-005",
+      "name": "分页读取日志",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-005",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "read_logs(deploy_id: str, page: int, page_size: int) -> List[str]",
+      "description": "从后往前按行读取日志文件，支持分页，返回指定页的行列表。",
+      "parameters": [
+        {
+          "name": "deploy_id",
+          "type": "str",
+          "in": "path",
+          "required": true,
+          "description": "部署任务 ID"
+        },
+        {
+          "name": "page",
+          "type": "int",
+          "in": "query",
+          "required": true,
+          "description": "页码，从 1 开始"
+        },
+        {
+          "name": "page_size",
+          "type": "int",
+          "in": "query",
+          "required": true,
+          "description": "每页行数"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 0,
+        "body": {
+          "lines": "List[str]"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 0,
+          "code": "LOG_NOT_FOUND",
+          "message": "日志文件不存在"
+        },
+        {
+          "status": 0,
+          "code": "LOG_READ_ERROR",
+          "message": "日志读取错误"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [
+        "deploy_id 不能为空",
+        "page 必须 >= 1",
+        "page_size 必须 > 0"
+      ],
+      "idempotency": "IDEMPOTENT",
+      "circuit_breaker": {
+        "enabled": false
+      },
+      "deprecated": false
+    },
+    {
+      "id": "IF-006",
+      "name": "清理过期日志",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-006",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "cleanup_logs(max_keep: int) -> int",
+      "description": "删除最旧的日志文件，只保留最近的 max_keep 个。",
+      "parameters": [
+        {
+          "name": "max_keep",
+          "type": "int",
+          "in": "query",
+          "required": true,
+          "description": "保留的最大日志文件数量"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 0,
+        "body": {
+          "deleted_count": "int"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 0,
+          "code": "LOG_CLEANUP_ERROR",
+          "message": "清理操作异常"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [
+        "max_keep 必须 >= 1"
+      ],
+      "idempotency": "NOT_IDEMPOTENT",
+      "circuit_breaker": {
+        "enabled": false
+      },
+      "deprecated": false
+    }
+  ],
+  "topology": {
+    "exchanges": [],
+    "namespaces": [],
+    "buckets": [
+      {
+        "id": "BUCKET-001",
+        "name": "keys",
+        "type": "directory",
+        "description": "存储加密私钥文件的根目录"
+      },
+      {
+        "id": "BUCKET-002",
+        "name": "logs",
+        "type": "directory",
+        "description": "存储日志缓存文件的目录"
+      }
+    ]
+  },
+  "error_handling": {
+    "strategy": "fail_fast_and_log",
+    "descriptions": "所有文件操作遇错即抛出异常，并由调用方统一捕获处理；关键错误记录到系统日志。"
+  },
+  "service_contracts": [],
+  "domain_objects": [],
+  "testing": {
+    "unit_test_coverage": "80%",
+    "integration_test_coverage": "70%",
+    "performance_test_requirements": "日志追加延迟 < 1ms，读取分页 < 10ms"
+  },
+  "deployment": {
+    "storage_base_path": "/var/lib/cogniforge",
+    "volume_mount": "/var/lib/cogniforge:/app/data",
+    "permissions": "0600 for files, 0700 for directories"
+  }
+}
