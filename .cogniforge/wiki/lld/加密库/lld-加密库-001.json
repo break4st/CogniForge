@@ -1,0 +1,160 @@
+{
+  "meta": {
+    "doc_id": "lld-EncryptionLibrary-001",
+    "type": "lld",
+    "module_type": "infrastructure",
+    "module": "加密库",
+    "title": "加密库详细设计",
+    "author": "design_agent",
+    "created": "2025-04-08T00:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-001"
+      ],
+      "contracts": [],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "对称加密 (AES-256-CBC)",
+      "对称解密 (与加密配套)",
+      "基于口令的密钥派生 (PBKDF2, SCRYPT)",
+      "主密钥的安全存储与加载",
+      "安全的随机数生成 (IV、盐值)"
+    ],
+    "out_of_scope": [
+      "非对称加密 (RSA, ECC)",
+      "密钥生命周期管理 (轮换、销毁)",
+      "加密数据的持久化与传输协议"
+    ],
+    "owned_components": [
+      "CMP-001"
+    ],
+    "owned_contracts": [],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "基础设施层核心加密工具，为上层业务服务提供标准的对称加密能力。以函数库形式被同步调用，不暴露 REST 接口。支持 AES-256-CBC 加解密、基于口令的密钥派生以及主密钥的安全文件存储。",
+    "dependencies": [],
+    "tech_stack": [
+      "Python 3.11+",
+      "Python cryptography 库 (AES-256-CBC)"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [],
+      "lld_objects": {
+        "data_models": [],
+        "interfaces": []
+      },
+      "coverage": "full",
+      "notes": "加密库组件直接实现安全需求，无对外契约"
+    }
+  ],
+  "data_models": [],
+  "interfaces": [],
+  "topology": {
+    "exchanges": [],
+    "namespaces": [],
+    "buckets": [
+      {
+        "name": "encryption-bucket",
+        "description": "存储加密后的主密钥文件"
+      }
+    ]
+  },
+  "error_handling": {
+    "strategy": "采用 Python 异常体系传递错误，不产生 HTTP 响应。调用方负责捕获并处理。",
+    "response_format": {},
+    "categories": [
+      {
+        "code": "EncryptionError",
+        "name": "加密异常基类",
+        "description": "所有加密相关异常的父类"
+      },
+      {
+        "code": "InvalidKeyError",
+        "name": "无效密钥异常",
+        "description": "密钥长度、类型不正确"
+      },
+      {
+        "code": "DecryptionError",
+        "name": "解密失败异常",
+        "description": "密文损坏、IV错误或密钥不匹配"
+      },
+      {
+        "code": "InvalidParameterError",
+        "name": "非法参数异常",
+        "description": "如空明文等参数错误"
+      },
+      {
+        "code": "KeyStorageError",
+        "name": "密钥存储异常",
+        "description": "密钥文件存储或读取相关错误"
+      },
+      {
+        "code": "MasterKeyFileCorrupted",
+        "name": "主密钥文件损坏异常",
+        "description": "密钥文件格式不正确或内容损坏"
+      }
+    ]
+  },
+  "workflow": {
+    "name": "主密钥初始化与存储流程",
+    "description": "首次部署时生成主密钥并用管理员口令加密存储，同时后续服务可从文件加载主密钥。",
+    "steps": [
+      {
+        "order": 1,
+        "name": "生成对称密钥",
+        "action": "调用 generate_key() 生成随机 256-bit AES 密钥（EncryptionKey）",
+        "timeout_seconds": 5,
+        "on_failure": "抛出异常，终止初始化"
+      },
+      {
+        "order": 2,
+        "name": "派生文件加密密钥",
+        "action": "使用管理员口令和随机盐值调用 derive_key_from_password(password, salt, KDFAlgorithm.SCRYPT) 生成保护主密钥的加密密钥",
+        "timeout_seconds": 10,
+        "on_failure": "抛出 InvalidParameterError"
+      },
+      {
+        "order": 3,
+        "name": "加密并写入主密钥文件",
+        "action": "用派生密钥加密主密钥，得到 EncryptedData，连同 KDF 参数序列化并写入指定文件路径",
+        "timeout_seconds": 5,
+        "on_failure": "抛出 IOError 或 KeyStorageError"
+      }
+    ],
+    "retry_strategy": {
+      "max_retries": 0,
+      "retry_interval_seconds": 0,
+      "retryable_errors": [],
+      "non_retryable_errors": [
+        "加密中任何异常均不可重试，须由管理员或调用方干预"
+      ]
+    }
+  }
+}
