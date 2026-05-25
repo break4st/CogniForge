@@ -144,8 +144,45 @@ class TechLeadAgent(BaseAgent):
         )
 
         response = self.agent.generate_agentic(prompt, role="techlead")
+
+        # Validate generated JSON against schema
+        json_abs = Path(self.config.repo_path) / json_path
+        if json_abs.exists():
+            try:
+                data = json.loads(json_abs.read_text(encoding="utf-8"))
+                schema_path = self.config.repo_path / "schemas" / "quality-report-schema.json"
+                errors = self._validate_with_schema(data, schema_path)
+                if errors:
+                    return self.format_result(
+                        status="failed",
+                        message=f"Schema validation failed: {'; '.join(errors[:3])}",
+                        reasoning=response.content,
+                    )
+            except json.JSONDecodeError as e:
+                return self.format_result(
+                    status="failed",
+                    message=f"LLM 输出的 JSON 无法解析: {e}",
+                    reasoning=response.content,
+                )
+
         return self._commit_result(json_path, f"质量评估 - {module}", "techlead_agent",
                                    f"docs: quality evaluation for {module}", response.content)
+
+    @staticmethod
+    def _validate_with_schema(data: dict, schema_path: Path) -> list[str]:
+        """Validate dict against JSON schema. Returns list of error messages."""
+        if not schema_path.exists():
+            return []
+        try:
+            import jsonschema
+            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            validator = jsonschema.Draft7Validator(schema)
+            errors = list(validator.iter_errors(data))
+            return [e.message for e in errors]
+        except ImportError:
+            return []
+        except Exception as e:
+            return [f"Schema validation error: {e}"]
 
     def _decide_next(self, input_data: dict) -> dict:
         return self.format_result(

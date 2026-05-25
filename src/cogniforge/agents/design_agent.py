@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import time
@@ -17,370 +18,37 @@ from cogniforge.wiki.wiki_renderer import repair_truncated_json
 
 # ---------------------------------------------------------------------------
 # Per-module-type JSON schema fragments for the LLM prompt
+# Loaded from schemas/agents/lld/*.json
 # ---------------------------------------------------------------------------
 
-_SCHEMA_BASE = """\
-{{
-  "meta": {{
-    "doc_id": "{doc_id}", "type": "lld",
-    "module_type": "{module_type}", "module": "{module}",
-    "title": "{title}", "author": "design_agent", "created": "{now}",
-    "version": 1, "status": "active"
-  }},
-  "source": {{
-    "prd": {{"doc_id": "prd-current", "version": 1, "requirements": ["REQ-001"]}},
-    "sad": {{"doc_id": "sad-001", "version": 1,
-      "components": ["CMP-001"], "contracts": ["CTR-001"], "data_models": []}},
-    "pm_turn_id": "", "se_turn_id": ""
-  }},
-  "module_boundary": {{
-    "in_scope": ["本模块负责的功能范围"],
-    "out_of_scope": ["不属于本模块的内容"],
-    "owned_components": ["CMP-001"],
-    "owned_contracts": [],
-    "consumed_contracts": [],
-    "owned_data_models": [],
-    "consumed_data_models": []
-  }},
-  "overview": {{
-    "description": "模块概述（string）",
-    "dependencies": ["依赖的模块名"],
-    "tech_stack": ["技术栈"]
-  }},
-  "traceability": [
-    {{
-      "requirement_id": "REQ-001",
-      "sad_component_ids": ["CMP-001"],
-      "sad_contract_ids": ["CTR-001"],
-      "lld_objects": {{"data_models": [], "interfaces": ["IF-001"], "domain_objects": [], "service_contracts": []}},
-      "coverage": "full",
-      "notes": ""
-    }}
-  ]"""
+_SCHEMA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "schemas" / "agents" / "lld"
 
-_SCHEMA_DATA_MODELS = """\
-  "data_models": [
-    {{
-      "id": "DM-001",
-      "name": "模型名",
-      "type": "table|reference|struct|store|config",
-      "status": "active", "version": 1,
-      "ownership": "canonical|derived|owned",
-      // ownership=derived 时必须:
-      "source": {{"doc_id": "lld-Primary Database-001", "model_name": "表名"}},
-      "description": "说明",
-      "fields": [
-        {{"name": "字段名", "type": "类型", "required": true, "description": "说明"}}
-      ],
-      // type=table 时必须:
-      "indexes": [
-        {{"name": "索引名", "unique": false, "columns": ["列名"]}}
-      ],
-      "source_requirements": ["REQ-001"],
-      "source_components": ["CMP-001"],
-      "source_contracts": ["CTR-001"],
-      "constraints": [],
-      "lifecycle": {{"create": "", "update": "", "delete": "", "retention": ""}},
-      "change_history": [
-        {{"version": 1, "change_type": "created", "summary": "初始创建", "reason": "首次生成 LLD"}}
-      ]
-    }}
-  ]"""
 
-_SCHEMA_INTERFACES = """\
-  "interfaces": [
-    {{
-      "id": "IF-001",
-      "name": "接口名称",
-      "status": "active", "version": 1,
-      "source_contract_id": "CTR-001",
-      "provider_component_id": "CMP-001",
-      "method": "GET|POST|PUT|DELETE|INTERNAL|MQ|WS|frontend",
-      "endpoint": "/api/...（不含 HTTP 方法前缀，method 与 endpoint 必须分别填写）",
-      "description": "接口说明",
-      "parameters": [
-        {{"name": "参数名", "type": "类型", "in": "path|query|body|header", "required": true, "description": "说明"}}
-      ],
-      "request_body": {{}},
-      "response": {{
-        "status": 200,
-        "body": {{"字段名": "类型"}}
-      }},
-      "error_codes": [
-        {{"status": 400, "code": "ERROR_CODE", "message": "错误说明"}}
-      ],
-      "auth": {{"required": false, "policy": ""}},
-      "validation_rules": [],
-      "idempotency": "not_applicable",
-      "pagination": "not_applicable",
-      "source_requirements": ["REQ-001"],
-      "change_history": [
-        {{"version": 1, "change_type": "created", "summary": "初始创建", "reason": "首次生成 LLD"}}
-      ]
-    }}
-  ]"""
+@functools.lru_cache(maxsize=32)
+def _load_schema_text(name: str) -> str:
+    """Load an LLD schema fragment from schemas/agents/lld/{name}.json."""
+    path = _SCHEMA_DIR / f"{name}.json"
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8").rstrip()
 
-_SCHEMA_ERROR = """\
-  "error_handling": {{
-    "strategy": "总体错误处理策略（1-2句）",
-    "response_format": {{
-      "body": {{"code": "integer", "error": "string", "detail": "string"}}
-    }},
-    "categories": [
-      {{"code": "4xx 或 5xx", "name": "分类名", "description": "触发条件和处理方式"}}
-    ]
-  }}"""
 
-_SCHEMA_WORKFLOW = """\
-  "workflow": {{
-    "name": "编排流程名（如：部署执行主流程）",
-    "description": "流程说明",
-    "steps": [
-      {{"order": 1, "name": "步骤名", "action": "具体操作",
-        "timeout_seconds": 60, "on_failure": "失败时的处理方式"}}
-    ],
-    "retry_strategy": {{
-      "max_retries": 3, "retry_interval_seconds": 30,
-      "retryable_errors": ["NETWORK_ERROR", "TIMEOUT"],
-      "non_retryable_errors": ["AUTH_ERROR", "CONFIG_ERROR"]
-    }}
-  }}"""
-
-# ── Module-type-specific sections ──
-
-_SCHEMA_DOMAIN_OBJECTS = """\
-  "domain_objects": [
-    {{
-      "name": "对象名",
-      "object_type": "entity|value_object|dto|enum",
-      "description": "说明",
-      // object_type=entity|value_object|dto 时:
-      "attributes": [
-        {{"name": "属性名", "type": "类型", "required": true,
-          "source": "db|computed|input|derived",
-          "description": "说明"}}
-      ],
-      // object_type=enum 时:
-      "values": ["合法值1", "合法值2"],
-      // object_type=dto 时:
-      "maps_to_entity": "对应的实体名（可选）"
-    }}
-  ]"""
-
-_SCHEMA_SERVICE_CONTRACTS = """\
-  "service_contracts": [
-    {{
-      "name": "服务类名（如 ProjectService）",
-      "description": "服务职责（一句话）",
-      "methods": [
-        {{
-          "name": "方法名（驼峰）",
-          "signature": "(param: Type, ...) -> ReturnType",
-          "precondition": "调用前必须满足的条件",
-          "postcondition": "调用后的结果",
-          "description": "行为描述（一句话）",
-          "exceptions": [
-            {{"name": "异常类名", "trigger": "触发条件", "http_status": 409}}
-          ]
-        }}
-      ],
-      "repository_dependencies": [
-        "findByNameAndCreatedBy(name, userId) -> Project?",
-        "existsActiveDeployment(projectId) -> boolean"
-      ]
-    }}
-  ]"""
-
-_SCHEMA_BUSINESS_RULES = """\
-  "business_rules": {{
-    "invariants": [
-      "必须始终为真的业务规则描述"
-    ],
-    "state_machines": [
-      {{
-        "entity": "实体名",
-        "states": ["状态1", "状态2"],
-        "transitions": [
-          {{"from": "状态1", "to": "状态2", "trigger": "触发事件", "actor": "执行者"}}
-        ],
-        "irreversible_rules": ["不可逆的状态转换规则"],
-        "concurrency": "并发控制说明"
-      }}
-    ],
-    "cross_service_rules": [
-      "跨服务协同规则描述"
-    ]
-  }}"""
-
-# ── Frontend-specific ──
-
-_SCHEMA_COMPONENT_TREE = """\
-  "component_tree": [
-    {{
-      "name": "组件名",
-      "path": "所在路由",
-      "description": "组件职责（一句话）",
-      "props": [
-        {{"name": "prop名", "type": "类型", "required": true, "description": "说明"}}
-      ],
-      "events": [
-        {{"name": "事件名", "payload_type": "载荷类型"}}
-      ],
-      "state": [
-        {{"name": "状态字段名", "type": "类型", "description": "说明"}}
-      ],
-      "behavior": [
-        "交互行为描述（如 mount 时发起请求）"
-      ],
-      "edge_cases": [
-        "边界情况处理描述"
-      ],
-      "children": [
-        // 递归同结构
-      ]
-    }}
-  ]"""
-
-_SCHEMA_STATE_DESIGN = """\
-  "state_design": {{
-    "global": [
-      {{"name": "状态名", "type": "类型", "description": "说明",
-        "consumers": ["消费该状态的组件名"]}}
-    ],
-    "caching_strategy": "缓存策略描述"
-  }}"""
-
-_SCHEMA_ROUTE_DESIGN = """\
-  "route_design": [
-    {{
-      "path": "/路由路径",
-      "page": "页面组件名",
-      "title": "页面标题",
-      "auth": "all|admin,operator|admin",
-      "layout": "default|blank"
-    }}
-  ]"""
-
-_SCHEMA_INTERACTION_FLOWS = """\
-  "interaction_flows": [
-    {{
-      "name": "流程名（如：一键部署流程）",
-      "description": "流程概述",
-      "steps": [
-        "步骤1: 具体操作描述"
-      ]
-    }}
-  ]"""
-
-_SCHEMA_API_INTEGRATION = """\
-  "api_integration": [
-    {{
-      "page": "页面组件名",
-      "endpoint": "GET /api/...",
-      "maps_to": "目标组件或状态字段"
-    }}
-  ]"""
-
-# ── Gateway-specific ──
-
-_SCHEMA_GATEWAY = """\
-  "route_table": [
-    {{
-      "path_pattern": "/api/projects/**",
-      "upstream": "上游服务名",
-      "description": "说明"
-    }}
-  ],
-  "middleware_chain": [
-    "Request → Auth → RateLimiter → Router → Upstream"
-  ],
-  "auth_policy": {{
-    "public_endpoints": ["/api/login", "/api/health"],
-    "auth_method": "JWT Bearer Token",
-    "role_path_map": [
-      {{"path": "GET /api/audit-logs", "roles": ["admin"]}},
-      {{"path": "POST /api/keys", "roles": ["admin", "operator"]}}
-    ],
-    "token_expiry": "access 2h, refresh 7d"
-  }},
-  "rate_limiting": {{
-    "global": "每 IP 100 req/s",
-    "per_user": "每 user 1000 req/min",
-    "special_endpoints": [
-      {{"endpoint": "POST /api/deployments", "limit": "每 user 10 req/min"}}
-    ]
-  }}"""
-
-# ── Database-specific ──
-
-_SCHEMA_DATABASE = """\
-  "index_strategy": [
-    {{
-      "table": "表名",
-      "indexes": [
-        {{"name": "idx_xxx", "columns": ["col1", "col2"], "unique": false,
-          "type": "B-tree|GIN|GIST", "purpose": "用途"}}
-      ]
-    }}
-  ],
-  "migration_strategy": {{
-    "tool": "Flyway|Liquibase|Alembic",
-    "naming": "V{序号}__{描述}.sql",
-    "rollback": "回滚策略说明"
-  }},
-  "capacity_estimation": {{
-    "estimated_rows_1y": "预估1年数据量",
-    "estimated_rows_3y": "预估3年数据量",
-    "hot_tables": ["高频读写表名"],
-    "partition_strategy": "分区策略（如有）"
-  }},
-  "connection_contracts": {{
-    "pool_size": "连接池大小",
-    "timeout": "连接超时",
-    "service_accounts": [
-      {{"service": "服务名", "db_user": "账号", "privileges": ["SELECT", "INSERT"]}}
-    ]
-  }}"""
-
-# ── Infrastructure-specific ──
-
-_SCHEMA_INFRA = """\
-  // 消息队列类:
-  "topology": {{
-    "exchanges": [
-      {{"name": "exchange名", "type": "direct|topic|fanout", "durable": true,
-        "bindings": [{{"queue": "队列名", "routing_key": "routing key"}}]}}
-    ],
-    "queues": [
-      {{"name": "队列名", "durable": true, "ttl_seconds": 86400, "max_length": 10000}}
-    ],
-    "producer_consumer_map": [
-      {{"producer": "生产者服务", "consumer": "消费者服务", "exchange": "exchange名"}}
-    ]
-  }},
-  "message_contracts": [
-    {{
-      "name": "消息名",
-      "exchange": "exchange名",
-      "routing_key": "routing key",
-      "schema": {{"字段名": "类型"}},
-      "required_fields": ["必填字段"],
-      "max_size_bytes": 1048576
-    }}
-  ],
-  "reliability_strategy": {{
-    "ack_mode": "manual",
-    "retry": {{"max_retries": 3, "backoff": "exponential"}},
-    "dead_letter": "死信队列名",
-    "idempotency": "幂等性保证方式"
-  }}
-  // 缓存类:
-  // "topology": {{"namespaces": [...], "key_patterns": [...], "expiry_strategy": "..."}},
-  // "connection_contracts": {{...}}
-  // 文件存储类:
-  // "topology": {{"buckets": [...], "path_conventions": "..."}},
-  // "connection_contracts": {{...}}
-"""
+_SCHEMA_BASE = _load_schema_text("lld-base")
+_SCHEMA_DATA_MODELS = _load_schema_text("lld-data-models")
+_SCHEMA_INTERFACES = _load_schema_text("lld-interfaces")
+_SCHEMA_ERROR = _load_schema_text("lld-error-handling")
+_SCHEMA_WORKFLOW = _load_schema_text("lld-workflow")
+_SCHEMA_DOMAIN_OBJECTS = _load_schema_text("lld-domain-objects")
+_SCHEMA_SERVICE_CONTRACTS = _load_schema_text("lld-service-contracts")
+_SCHEMA_BUSINESS_RULES = _load_schema_text("lld-business-rules")
+_SCHEMA_COMPONENT_TREE = _load_schema_text("lld-component-tree")
+_SCHEMA_STATE_DESIGN = _load_schema_text("lld-state-design")
+_SCHEMA_ROUTE_DESIGN = _load_schema_text("lld-route-design")
+_SCHEMA_INTERACTION_FLOWS = _load_schema_text("lld-interaction-flows")
+_SCHEMA_API_INTEGRATION = _load_schema_text("lld-api-integration")
+_SCHEMA_GATEWAY = _load_schema_text("lld-gateway")
+_SCHEMA_DATABASE = _load_schema_text("lld-database")
+_SCHEMA_INFRA = _load_schema_text("lld-infrastructure")
 
 # ---------------------------------------------------------------------------
 # Ownership rules per module_type
