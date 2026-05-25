@@ -1,0 +1,727 @@
+{
+  "meta": {
+    "doc_id": "lld-SQLite数据库-001",
+    "type": "lld",
+    "module_type": "database",
+    "module": "SQLite数据库",
+    "title": "SQLite数据库详细设计",
+    "author": "design_agent",
+    "created": "2025-04-15T10:00:00Z",
+    "version": 2,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-001"
+      ],
+      "contracts": [
+        "CTR-001"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "定义所有业务数据表的结构、约束与索引",
+      "管理数据库文件的创建、迁移与版本控制",
+      "向外暴露 SQLAlchemy 模型对象供上层服务 CRUD",
+      "保证数据一致性与事务支持"
+    ],
+    "out_of_scope": [
+      "业务逻辑处理",
+      "HTTP/WebSocket 接口实现",
+      "密钥派生与加解密",
+      "用户身份认证与授权"
+    ],
+    "owned_components": [
+      "CMP-001"
+    ],
+    "owned_contracts": [],
+    "consumed_contracts": [],
+    "owned_data_models": [
+      "DM-001",
+      "DM-002",
+      "DM-003",
+      "DM-004",
+      "DM-005"
+    ],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "本地文件数据库，存储项目、环境、部署记录等结构化数据，是桌面部署工具的持久化核心。",
+    "dependencies": [],
+    "tech_stack": [
+      "SQLite",
+      "SQLAlchemy",
+      "Python 3.11",
+      "Alembic"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [
+        "CTR-001"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002",
+          "DM-003",
+          "DM-004",
+          "DM-005"
+        ],
+        "interfaces": [],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": "所有表结构、索引、迁移均直接对应 REQ-001 的存储要求。"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "projects",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "canonical",
+      "description": "项目主表，存储部署项目的元信息。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "自增主键"
+        },
+        {
+          "name": "name",
+          "type": "String(256)",
+          "required": true,
+          "description": "项目名称，唯一"
+        },
+        {
+          "name": "description",
+          "type": "Text",
+          "required": false,
+          "description": "项目描述"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "创建时间，默认当前UTC"
+        },
+        {
+          "name": "updated_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "最后更新时间，自动更新"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "ix_projects_name",
+          "unique": true,
+          "columns": [
+            "name"
+          ]
+        },
+        {
+          "name": "ix_projects_created_at",
+          "unique": false,
+          "columns": [
+            "created_at"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [
+        "name 字段唯一"
+      ],
+      "lifecycle": {
+        "create": "创建项目时 INSERT",
+        "update": "修改项目名或描述时 UPDATE",
+        "delete": "删除项目时 DELETE，关联记录需外联删除",
+        "retention": "永久保存"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "environments",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "canonical",
+      "description": "环境表，存储各项目的部署环境连接信息。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键，自增"
+        },
+        {
+          "name": "project_id",
+          "type": "Integer (FK → projects.id)",
+          "required": true,
+          "description": "所属项目ID"
+        },
+        {
+          "name": "name",
+          "type": "String(128)",
+          "required": true,
+          "description": "环境名称，如 dev、staging"
+        },
+        {
+          "name": "env_type",
+          "type": "String(32)",
+          "required": true,
+          "description": "环境类型：development、testing、staging、production"
+        },
+        {
+          "name": "host",
+          "type": "String(256)",
+          "required": true,
+          "description": "目标主机 IP 或域名"
+        },
+        {
+          "name": "port",
+          "type": "Integer",
+          "required": false,
+          "description": "SSH/连接端口，默认22"
+        },
+        {
+          "name": "username",
+          "type": "String(128)",
+          "required": true,
+          "description": "登录用户名"
+        },
+        {
+          "name": "password_encrypted",
+          "type": "Text",
+          "required": false,
+          "description": "加密后的密码"
+        },
+        {
+          "name": "private_key_path",
+          "type": "String(1024)",
+          "required": false,
+          "description": "私钥文件路径"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "ix_environments_project_id",
+          "unique": false,
+          "columns": [
+            "project_id"
+          ]
+        },
+        {
+          "name": "ix_environments_project_id_name",
+          "unique": true,
+          "columns": [
+            "project_id",
+            "name"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [
+        "同一项目下环境名唯一",
+        "project_id 外键关联 projects.id"
+      ],
+      "lifecycle": {
+        "create": "添加环境时 INSERT",
+        "update": "修改环境信息时 UPDATE",
+        "delete": "删除环境时 DELETE",
+        "retention": "永久保存"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-003",
+      "name": "deploy_records",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "canonical",
+      "description": "部署记录表，存储每次部署操作的详细信息与结果。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键，自增"
+        },
+        {
+          "name": "project_id",
+          "type": "Integer (FK → projects.id)",
+          "required": true,
+          "description": "所属项目ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "Integer (FK → environments.id)",
+          "required": true,
+          "description": "目标环境ID"
+        },
+        {
+          "name": "status",
+          "type": "String(32)",
+          "required": true,
+          "description": "状态：pending、running、success、failed、cancelled"
+        },
+        {
+          "name": "started_at",
+          "type": "DateTime",
+          "required": false,
+          "description": "开始时间"
+        },
+        {
+          "name": "finished_at",
+          "type": "DateTime",
+          "required": false,
+          "description": "结束时间"
+        },
+        {
+          "name": "log",
+          "type": "Text",
+          "required": false,
+          "description": "部署日志输出"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "记录创建时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "ix_deploy_records_project_id",
+          "unique": false,
+          "columns": [
+            "project_id"
+          ]
+        },
+        {
+          "name": "ix_deploy_records_environment_id",
+          "unique": false,
+          "columns": [
+            "environment_id"
+          ]
+        },
+        {
+          "name": "ix_deploy_records_status",
+          "unique": false,
+          "columns": [
+            "status"
+          ]
+        },
+        {
+          "name": "ix_deploy_records_created_at",
+          "unique": false,
+          "columns": [
+            "created_at"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [
+        "project_id 外键关联 projects.id",
+        "environment_id 外键关联 environments.id"
+      ],
+      "lifecycle": {
+        "create": "开始部署时 INSERT",
+        "update": "部署状态变更或日志追加时 UPDATE",
+        "delete": "保留记录，一般不允许删除",
+        "retention": "长期保留，后续可能按策略清理"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-004",
+      "name": "deploy_steps",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "canonical",
+      "description": "部署步骤表，记录一次部署中各个步骤的执行详情。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键，自增"
+        },
+        {
+          "name": "deploy_record_id",
+          "type": "Integer (FK → deploy_records.id)",
+          "required": true,
+          "description": "所属部署记录ID"
+        },
+        {
+          "name": "step_name",
+          "type": "String(256)",
+          "required": true,
+          "description": "步骤名称，如 'build'、'upload'、'restart'"
+        },
+        {
+          "name": "status",
+          "type": "String(32)",
+          "required": true,
+          "description": "状态：pending、running、success、failed、skipped"
+        },
+        {
+          "name": "started_at",
+          "type": "DateTime",
+          "required": false,
+          "description": "开始时间"
+        },
+        {
+          "name": "finished_at",
+          "type": "DateTime",
+          "required": false,
+          "description": "结束时间"
+        },
+        {
+          "name": "log",
+          "type": "Text",
+          "required": false,
+          "description": "步骤日志输出"
+        },
+        {
+          "name": "order",
+          "type": "Integer",
+          "required": true,
+          "description": "步骤执行顺序序号"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "ix_deploy_steps_deploy_record_id",
+          "unique": false,
+          "columns": [
+            "deploy_record_id"
+          ]
+        },
+        {
+          "name": "ix_deploy_steps_deploy_record_id_order",
+          "unique": true,
+          "columns": [
+            "deploy_record_id",
+            "order"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [
+        "deploy_record_id 外键关联 deploy_records.id",
+        "同一部署记录下步骤顺序唯一"
+      ],
+      "lifecycle": {
+        "create": "部署步骤开始时 INSERT",
+        "update": "步骤状态变更或日志追加时 UPDATE",
+        "delete": "跟随部署记录，一般不单独删除",
+        "retention": "与部署记录保留策略一致"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-005",
+      "name": "configurations",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "canonical",
+      "description": "配置表，存储项目或环境级别的键值对配置。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键，自增"
+        },
+        {
+          "name": "project_id",
+          "type": "Integer (FK → projects.id, nullable)",
+          "required": false,
+          "description": "所属项目ID，可为空表示环境级配置"
+        },
+        {
+          "name": "environment_id",
+          "type": "Integer (FK → environments.id, nullable)",
+          "required": false,
+          "description": "所属环境ID，可为空表示项目级配置"
+        },
+        {
+          "name": "key",
+          "type": "String(256)",
+          "required": true,
+          "description": "配置键"
+        },
+        {
+          "name": "value",
+          "type": "Text",
+          "required": true,
+          "description": "配置值"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "ix_configurations_project_id",
+          "unique": false,
+          "columns": [
+            "project_id"
+          ]
+        },
+        {
+          "name": "ix_configurations_environment_id",
+          "unique": false,
+          "columns": [
+            "environment_id"
+          ]
+        },
+        {
+          "name": "ix_configurations_project_id_key",
+          "unique": true,
+          "columns": [
+            "project_id",
+            "key"
+          ]
+        },
+        {
+          "name": "ix_configurations_environment_id_key",
+          "unique": true,
+          "columns": [
+            "environment_id",
+            "key"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [
+        "project_id 或 environment_id 至少一个非空",
+        "同一项目或环境下配置键唯一"
+      ],
+      "lifecycle": {
+        "create": "添加配置时 INSERT",
+        "update": "修改配置值时 UPDATE",
+        "delete": "删除配置项时 DELETE",
+        "retention": "永久保存"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "index_strategy": {
+    "purpose": "优化查询性能，保证数据完整性，支持高频查询字段。",
+    "indexes_summary": [
+      "projects.name 唯一索引，防止重名并加速按名查询",
+      "projects.created_at 索引加速按创建时间排序或分页",
+      "environments.project_id 索引加速获取项目下环境列表",
+      "environments.project_id+name 联合唯一索引保证环境名唯一",
+      "deploy_records.project_id 索引加速按项目查询部署记录",
+      "deploy_records.environment_id 索引加速按环境查询部署记录",
+      "deploy_records.status 索引加速按状态过滤",
+      "deploy_records.created_at 索引加速按时间排序",
+      "deploy_steps.deploy_record_id 索引加速获取部署记录的所有步骤",
+      "deploy_steps.deploy_record_id+order 联合唯一索引保证顺序唯一且支持按顺序加载",
+      "configurations.project_id+key 联合唯一索引保证配置唯一",
+      "configurations.environment_id+key 联合唯一索引保证配置唯一",
+      "外键字段均建立索引以优化 JOIN 操作"
+    ]
+  },
+  "migration_strategy": {
+    "tool": "Alembic",
+    "tracking": "使用 Alembic 版本号管理数据库迁移脚本",
+    "strategy": "增量迁移，每个版本对应一个迁移脚本，支持升级和降级",
+    "seed_data": "初始可包含示例项目和配置（可选）",
+    "handling": {
+      "initial_schema": "第一个迁移版本创建所有基础表",
+      "schema_changes": "后续迁移通过 Alembic 自动生成或以手动编写脚本实现",
+      "data_migrations": "必要时编写 data migration 脚本转换数据",
+      "downgrade": "提供降级脚本以回滚到前一个版本"
+    }
+  },
+  "capacity_estimation": {
+    "expected_data_volume": "桌面单用户场景，数据量级在十万行以内",
+    "growth_rate": "每天最多几百条记录（部署记录及步骤）",
+    "storage_estimate": "数据库文件大小预计在 10-100 MB 范围",
+    "performance_targets": {
+      "query": "简单查询 1ms 内，复杂关联 10ms 以内",
+      "write": "单条插入 5ms 以内",
+      "backup": "数据库文件小于 100MB，备份快速"
+    }
+  },
+  "connection_contracts": {
+    "engine_creation": "使用 SQLAlchemy create_engine 创建 SQLite 连接",
+    "connection_string": "sqlite:///./deploy_tool.db",
+    "pooling": "默认连接池（NullPool for SQLite）",
+    "isolation_level": "SERIALIZABLE（默认）",
+    "thread_safety": "单线程访问，通过 SQLAlchemy 的 check_same_thread=False 在必要时允许多线程",
+    "context_manager": "所有数据库操作通过上下文管理器或依赖注入获取 session"
+  },
+  "error_handling": {
+    "strategy": "捕获数据库异常并转换为领域错误，记录日志后向上传播",
+    "common_errors": [
+      {
+        "exception": "sqlalchemy.exc.IntegrityError",
+        "cause": "违反唯一或外键约束",
+        "handling": "转换为自定义 DuplicateEntryError 或 ForeignKeyError，提示用户具体字段"
+      },
+      {
+        "exception": "sqlalchemy.exc.OperationalError",
+        "cause": "数据库锁或文件访问错误",
+        "handling": "重试有限次数，失败后抛出 DatabaseLockedError"
+      },
+      {
+        "exception": "sqlalchemy.exc.DataError",
+        "cause": "数据格式错误（如字段超长）",
+        "handling": "转换为 ValidationError，指明无效字段"
+      }
+    ],
+    "logging": "使用 logging 记录异常详情，包含操作上下文",
+    "graceful_degradation": "数据库不可用时，提示用户检查磁盘空间和权限，并禁止写操作"
+  },
+  "schema": {
+    "dialect": "SQLite",
+    "entities": [
+      "projects",
+      "environments",
+      "deploy_records",
+      "deploy_steps",
+      "configurations"
+    ],
+    "relationships": [
+      "projects 1──N environments",
+      "projects 1──N deploy_records",
+      "environments 1──N deploy_records",
+      "deploy_records 1──N deploy_steps",
+      "projects 1──N configurations (可空)",
+      "environments 1──N configurations (可空)"
+    ],
+    "constraints_global": [
+      "所有主键为自增整数",
+      "时间字段使用 UTC 时间",
+      "外键约束由业务代码或 SQLite PRAGMA foreign_keys=ON 保证"
+    ]
+  }
+}
