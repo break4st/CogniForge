@@ -1,0 +1,889 @@
+{
+  "meta": {
+    "doc_id": "lld-Nginx Gateway-001",
+    "type": "lld",
+    "module_type": "gateway",
+    "module": "Nginx Gateway",
+    "title": "Nginx 网关详细设计文档",
+    "author": "design_agent",
+    "created": "2025-04-09T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": ["REQ-001"]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": ["CMP-001"],
+      "contracts": ["CTR-001"],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "HTTP/2 及 HTTPS 终结、证书更新",
+      "静态文件服务（/ 及所有非 /api 路径）",
+      "API 路由转发（所有 /api/* 请求）",
+      "请求头注入（如 X-Real-IP、X-Request-ID）",
+      "基于 JWT 的令牌验证与角色鉴权",
+      "按 IP 和用户维度的速率限制",
+      "统一错误响应格式化（JSON 格式）",
+      "健康检查端点透传"
+    ],
+    "out_of_scope": [
+      "业务数据库操作、会话管理",
+      "复杂业务逻辑编排（如部署任务执行）",
+      "密钥的加密存储与解密（由后端 KeyManager 负责）",
+      "异步任务消息队列管理"
+    ],
+    "owned_components": ["CMP-001"],
+    "owned_contracts": [],
+    "consumed_contracts": ["CTR-001"],
+    "owned_data_models": ["DM-001", "DM-002", "DM-003", "DM-004", "DM-005"],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "Nginx 反向代理网关，提供 HTTPS 终止，静态前端资源服务，并将所有 /api/* 请求透明转发至 FastAPI 后端集群。同时承担集中式认证（JWT 验证）、角色授权、全局限流和统一错误响应格式化的职责。",
+    "dependencies": ["FastAPI 后端服务集群"],
+    "tech_stack": ["Nginx 1.25+", "OpenResty", "Lua", "OpenSSL 3.x"]
+  },
+  "business_rules": {
+    "invariants": [
+      "所有 /api/* 请求必须通过 JWT 认证，除非明确标记为公开端点",
+      "速率限制基于 IP 和用户令牌两层，任一维度超标均拒绝请求",
+      "SSL 证书路径和私钥必须存在且可读，否则 Nginx 启动失败",
+      "上游服务器定义不能为空，若所有上游不可用则返回 502 错误",
+      "静态文件目录必须可读，否则根路径返回 503"
+    ]
+  },
+  "error_handling": {
+    "strategy": "网关层统一捕获错误，返回 JSON 格式错误响应。包括：401 未认证、403 禁止、404 未找到、429 请求过多、500 内部错误、502 网关错误、503 服务不可用。错误响应体包含 error_code、message 和 request_id。",
+    "error_map": [
+      {
+        "status_code": 401,
+        "error_code": "UNAUTHORIZED",
+        "message_template": "未认证或 JWT 无效",
+        "response_schema": {
+          "error_code": "string",
+          "message": "string",
+          "request_id": "string"
+        }
+      },
+      {
+        "status_code": 403,
+        "error_code": "FORBIDDEN",
+        "message_template": "角色权限不足",
+        "response_schema": {
+          "error_code": "string",
+          "message": "string",
+          "request_id": "string"
+        }
+      },
+      {
+        "status_code": 404,
+        "error_code": "NOT_FOUND",
+        "message_template": "路径或资源不存在",
+        "response_schema": {
+          "error_code": "string",
+          "message": "string",
+          "request_id": "string"
+        }
+      },
+      {
+        "status_code": 429,
+        "error_code": "TOO_MANY_REQUESTS",
+        "message_template": "触发速率限制",
+        "response_schema": {
+          "error_code": "string",
+          "message": "string",
+          "request_id": "string"
+        }
+      },
+      {
+        "status_code": 500,
+        "error_code": "INTERNAL_ERROR",
+        "message_template": "网关内部错误",
+        "response_schema": {
+          "error_code": "string",
+          "message": "string",
+          "request_id": "string"
+        }
+      },
+      {
+        "status_code": 502,
+        "error_code": "BAD_GATEWAY",
+        "message_template": "上游服务不可用",
+        "response_schema": {
+          "error_code": "string",
+          "message": "string",
+          "request_id": "string"
+        }
+      },
+      {
+        "status_code": 503,
+        "error_code": "SERVICE_UNAVAILABLE",
+        "message_template": "服务暂时不可用",
+        "response_schema": {
+          "error_code": "string",
+          "message": "string",
+          "request_id": "string"
+        }
+      }
+    ]
+  },
+  "route_table": [
+    {
+      "endpoint": "/",
+      "methods": ["GET"],
+      "handler": "static_files",
+      "description": "静态前端入口文件",
+      "auth_required": false,
+      "rate_limit_zone": "static"
+    },
+    {
+      "endpoint": "/assets/*",
+      "methods": ["GET"],
+      "handler": "static_files",
+      "description": "静态资源文件",
+      "auth_required": false,
+      "rate_limit_zone": "static"
+    },
+    {
+      "endpoint": "/api/projects",
+      "methods": ["POST"],
+      "handler": "upstream_api",
+      "description": "创建项目",
+      "auth_required": true,
+      "roles": ["admin", "developer"],
+      "rate_limit_zone": "api"
+    },
+    {
+      "endpoint": "/api/projects",
+      "methods": ["GET"],
+      "handler": "upstream_api",
+      "description": "获取项目列表",
+      "auth_required": true,
+      "roles": ["admin", "developer", "viewer"],
+      "rate_limit_zone": "api"
+    },
+    {
+      "endpoint": "/api/projects/:id",
+      "methods": ["GET"],
+      "handler": "upstream_api",
+      "description": "获取项目详情",
+      "auth_required": true,
+      "roles": ["admin", "developer", "viewer"],
+      "rate_limit_zone": "api"
+    },
+    {
+      "endpoint": "/api/projects/:id",
+      "methods": ["PUT"],
+      "handler": "upstream_api",
+      "description": "更新项目",
+      "auth_required": true,
+      "roles": ["admin", "developer"],
+      "rate_limit_zone": "api"
+    },
+    {
+      "endpoint": "/api/projects/:id",
+      "methods": ["DELETE"],
+      "handler": "upstream_api",
+      "description": "删除项目",
+      "auth_required": true,
+      "roles": ["admin"],
+      "rate_limit_zone": "api"
+    },
+    {
+      "endpoint": "/api/projects/:id/environments",
+      "methods": ["GET"],
+      "handler": "upstream_api",
+      "description": "获取环境列表",
+      "auth_required": true,
+      "roles": ["admin", "developer", "viewer"],
+      "rate_limit_zone": "api"
+    },
+    {
+      "endpoint": "/api/projects/:id/environments",
+      "methods": ["POST"],
+      "handler": "upstream_api",
+      "description": "创建环境",
+      "auth_required": true,
+      "roles": ["admin", "developer"],
+      "rate_limit_zone": "api"
+    },
+    {
+      "endpoint": "/api/projects/:id/environments/:env_id",
+      "methods": ["GET"],
+      "handler": "upstream_api",
+      "description": "获取环境详情",
+      "auth_required": true,
+      "roles": ["admin", "developer", "viewer"],
+      "rate_limit_zone": "api"
+    },
+    {
+      "endpoint": "/api/projects/:id/environments/:env_id",
+      "methods": ["PUT"],
+      "handler": "upstream_api",
+      "description": "更新环境",
+      "auth_required": true,
+      "roles": ["admin", "developer"],
+      "rate_limit_zone": "api"
+    },
+    {
+      "endpoint": "/api/projects/:id/environments/:env_id",
+      "methods": ["DELETE"],
+      "handler": "upstream_api",
+      "description": "删除环境",
+      "auth_required": true,
+      "roles": ["admin"],
+      "rate_limit_zone": "api"
+    },
+    {
+      "endpoint": "/api/projects/:id/deploy",
+      "methods": ["POST"],
+      "handler": "upstream_api",
+      "description": "部署项目",
+      "auth_required": true,
+      "roles": ["admin", "developer"],
+      "rate_limit_zone": "api"
+    },
+    {
+      "endpoint": "/api/projects/:id/deploy/status",
+      "methods": ["GET"],
+      "handler": "upstream_api",
+      "description": "获取部署状态",
+      "auth_required": true,
+      "roles": ["admin", "developer", "viewer"],
+      "rate_limit_zone": "api"
+    },
+    {
+      "endpoint": "/api/auth/register",
+      "methods": ["POST"],
+      "handler": "upstream_api",
+      "description": "用户注册",
+      "auth_required": false,
+      "rate_limit_zone": "auth"
+    },
+    {
+      "endpoint": "/api/auth/login",
+      "methods": ["POST"],
+      "handler": "upstream_api",
+      "description": "用户登录",
+      "auth_required": false,
+      "rate_limit_zone": "auth"
+    },
+    {
+      "endpoint": "/api/auth/refresh",
+      "methods": ["POST"],
+      "handler": "upstream_api",
+      "description": "令牌刷新",
+      "auth_required": true,
+      "rate_limit_zone": "auth"
+    },
+    {
+      "endpoint": "/api/auth/logout",
+      "methods": ["POST"],
+      "handler": "upstream_api",
+      "description": "用户登出",
+      "auth_required": true,
+      "rate_limit_zone": "auth"
+    },
+    {
+      "endpoint": "/api/dashboard/stats",
+      "methods": ["GET"],
+      "handler": "upstream_api",
+      "description": "仪表盘统计",
+      "auth_required": true,
+      "roles": ["admin", "viewer"],
+      "rate_limit_zone": "api"
+    },
+    {
+      "endpoint": "/api/secrets",
+      "methods": ["GET"],
+      "handler": "upstream_api",
+      "description": "密钥列表",
+      "auth_required": true,
+      "roles": ["admin"],
+      "rate_limit_zone": "api"
+    },
+    {
+      "endpoint": "/api/secrets",
+      "methods": ["POST"],
+      "handler": "upstream_api",
+      "description": "创建密钥",
+      "auth_required": true,
+      "roles": ["admin"],
+      "rate_limit_zone": "api"
+    },
+    {
+      "endpoint": "/api/secrets/:key",
+      "methods": ["DELETE"],
+      "handler": "upstream_api",
+      "description": "删除密钥",
+      "auth_required": true,
+      "roles": ["admin"],
+      "rate_limit_zone": "api"
+    },
+    {
+      "endpoint": "/api/health",
+      "methods": ["GET"],
+      "handler": "upstream_api",
+      "description": "健康检查",
+      "auth_required": false,
+      "rate_limit_zone": "health"
+    }
+  ],
+  "middleware_chain": [
+    {
+      "name": "rate_limiting",
+      "order": 1,
+      "description": "全局速率限制检查，基于 IP 和用户令牌",
+      "config": {
+        "zones": {
+          "static": "60r/m",
+          "auth": "10r/m",
+          "api": "100r/m",
+          "health": "1000r/m"
+        }
+      }
+    },
+    {
+      "name": "jwt_auth",
+      "order": 2,
+      "description": "JWT 令牌验证与角色提取",
+      "config": {
+        "public_key_path": "/etc/nginx/auth/public.pem",
+        "header_name": "Authorization",
+        "prefix": "Bearer "
+      }
+    },
+    {
+      "name": "role_authz",
+      "order": 3,
+      "description": "基于路由配置的角色授权检查"
+    }
+  ],
+  "auth_policy": {
+    "method": "JWT",
+    "token_location": "Authorization header (Bearer token)",
+    "role_extraction": "从 JWT payload 的 'roles' 字段提取角色列表",
+    "role_path_map": [
+      {
+        "path_pattern": "/api/projects",
+        "methods": ["POST"],
+        "allowed_roles": ["admin", "developer"]
+      },
+      {
+        "path_pattern": "/api/projects",
+        "methods": ["GET"],
+        "allowed_roles": ["admin", "developer", "viewer"]
+      },
+      {
+        "path_pattern": "/api/projects/:id",
+        "methods": ["GET"],
+        "allowed_roles": ["admin", "developer", "viewer"]
+      },
+      {
+        "path_pattern": "/api/projects/:id",
+        "methods": ["PUT"],
+        "allowed_roles": ["admin", "developer"]
+      },
+      {
+        "path_pattern": "/api/projects/:id",
+        "methods": ["DELETE"],
+        "allowed_roles": ["admin"]
+      },
+      {
+        "path_pattern": "/api/projects/:id/environments",
+        "methods": ["GET"],
+        "allowed_roles": ["admin", "developer", "viewer"]
+      },
+      {
+        "path_pattern": "/api/projects/:id/environments",
+        "methods": ["POST"],
+        "allowed_roles": ["admin", "developer"]
+      },
+      {
+        "path_pattern": "/api/projects/:id/environments/:env_id",
+        "methods": ["GET"],
+        "allowed_roles": ["admin", "developer", "viewer"]
+      },
+      {
+        "path_pattern": "/api/projects/:id/environments/:env_id",
+        "methods": ["PUT"],
+        "allowed_roles": ["admin", "developer"]
+      },
+      {
+        "path_pattern": "/api/projects/:id/environments/:env_id",
+        "methods": ["DELETE"],
+        "allowed_roles": ["admin"]
+      },
+      {
+        "path_pattern": "/api/projects/:id/deploy",
+        "methods": ["POST"],
+        "allowed_roles": ["admin", "developer"]
+      },
+      {
+        "path_pattern": "/api/projects/:id/deploy/status",
+        "methods": ["GET"],
+        "allowed_roles": ["admin", "developer", "viewer"]
+      },
+      {
+        "path_pattern": "/api/dashboard/stats",
+        "methods": ["GET"],
+        "allowed_roles": ["admin", "viewer"]
+      },
+      {
+        "path_pattern": "/api/secrets",
+        "methods": ["GET", "POST"],
+        "allowed_roles": ["admin"]
+      },
+      {
+        "path_pattern": "/api/secrets/:key",
+        "methods": ["DELETE"],
+        "allowed_roles": ["admin"]
+      }
+    ],
+    "public_paths": [
+      "/",
+      "/assets/*",
+      "/api/auth/register",
+      "/api/auth/login",
+      "/api/health"
+    ]
+  },
+  "rate_limiting": {
+    "algorithm": "leaky_bucket",
+    "dimensions": ["ip", "user_token"],
+    "zones": [
+      {
+        "name": "static",
+        "rate": "60r/m",
+        "burst": 120,
+        "description": "静态资源"
+      },
+      {
+        "name": "auth",
+        "rate": "10r/m",
+        "burst": 20,
+        "description": "认证相关端点"
+      },
+      {
+        "name": "api",
+        "rate": "100r/m",
+        "burst": 200,
+        "description": "业务 API 端点"
+      },
+      {
+        "name": "health",
+        "rate": "1000r/m",
+        "burst": 2000,
+        "description": "健康检查端点"
+      }
+    ],
+    "response_on_limit": {
+      "status_code": 429,
+      "body": "{\"error_code\": \"TOO_MANY_REQUESTS\", \"message\": \"请求过多，请稍后再试\", \"request_id\": \"$request_id\"}"
+    }
+  },
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "Nginx Configuration Entity",
+      "type": "config",
+      "description": "Nginx 主配置文件实体",
+      "fields": [],
+      "source": "owned"
+    },
+    {
+      "id": "DM-002",
+      "name": "SSL Certificate File",
+      "type": "store",
+      "description": "SSL 证书与私钥文件存储",
+      "fields": [],
+      "source": "owned"
+    },
+    {
+      "id": "DM-003",
+      "name": "JWT Token Payload",
+      "type": "struct",
+      "description": "JWT 令牌载荷结构",
+      "fields": [
+        {
+          "name": "sub",
+          "type": "string",
+          "description": "用户ID"
+        },
+        {
+          "name": "roles",
+          "type": "list",
+          "description": "角色列表"
+        },
+        {
+          "name": "exp",
+          "type": "int",
+          "description": "过期时间戳"
+        }
+      ],
+      "source": "consumed"
+    },
+    {
+      "id": "DM-004",
+      "name": "Error Response Schema",
+      "type": "struct",
+      "description": "统一错误响应体结构",
+      "fields": [
+        {
+          "name": "error_code",
+          "type": "string",
+          "description": "错误码"
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "description": "错误消息"
+        },
+        {
+          "name": "request_id",
+          "type": "string",
+          "description": "请求追踪ID"
+        }
+      ],
+      "source": "owned"
+    },
+    {
+      "id": "DM-005",
+      "name": "Rate Limit Data",
+      "type": "store",
+      "description": "速率限制存储数据结构",
+      "fields": [
+        {
+          "name": "ip_counters",
+          "type": "map",
+          "description": "基于IP的计数器"
+        },
+        {
+          "name": "token_counters",
+          "type": "map",
+          "description": "基于令牌的计数器"
+        }
+      ],
+      "source": "owned"
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "根路径接口",
+      "endpoint": "/",
+      "method": "GET",
+      "request": {},
+      "response": {
+        "body": "HTML 文档"
+      }
+    },
+    {
+      "id": "IF-002",
+      "name": "静态资源接口",
+      "endpoint": "/assets/*",
+      "method": "GET",
+      "request": {},
+      "response": {
+        "body": "对应的静态文件"
+      }
+    },
+    {
+      "id": "IF-003",
+      "name": "创建项目接口",
+      "endpoint": "/api/projects",
+      "method": "POST",
+      "request": {
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"name\": \"string\", \"description\": \"string\"}"
+      },
+      "response": {
+        "body": "{\"id\": \"string\", \"name\": \"string\", \"created_at\": \"string\"}"
+      }
+    },
+    {
+      "id": "IF-004",
+      "name": "获取项目列表接口",
+      "endpoint": "/api/projects",
+      "method": "GET",
+      "request": {},
+      "response": {
+        "body": "[{\"id\": \"string\", \"name\": \"string\", \"status\": \"string\"}]"
+      }
+    },
+    {
+      "id": "IF-005",
+      "name": "获取项目详情接口",
+      "endpoint": "/api/projects/:id",
+      "method": "GET",
+      "request": {},
+      "response": {
+        "body": "{\"id\": \"string\", \"name\": \"string\", \"description\": \"string\", \"status\": \"string\", \"environments\": []}"
+      }
+    },
+    {
+      "id": "IF-006",
+      "name": "更新项目接口",
+      "endpoint": "/api/projects/:id",
+      "method": "PUT",
+      "request": {
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"name\": \"string\", \"description\": \"string\"}"
+      },
+      "response": {
+        "body": "{\"id\": \"string\", \"name\": \"string\", \"updated_at\": \"string\"}"
+      }
+    },
+    {
+      "id": "IF-007",
+      "name": "删除项目接口",
+      "endpoint": "/api/projects/:id",
+      "method": "DELETE",
+      "request": {},
+      "response": {
+        "body": "{\"message\": \"Project deleted\"}"
+      }
+    },
+    {
+      "id": "IF-008",
+      "name": "获取环境列表接口",
+      "endpoint": "/api/projects/:id/environments",
+      "method": "GET",
+      "request": {},
+      "response": {
+        "body": "[{\"id\": \"string\", \"name\": \"string\", \"type\": \"string\"}]"
+      }
+    },
+    {
+      "id": "IF-009",
+      "name": "创建环境接口",
+      "endpoint": "/api/projects/:id/environments",
+      "method": "POST",
+      "request": {
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"name\": \"string\", \"type\": \"string\"}"
+      },
+      "response": {
+        "body": "{\"id\": \"string\", \"name\": \"string\", \"created_at\": \"string\"}"
+      }
+    },
+    {
+      "id": "IF-010",
+      "name": "获取环境详情接口",
+      "endpoint": "/api/projects/:id/environments/:env_id",
+      "method": "GET",
+      "request": {},
+      "response": {
+        "body": "{\"id\": \"string\", \"name\": \"string\", \"type\": \"string\", \"variables\": {}}"
+      }
+    },
+    {
+      "id": "IF-011",
+      "name": "更新环境接口",
+      "endpoint": "/api/projects/:id/environments/:env_id",
+      "method": "PUT",
+      "request": {
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"name\": \"string\", \"type\": \"string\", \"variables\": {}}"
+      },
+      "response": {
+        "body": "{\"id\": \"string\", \"name\": \"string\", \"updated_at\": \"string\"}"
+      }
+    },
+    {
+      "id": "IF-012",
+      "name": "删除环境接口",
+      "endpoint": "/api/projects/:id/environments/:env_id",
+      "method": "DELETE",
+      "request": {},
+      "response": {
+        "body": "{\"message\": \"Environment deleted\"}"
+      }
+    },
+    {
+      "id": "IF-013",
+      "name": "部署项目接口",
+      "endpoint": "/api/projects/:id/deploy",
+      "method": "POST",
+      "request": {
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"environment_id\": \"string\", \"version\": \"string\"}"
+      },
+      "response": {
+        "body": "{\"deploy_id\": \"string\", \"status\": \"string\"}"
+      }
+    },
+    {
+      "id": "IF-014",
+      "name": "获取部署状态接口",
+      "endpoint": "/api/projects/:id/deploy/status",
+      "method": "GET",
+      "request": {},
+      "response": {
+        "body": "{\"deploy_id\": \"string\", \"status\": \"string\", \"progress\": 0.5}"
+      }
+    },
+    {
+      "id": "IF-015",
+      "name": "用户注册接口",
+      "endpoint": "/api/auth/register",
+      "method": "POST",
+      "request": {
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"username\": \"string\", \"password\": \"string\", \"email\": \"string\"}"
+      },
+      "response": {
+        "body": "{\"user_id\": \"string\", \"message\": \"User created\"}"
+      }
+    },
+    {
+      "id": "IF-016",
+      "name": "用户登录接口",
+      "endpoint": "/api/auth/login",
+      "method": "POST",
+      "request": {
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"username\": \"string\", \"password\": \"string\"}"
+      },
+      "response": {
+        "body": "{\"access_token\": \"string\", \"refresh_token\": \"string\"}"
+      }
+    },
+    {
+      "id": "IF-017",
+      "name": "令牌刷新接口",
+      "endpoint": "/api/auth/refresh",
+      "method": "POST",
+      "request": {
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"refresh_token\": \"string\"}"
+      },
+      "response": {
+        "body": "{\"access_token\": \"string\"}"
+      }
+    },
+    {
+      "id": "IF-018",
+      "name": "用户登出接口",
+      "endpoint": "/api/auth/logout",
+      "method": "POST",
+      "request": {
+        "headers": {
+          "Authorization": "Bearer token"
+        }
+      },
+      "response": {
+        "body": "{\"message\": \"Logged out\"}"
+      }
+    },
+    {
+      "id": "IF-019",
+      "name": "仪表盘统计接口",
+      "endpoint": "/api/dashboard/stats",
+      "method": "GET",
+      "request": {},
+      "response": {
+        "body": "{\"projects_count\": 0, \"deployments_count\": 0, \"environments_count\": 0}"
+      }
+    },
+    {
+      "id": "IF-020",
+      "name": "密钥管理接口",
+      "endpoint": "/api/secrets",
+      "method": "GET",
+      "request": {},
+      "response": {
+        "body": "[{\"key\": \"string\", \"created_at\": \"string\"}]"
+      }
+    },
+    {
+      "id": "IF-021",
+      "name": "创建密钥接口",
+      "endpoint": "/api/secrets",
+      "method": "POST",
+      "request": {
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"key\": \"string\", \"value\": \"string\"}"
+      },
+      "response": {
+        "body": "{\"key\": \"string\", \"message\": \"Secret created\"}"
+      }
+    },
+    {
+      "id": "IF-022",
+      "name": "删除密钥接口",
+      "endpoint": "/api/secrets/:key",
+      "method": "DELETE",
+      "request": {},
+      "response": {
+        "body": "{\"message\": \"Secret deleted\"}"
+      }
+    },
+    {
+      "id": "IF-023",
+      "name": "健康检查接口",
+      "endpoint": "/api/health",
+      "method": "GET",
+      "request": {},
+      "response": {
+        "body": "{\"status\": \"ok\"}"
+      }
+    },
+    {
+      "id": "IF-024",
+      "name": "认证中间件接口",
+      "endpoint": "internal",
+      "method": "internal",
+      "request": {},
+      "response": {},
+      "description": "JWT 认证中间件，内部接口，不对外暴露"
+    },
+    {
+      "id": "IF-025",
+      "name": "授权中间件接口",
+      "endpoint": "internal",
+      "method": "internal",
+      "request": {},
+      "response": {},
+      "description": "角色授权中间件，内部接口，不对外暴露"
+    },
+    {
+      "id": "IF-026",
+      "name": "速率限制中间件接口",
+      "endpoint": "internal",
+      "method": "internal",
+      "request": {},
+      "response": {},
+      "description": "速率限制中间件，内部接口，不对外暴露"
+    }
+  ]
+}
