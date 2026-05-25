@@ -1,0 +1,455 @@
+{
+  "meta": {
+    "doc_id": "lld-ConnectivityTestService-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "连通性测试服务",
+    "title": "连通性测试服务详细设计",
+    "author": "design_agent",
+    "created": "2025-03-18T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-002"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-002"
+      ],
+      "contracts": [
+        "CTR-005"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "TCP连通性检测：探测目标主机的指定端口是否可达",
+      "SSH认证测试：使用目标主机用户名及解密后的私钥尝试登录",
+      "远程路径写权限检测：通过SSH在指定远程路径下创建临时文件验证写入能力",
+      "生成结构化测试结果并返回（布尔状态+可读描述）"
+    ],
+    "out_of_scope": [
+      "环境的生命周期管理（创建、更新、删除由环境管理服务负责）",
+      "私钥的加密存储与轮转（由密钥管理组件KeyManager负责）",
+      "部署文件上传、脚本执行、进度通知等其它部署步骤",
+      "前端SSE进度展示（由进度通知器负责）"
+    ],
+    "owned_components": [
+      "CMP-002"
+    ],
+    "owned_contracts": [],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "连通性测试服务是部署流水线中的独立微服务，负责验证目标环境的基础设施可达性与凭证有效性。每次调用执行实时探测，包含TCP连接、SSH认证、写权限检查，返回结构化结果。服务无状态，不存储业务数据。",
+    "dependencies": [
+      "环境管理服务（提供环境基础信息查询）",
+      "密钥管理组件KeyManager（提供私钥解密）",
+      "PostgreSQL数据库（直接读取environments表）"
+    ],
+    "tech_stack": [
+      "Python 3.11+",
+      "FastAPI",
+      "Paramiko",
+      "socket（标准库）",
+      "cryptography（通过KeyManager调用）"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-002",
+      "sad_component_ids": [
+        "CMP-002"
+      ],
+      "sad_contract_ids": [
+        "CTR-005"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-001"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": "REQ-002 要求对指定环境执行网络、认证、写权限三项检测并返回详细信息，本设计完全覆盖。"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "EnvironmentConnectInfo",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "environments"
+      },
+      "description": "从环境管理数据库表投影的连接信息视图，仅包含连通性测试所需的字段",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "环境唯一标识，主键"
+        },
+        {
+          "name": "name",
+          "type": "String",
+          "required": true,
+          "description": "环境名称，仅用于日志记录"
+        },
+        {
+          "name": "host",
+          "type": "String",
+          "required": true,
+          "description": "目标主机IP或域名"
+        },
+        {
+          "name": "port",
+          "type": "Integer",
+          "required": true,
+          "description": "SSH端口，默认为22"
+        },
+        {
+          "name": "username",
+          "type": "String",
+          "required": true,
+          "description": "SSH登录用户名"
+        },
+        {
+          "name": "encrypted_private_key",
+          "type": "String",
+          "required": true,
+          "description": "经AES-256-GCM加密的私钥密文"
+        },
+        {
+          "name": "remote_path",
+          "type": "String",
+          "required": true,
+          "description": "待检测写权限的远程目录路径"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-002"
+      ],
+      "source_contracts": [
+        "CTR-005"
+      ],
+      "constraints": [
+        "所有字段在数据库中应为NOT NULL约束",
+        "port取值范围1-65535",
+        "encrypted_private_key为经过AES-256-GCM加密的Base64编码字符串"
+      ],
+      "lifecycle": {
+        "create": "",
+        "update": "",
+        "delete": "",
+        "retention": "跟随environments表"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成连通性测试服务LLD，定义derived数据视图"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "环境连通性测试",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-005",
+      "provider_component_id": "CMP-002",
+      "method": "POST",
+      "endpoint": "/api/environments/{id}/test-connectivity",
+      "description": "对指定环境执行TCP连接、SSH认证、远程路径写权限三项检测，返回结构化测试结果。",
+      "parameters": [
+        {
+          "name": "id",
+          "type": "integer",
+          "in": "path",
+          "required": true,
+          "description": "目标环境ID"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "tcp_status": "boolean",
+          "ssh_auth_status": "boolean",
+          "write_permission": "boolean",
+          "details": "string (human-readable)"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "BAD_PARAM",
+          "message": "路径参数格式错误（如非数字）"
+        },
+        {
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "指定的环境ID在数据库中不存在"
+        },
+        {
+          "status": 422,
+          "code": "UNPROCESSABLE_ENTITY",
+          "message": "环境记录中的关键字段为空或无效"
+        },
+        {
+          "status": 500,
+          "code": "DECRYPTION_FAILED",
+          "message": "私钥解密失败（可能是密钥版本不匹配或数据损坏）"
+        },
+        {
+          "status": 500,
+          "code": "INTERNAL_ERROR",
+          "message": "未预期的系统级内部错误"
+        }
+      ],
+      "auth": {
+        "required": true,
+        "policy": "Bearer token (JWT)"
+      },
+      "validation_rules": [
+        "id必须为正整数"
+      ],
+      "idempotency": "not_applicable",
+      "pagination": "single_item",
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-002"
+      ],
+      "source_contracts": [
+        "CTR-005"
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "ConnectivityTestRequest",
+      "object_type": "value_object",
+      "description": "连通性测试输入值对象，包装环境ID",
+      "fields": {
+        "environment_id": {
+          "type": "integer",
+          "description": "环境唯一标识",
+          "required": true
+        }
+      },
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-002"
+      ],
+      "source_contracts": [
+        "CTR-005"
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "TCPTestResult",
+      "object_type": "value_object",
+      "description": "TCP连接测试结果值对象",
+      "fields": {
+        "success": {
+          "type": "boolean",
+          "description": "连接是否成功",
+          "required": true
+        },
+        "detail": {
+          "type": "string",
+          "description": "可读化描述信息",
+          "required": false
+        }
+      },
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-002"
+      ],
+      "source_contracts": [
+        "CTR-005"
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "SSHAuthTestResult",
+      "object_type": "value_object",
+      "description": "SSH认证测试结果值对象",
+      "fields": {
+        "success": {
+          "type": "boolean",
+          "description": "认证是否成功",
+          "required": true
+        },
+        "detail": {
+          "type": "string",
+          "description": "可读化描述信息",
+          "required": false
+        }
+      },
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-002"
+      ],
+      "source_contracts": [
+        "CTR-005"
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "WritePermissionTestResult",
+      "object_type": "value_object",
+      "description": "远程路径写权限测试结果值对象",
+      "fields": {
+        "success": {
+          "type": "boolean",
+          "description": "写权限验证是否成功",
+          "required": true
+        },
+        "detail": {
+          "type": "string",
+          "description": "可读化描述信息",
+          "required": false
+        }
+      },
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-002"
+      ],
+      "source_contracts": [
+        "CTR-005"
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "ConnectivityTestService",
+      "status": "active",
+      "version": 1,
+      "description": "连通性测试服务契约，定义服务内部组件实现的方法签名。",
+      "methods": [
+        {
+          "name": "test_connectivity",
+          "description": "执行连通性测试的主方法，组合TCP、SSH、写权限三项检测",
+          "parameters": [
+            {
+              "name": "env_id",
+              "type": "integer",
+              "description": "环境ID"
+            }
+          ],
+          "return_type": "ConnectivityTestResult",
+          "exceptions": [
+            "EnvironmentNotFoundError",
+            "DecryptionError",
+            "ConnectivityTestError"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-002"
+      ],
+      "source_contracts": [
+        "CTR-005"
+      ]
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "rule": "三项检测必须全部执行，不能因单项检测失败而跳过后续检测",
+      "type": "invariant",
+      "rationale": "为了提供完整的诊断信息，即使TCP连接失败，也应尝试SSH和写权限检测，结果中记录实际状态"
+    },
+    {
+      "id": "BR-002",
+      "rule": "私钥解密必须在每次测试时实时进行，不得缓存私钥明文",
+      "type": "invariant",
+      "rationale": "安全要求，避免内存中长期存在明文私钥"
+    },
+    {
+      "id": "BR-003",
+      "rule": "TCP连接超时应设置为5秒，SSH认证超时10秒",
+      "type": "invariant",
+      "rationale": "平衡用户体验与网络延迟容忍度"
+    }
+  ],
+  "error_handling": [
+    {
+      "scenario": "数据库连接失败或环境ID不存在",
+      "strategy": "返回404 NOT_FOUND，错误码NOT_FOUND",
+      "recovery": "无自动恢复，需用户确认环境ID有效"
+    },
+    {
+      "scenario": "私钥解密失败",
+      "strategy": "返回500，错误码DECRYPTION_FAILED，记录详细错误日志",
+      "recovery": "需管理员检查密钥存储与加密配置"
+    },
+    {
+      "scenario": "TCP连接超时",
+      "strategy": "标记TCP测试失败，继续执行后续检测，不中断整个流程",
+      "recovery": "记录超时事件，返回部分成功结果"
+    },
+    {
+      "scenario": "SSH认证失败（如密钥无效）",
+      "strategy": "标记SSH测试失败，继续写权限检测（可能因无法登录而无法检测），结果中注明失败原因",
+      "recovery": "无自动恢复，需用户更新环境凭证"
+    },
+    {
+      "scenario": "远程路径写权限检测失败（无权限或目录不存在）",
+      "strategy": "标记写权限失败，返回具体错误描述（如Permission denied）",
+      "recovery": "无自动恢复，需用户检查远程路径权限"
+    }
+  ]
+}
