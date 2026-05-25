@@ -1,0 +1,477 @@
+{
+  "meta": {
+    "doc_id": "lld-密钥安全模块-001",
+    "type": "lld",
+    "module_type": "infrastructure",
+    "module": "密钥安全模块",
+    "title": "密钥安全模块详细设计",
+    "author": "design_agent",
+    "created": "2025-03-20T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-010"
+      ],
+      "contracts": [],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "生成新的 SSH 密钥对（RSA / Ed25519），返回私钥 PEM、公钥 PEM 及指纹",
+      "使用 AES-256-GCM 对私钥进行加密，主密钥由调用方传入",
+      "解密经 AES-256-GCM 加密的私钥，返回原始 PEM",
+      "计算公钥的 SHA-256 指纹（OpenSSH 格式）"
+    ],
+    "out_of_scope": [
+      "用户口令输入与验证",
+      "私钥的持久化存储、删除或查询",
+      "SSH 连接的建立与管理",
+      "主密钥的生成与派生（仅接受已派生的密钥）"
+    ],
+    "owned_components": [
+      "CMP-010"
+    ],
+    "owned_contracts": [],
+    "consumed_contracts": [],
+    "owned_data_models": [
+      "DM-001",
+      "DM-002",
+      "DM-003"
+    ],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "作为基础设施层模块，为上层服务提供密钥生成、AES-256-GCM 加解密及指纹计算能力。所有接口均为同步内部函数，不直接暴露 HTTP 端点。",
+    "dependencies": [],
+    "tech_stack": [
+      "Python 3.11+",
+      "cryptography (AES-GCM, key generation)"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-010"
+      ],
+      "sad_contract_ids": [],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002",
+          "DM-003"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003",
+          "IF-004"
+        ],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": "覆盖密钥安全模块所有核心功能"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "KeyGenerationResult",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "密钥对生成结果，包含私钥、公钥及其指纹",
+      "fields": [
+        {
+          "name": "private_key_pem",
+          "type": "string",
+          "required": true,
+          "description": "私钥 PEM 格式字符串"
+        },
+        {
+          "name": "public_key_pem",
+          "type": "string",
+          "required": true,
+          "description": "公钥 PEM 格式字符串"
+        },
+        {
+          "name": "fingerprint",
+          "type": "string",
+          "required": true,
+          "description": "公钥 SHA-256 指纹，格式为 SHA256:base64(hash)"
+        },
+        {
+          "name": "key_type",
+          "type": "string",
+          "required": true,
+          "description": "密钥类型，如 rsa 或 ed25519"
+        },
+        {
+          "name": "bits",
+          "type": "integer",
+          "required": false,
+          "description": "密钥长度（RSA 时使用，Ed25519 可省略）"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-010"
+      ],
+      "source_contracts": [],
+      "constraints": [],
+      "lifecycle": {
+        "create": "由 generate_key_pair 接口创建",
+        "update": "不可变对象",
+        "delete": "随作用域自动释放",
+        "retention": "仅内存存在"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "EncryptedKeyData",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "使用 AES-256-GCM 加密后的私钥数据，包含密文和认证信息",
+      "fields": [
+        {
+          "name": "cipher_data",
+          "type": "bytes",
+          "required": true,
+          "description": "加密后的私钥字节串"
+        },
+        {
+          "name": "nonce",
+          "type": "bytes",
+          "required": true,
+          "description": "12 字节随机数"
+        },
+        {
+          "name": "tag",
+          "type": "bytes",
+          "required": true,
+          "description": "16 字节认证标签"
+        },
+        {
+          "name": "algorithm",
+          "type": "string",
+          "required": true,
+          "description": "加密算法标识，固定为 AES-256-GCM"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-010"
+      ],
+      "source_contracts": [],
+      "constraints": [],
+      "lifecycle": {
+        "create": "由 encrypt_private_key 接口创建",
+        "update": "不可变对象",
+        "delete": "随作用域自动释放",
+        "retention": "仅内存或序列化存储"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-003",
+      "name": "MasterKeyConfig",
+      "type": "config",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "主密钥派生参数配置，用于从用户口令生成加密密钥",
+      "fields": [
+        {
+          "name": "derivation_method",
+          "type": "string",
+          "required": true,
+          "description": "派生方法：pbkdf2 或 os_keychain"
+        },
+        {
+          "name": "salt",
+          "type": "bytes",
+          "required": false,
+          "description": "PBKDF2 所需的盐值（16 字节）"
+        },
+        {
+          "name": "iterations",
+          "type": "integer",
+          "required": false,
+          "description": "PBKDF2 迭代次数，推荐 ≥ 600,000"
+        },
+        {
+          "name": "hash_algorithm",
+          "type": "string",
+          "required": false,
+          "description": "哈希算法，固定为 sha256"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-010"
+      ],
+      "source_contracts": [],
+      "constraints": [],
+      "lifecycle": {
+        "create": "由上层服务根据用户设置创建",
+        "update": "可通过管理接口更新",
+        "delete": "不可删除",
+        "retention": "持久化配置"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "generate_key_pair",
+      "type": "internal",
+      "method": "FUNCTION",
+      "endpoint": "internal",
+      "description": "生成新的 SSH 密钥对，支持 RSA 和 Ed25519 算法",
+      "request": {
+        "parameters": [
+          {
+            "name": "key_type",
+            "type": "string",
+            "required": true,
+            "description": "密钥类型：rsa 或 ed25519"
+          },
+          {
+            "name": "bits",
+            "type": "integer",
+            "required": false,
+            "description": "密钥长度（RSA 时使用，默认 4096）"
+          }
+        ]
+      },
+      "response": {
+        "status_code": 200,
+        "body": {
+          "type": "KeyGenerationResult",
+          "description": "生成的密钥对和指纹信息"
+        }
+      },
+      "error_handling": {
+        "strategy": "fail_fast",
+        "errors": [
+          {
+            "code": "INVALID_KEY_TYPE",
+            "message": "不支持的密钥类型",
+            "trigger": "key_type 不是 rsa 或 ed25519"
+          },
+          {
+            "code": "GENERATION_FAILED",
+            "message": "密钥生成失败",
+            "trigger": "底层加密库操作失败"
+          }
+        ],
+        "retry": false
+      },
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-010"
+      ],
+      "source_contracts": []
+    },
+    {
+      "id": "IF-002",
+      "name": "encrypt_private_key",
+      "type": "internal",
+      "method": "FUNCTION",
+      "endpoint": "internal",
+      "description": "使用 AES-256-GCM 加密私钥 PEM 字符串",
+      "request": {
+        "parameters": [
+          {
+            "name": "private_key_pem",
+            "type": "string",
+            "required": true,
+            "description": "待加密的私钥 PEM"
+          },
+          {
+            "name": "master_key",
+            "type": "bytes",
+            "required": true,
+            "description": "256 位 AES 密钥"
+          }
+        ]
+      },
+      "response": {
+        "status_code": 200,
+        "body": {
+          "type": "EncryptedKeyData",
+          "description": "加密后的数据，包含 cipher_data、nonce、tag 和 algorithm"
+        }
+      },
+      "error_handling": {
+        "strategy": "fail_fast",
+        "errors": [
+          {
+            "code": "ENCRYPTION_FAILED",
+            "message": "加密操作失败",
+            "trigger": "加密过程中异常"
+          }
+        ],
+        "retry": false
+      },
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-010"
+      ],
+      "source_contracts": []
+    },
+    {
+      "id": "IF-003",
+      "name": "decrypt_private_key",
+      "type": "internal",
+      "method": "FUNCTION",
+      "endpoint": "internal",
+      "description": "解密使用 AES-256-GCM 加密的私钥数据，返回原始 PEM",
+      "request": {
+        "parameters": [
+          {
+            "name": "encrypted_data",
+            "type": "EncryptedKeyData",
+            "required": true,
+            "description": "加密数据，包含 cipher_data、nonce、tag"
+          },
+          {
+            "name": "master_key",
+            "type": "bytes",
+            "required": true,
+            "description": "256 位 AES 密钥"
+          }
+        ]
+      },
+      "response": {
+        "status_code": 200,
+        "body": {
+          "type": "string",
+          "description": "解密后的私钥 PEM 字符串"
+        }
+      },
+      "error_handling": {
+        "strategy": "fail_fast",
+        "errors": [
+          {
+            "code": "DECRYPTION_FAILED",
+            "message": "解密失败，密钥错误或数据损坏",
+            "trigger": "认证标签不匹配或解密异常"
+          }
+        ],
+        "retry": false
+      },
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-010"
+      ],
+      "source_contracts": []
+    },
+    {
+      "id": "IF-004",
+      "name": "compute_fingerprint",
+      "type": "internal",
+      "method": "FUNCTION",
+      "endpoint": "internal",
+      "description": "计算 SSH 公钥的 SHA-256 指纹（OpenSSH 格式）",
+      "request": {
+        "parameters": [
+          {
+            "name": "public_key_pem",
+            "type": "string",
+            "required": true,
+            "description": "公钥 PEM 字符串"
+          }
+        ]
+      },
+      "response": {
+        "status_code": 200,
+        "body": {
+          "type": "string",
+          "description": "指纹字符串，如 SHA256:base64(hash)"
+        }
+      },
+      "error_handling": {
+        "strategy": "fail_fast",
+        "errors": [
+          {
+            "code": "FINGERPRINT_FAILED",
+            "message": "指纹计算失败",
+            "trigger": "公钥解析或哈希计算异常"
+          }
+        ],
+        "retry": false
+      },
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-010"
+      ],
+      "source_contracts": []
+    }
+  ],
+  "topology": {
+    "exchanges": []
+  },
+  "error_handling": {
+    "strategy": "fail_fast"
+  }
+}
