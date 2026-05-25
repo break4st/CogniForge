@@ -1,0 +1,254 @@
+{
+  "meta": {
+    "doc_id": "lld-DeploymentLogService-001",
+    "type": "lld",
+    "module": "DeploymentLogService",
+    "module_type": "service",
+    "version": 1,
+    "status": "draft",
+    "title": "DeploymentLogService LLD",
+    "author": "system",
+    "created": "2025-01-01T00:00:00Z"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-001",
+      "version": 1
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1
+    }
+  },
+  "module_boundary": {
+    "in_scope": [
+      "接收并暂存部署/回滚过程的日志行",
+      "将日志实时推送到UI",
+      "支持按项目/环境查询历史日志",
+      "日志缓存管理（内存缓存，可选持久化）",
+      "日志流管理（每个部署/回滚任务一个日志流）"
+    ],
+    "out_of_scope": [
+      "部署/回滚任务的执行逻辑（属于DeploymentService/VersionHistoryService）",
+      "日志的长期持久化存储（当前仅内存缓存，可选JSON文件）",
+      "日志的导出/归档功能",
+      "用户认证与授权"
+    ]
+  },
+  "overview": {
+    "description": "DeploymentLogService 负责管理部署和回滚任务产生的日志数据。它提供日志追加、实时推送和历史查询功能，使用内存缓存存储日志流，并可通过IPC与UI通信。",
+    "dependencies": [
+      "DeploymentService (发送日志行)",
+      "VersionHistoryService (发送日志行)",
+      "UI组件 (接收实时日志推送并通过IPC查询)"
+    ],
+    "tech_stack": [
+      "TypeScript",
+      "Node.js 18+",
+      "Electron IPC",
+      "本地 JSON 文件（可选持久化，通过 ConfigStore）"
+    ]
+  },
+  "domain_objects": [
+    {
+      "name": "LogEntry",
+      "object_type": "value_object",
+      "id": "DO-001",
+      "description": "单条日志记录的数据结构",
+      "attributes": [
+        {
+          "name": "timestamp",
+          "type": "string",
+          "description": "日志产生时间戳，ISO 8601格式",
+          "required": true
+        },
+        {
+          "name": "level",
+          "type": "string",
+          "description": "日志级别，如 INFO, WARN, ERROR",
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "description": "日志内容",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "LogStream",
+      "object_type": "entity",
+      "id": "DO-002",
+      "description": "代表一个部署/回滚任务的完整日志流",
+      "attributes": [
+        {
+          "name": "taskId",
+          "type": "string",
+          "description": "关联的任务ID",
+          "required": true
+        },
+        {
+          "name": "entries",
+          "type": "LogEntry[]",
+          "description": "日志条目列表",
+          "required": true
+        },
+        {
+          "name": "state",
+          "type": "string",
+          "description": "日志流的状态，用于控制追加",
+          "required": true
+        }
+      ]
+    }
+  ],
+  "data_models": {
+    "schemas": {
+      "LogEntry": {
+        "type": "object",
+        "properties": {
+          "timestamp": { "type": "string", "format": "date-time" },
+          "level": { "type": "string", "enum": ["INFO", "WARN", "ERROR"] },
+          "message": { "type": "string" }
+        },
+        "required": ["timestamp", "level", "message"]
+      }
+    },
+    "relationships": [],
+    "indexes": []
+  },
+  "business_rules": {
+    "invariants": [
+      "日志流状态必须为 ACTIVE 或 COMPLETED",
+      "taskId 在同一个 LogCache 中必须唯一",
+      "LogEntry 的 level 必须为有效枚举值"
+    ]
+  },
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "ILogStreamService",
+      "description": "日志流服务接口",
+      "method": "appendLog",
+      "endpoint": "ipc://log-stream/append",
+      "request": {
+        "body": {
+          "type": "object",
+          "properties": {
+            "taskId": { "type": "string" },
+            "level": { "type": "string" },
+            "message": { "type": "string" }
+          },
+          "required": ["taskId", "level", "message"]
+        }
+      },
+      "response": {
+        "body": {
+          "type": "object",
+          "properties": {
+            "success": { "type": "boolean" }
+          }
+        }
+      },
+      "error_handling": {
+        "strategy": "使用领域特定错误码分类处理，对外暴露统一错误码，内部通过日志记录详细错误信息",
+        "error_codes": [
+          {
+            "code": "STREAM_NOT_FOUND",
+            "message": "日志流不存在",
+            "http_status": 404
+          },
+          {
+            "code": "STREAM_COMPLETED",
+            "message": "日志流已完成，无法追加",
+            "http_status": 400
+          },
+          {
+            "code": "INVALID_LOG_LEVEL",
+            "message": "无效的日志级别",
+            "http_status": 400
+          }
+        ]
+      }
+    },
+    {
+      "id": "SC-002",
+      "name": "ILogStreamService",
+      "description": "日志流服务接口 - 订阅",
+      "method": "subscribe",
+      "endpoint": "ipc://log-stream/subscribe",
+      "request": {
+        "body": {
+          "type": "object",
+          "properties": {
+            "taskId": { "type": "string" },
+            "callback": { "type": "function" }
+          },
+          "required": ["taskId", "callback"]
+        }
+      },
+      "response": {
+        "body": {
+          "type": "function",
+          "description": "返回取消订阅的函数"
+        }
+      },
+      "error_handling": {
+        "strategy": "使用领域特定错误码分类处理，对外暴露统一错误码，内部通过日志记录详细错误信息",
+        "error_codes": [
+          {
+            "code": "STREAM_NOT_FOUND",
+            "message": "日志流不存在",
+            "http_status": 404
+          }
+        ]
+      }
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "IDeploymentLogService",
+      "method": "appendLog",
+      "endpoint": "ipc://deployment-log/append",
+      "request": {
+        "body": {
+          "type": "object",
+          "properties": {
+            "taskId": { "type": "string" },
+            "level": { "type": "string" },
+            "message": { "type": "string" }
+          }
+        }
+      },
+      "response": {
+        "body": {
+          "type": "object",
+          "properties": {
+            "success": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    {
+      "name": "IDeploymentLogService",
+      "method": "subscribe",
+      "endpoint": "ipc://deployment-log/subscribe",
+      "request": {
+        "body": {
+          "type": "object",
+          "properties": {
+            "taskId": { "type": "string" },
+            "callback": { "type": "function" }
+          }
+        }
+      },
+      "response": {
+        "body": {
+          "type": "function",
+          "description": "返回取消订阅的函数"
+        }
+      }
+    }
+  ]
+}
