@@ -134,7 +134,12 @@ def validate_lld_json(json_path: Path) -> dict:
                                      f"模型 '{dm.get('name','?')}' 的 source 缺少 doc_id 或 model_name"))
 
     # 4b. domain_objects (service only)
-    for dobj in data.get("domain_objects", []):
+    domain_objects = data.get("domain_objects", [])
+    if isinstance(domain_objects, dict):
+        violations.append(_v("domain_objects", "type",
+                             f"domain_objects 必须是数组，当前是对象 (dict，LLM 将 ID 用作 key)"))
+        domain_objects = []
+    for dobj in domain_objects:
         if not isinstance(dobj, dict):
             continue
         ot = dobj.get("object_type", "")
@@ -159,11 +164,18 @@ def validate_lld_json(json_path: Path) -> dict:
         if not isinstance(svc, dict):
             continue
         methods = svc.get("methods", [])
+        # Defend against LLM generating methods as a dict instead of a list
+        if isinstance(methods, dict):
+            violations.append(_v("service_contracts", f"{svc.get('name','?')}.methods",
+                                 f"服务 '{svc.get('name','?')}' 的 methods 必须是数组，当前是对象 (dict)"))
+            continue
         if not methods:
             violations.append(_v("service_contracts", f"{svc.get('name','?')}.methods",
                                  f"服务 '{svc.get('name','?')}' 没有任何方法"))
         for m in methods:
             if not isinstance(m, dict):
+                violations.append(_v("service_contracts", f"{svc.get('name','?')}.methods[]",
+                                     f"methods 数组中的元素必须是对象，当前是 {type(m).__name__}"))
                 continue
             meth_name = m.get("name", "?")
             if not m.get("precondition"):
@@ -175,6 +187,12 @@ def validate_lld_json(json_path: Path) -> dict:
             if not m.get("signature"):
                 violations.append(_v("service_contracts", f"{svc.get('name','?')}.{meth_name}.signature",
                                      f"方法 '{meth_name}' 缺少 signature"))
+            # Check exceptions array items are objects
+            for e in m.get("exceptions", []):
+                if not isinstance(e, dict):
+                    violations.append(_v("service_contracts",
+                                         f"{svc.get('name','?')}.{meth_name}.exceptions[]",
+                                         f"exceptions 数组中的元素必须是对象，当前是 {type(e).__name__}: '{e}'"))
 
     # 4d. business_rules (service only)
     br = data.get("business_rules", {})
@@ -261,6 +279,20 @@ def validate_lld_json(json_path: Path) -> dict:
     if isinstance(eh, dict):
         if not eh.get("strategy"):
             warnings.append(_v("error_handling", "strategy", "error_handling 缺少 strategy"))
+
+    # 4l. workflow (optional, but if present must be dict not list)
+    wf = data.get("workflow")
+    if wf is not None:
+        if isinstance(wf, list):
+            violations.append(_v("workflow", "type",
+                                 f"workflow 必须是对象 (dict)，当前是数组 (list)"))
+        elif isinstance(wf, dict):
+            if not wf.get("steps"):
+                warnings.append(_v("workflow", "steps", "workflow 缺少 steps"))
+            for i, step in enumerate(wf.get("steps", [])):
+                if isinstance(step, str):
+                    violations.append(_v("workflow", f"steps[{i}]",
+                                         f"workflow 步骤必须是对象，当前是字符串: '{step}'"))
 
     # ── 5. Source consistency checks ──
     src = data.get("source", {})

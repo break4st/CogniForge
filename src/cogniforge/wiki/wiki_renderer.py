@@ -2361,7 +2361,18 @@ def _render_lld(d: dict) -> str:
     models = d.get("data_models", [])
     ifaces = d.get("interfaces", [])
     workflow = d.get("workflow")
+    # Defend against LLM generating workflow as a list instead of a dict
+    if isinstance(workflow, list) and workflow:
+        workflow = workflow[0]
     domain_objects = d.get("domain_objects", [])
+    # Defend against LLM generating domain_objects as a dict instead of a list
+    if isinstance(domain_objects, dict):
+        normalized = []
+        for oname, obody in domain_objects.items():
+            if isinstance(obody, dict):
+                obody.setdefault("name", oname)
+                normalized.append(obody)
+        domain_objects = normalized
     service_contracts = d.get("service_contracts", [])
     # Defend against LLM generating this as a dict instead of a list
     if isinstance(service_contracts, dict):
@@ -3009,6 +3020,8 @@ def _render_lld(d: dict) -> str:
         source_labels = {"db": "DB 透传", "computed": "计算", "input": "输入", "derived": "派生"}
 
         for dobj in domain_objects:
+            if isinstance(dobj, str):
+                continue
             ot = dobj.get("object_type", "entity")
             oicon = obj_type_icons.get(ot, "📄")
             olabel = obj_type_labels.get(ot, ot)
@@ -3324,6 +3337,8 @@ def _render_lld(d: dict) -> str:
             # Render steps as a visual flow
             step_htmls = []
             for i, step in enumerate(steps):
+                if isinstance(step, str):
+                    continue
                 order = step.get("order", i + 1)
                 name = step.get("name", f"Step {order}")
                 action = step.get("action", "")
