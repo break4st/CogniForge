@@ -353,6 +353,39 @@ def validate_lld_json(json_path: Path) -> dict:
     }
 
 
+def _translate_detail(v: dict) -> str:
+    """Translate jsonschema violations into actionable natural language."""
+    detail = v.get("detail", "")
+    field = v.get("field", "")
+    section = v.get("section", "")
+
+    if "is not of type 'array'" in detail:
+        target = field.split("→")[-1].strip() if "→" in field else field
+        return f"字段 '{target}' 必须是数组 []，当前写成了对象 {{}}。请改为 [] 格式。"
+
+    if "is not of type 'object'" in detail:
+        target = field.split("→")[-1].strip() if "→" in field else field
+        return f"字段 '{target}' 必须是对象 {{}}，当前写成了数组 [] 或字符串。请改为 {{}} 格式。"
+
+    if "is a required property" in detail.lower():
+        return f"缺少必需字段: {detail}"
+
+    if "Additional properties are not allowed" in detail:
+        import re
+        m = re.findall(r"'([^']*)'", detail)
+        extra = ", ".join(m) if m else ""
+        extra_info = f"（多余的: {extra}）" if extra else ""
+        return f"包含了不属于本 module_type 的字段 {extra_info}。请移除。"
+
+    if "is not one of" in detail:
+        return f"值不在允许范围内: {detail}"
+
+    if section == "schema":
+        return f"JSON Schema 违规: {detail}"
+
+    return detail
+
+
 def format_validation_report(result: dict) -> str:
     """Render a human-readable validation report for feeding back to the LLM."""
     lines = []
@@ -374,7 +407,8 @@ def format_validation_report(result: dict) -> str:
     lines.append(f"✗ LLD 校验失败 — {module} ({module_type})")
     lines.append(f"  必须修复 {len(violations)} 个问题:\n")
     for i, v in enumerate(violations, 1):
-        lines.append(f"  {i}. [{v['section']}] {v['field']}: {v['detail']}")
+        translated = _translate_detail(v)
+        lines.append(f"  {i}. [{v['section']}] {translated}")
 
     if warnings:
         lines.append(f"\n建议改进 ({len(warnings)} 条):")

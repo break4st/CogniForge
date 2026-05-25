@@ -187,40 +187,25 @@ class DesignAgent(BaseAgent):
             conditional_schema = _build_conditional_schema(module_type)
 
             prompt = (
-                f"根据以下数据创建一份详细设计文档 (LLD):\n\n"
-                f"JSON 结构:\n"
-                f"{_SCHEMA_BASE}\n"
-                f"{_SCHEMA_DATA_MODELS}\n"
-                f"{_SCHEMA_INTERFACES}\n"
-                f"{_SCHEMA_ERROR}\n"
-                f"{_SCHEMA_WORKFLOW}\n"
-                + (f"{conditional_schema}\n" if conditional_schema else "")
-                + f"\n重要:\n"
-                f"- data_models 中每个模型必须分配唯一 id（DM-001, DM-002...）\n"
-                f"- interfaces 中每个接口必须分配唯一 id（IF-001, IF-002...）\n"
-                f"- interfaces[].method 与 endpoint 分开填写，method 为 HTTP 方法或 INTERNAL/MQ/WS/frontend\n"
-                f"- interfaces[].response.body 的字段名与类型与 SAD 契约严格一致，不可修改\n"
-                f"- 前端模块的 interfaces 使用 frontend 作为 method 值，endpoint 填写路由路径\n"
-                f"- overview.tech_stack 必须从 SAD tech_stack 中选取本模块相关的技术子集\n"
-                f"- gateway 模块的 API 契约必须自包含：完整的 request/response body\n"
-                f"- JSON 字符串值内的双引号必须转义为 \\\"，中文引号请使用「」代替 \"\"\n\n"
-                f"{ownership_rules}\n"
-                f"输入数据:\n"
+                f"为以下模块生成完整 LLD JSON。\n\n"
+                f"{ownership_rules}\n\n"
+                f"## 模块信息\n"
                 f"module: {module}\n"
                 f"module_type: {module_type}\n"
                 f"overview: {overview}\n"
                 f"data_models: {json.dumps(data_models, ensure_ascii=False)}\n"
                 f"interfaces: {json.dumps(interfaces, ensure_ascii=False)}\n"
                 f"error_handling: {error_handling}\n\n"
-                f"{contract_context}\n"
-                f"要求:\n"
-                f"1. 以上 prompt 已包含本模块 SAD 定义、接口契约、邻模块接口签名\n"
-                f"2. 接口契约约束:\n"
-                f"   - provider 契约: 你必须实现这些接口，response body 字段名与类型不可修改\n"
-                f"   - consumer 契约: 引用这些接口的确切 endpoint 与字段，不要自造变体\n"
-                f"3. 各模块类型要求的章节必须完整填写，不可省略\n"
+                + (f"## 本模块类型专属章节\n{conditional_schema}\n\n" if conditional_schema else "")
+                + f"{contract_context}\n"
+                f"## 要求\n"
+                f"- ID 分配: data_models→DM-001起, interfaces→IF-001起, domain_objects→DO-001起, service_contracts→SC-001起\n"
+                f"- interfaces: method 和 endpoint 分开填写\n"
+                f"- tech_stack: 必须从 SAD tech_stack 选取本模块相关子集\n"
+                f"- provider 契约: response body 字段名和类型与 SAD 严格一致\n"
+                f"- consumer 契约: 引用确切 endpoint 和字段，不编造\n"
                 + _type_specific_hints(module_type)
-                + f"使用中文"
+                + f"使用中文。"
             )
 
             _progress("LLM 生成中")
@@ -297,18 +282,16 @@ class DesignAgent(BaseAgent):
                 fix_prompt = (
                     f"你刚才生成的 LLD JSON 校验未通过：\n\n"
                     f"{validation_report}\n\n"
-                    f"当前 JSON:\n{current_json[:6000]}\n\n"
-                    f"请修正以上所有问题，返回完整的修正后 JSON。"
-                    f"特别检查：\n"
-                    f"- methods 必须是数组 [] 不是对象 {{}}，每个元素带 name 字段\n"
-                    f"- domain_objects 必须是数组 [] 不是对象 {{}}\n"
-                    f"- workflow 必须是对象 {{}} 不是数组 []\n"
-                    f"- 数组中不能混入裸字符串\n"
+                    f"当前 JSON（请检查违反规则的具体字段）:\n{current_json[:6000]}\n\n"
+                    f"请修正以上所有问题，返回完整的修正后 JSON。\n"
                     f"只返回纯 JSON 对象，不要 markdown 代码块包裹。"
                 )
                 from cogniforge.llm.base import LLMMessage
                 fix_response = self.agent.generate_messages([
-                    LLMMessage(role="system", content="你是 CogniForge 系统的 Design Agent。职责: 生成 LLD JSON。"),
+                    LLMMessage(role="system", content=(
+                        "你是 CogniForge 系统的 Design Agent。职责: 生成 LLD JSON。\n"
+                        "输出格式请参照 system prompt 中的 EXAMPLE JSON OUTPUT 示例。"
+                    )),
                     LLMMessage(role="user", content=fix_prompt),
                 ], max_tokens=8192)
                 json_text = _extract_json(fix_response.content)
