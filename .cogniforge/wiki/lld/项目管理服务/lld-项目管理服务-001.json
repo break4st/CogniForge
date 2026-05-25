@@ -1,0 +1,884 @@
+{
+  "meta": {
+    "doc_id": "lld-ProjectManagement-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "项目管理服务",
+    "title": "项目管理服务详细设计",
+    "author": "design_agent",
+    "created": "2025-03-20T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-006"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-003"
+      ],
+      "contracts": [
+        "CTR-001"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "创建、查询、更新、归档（软删除）项目",
+      "项目名称全局唯一性校验",
+      "维护项目状态（active/archived）",
+      "提供项目存在性及状态查询能力给其他服务"
+    ],
+    "out_of_scope": [
+      "环境、部署、密钥等关联业务的管理",
+      "项目管理UI",
+      "用户认证与授权",
+      "其他服务基于project_id的数据隔离逻辑实现"
+    ],
+    "owned_components": [
+      "CMP-003"
+    ],
+    "owned_contracts": [
+      "CTR-001"
+    ],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "实现项目实体的增删改查，维护项目状态（激活/归档），校验项目名称全局唯一，处理项目切换时的数据隔离逻辑。",
+    "dependencies": [],
+    "tech_stack": [
+      "Python 3.11+",
+      "FastAPI",
+      "SQLAlchemy",
+      "SQLite",
+      "asyncio"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-006",
+      "sad_component_ids": [
+        "CMP-003"
+      ],
+      "sad_contract_ids": [
+        "CTR-001"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003",
+          "IF-004",
+          "IF-005"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": "所有接口及唯一性校验均完整覆盖"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "projects",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "projects"
+      },
+      "description": "项目主表，本服务视图包含所有核心字段",
+      "fields": [
+        {
+          "name": "id",
+          "type": "INTEGER",
+          "required": true,
+          "description": "主键，自增"
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(255)",
+          "required": true,
+          "description": "项目名称，全局唯一"
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "required": false,
+          "description": "项目描述"
+        },
+        {
+          "name": "local_build_path",
+          "type": "VARCHAR(512)",
+          "required": true,
+          "description": "本地构建产物路径"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(20)",
+          "required": true,
+          "description": "项目状态：active 或 archived"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME",
+          "required": true,
+          "description": "最后更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "ix_projects_name",
+          "unique": true,
+          "columns": [
+            "name"
+          ]
+        },
+        {
+          "name": "ix_projects_status",
+          "unique": false,
+          "columns": [
+            "status"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-006"
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [
+        "name 全局唯一",
+        "status 只能为 'active' 或 'archived'"
+      ],
+      "lifecycle": {
+        "create": "新建项目时，status 默认为 'active'",
+        "update": "更新 name、description、local_build_path 任一字段时刷新 updated_at",
+        "delete": "不物理删除，将 status 更新为 'archived'",
+        "retention": "永久保留"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建，从主数据库派生引用",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "创建项目",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-003",
+      "method": "POST",
+      "endpoint": "/api/projects",
+      "description": "创建一个新项目，返回创建后的完整项目对象",
+      "parameters": [],
+      "request_body": {
+        "type": "object",
+        "required": ["name", "local_build_path"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "项目名称"
+          },
+          "description": {
+            "type": "string",
+            "description": "项目描述"
+          },
+          "local_build_path": {
+            "type": "string",
+            "description": "本地构建产物路径"
+          }
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "integer"},
+            "name": {"type": "string"},
+            "description": {"type": "string"},
+            "local_build_path": {"type": "string"},
+            "status": {"type": "string"},
+            "created_at": {"type": "string", "format": "date-time"},
+            "updated_at": {"type": "string", "format": "date-time"}
+          }
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "VALIDATION_ERROR",
+          "message": "请求体参数错误"
+        },
+        {
+          "status": 409,
+          "code": "DUPLICATE_NAME",
+          "message": "项目名称已存在"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [
+        "name 非空且长度不超过255",
+        "local_build_path 非空"
+      ],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-006"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "查询所有项目",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-003",
+      "method": "GET",
+      "endpoint": "/api/projects",
+      "description": "获取所有项目的列表，支持分页和状态筛选",
+      "parameters": [
+        {
+          "name": "status",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "description": "按状态筛选，可选 active/archived"
+        },
+        {
+          "name": "page",
+          "in": "query",
+          "required": false,
+          "type": "integer",
+          "description": "页码，从1开始"
+        },
+        {
+          "name": "page_size",
+          "in": "query",
+          "required": false,
+          "type": "integer",
+          "description": "每页数量，默认20"
+        }
+      ],
+      "request_body": null,
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {"type": "integer"},
+                  "name": {"type": "string"},
+                  "description": {"type": "string"},
+                  "local_build_path": {"type": "string"},
+                  "status": {"type": "string"},
+                  "created_at": {"type": "string", "format": "date-time"},
+                  "updated_at": {"type": "string", "format": "date-time"}
+                }
+              }
+            },
+            "total": {"type": "integer"},
+            "page": {"type": "integer"},
+            "page_size": {"type": "integer"}
+          }
+        }
+      },
+      "error_codes": [],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "offset_based",
+      "source_requirements": [
+        "REQ-006"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-003",
+      "name": "查询单个项目",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-003",
+      "method": "GET",
+      "endpoint": "/api/projects/{project_id}",
+      "description": "根据ID获取单个项目的详细信息",
+      "parameters": [
+        {
+          "name": "project_id",
+          "in": "path",
+          "required": true,
+          "type": "integer",
+          "description": "项目唯一标识"
+        }
+      ],
+      "request_body": null,
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "integer"},
+            "name": {"type": "string"},
+            "description": {"type": "string"},
+            "local_build_path": {"type": "string"},
+            "status": {"type": "string"},
+            "created_at": {"type": "string", "format": "date-time"},
+            "updated_at": {"type": "string", "format": "date-time"}
+          }
+        }
+      },
+      "error_codes": [
+        {
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "项目不存在"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "safe",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-006"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-004",
+      "name": "更新项目",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-003",
+      "method": "PUT",
+      "endpoint": "/api/projects/{project_id}",
+      "description": "更新项目的名称、描述或路径，自动校验名称唯一性",
+      "parameters": [
+        {
+          "name": "project_id",
+          "in": "path",
+          "required": true,
+          "type": "integer",
+          "description": "项目唯一标识"
+        }
+      ],
+      "request_body": {
+        "type": "object",
+        "required": ["name", "local_build_path"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "项目名称"
+          },
+          "description": {
+            "type": "string",
+            "description": "项目描述"
+          },
+          "local_build_path": {
+            "type": "string",
+            "description": "本地构建产物路径"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "integer"},
+            "name": {"type": "string"},
+            "description": {"type": "string"},
+            "local_build_path": {"type": "string"},
+            "status": {"type": "string"},
+            "created_at": {"type": "string", "format": "date-time"},
+            "updated_at": {"type": "string", "format": "date-time"}
+          }
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "VALIDATION_ERROR",
+          "message": "请求体参数错误"
+        },
+        {
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "项目不存在"
+        },
+        {
+          "status": 409,
+          "code": "DUPLICATE_NAME",
+          "message": "项目名称已存在"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [
+        "name 非空且长度不超过255",
+        "local_build_path 非空"
+      ],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-006"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-005",
+      "name": "归档项目",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-003",
+      "method": "DELETE",
+      "endpoint": "/api/projects/{project_id}",
+      "description": "将项目状态置为 archived，实现软删除",
+      "parameters": [
+        {
+          "name": "project_id",
+          "in": "path",
+          "required": true,
+          "type": "integer",
+          "description": "项目唯一标识"
+        }
+      ],
+      "request_body": null,
+      "response": {
+        "status": 204,
+        "body": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      "error_codes": [
+        {
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "项目不存在"
+        },
+        {
+          "status": 409,
+          "code": "ALREADY_ARCHIVED",
+          "message": "项目已归档"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "safe",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-006"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "object_type": "class",
+      "name": "Project",
+      "description": "项目实体类",
+      "fields": [
+        {
+          "name": "id",
+          "type": "int",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "name",
+          "type": "str",
+          "required": true,
+          "description": "项目名称"
+        },
+        {
+          "name": "description",
+          "type": "str",
+          "required": false,
+          "description": "项目描述"
+        },
+        {
+          "name": "local_build_path",
+          "type": "str",
+          "required": true,
+          "description": "本地构建路径"
+        },
+        {
+          "name": "status",
+          "type": "str",
+          "required": true,
+          "description": "状态"
+        },
+        {
+          "name": "created_at",
+          "type": "datetime",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "datetime",
+          "required": true,
+          "description": "更新时间"
+        }
+      ],
+      "methods": []
+    },
+    {
+      "object_type": "repository",
+      "name": "ProjectRepository",
+      "description": "项目数据持久化接口",
+      "fields": [],
+      "methods": [
+        {
+          "name": "create",
+          "parameters": [
+            {"name": "project", "type": "ProjectCreate"}
+          ],
+          "return_type": "Project"
+        },
+        {
+          "name": "list",
+          "parameters": [
+            {"name": "filters", "type": "Optional[ProjectFilter]"},
+            {"name": "pagination", "type": "Pagination"}
+          ],
+          "return_type": "List[Project]"
+        },
+        {
+          "name": "get_by_id",
+          "parameters": [
+            {"name": "project_id", "type": "int"}
+          ],
+          "return_type": "Optional[Project]"
+        },
+        {
+          "name": "update",
+          "parameters": [
+            {"name": "project", "type": "ProjectUpdate"}
+          ],
+          "return_type": "Project"
+        },
+        {
+          "name": "archive",
+          "parameters": [
+            {"name": "project_id", "type": "int"}
+          ],
+          "return_type": "None"
+        }
+      ]
+    },
+    {
+      "object_type": "value_object",
+      "name": "ProjectCreate",
+      "description": "创建项目的数据传输对象",
+      "fields": [
+        {
+          "name": "name",
+          "type": "str",
+          "required": true,
+          "description": "项目名称"
+        },
+        {
+          "name": "description",
+          "type": "Optional[str]",
+          "required": false,
+          "description": "项目描述"
+        },
+        {
+          "name": "local_build_path",
+          "type": "str",
+          "required": true,
+          "description": "本地构建路径"
+        }
+      ],
+      "methods": []
+    },
+    {
+      "object_type": "value_object",
+      "name": "ProjectUpdate",
+      "description": "更新项目的数据传输对象",
+      "fields": [
+        {
+          "name": "name",
+          "type": "str",
+          "required": true,
+          "description": "项目名称"
+        },
+        {
+          "name": "description",
+          "type": "Optional[str]",
+          "required": false,
+          "description": "项目描述"
+        },
+        {
+          "name": "local_build_path",
+          "type": "str",
+          "required": true,
+          "description": "本地构建路径"
+        }
+      ],
+      "methods": []
+    },
+    {
+      "object_type": "value_object",
+      "name": "ProjectFilter",
+      "description": "项目列表筛选参数",
+      "fields": [
+        {
+          "name": "status",
+          "type": "Optional[str]",
+          "required": false,
+          "description": "状态筛选"
+        }
+      ],
+      "methods": []
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "ProjectService",
+      "description": "项目管理服务对外契约",
+      "preconditions": [
+        "数据库连接正常"
+      ],
+      "postconditions": [
+        "所有操作完成后数据库状态一致"
+      ],
+      "methods": [
+        {
+          "name": "create_project",
+          "signature": "create_project(request: ProjectCreate) -> Project",
+          "description": "创建新项目",
+          "precondition": "项目名称在系统中不存在",
+          "postcondition": "系统中新增一个激活状态的项目",
+          "parameters": [
+            {
+              "name": "request",
+              "type": "ProjectCreate"
+            }
+          ],
+          "return_type": "Project",
+          "exceptions": [
+            "DuplicateProjectNameException",
+            "ValidationException"
+          ]
+        },
+        {
+          "name": "list_projects",
+          "signature": "list_projects(filters: Optional[ProjectFilter] = None, pagination: Pagination) -> PaginatedResult[Project]",
+          "description": "分页列出所有项目",
+          "precondition": "无",
+          "postcondition": "返回符合筛选条件的分页项目列表",
+          "parameters": [
+            {
+              "name": "filters",
+              "type": "Optional[ProjectFilter]"
+            },
+            {
+              "name": "pagination",
+              "type": "Pagination"
+            }
+          ],
+          "return_type": "PaginatedResult[Project]",
+          "exceptions": []
+        },
+        {
+          "name": "get_project",
+          "signature": "get_project(project_id: int) -> Optional[Project]",
+          "description": "根据ID获取项目",
+          "precondition": "项目ID存在",
+          "postcondition": "返回项目对象或None",
+          "parameters": [
+            {
+              "name": "project_id",
+              "type": "int"
+            }
+          ],
+          "return_type": "Optional[Project]",
+          "exceptions": []
+        },
+        {
+          "name": "update_project",
+          "signature": "update_project(project_id: int, request: ProjectUpdate) -> Project",
+          "description": "更新项目信息",
+          "precondition": "项目存在且新名称不与其他项目冲突",
+          "postcondition": "项目信息更新",
+          "parameters": [
+            {
+              "name": "project_id",
+              "type": "int"
+            },
+            {
+              "name": "request",
+              "type": "ProjectUpdate"
+            }
+          ],
+          "return_type": "Project",
+          "exceptions": [
+            "ProjectNotFoundException",
+            "DuplicateProjectNameException",
+            "ValidationException"
+          ]
+        },
+        {
+          "name": "archive_project",
+          "signature": "archive_project(project_id: int) -> None",
+          "description": "归档项目",
+          "precondition": "项目存在且状态为active",
+          "postcondition": "项目状态变为archived",
+          "parameters": [
+            {
+              "name": "project_id",
+              "type": "int"
+            }
+          ],
+          "return_type": "None",
+          "exceptions": [
+            "ProjectNotFoundException",
+            "ProjectAlreadyArchivedException"
+          ]
+        }
+      ],
+      "dependencies": [],
+      "notes": ""
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "name": "项目名称唯一性",
+      "description": "系统全局中项目名称必须唯一，创建和更新时需校验",
+      "invariants": [
+        "name 字段在 projects 表中唯一"
+      ],
+      "enforcement": "数据库唯一索引 + 应用层校验"
+    }
+  ],
+  "error_handling": {
+    "strategy": "统一使用 FastAPI 的异常处理机制，定义自定义异常类，在中间件中捕获并转换为标准 HTTP 错误响应",
+    "error_codes": [
+      {
+        "code": "VALIDATION_ERROR",
+        "status": 400,
+        "message": "请求参数校验失败"
+      },
+      {
+        "code": "DUPLICATE_NAME",
+        "status": 409,
+        "message": "项目名称重复"
+      },
+      {
+        "code": "NOT_FOUND",
+        "status": 404,
+        "message": "资源不存在"
+      },
+      {
+        "code": "ALREADY_ARCHIVED",
+        "status": 409,
+        "message": "资源已归档"
+      }
+    ]
+  }
+}
