@@ -1,0 +1,875 @@
+{
+  "meta": {
+    "doc_id": "lld-version-service-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "VersionService",
+    "title": "部署版本管理服务详细设计",
+    "author": "design_agent",
+    "created": "2024-03-14T10:30:00Z",
+    "version": 3,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-001"
+      ],
+      "contracts": [
+        "CTR-001"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "部署版本记录的创建（由部署成功事件触发或API手动创建）",
+      "版本列表查询（按项目、环境、部署筛选）",
+      "单个版本详情查询",
+      "回滚执行：将目标版本设为活跃版本，实现软链接切换",
+      "旧版本清理：按保留策略删除远程服务器上的版本文件及数据库记录",
+      "版本生命周期状态管理（active/inactive/archived/rolling_back）"
+    ],
+    "out_of_scope": [
+      "部署过程的执行（由DeploymentService负责）",
+      "SSH连接的建立与管理（由SSHService负责）",
+      "服务器文件系统的基础操作（由FileManager提供抽象）",
+      "前端UI渲染与交互（由Dashboard、DeployHistory等前端模块负责）",
+      "用户认证与授权（由APIGateway统一处理）"
+    ],
+    "owned_components": [
+      "CMP-001"
+    ],
+    "owned_contracts": [
+      "CTR-001"
+    ],
+    "consumed_contracts": [
+      "CTR-002",
+      "CTR-003",
+      "CTR-004"
+    ],
+    "owned_data_models": [
+      "DM-002",
+      "DM-004"
+    ],
+    "consumed_data_models": [
+      "DM-001",
+      "DM-003"
+    ]
+  },
+  "overview": {
+    "description": "VersionService负责管理部署过程中生成的版本记录，支持按部署、项目、环境进行历史版本查询，提供回滚功能（将指定版本切换为活跃版本），并能根据保留策略清理远程服务器上的旧版本文件及对应数据库记录。",
+    "dependencies": [
+      "SSHService",
+      "FileManager",
+      "DeploymentService",
+      "APIGateway"
+    ],
+    "tech_stack": [
+      "Python 3.11",
+      "FastAPI",
+      "SQLite",
+      "SQLAlchemy",
+      "paramiko（通过SSHService）"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [
+        "CTR-001"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003",
+          "IF-004"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005",
+          "DO-006"
+        ],
+        "service_contracts": [
+          "SC-001",
+          "SC-002",
+          "SC-003",
+          "SC-004"
+        ]
+      },
+      "coverage": "full",
+      "notes": "所有需求已完整覆盖"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "deployment_versions",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "deployment_versions"
+      },
+      "description": "存储每次部署产生的版本快照记录",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "deployment_id",
+          "type": "Integer",
+          "required": true,
+          "description": "外键关联deployments.id"
+        },
+        {
+          "name": "version_path",
+          "type": "String",
+          "required": true,
+          "description": "服务器上的版本文件/目录路径"
+        },
+        {
+          "name": "version_label",
+          "type": "String",
+          "required": false,
+          "description": "用户自定义标签或自动生成"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "required": true,
+          "description": "状态（active/inactive/archived/rolling_back），默认inactive"
+        },
+        {
+          "name": "active_since",
+          "type": "DateTime",
+          "required": false,
+          "description": "成为活跃版本的时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_dv_deployment_status",
+          "unique": true,
+          "columns": [
+            "deployment_id",
+            "status"
+          ]
+        },
+        {
+          "name": "idx_dv_deployment_id",
+          "unique": false,
+          "columns": [
+            "deployment_id"
+          ]
+        },
+        {
+          "name": "idx_dv_created_at",
+          "unique": false,
+          "columns": [
+            "created_at"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [
+        "同一个deployment_id下只能有一条status=active的记录",
+        "回滚操作必须原子切换状态"
+      ],
+      "lifecycle": {
+        "create": "部署成功后由DeploymentService触发VersionService创建记录",
+        "update": "回滚或手动状态变更时修改status/active_since",
+        "delete": "清理策略触发时物理删除记录",
+        "retention": "不活跃版本可保留至管理员设定的天数后删除"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "VersionStatus",
+      "type": "config",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "版本状态枚举值",
+      "fields": [],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [
+        "合法值：active, inactive, archived, rolling_back"
+      ],
+      "lifecycle": {
+        "create": "模块初始化时定义",
+        "update": "",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "ListVersions",
+      "type": "http",
+      "endpoint": {
+        "method": "GET",
+        "path": "/api/versions"
+      },
+      "request": {
+        "parameters": {
+          "deployment_id": {
+            "type": "integer",
+            "required": false,
+            "description": "按部署ID筛选"
+          },
+          "project_id": {
+            "type": "integer",
+            "required": false,
+            "description": "按项目ID筛选"
+          },
+          "environment": {
+            "type": "string",
+            "required": false,
+            "description": "按环境名称筛选"
+          }
+        },
+        "body": null
+      },
+      "response": {
+        "status_code": 200,
+        "body": {
+          "type": "array",
+          "items": {
+            "$ref": "DO-001"
+          }
+        }
+      },
+      "errors": [
+        {
+          "status_code": 500,
+          "message": "Internal Server Error"
+        }
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "description": "获取版本列表，支持多条件筛选"
+    },
+    {
+      "id": "IF-002",
+      "name": "GetVersion",
+      "type": "http",
+      "endpoint": {
+        "method": "GET",
+        "path": "/api/versions/{version_id}"
+      },
+      "request": {
+        "parameters": {
+          "version_id": {
+            "type": "integer",
+            "required": true,
+            "description": "版本ID"
+          }
+        },
+        "body": null
+      },
+      "response": {
+        "status_code": 200,
+        "body": {
+          "$ref": "DO-001"
+        }
+      },
+      "errors": [
+        {
+          "status_code": 404,
+          "message": "Version not found"
+        },
+        {
+          "status_code": 500,
+          "message": "Internal Server Error"
+        }
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "description": "获取单个版本详情"
+    },
+    {
+      "id": "IF-003",
+      "name": "CreateVersion",
+      "type": "http",
+      "endpoint": {
+        "method": "POST",
+        "path": "/api/versions"
+      },
+      "request": {
+        "parameters": null,
+        "body": {
+          "type": "object",
+          "properties": {
+            "deployment_id": {
+              "type": "integer",
+              "required": true
+            },
+            "version_path": {
+              "type": "string",
+              "required": true
+            },
+            "version_label": {
+              "type": "string",
+              "required": false
+            }
+          }
+        }
+      },
+      "response": {
+        "status_code": 201,
+        "body": {
+          "$ref": "DO-001"
+        }
+      },
+      "errors": [
+        {
+          "status_code": 400,
+          "message": "Bad Request"
+        },
+        {
+          "status_code": 500,
+          "message": "Internal Server Error"
+        }
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "description": "手动创建版本记录"
+    },
+    {
+      "id": "IF-004",
+      "name": "Rollback",
+      "type": "http",
+      "endpoint": {
+        "method": "POST",
+        "path": "/api/versions/{version_id}/rollback"
+      },
+      "request": {
+        "parameters": {
+          "version_id": {
+            "type": "integer",
+            "required": true,
+            "description": "目标回滚版本ID"
+          }
+        },
+        "body": null
+      },
+      "response": {
+        "status_code": 200,
+        "body": {
+          "$ref": "DO-002"
+        }
+      },
+      "errors": [
+        {
+          "status_code": 404,
+          "message": "Version not found"
+        },
+        {
+          "status_code": 409,
+          "message": "Conflict: Version already active or cannot be rolled back"
+        },
+        {
+          "status_code": 500,
+          "message": "Internal Server Error"
+        }
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "description": "回滚到指定版本"
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "Version",
+      "object_type": "dto",
+      "description": "版本信息传输对象",
+      "fields": [
+        {
+          "name": "id",
+          "type": "integer",
+          "description": "版本ID"
+        },
+        {
+          "name": "deployment_id",
+          "type": "integer",
+          "description": "部署ID"
+        },
+        {
+          "name": "version_path",
+          "type": "string",
+          "description": "版本路径"
+        },
+        {
+          "name": "version_label",
+          "type": "string",
+          "description": "版本标签"
+        },
+        {
+          "name": "created_at",
+          "type": "string",
+          "description": "创建时间"
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "description": "状态"
+        },
+        {
+          "name": "active_since",
+          "type": "string",
+          "description": "活跃时间"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "RollbackResult",
+      "object_type": "dto",
+      "description": "回滚操作结果",
+      "fields": [
+        {
+          "name": "previous_active_version_id",
+          "type": "integer",
+          "description": "回滚前活跃版本ID"
+        },
+        {
+          "name": "new_active_version_id",
+          "type": "integer",
+          "description": "新活跃版本ID（目标回滚版本）"
+        },
+        {
+          "name": "timestamp",
+          "type": "string",
+          "description": "回滚时间"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "VersionStatusEnum",
+      "object_type": "enum",
+      "description": "版本状态枚举",
+      "values": [
+        "active",
+        "inactive",
+        "archived",
+        "rolling_back"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "VersionQuery",
+      "object_type": "dto",
+      "description": "版本查询参数",
+      "fields": [
+        {
+          "name": "deployment_id",
+          "type": "integer",
+          "description": "部署ID"
+        },
+        {
+          "name": "project_id",
+          "type": "integer",
+          "description": "项目ID"
+        },
+        {
+          "name": "environment",
+          "type": "string",
+          "description": "环境"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ]
+    },
+    {
+      "id": "DO-005",
+      "name": "CreateVersionRequest",
+      "object_type": "dto",
+      "description": "创建版本请求体",
+      "fields": [
+        {
+          "name": "deployment_id",
+          "type": "integer",
+          "description": "部署ID"
+        },
+        {
+          "name": "version_path",
+          "type": "string",
+          "description": "版本路径"
+        },
+        {
+          "name": "version_label",
+          "type": "string",
+          "description": "版本标签"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ]
+    },
+    {
+      "id": "DO-006",
+      "name": "CleanupResult",
+      "object_type": "dto",
+      "description": "清理结果",
+      "fields": [
+        {
+          "name": "deleted_versions_count",
+          "type": "integer",
+          "description": "删除的版本数量"
+        },
+        {
+          "name": "freed_space_mb",
+          "type": "number",
+          "description": "释放的空间（MB）"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "list_versions",
+      "methods": [
+        {
+          "method_name": "list_versions",
+          "input": {
+            "$ref": "DO-004"
+          },
+          "output": {
+            "type": "array",
+            "items": {
+              "$ref": "DO-001"
+            }
+          },
+          "description": "查询版本列表",
+          "behaviour": "根据可选的筛选参数查询部署版本列表，返回Version对象数组",
+          "errors": [
+            {
+              "code": "VERSION_SERVICE_ERROR",
+              "message": "版本服务内部错误"
+            }
+          ]
+        }
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "description": "版本查询服务契约"
+    },
+    {
+      "id": "SC-002",
+      "name": "create_version",
+      "methods": [
+        {
+          "method_name": "create_version",
+          "input": {
+            "$ref": "DO-005"
+          },
+          "output": {
+            "$ref": "DO-001"
+          },
+          "description": "创建版本记录",
+          "behaviour": "根据提供的deployment_id、version_path等信息创建新的版本记录，初始状态为inactive",
+          "errors": [
+            {
+              "code": "INVALID_DEPLOYMENT",
+              "message": "部署ID不存在"
+            },
+            {
+              "code": "VERSION_SERVICE_ERROR",
+              "message": "版本服务内部错误"
+            }
+          ]
+        }
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "description": "版本创建服务契约"
+    },
+    {
+      "id": "SC-003",
+      "name": "rollback",
+      "methods": [
+        {
+          "method_name": "rollback",
+          "input": {
+            "type": "object",
+            "properties": {
+              "version_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "version_id"
+            ]
+          },
+          "output": {
+            "$ref": "DO-002"
+          },
+          "description": "回滚到目标版本",
+          "behaviour": "将指定版本设为活跃版本，当前活跃版本变为inactive，更新active_since时间，记录回滚事件",
+          "errors": [
+            {
+              "code": "VERSION_NOT_FOUND",
+              "message": "版本不存在"
+            },
+            {
+              "code": "VERSION_ALREADY_ACTIVE",
+              "message": "目标版本已是活跃版本"
+            },
+            {
+              "code": "ROLLBACK_FAILED",
+              "message": "回滚操作在服务器上执行失败"
+            }
+          ]
+        }
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "description": "回滚服务契约"
+    },
+    {
+      "id": "SC-004",
+      "name": "cleanup_old_versions",
+      "methods": [
+        {
+          "method_name": "cleanup_old_versions",
+          "input": {
+            "type": "object",
+            "properties": {
+              "retention_days": {
+                "type": "integer"
+              },
+              "project_id": {
+                "type": "integer"
+              },
+              "environment": {
+                "type": "string"
+              }
+            }
+          },
+          "output": {
+            "$ref": "DO-006"
+          },
+          "description": "清理旧版本",
+          "behaviour": "根据保留策略（天数）删除远程服务器上指定项目/环境的旧版本文件，并删除对应数据库记录，返回清理统计",
+          "errors": [
+            {
+              "code": "CLEANUP_FAILED",
+              "message": "清理操作失败"
+            }
+          ]
+        }
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "description": "清理服务契约"
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "description": "同一部署下只能有一个活跃版本",
+      "rule_type": "invariant",
+      "expression": "部署版本表中，deployment_id 和 status='active' 的组合必须唯一"
+    },
+    {
+      "id": "BR-002",
+      "description": "回滚操作需原子切换版本状态",
+      "rule_type": "invariant",
+      "expression": "回滚过程中，先将当前活跃版本设为inactive，再将目标版本设为active，整个过程在同一事务中完成"
+    },
+    {
+      "id": "BR-003",
+      "description": "版本状态流转规则",
+      "rule_type": "state_machine",
+      "states": [
+        "inactive",
+        "active",
+        "rolling_back",
+        "archived"
+      ],
+      "transitions": [
+        {
+          "from": "inactive",
+          "to": "active",
+          "trigger": "回滚至该版本或首次部署"
+        },
+        {
+          "from": "active",
+          "to": "inactive",
+          "trigger": "被回滚操作替换"
+        },
+        {
+          "from": "active",
+          "to": "rolling_back",
+          "trigger": "启动回滚流程（临时状态）"
+        },
+        {
+          "from": "rolling_back",
+          "to": "active",
+          "trigger": "回滚完成（目标版本）"
+        },
+        {
+          "from": "any",
+          "to": "archived",
+          "trigger": "管理员手动归档或自动清理"
+        }
+      ]
+    },
+    {
+      "id": "BR-004",
+      "description": "版本清理前必须检查远程文件是否存在，若不存在则仅删除数据库记录",
+      "rule_type": "constraint"
+    }
+  ],
+  "error_handling": {
+    "strategy": "集中错误处理中间件捕获未处理异常并返回标准错误响应，业务异常抛出特定异常类由全局异常处理器转换为HTTP错误响应",
+    "errors": [
+      {
+        "code": "VERSION_NOT_FOUND",
+        "http_status": 404,
+        "message": "指定版本ID不存在"
+      },
+      {
+        "code": "INVALID_DEPLOYMENT",
+        "http_status": 400,
+        "message": "关联的部署ID无效"
+      },
+      {
+        "code": "VERSION_ALREADY_ACTIVE",
+        "http_status": 409,
+        "message": "目标版本已是活跃版本，无需回滚"
+      },
+      {
+        "code": "ROLLBACK_FAILED",
+        "http_status": 500,
+        "message": "回滚操作在远程服务器上执行失败"
+      },
+      {
+        "code": "CLEANUP_FAILED",
+        "http_status": 500,
+        "message": "清理操作失败"
+      },
+      {
+        "code": "VERSION_SERVICE_ERROR",
+        "http_status": 500,
+        "message": "版本服务内部错误"
+      }
+    ]
+  }
+}
