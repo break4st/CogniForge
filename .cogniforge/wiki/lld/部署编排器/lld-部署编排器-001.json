@@ -1,0 +1,1017 @@
+{
+  "meta": {
+    "doc_id": "lld-deployment-orchestrator-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "部署编排器",
+    "title": "部署编排器详细设计",
+    "author": "design_agent",
+    "created": "2025-03-27T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-004"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-004"
+      ],
+      "contracts": [
+        "CTR-010"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "接收部署请求并校验项目、环境绑定、本地文件",
+      "生成部署标识并持久化部署记录",
+      "提交异步部署任务到 Celery",
+      "在 Celery Worker 中执行 SSH 远程部署步骤（解密私钥、建立连接、创建目录、上传文件、生成脚本）",
+      "按步骤更新部署进度并通过进度通知器推送",
+      "部署失败时标记部署记录为失败并记录错误信息"
+    ],
+    "out_of_scope": [
+      "前端实时进度展示（由前端模块负责）",
+      "项目 CRUD 管理（由项目管理服务负责）",
+      "环境配置与私钥加密存储（由环境管理服务负责）",
+      "连通性测试（由连通性测试服务负责）",
+      "部署历史与日志存储查询（由部署历史与日志服务负责）",
+      "SSE 推送通道的建立和维护（由进度通知器负责）"
+    ],
+    "owned_components": [
+      "CMP-004"
+    ],
+    "owned_contracts": [
+      "CTR-010"
+    ],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": [
+      "DM-001",
+      "DM-002",
+      "DM-003",
+      "DM-004"
+    ]
+  },
+  "overview": {
+    "description": "部署编排器是一键部署流程的枢纽服务，负责接收部署请求，校验本地文件、项目存在性及环境绑定，生成唯一部署标识并提交到 Celery 异步任务队列；在 Worker 中通过 Paramiko 执行 SSH 远程部署步骤并实时更新进度。",
+    "dependencies": [
+      "项目管理服务",
+      "环境管理服务",
+      "进度通知器",
+      "Celery + Redis",
+      "PostgreSQL"
+    ],
+    "tech_stack": [
+      "Python 3.11+",
+      "FastAPI",
+      "Celery (Redis broker)",
+      "Paramiko",
+      "cryptography (AES-256-GCM)"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-004",
+      "sad_component_ids": [
+        "CMP-004"
+      ],
+      "sad_contract_ids": [
+        "CTR-010"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002",
+          "DM-003",
+          "DM-004"
+        ],
+        "interfaces": [
+          "IF-001"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005"
+        ],
+        "service_contracts": [
+          "SC-001",
+          "SC-002"
+        ]
+      },
+      "coverage": "full",
+      "notes": "覆盖了触发部署的完整同步流程和异步执行流程"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "projects",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "projects"
+      },
+      "description": "项目主表，仅读取以验证项目存在",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "name",
+          "type": "String",
+          "required": true,
+          "description": "项目名称"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "required": false,
+          "description": "项目状态"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "CTR-010"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "",
+        "update": "",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "environments",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "environments"
+      },
+      "description": "环境配置表，用于获取 SSH 连接信息和加密私钥",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "name",
+          "type": "String",
+          "required": true,
+          "description": "环境名称"
+        },
+        {
+          "name": "host",
+          "type": "String",
+          "required": true,
+          "description": "SSH 主机地址"
+        },
+        {
+          "name": "port",
+          "type": "Integer",
+          "required": true,
+          "description": "SSH 端口"
+        },
+        {
+          "name": "username",
+          "type": "String",
+          "required": true,
+          "description": "SSH 用户名"
+        },
+        {
+          "name": "encrypted_private_key",
+          "type": "Text",
+          "required": true,
+          "description": "加密后的私钥"
+        },
+        {
+          "name": "encryption_iv",
+          "type": "String",
+          "required": true,
+          "description": "加密初始向量"
+        },
+        {
+          "name": "encryption_tag",
+          "type": "String",
+          "required": true,
+          "description": "加密认证标签"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "CTR-010"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "",
+        "update": "",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-003",
+      "name": "project_environments",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "project_environments"
+      },
+      "description": "项目与环境绑定关系表，验证项目是否绑定到指定环境",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "project_id",
+          "type": "Integer",
+          "required": true,
+          "description": "项目 ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "Integer",
+          "required": true,
+          "description": "环境 ID"
+        },
+        {
+          "name": "project_path",
+          "type": "String",
+          "required": true,
+          "description": "项目部署路径"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "CTR-010"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "",
+        "update": "",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-004",
+      "name": "deployment_tasks",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "source": {
+        "doc_id": "",
+        "model_name": ""
+      },
+      "description": "部署任务主表，记录每次部署的完整信息与状态",
+      "fields": [
+        {
+          "name": "id",
+          "type": "String",
+          "required": true,
+          "description": "UUID 主键"
+        },
+        {
+          "name": "project_id",
+          "type": "Integer",
+          "required": true,
+          "description": "项目 ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "Integer",
+          "required": true,
+          "description": "环境 ID"
+        },
+        {
+          "name": "project_env_id",
+          "type": "Integer",
+          "required": true,
+          "description": "项目环境绑定 ID"
+        },
+        {
+          "name": "deployment_id",
+          "type": "String",
+          "required": true,
+          "description": "生成的唯一部署标识"
+        },
+        {
+          "name": "archive_url",
+          "type": "String",
+          "required": true,
+          "description": "上传后的压缩包路径或 URL"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "required": true,
+          "description": "部署状态：pending, in_progress, success, failed"
+        },
+        {
+          "name": "current_step",
+          "type": "String",
+          "required": false,
+          "description": "当前执行步骤"
+        },
+        {
+          "name": "progress_percentage",
+          "type": "Integer",
+          "required": false,
+          "description": "进度百分比"
+        },
+        {
+          "name": "error_message",
+          "type": "Text",
+          "required": false,
+          "description": "失败时的错误信息"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_deployment_tasks_deployment_id",
+          "columns": [
+            "deployment_id"
+          ],
+          "unique": true
+        },
+        {
+          "name": "idx_deployment_tasks_status",
+          "columns": [
+            "status"
+          ],
+          "unique": false
+        }
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "CTR-010"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "部署任务开始时创建",
+        "update": "部署过程中更新状态和进度",
+        "delete": "不删除",
+        "retention": "永久保留"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategies": [
+      {
+        "scope": "同步 API",
+        "error_type": "ValidationError",
+        "handling": "返回 422 Unprocessable Entity，附带详细错误信息",
+        "recovery": "无"
+      },
+      {
+        "scope": "同步 API",
+        "error_type": "ProjectNotFoundError",
+        "handling": "返回 404 Not Found，附带错误信息",
+        "recovery": "无"
+      },
+      {
+        "scope": "异步任务",
+        "error_type": "SSHConnectionError",
+        "handling": "更新部署任务状态为 failed，记录错误信息，发送进度通知",
+        "recovery": "人工介入检查网络/认证"
+      },
+      {
+        "scope": "异步任务",
+        "error_type": "PrivateKeyDecryptionError",
+        "handling": "更新部署任务状态为 failed，记录错误信息，发送进度通知",
+        "recovery": "检查加密密钥或重新配置环境私钥"
+      },
+      {
+        "scope": "异步任务",
+        "error_type": "GeneralException",
+        "handling": "捕获异常，更新部署任务状态为 failed，记录堆栈信息，发送进度通知",
+        "recovery": "人工排查日志"
+      }
+    ],
+    "fallback": "所有未捕获异常由 Celery 任务最外层捕获，确保任务不会无限重试"
+  },
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "DeployOrchestrator",
+      "object_type": "service",
+      "description": "部署同步入口，负责校验请求并提交异步任务",
+      "attributes": [
+        {
+          "name": "project_service_client",
+          "type": "ApiClient",
+          "required": true,
+          "description": "项目管理服务客户端"
+        },
+        {
+          "name": "environment_service_client",
+          "type": "ApiClient",
+          "required": true,
+          "description": "环境管理服务客户端"
+        },
+        {
+          "name": "file_storage",
+          "type": "FileStorage",
+          "required": true,
+          "description": "本地文件存储服务"
+        },
+        {
+          "name": "celery_app",
+          "type": "Celery",
+          "required": true,
+          "description": "Celery 实例，用于提交任务"
+        },
+        {
+          "name": "db_session",
+          "type": "Session",
+          "required": true,
+          "description": "数据库会话"
+        },
+        {
+          "name": "encryption_key",
+          "type": "bytes",
+          "required": true,
+          "description": "用于解密私钥的对称密钥"
+        },
+        {
+          "name": "progress_notifier",
+          "type": "ProgressNotifier",
+          "required": true,
+          "description": "进度通知器"
+        },
+        {
+          "name": "logger",
+          "type": "Logger",
+          "required": true,
+          "description": "日志记录器"
+        }
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "CTR-010"
+      ],
+      "methods": [
+        {
+          "name": "handle_deploy_request",
+          "description": "处理同步部署请求，校验参数、项目存在、环境绑定及文件，生成部署标识并提交异步任务，返回部署 ID",
+          "parameters": [
+            {
+              "name": "request",
+              "type": "DeployRequest",
+              "required": true,
+              "description": "部署请求体"
+            }
+          ],
+          "return": {
+            "type": "DeployResponse",
+            "required": true,
+            "description": "包含 deployment_id 的响应"
+          },
+          "errors": [
+            "ValidationError",
+            "ProjectNotFoundError",
+            "EnvironmentNotFoundError"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "SSHDeployWorker",
+      "object_type": "service",
+      "description": "Celery Worker 中执行的部署任务，包含 SSH 连接、文件上传和部署步骤",
+      "attributes": [
+        {
+          "name": "encryption_key",
+          "type": "bytes",
+          "required": true,
+          "description": "用于解密私钥的对称密钥"
+        },
+        {
+          "name": "progress_notifier",
+          "type": "ProgressNotifier",
+          "required": true,
+          "description": "进度通知器"
+        },
+        {
+          "name": "logger",
+          "type": "Logger",
+          "required": true,
+          "description": "日志记录器"
+        }
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "CTR-010"
+      ],
+      "methods": [
+        {
+          "name": "execute_deployment",
+          "description": "执行完整的部署流程：解密私钥、建立 SSH 连接、上传文件、执行部署脚本",
+          "parameters": [
+            {
+              "name": "task_id",
+              "type": "str",
+              "required": true,
+              "description": "部署任务 ID"
+            }
+          ],
+          "return": {
+            "type": "None",
+            "required": false,
+            "description": "无返回值，通过进度通知更新状态"
+          },
+          "errors": [
+            "PrivateKeyDecryptionError",
+            "SSHConnectionError",
+            "FileUploadError",
+            "ScriptExecutionError"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "PrivateKeyDecryptor",
+      "object_type": "util",
+      "description": "用于解密环境配置中加密存储的 SSH 私钥",
+      "attributes": [
+        {
+          "name": "encryption_key",
+          "type": "bytes",
+          "required": true,
+          "description": "对称解密密钥"
+        }
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "CTR-010"
+      ],
+      "methods": [
+        {
+          "name": "decrypt_private_key",
+          "description": "解密私钥",
+          "parameters": [
+            {
+              "name": "encrypted_key",
+              "type": "str",
+              "required": true,
+              "description": "加密后的私钥"
+            },
+            {
+              "name": "iv",
+              "type": "str",
+              "required": true,
+              "description": "初始向量"
+            },
+            {
+              "name": "tag",
+              "type": "str",
+              "required": true,
+              "description": "认证标签"
+            }
+          ],
+          "return": {
+            "type": "str",
+            "required": true,
+            "description": "解密后的私钥字符串"
+          },
+          "errors": [
+            "PrivateKeyDecryptionError"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "FileArchiver",
+      "object_type": "util",
+      "description": "负责将上传的项目文件压缩打包并存储到指定位置",
+      "attributes": [
+        {
+          "name": "upload_dir",
+          "type": "str",
+          "required": true,
+          "description": "上传文件临时目录"
+        },
+        {
+          "name": "archive_dir",
+          "type": "str",
+          "required": true,
+          "description": "归档文件存储目录"
+        }
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "CTR-010"
+      ],
+      "methods": [
+        {
+          "name": "archive_files",
+          "description": "将源文件压缩为 .tar.gz",
+          "parameters": [
+            {
+              "name": "file_paths",
+              "type": "List[str]",
+              "required": true,
+              "description": "要打包的文件路径列表"
+            }
+          ],
+          "return": {
+            "type": "str",
+            "required": true,
+            "description": "生成的归档文件路径"
+          },
+          "errors": [
+            "FileArchiveError"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "DO-005",
+      "name": "ProgressReporter",
+      "object_type": "service",
+      "description": "负责更新部署任务进度并通知进度通知器",
+      "attributes": [
+        {
+          "name": "db_session",
+          "type": "Session",
+          "required": true,
+          "description": "数据库会话"
+        },
+        {
+          "name": "progress_notifier",
+          "type": "ProgressNotifier",
+          "required": true,
+          "description": "进度通知器"
+        }
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "CTR-010"
+      ],
+      "methods": [
+        {
+          "name": "report_progress",
+          "description": "更新部署任务的当前步骤、进度百分比，并推送通知",
+          "parameters": [
+            {
+              "name": "task_id",
+              "type": "str",
+              "required": true,
+              "description": "部署任务 ID"
+            },
+            {
+              "name": "step",
+              "type": "str",
+              "required": true,
+              "description": "当前步骤名称"
+            },
+            {
+              "name": "percentage",
+              "type": "int",
+              "required": true,
+              "description": "进度百分比"
+            }
+          ],
+          "return": {
+            "type": "None",
+            "required": false,
+            "description": "无返回值"
+          },
+          "errors": []
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "部署编排器同步 API",
+      "description": "触发一键部署的同步 HTTP API",
+      "endpoint": "/api/v1/deployments/",
+      "method": "POST",
+      "request": {
+        "body": {
+          "content_type": "multipart/form-data",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "project_id": {
+                "type": "integer",
+                "description": "项目 ID"
+              },
+              "environment_id": {
+                "type": "integer",
+                "description": "环境 ID"
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "binary"
+                },
+                "description": "上传的项目文件列表"
+              }
+            },
+            "required": [
+              "project_id",
+              "environment_id",
+              "files"
+            ]
+          }
+        }
+      },
+      "response": {
+        "200": {
+          "description": "成功提交部署任务",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "deployment_id": {
+                    "type": "string",
+                    "description": "生成的部署标识"
+                  },
+                  "message": {
+                    "type": "string",
+                    "description": "提示信息"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "请求参数校验失败",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "detail": {
+                    "type": "array"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "404": {
+          "description": "项目或环境不存在",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "detail": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "CTR-010"
+      ],
+      "errors": [
+        "ProjectNotFoundError",
+        "EnvironmentNotFoundError"
+      ],
+      "authentication": "需要认证（具体机制未定，通常为 JWT）",
+      "rate_limit": "100 次/分钟",
+      "dependencies": [
+        "项目管理服务",
+        "环境管理服务"
+      ]
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "description": "部署请求必须包含至少一个文件",
+      "type": "invariant"
+    },
+    {
+      "id": "BR-002",
+      "description": "项目 ID 对应的项目必须存在",
+      "type": "invariant"
+    },
+    {
+      "id": "BR-003",
+      "description": "环境 ID 对应的环境必须存在，且与项目有绑定关系",
+      "type": "invariant"
+    },
+    {
+      "id": "BR-004",
+      "description": "部署标识全局唯一，格式为 DEP-YYYYMMDD-XXXXXX",
+      "type": "invariant"
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "DeploymentService",
+      "description": "部署编排器对外提供的同步 HTTP API 契约",
+      "methods": [
+        {
+          "name": "post_deployments",
+          "spec": "POST /api/v1/deployments/",
+          "input": {
+            "project_id": "integer",
+            "environment_id": "integer",
+            "files": "array of binary"
+          },
+          "output": {
+            "deployment_id": "string",
+            "message": "string"
+          },
+          "errors": [
+            "422 ValidationError",
+            "404 Not Found"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "CTR-010"
+      ],
+      "dependencies": [
+        "项目管理服务",
+        "环境管理服务"
+      ]
+    },
+    {
+      "id": "SC-002",
+      "name": "deployment_task",
+      "description": "Celery 异步任务契约",
+      "methods": [
+        {
+          "name": "run_deployment_task",
+          "spec": "celery_task[deployment.deploy]",
+          "input": {
+            "task_id": "string"
+          },
+          "output": {
+            "void": "null"
+          },
+          "errors": [
+            "部署异常时任务状态标记为 FAILURE"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "CTR-010"
+      ],
+      "dependencies": [
+        "Celery Worker"
+      ]
+    }
+  ]
+}
