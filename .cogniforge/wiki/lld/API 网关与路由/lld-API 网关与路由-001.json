@@ -1,0 +1,538 @@
+{
+  "meta": {
+    "doc_id": "lld-gateway-001",
+    "type": "lld",
+    "module_type": "gateway",
+    "module": "API 网关与路由",
+    "title": "API 网关与路由详细设计",
+    "author": "design_agent",
+    "created": "2025-04-11T10:30:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-001"
+      ],
+      "contracts": [],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "启动和维护 Express HTTP 服务",
+      "注册下游业务微服务路由",
+      "身份认证（JWT）",
+      "角色鉴权",
+      "速率限制",
+      "输入校验",
+      "CORS 处理",
+      "统一响应格式与错误处理",
+      "请求日志记录",
+      "健康检查接口",
+      "用户登录接口",
+      "管理路由表查看接口"
+    ],
+    "out_of_scope": [
+      "具体业务逻辑实现",
+      "数据库连接与模型定义（仅维护网关自身配置）",
+      "UI 交互",
+      "远程连接管理"
+    ],
+    "owned_components": [
+      "CMP-001"
+    ],
+    "owned_contracts": [
+      "CTR-101",
+      "CTR-102",
+      "CTR-103"
+    ],
+    "consumed_contracts": [
+      "CTR-201",
+      "CTR-202",
+      "CTR-203",
+      "CTR-204",
+      "CTR-205"
+    ],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "Express 应用主入口，负责路由管理、请求参数校验、统一错误处理，并将请求转发至对应的业务服务模块。",
+    "dependencies": [
+      "项目管理服务",
+      "环境管理服务",
+      "部署执行器",
+      "脚本引擎",
+      "历史与日志服务"
+    ],
+    "tech_stack": [
+      "TypeScript",
+      "Node.js",
+      "Express",
+      "jsonwebtoken",
+      "express-rate-limit",
+      "winston",
+      "cors",
+      "Joi"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003"
+        ],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": "网关应具备统一入口、认证、路由转发能力"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "GatewayConfig",
+      "type": "config",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "网关自身配置模型，包含动态路由表、认证策略、限流规则等。以 JSON 文件或环境变量形式持久化。",
+      "fields": [
+        {
+          "name": "routes",
+          "type": "array",
+          "required": true,
+          "description": "路由映射数组，每项包含 pathPattern、upstream、description、needAuth、roles 等子字段"
+        },
+        {
+          "name": "authPolicy",
+          "type": "object",
+          "required": true,
+          "description": "认证策略对象，包含 publicEndpoints、jwtSecret 引用、tokenExpiry 等"
+        },
+        {
+          "name": "rateLimiting",
+          "type": "object",
+          "required": true,
+          "description": "限流配置对象，包含 global、perUser、specialEndpoints 等"
+        },
+        {
+          "name": "cors",
+          "type": "object",
+          "required": true,
+          "description": "CORS 配置对象，包含 allowedOrigins"
+        },
+        {
+          "name": "server",
+          "type": "object",
+          "required": true,
+          "description": "服务器配置对象，包含 port、host"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [],
+      "constraints": [
+        "routes 字段必须包含至少一个路由映射",
+        "publicEndpoints 必须包含 /api/health 和 /api/login",
+        "限流规则必须满足非负整数要求"
+      ],
+      "lifecycle": {
+        "create": "服务启动时从配置文件或环境变量加载",
+        "update": "更新配置文件并重启服务",
+        "delete": "停止服务时配置失效",
+        "retention": "与配置文件生命周期一致，持久化存储"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "Health Check",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-101",
+      "provider_component_id": "CMP-001",
+      "method": "GET",
+      "endpoint": "/api/health",
+      "description": "返回网关运行状态及基本统计信息，用于监控。",
+      "parameters": [],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "status": "string",
+          "uptime": "number",
+          "timestamp": "string"
+        }
+      },
+      "error_codes": [],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "Login",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-102",
+      "provider_component_id": "CMP-001",
+      "method": "POST",
+      "endpoint": "/api/login",
+      "description": "验证用户凭据，返回 JWT token。",
+      "parameters": [],
+      "request_body": {
+        "username": "string",
+        "password": "string"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "code": "number",
+          "token": "string",
+          "expires_in": "number"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "INVALID_CREDENTIALS",
+          "message": "用户名或密码错误"
+        },
+        {
+          "status": 429,
+          "code": "RATE_LIMITED",
+          "message": "尝试次数过多，请稍后再试"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [
+        "username 非空",
+        "password 非空且长度不小于6"
+      ],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-003",
+      "name": "Route Table Viewer",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-103",
+      "provider_component_id": "CMP-001",
+      "method": "GET",
+      "endpoint": "/api/routes",
+      "description": "查看当前注册的路由表（仅管理员可访问）。",
+      "parameters": [],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "routes": "array"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 403,
+          "code": "FORBIDDEN",
+          "message": "权限不足"
+        }
+      ],
+      "auth": {
+        "required": true,
+        "policy": "admin"
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "route_table": {
+    "source": "GatewayConfig.routes",
+    "entries": [
+      {
+        "path_pattern": "/api/health",
+        "methods": ["GET"],
+        "upstream": "internal",
+        "description": "健康检查",
+        "need_auth": false,
+        "roles": []
+      },
+      {
+        "path_pattern": "/api/login",
+        "methods": ["POST"],
+        "upstream": "internal",
+        "description": "用户登录",
+        "need_auth": false,
+        "roles": []
+      },
+      {
+        "path_pattern": "/api/routes",
+        "methods": ["GET"],
+        "upstream": "internal",
+        "description": "路由表查看",
+        "need_auth": true,
+        "roles": ["admin"]
+      },
+      {
+        "path_pattern": "/api/projects/*",
+        "methods": ["GET", "POST", "PUT", "DELETE"],
+        "upstream": "http://localhost:3001",
+        "description": "项目管理服务",
+        "need_auth": true,
+        "roles": ["admin", "developer"]
+      },
+      {
+        "path_pattern": "/api/environments/*",
+        "methods": ["GET", "POST", "PUT", "DELETE"],
+        "upstream": "http://localhost:3002",
+        "description": "环境管理服务",
+        "need_auth": true,
+        "roles": ["admin", "developer"]
+      },
+      {
+        "path_pattern": "/api/deployments/*",
+        "methods": ["GET", "POST", "PUT"],
+        "upstream": "http://localhost:3003",
+        "description": "部署执行服务",
+        "need_auth": true,
+        "roles": ["admin", "developer", "operator"]
+      },
+      {
+        "path_pattern": "/api/scripts/*",
+        "methods": ["GET", "POST", "PUT", "DELETE"],
+        "upstream": "http://localhost:3004",
+        "description": "脚本引擎服务",
+        "need_auth": true,
+        "roles": ["admin", "developer"]
+      },
+      {
+        "path_pattern": "/api/logs/*",
+        "methods": ["GET"],
+        "upstream": "http://localhost:3005",
+        "description": "历史与日志服务",
+        "need_auth": true,
+        "roles": ["admin", "viewer"]
+      }
+    ]
+  },
+  "middleware_chain": {
+    "order": [
+      "request_logger",
+      "cors_handler",
+      "rate_limiter",
+      "json_body_parser",
+      "auth_handler",
+      "role_authorization",
+      "input_validation",
+      "proxy_handler",
+      "error_handler"
+    ],
+    "middlewares": [
+      {
+        "name": "request_logger",
+        "type": "custom",
+        "description": "记录每个请求的方法、URL、响应时间等",
+        "config": {}
+      },
+      {
+        "name": "cors_handler",
+        "type": "library:cors",
+        "config": {
+          "origin": "from GatewayConfig.cors.allowedOrigins"
+        }
+      },
+      {
+        "name": "rate_limiter",
+        "type": "library:express-rate-limit",
+        "config": {
+          "windowMs": 900000,
+          "max": 100
+        }
+      },
+      {
+        "name": "json_body_parser",
+        "type": "library:express.json",
+        "config": {}
+      },
+      {
+        "name": "auth_handler",
+        "type": "custom",
+        "description": "验证 JWT token，将用户信息附加到请求对象",
+        "config": {
+          "secret": "from GatewayConfig.authPolicy.jwtSecret"
+        }
+      },
+      {
+        "name": "role_authorization",
+        "type": "custom",
+        "description": "根据路由所需的角色和用户角色进行授权",
+        "config": {
+          "role_path_map": {
+            "/api/admin": ["admin"],
+            "/api/projects": ["admin", "developer"],
+            "/api/environments": ["admin", "developer"],
+            "/api/deployments": ["admin", "developer", "operator"],
+            "/api/scripts": ["admin", "developer"],
+            "/api/logs": ["admin", "viewer"]
+          }
+        }
+      },
+      {
+        "name": "input_validation",
+        "type": "custom",
+        "description": "使用 Joi 对请求参数进行校验",
+        "config": {}
+      },
+      {
+        "name": "proxy_handler",
+        "type": "custom",
+        "description": "根据路由表将请求转发到上游服务",
+        "config": {
+          "timeout": 5000
+        }
+      },
+      {
+        "name": "error_handler",
+        "type": "custom",
+        "description": "统一错误处理，返回标准格式错误响应",
+        "config": {}
+      }
+    ]
+  },
+  "auth_policy": {
+    "provider": "jwt",
+    "token_location": "header:Authorization:Bearer",
+    "secret_source": "env:JWT_SECRET",
+    "token_expiry": "24h",
+    "public_endpoints": [
+      "/api/health",
+      "/api/login"
+    ],
+    "role_path_map": {
+      "/api/admin": ["admin"],
+      "/api/projects": ["admin", "developer"],
+      "/api/environments": ["admin", "developer"],
+      "/api/deployments": ["admin", "developer", "operator"],
+      "/api/scripts": ["admin", "developer"],
+      "/api/logs": ["admin", "viewer"]
+    }
+  },
+  "rate_limiting": {
+    "global": {
+      "windowMs": 900000,
+      "max": 100,
+      "message": "Too many requests, please try again later."
+    },
+    "per_user": {
+      "windowMs": 900000,
+      "max": 200,
+      "key_generator": "req.user ? req.user.id : req.ip"
+    },
+    "special_endpoints": {
+      "/api/login": {
+        "windowMs": 900000,
+        "max": 5
+      }
+    }
+  },
+  "error_handling": {
+    "strategy": "centralized",
+    "custom_error_classes": [
+      "AppError",
+      "ValidationError",
+      "AuthenticationError",
+      "AuthorizationError",
+      "RateLimitError"
+    ],
+    "response_format": {
+      "success": false,
+      "code": "string",
+      "message": "string",
+      "details": "any"
+    },
+    "logging": {
+      "level": "error",
+      "include_stack": true,
+      "destination": "winston"
+    }
+  }
+}
