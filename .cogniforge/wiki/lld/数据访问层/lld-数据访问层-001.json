@@ -1,0 +1,842 @@
+{
+  "meta": {
+    "doc_id": "lld-data-access-layer-001",
+    "type": "lld",
+    "module_type": "infrastructure",
+    "module": "数据访问层",
+    "title": "数据访问层详细设计",
+    "author": "design_agent",
+    "created": "2025-04-11T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-001"
+      ],
+      "contracts": [
+        "CTR-001"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "管理SQLite数据库连接的生命周期（打开、关闭、健康检查）",
+      "执行数据库模式（schema）的版本化迁移",
+      "封装所有SQL执行操作（查询、插入、更新、删除）并转为Promise接口",
+      "向上层服务提供针对核心业务实体（项目、环境、部署历史、模板）的类型化CRUD方法"
+    ],
+    "out_of_scope": [
+      "业务校验逻辑（例如项目名称是否重复）由调用方服务负责",
+      "具体业务流的编排（如部署执行流程）不属于本层",
+      "跨进程通信（HTTP API、MQ）的暴露，本层仅作为内部Node.js模块被函数调用"
+    ],
+    "owned_components": [
+      "CMP-001"
+    ],
+    "owned_contracts": [],
+    "consumed_contracts": [],
+    "owned_data_models": [
+      "DM-001"
+    ],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "封装 SQLite 数据库操作，提供异步的 DAO 接口，负责表结构初始化及项目、环境、历史、模板等数据的持久化。",
+    "dependencies": [],
+    "tech_stack": [
+      "Node.js",
+      "TypeScript",
+      "better-sqlite3",
+      "winston"
+    ]
+  },
+  "topology": {
+    "exchanges": [],
+    "namespaces": [
+      {
+        "name": "sqlite-db",
+        "type": "database",
+        "description": "用于持久化所有业务数据的SQLite数据库文件",
+        "buckets": [
+          {
+            "name": "projects",
+            "type": "table",
+            "description": "存储项目信息"
+          },
+          {
+            "name": "environments",
+            "type": "table",
+            "description": "存储环境信息"
+          },
+          {
+            "name": "deployment_histories",
+            "type": "table",
+            "description": "存储部署历史记录"
+          },
+          {
+            "name": "templates",
+            "type": "table",
+            "description": "存储模板信息"
+          },
+          {
+            "name": "schema_versions",
+            "type": "table",
+            "description": "存储已应用的数据库迁移版本"
+          }
+        ]
+      }
+    ],
+    "buckets": []
+  },
+  "business_rules": {
+    "invariants": [
+      "数据库连接始终为打开状态，除非显式调用close()",
+      "所有写操作必须在事务内执行，保证原子性",
+      "数据迁移必须按版本顺序执行，且不可跳过",
+      "已成功的迁移版本不可回滚"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [
+        "CTR-001"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003",
+          "IF-004",
+          "IF-005",
+          "IF-006",
+          "IF-007",
+          "IF-008",
+          "IF-009",
+          "IF-010",
+          "IF-011",
+          "IF-012",
+          "IF-013",
+          "IF-014"
+        ],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": "数据访问层封装了所有与SQLite的交互，通过INTERNAL接口向上层服务提供所需数据的CRUD操作，覆盖REQ-001的所有数据持久化需求。"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "schema_versions",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "记录已应用的数据库迁移脚本，确保幂等初始化。仅供本模块内部使用。",
+      "fields": [
+        {
+          "name": "version",
+          "type": "INTEGER",
+          "required": true,
+          "description": "迁移版本号（主键）"
+        },
+        {
+          "name": "name",
+          "type": "TEXT",
+          "required": true,
+          "description": "迁移脚本描述性名称"
+        },
+        {
+          "name": "applied_at",
+          "type": "TEXT",
+          "required": true,
+          "description": "应用时间戳（ISO8601格式）"
+        },
+        {
+          "name": "checksum",
+          "type": "TEXT",
+          "required": false,
+          "description": "脚本内容的哈希值，用于检测更改"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "pk_version",
+          "unique": true,
+          "columns": [
+            "version"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [
+        "version字段为主键，必须唯一",
+        "applied_at字段不能为空"
+      ],
+      "lifecycle": {
+        "create": "在执行数据库初始化时由迁移流程创建（如果表不存在）",
+        "update": "每次执行新的迁移脚本时插入一行记录",
+        "delete": "通常不删除记录，但可通过特定重置流程清空",
+        "retention": "永久保留，用于审计迁移历史"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "initialize",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "DataAccessLayer.initialize()",
+      "description": "打开数据库连接，启用WAL模式，执行待迁移脚本，返回就绪信号。",
+      "parameters": [
+        {
+          "name": "dbPath",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "SQLite数据库文件路径"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "message": "string"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 500,
+          "code": "DB_CONNECTION_FAILED",
+          "message": "无法打开数据库文件"
+        },
+        {
+          "status": 500,
+          "code": "MIGRATION_FAILED",
+          "message": "数据库迁移脚本执行失败"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [
+        "dbPath必须为非空字符串，指向有效的文件系统路径"
+      ],
+      "idempotency": "idempotent",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "close",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "DataAccessLayer.close()",
+      "description": "安全关闭数据库连接。",
+      "parameters": [],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 500,
+          "code": "DB_CLOSE_FAILED",
+          "message": "关闭数据库连接时发生错误"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "idempotent",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-003",
+      "name": "listProjects",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "DataAccessLayer.listProjects()",
+      "description": "查询所有项目，返回项目列表。",
+      "parameters": [],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "projects": "array"
+        }
+      },
+      "error_codes": [],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "idempotent",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-004",
+      "name": "getProject",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "DataAccessLayer.getProject()",
+      "description": "根据ID获取单个项目。",
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "项目ID"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "project": "object|null"
+        }
+      },
+      "error_codes": [],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "idempotent",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-005",
+      "name": "createProject",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "DataAccessLayer.createProject()",
+      "description": "创建新项目。",
+      "parameters": [],
+      "request_body": {
+        "project": "object"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "project": "object"
+        }
+      },
+      "error_codes": [],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_idempotent",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-006",
+      "name": "updateProject",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "DataAccessLayer.updateProject()",
+      "description": "更新现有项目。",
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "项目ID"
+        }
+      ],
+      "request_body": {
+        "project": "object"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "project": "object"
+        }
+      },
+      "error_codes": [],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "idempotent",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-007",
+      "name": "deleteProject",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "DataAccessLayer.deleteProject()",
+      "description": "删除项目。",
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "项目ID"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "idempotent",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-008",
+      "name": "listEnvironments",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "DataAccessLayer.listEnvironments()",
+      "description": "查询所有环境。",
+      "parameters": [],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "environments": "array"
+        }
+      },
+      "error_codes": [],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "idempotent",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-009",
+      "name": "getEnvironment",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "DataAccessLayer.getEnvironment()",
+      "description": "根据ID获取单个环境。",
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "环境ID"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "environment": "object|null"
+        }
+      },
+      "error_codes": [],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "idempotent",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-010",
+      "name": "createEnvironment",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "DataAccessLayer.createEnvironment()",
+      "description": "创建新环境。",
+      "parameters": [],
+      "request_body": {
+        "environment": "object"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "environment": "object"
+        }
+      },
+      "error_codes": [],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_idempotent",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-011",
+      "name": "updateEnvironment",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "DataAccessLayer.updateEnvironment()",
+      "description": "更新现有环境。",
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "环境ID"
+        }
+      ],
+      "request_body": {
+        "environment": "object"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "environment": "object"
+        }
+      },
+      "error_codes": [],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "idempotent",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-012",
+      "name": "deleteEnvironment",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "DataAccessLayer.deleteEnvironment()",
+      "description": "删除环境。",
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "in": "body",
+          "required": true,
+          "description": "环境ID"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean"
+        }
+      },
+      "error_codes": [],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "idempotent",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-013",
+      "name": "listDeploymentHistories",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "DataAccessLayer.listDeploymentHistories()",
+      "description": "查询所有部署历史记录。",
+      "parameters": [],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "histories": "array"
+        }
+      },
+      "error_codes": [],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "idempotent",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-014",
+      "name": "addDeploymentHistory",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "DataAccessLayer.addDeploymentHistory()",
+      "description": "添加一条部署历史记录。",
+      "parameters": [],
+      "request_body": {
+        "history": "object"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "history": "object"
+        }
+      },
+      "error_codes": [],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_idempotent",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ]
+}
