@@ -1,0 +1,1010 @@
+{
+  "meta": {
+    "doc_id": "lld-Key Management Service-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "密钥管理服务",
+    "title": "密钥管理服务详细设计",
+    "author": "design_agent",
+    "created": "2025-03-19T14:30:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-002"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-005"
+      ],
+      "contracts": [
+        "CTR-003"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "接收并验证SSH私钥格式，提取指纹，调用密钥安全模块加密后存储",
+      "生成新的SSH密钥对，加密私钥并存储",
+      "提供密钥列表及详情查询，响应不含私钥明文",
+      "允许更新密钥名称和默认标记，保证全局最多一个默认密钥",
+      "删除密钥前检查是否被任何环境引用，有引用则拒绝删除"
+    ],
+    "out_of_scope": [
+      "私钥加密算法实现与密钥生命周期管理（由密钥安全模块提供）",
+      "环境与密钥关联关系存储（由环境管理服务负责）",
+      "部署时使用私钥建立SSH连接（由部署引擎协调）",
+      "前端界面展示逻辑（由桌面客户端负责）"
+    ],
+    "owned_components": [
+      "CMP-005"
+    ],
+    "owned_contracts": [
+      "CTR-003"
+    ],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": [
+      "DM-001",
+      "DM-002"
+    ]
+  },
+  "overview": {
+    "description": "密钥管理服务负责私钥导入、生成、指纹提取、默认标记及删除前引用检查，并依赖密钥安全模块进行加解密。提供REST API供桌面客户端使用。",
+    "dependencies": [
+      "密钥安全模块 (CMP-010)",
+      "环境管理服务 (CMP-004) - 仅数据引用检查"
+    ],
+    "tech_stack": [
+      "Python 3.11+",
+      "FastAPI",
+      "SQLite (via SQLAlchemy)",
+      "Paramiko",
+      "cryptography 库 (通过密钥安全模块间接使用)"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-002",
+      "sad_component_ids": [
+        "CMP-005"
+      ],
+      "sad_contract_ids": [
+        "CTR-003"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003",
+          "IF-004",
+          "IF-005"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "keys",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "keys"
+      },
+      "description": "存储SSH密钥对的元数据与加密后的私钥。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键，自增"
+        },
+        {
+          "name": "name",
+          "type": "String(128)",
+          "required": true,
+          "description": "密钥别名"
+        },
+        {
+          "name": "fingerprint",
+          "type": "String(64)",
+          "required": true,
+          "description": "SSH公钥指纹，例如 SHA256:..."
+        },
+        {
+          "name": "encrypted_private_key",
+          "type": "Text",
+          "required": true,
+          "description": "经密钥安全模块加密后的私钥密文"
+        },
+        {
+          "name": "is_default",
+          "type": "Boolean",
+          "required": true,
+          "description": "是否为默认密钥，全局最多一条记录为True"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "创建时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_keys_fingerprint",
+          "unique": true,
+          "columns": [
+            "fingerprint"
+          ]
+        },
+        {
+          "name": "idx_keys_is_default",
+          "unique": false,
+          "columns": [
+            "is_default"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [
+        "CTR-003"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "通过 POST /api/keys 或内部生成方法创建",
+        "update": "仅允许更新 name 和 is_default 字段",
+        "delete": "检查不被环境引用后物理删除",
+        "retention": "手动删除，无自动清理策略"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "environments",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "environments"
+      },
+      "description": "部署环境配置，仅部署密钥引用字段与本服务相关。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "deploy_key_id",
+          "type": "Integer",
+          "required": false,
+          "description": "外键，关联 keys.id，用于SSH认证"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [
+        "CTR-003"
+      ],
+      "constraints": [],
+      "lifecycle": {},
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "Key",
+      "description": "密钥实体，包含密钥元数据和加密后的私钥",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "description": "唯一标识"
+        },
+        {
+          "name": "name",
+          "type": "String",
+          "description": "密钥别名"
+        },
+        {
+          "name": "fingerprint",
+          "type": "String",
+          "description": "SSH公钥指纹"
+        },
+        {
+          "name": "encrypted_private_key",
+          "type": "String",
+          "description": "加密后的私钥"
+        },
+        {
+          "name": "is_default",
+          "type": "Boolean",
+          "description": "默认密钥标记"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "description": "创建时间"
+        }
+      ],
+      "methods": [
+        {
+          "name": "validate_private_key",
+          "description": "验证私钥格式并提取指纹",
+          "parameters": [
+            {
+              "name": "private_key_text",
+              "type": "String"
+            }
+          ],
+          "return": {
+            "type": "Boolean",
+            "description": "是否有效"
+          }
+        },
+        {
+          "name": "encrypt_private_key",
+          "description": "调用密钥安全模块加密私钥",
+          "parameters": [
+            {
+              "name": "plain_text",
+              "type": "String"
+            }
+          ],
+          "return": {
+            "type": "String",
+            "description": "加密后的密文"
+          }
+        }
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "KeyRepository",
+      "description": "密钥仓储，负责数据库操作",
+      "methods": [
+        {
+          "name": "save",
+          "description": "保存密钥实体到数据库",
+          "parameters": [
+            {
+              "name": "key",
+              "type": "Key"
+            }
+          ],
+          "return": {
+            "type": "Key",
+            "description": "保存后的密钥"
+          }
+        },
+        {
+          "name": "find_by_id",
+          "description": "按ID查找密钥",
+          "parameters": [
+            {
+              "name": "key_id",
+              "type": "Integer"
+            }
+          ],
+          "return": {
+            "type": "Key",
+            "nullable": true
+          }
+        },
+        {
+          "name": "find_all",
+          "description": "获取所有密钥列表",
+          "return": {
+            "type": "List<Key>"
+          }
+        },
+        {
+          "name": "update",
+          "description": "更新密钥名称和默认标记",
+          "parameters": [
+            {
+              "name": "key",
+              "type": "Key"
+            }
+          ]
+        },
+        {
+          "name": "delete",
+          "description": "删除密钥",
+          "parameters": [
+            {
+              "name": "key_id",
+              "type": "Integer"
+            }
+          ]
+        },
+        {
+          "name": "find_default",
+          "description": "查找当前默认密钥",
+          "return": {
+            "type": "Key",
+            "nullable": true
+          }
+        },
+        {
+          "name": "clear_default",
+          "description": "清除所有默认标记"
+        },
+        {
+          "name": "is_referenced_by_environment",
+          "description": "检查密钥是否被任何环境引用",
+          "parameters": [
+            {
+              "name": "key_id",
+              "type": "Integer"
+            }
+          ],
+          "return": {
+            "type": "Boolean"
+          }
+        }
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "KeyService",
+      "description": "密钥管理应用服务，处理业务逻辑",
+      "methods": [
+        {
+          "name": "import_key",
+          "description": "导入私钥并保存",
+          "parameters": [
+            {
+              "name": "name",
+              "type": "String"
+            },
+            {
+              "name": "private_key_text",
+              "type": "String"
+            },
+            {
+              "name": "is_default",
+              "type": "Boolean"
+            }
+          ],
+          "return": {
+            "type": "Key"
+          }
+        },
+        {
+          "name": "generate_key_pair",
+          "description": "生成新的SSH密钥对并保存",
+          "parameters": [
+            {
+              "name": "name",
+              "type": "String"
+            },
+            {
+              "name": "is_default",
+              "type": "Boolean"
+            }
+          ],
+          "return": {
+            "type": "Key"
+          }
+        },
+        {
+          "name": "list_keys",
+          "description": "获取所有密钥列表（不含私钥）",
+          "return": {
+            "type": "List<KeyDTO>"
+          }
+        },
+        {
+          "name": "get_key_detail",
+          "description": "获取密钥详情（不含私钥）",
+          "parameters": [
+            {
+              "name": "key_id",
+              "type": "Integer"
+            }
+          ],
+          "return": {
+            "type": "KeyDTO"
+          }
+        },
+        {
+          "name": "update_key",
+          "description": "更新密钥名称和默认标记",
+          "parameters": [
+            {
+              "name": "key_id",
+              "type": "Integer"
+            },
+            {
+              "name": "name",
+              "type": "String"
+            },
+            {
+              "name": "is_default",
+              "type": "Boolean"
+            }
+          ],
+          "return": {
+            "type": "KeyDTO"
+          }
+        },
+        {
+          "name": "delete_key",
+          "description": "删除密钥（检查引用）",
+          "parameters": [
+            {
+              "name": "key_id",
+              "type": "Integer"
+            }
+          ],
+          "return": {
+            "type": "void"
+          }
+        }
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "KeyDTO",
+      "description": "数据传输对象，不包含加密的私钥",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "Integer"
+        },
+        {
+          "name": "name",
+          "type": "String"
+        },
+        {
+          "name": "fingerprint",
+          "type": "String"
+        },
+        {
+          "name": "is_default",
+          "type": "Boolean"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime"
+        }
+      ]
+    },
+    {
+      "id": "DO-005",
+      "name": "CryptoProvider",
+      "description": "密钥安全模块的抽象接口（防腐层）",
+      "methods": [
+        {
+          "name": "encrypt",
+          "description": "加密明文字符串",
+          "parameters": [
+            {
+              "name": "plain_text",
+              "type": "String"
+            }
+          ],
+          "return": {
+            "type": "String"
+          }
+        },
+        {
+          "name": "decrypt",
+          "description": "解密密文（仅内部使用）",
+          "parameters": [
+            {
+              "name": "cipher_text",
+              "type": "String"
+            }
+          ],
+          "return": {
+            "type": "String",
+            "description": "明文私钥"
+          }
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "导入密钥",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-003",
+      "provider_component_id": "CMP-005",
+      "method": "POST",
+      "endpoint": "/api/keys",
+      "description": "接收私钥文本及元数据，验证格式，加密存储，提取指纹，返回密钥元数据（不含私钥）。",
+      "parameters": [
+        {
+          "name": "body",
+          "type": "application/json",
+          "required": true,
+          "description": "导入密钥的请求体",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "密钥别名"
+              },
+              "private_key": {
+                "type": "string",
+                "description": "SSH私钥文本"
+              },
+              "is_default": {
+                "type": "boolean",
+                "description": "是否设为默认密钥"
+              }
+            },
+            "required": [
+              "name",
+              "private_key"
+            ]
+          }
+        }
+      ],
+      "responses": [
+        {
+          "status_code": 201,
+          "description": "成功创建密钥",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "DO-004"
+              },
+              "example": {
+                "id": 1,
+                "name": "MyKey",
+                "fingerprint": "SHA256:xxxxxxxx",
+                "is_default": false,
+                "created_at": "2025-03-19T14:30:00Z"
+              }
+            }
+          }
+        },
+        {
+          "status_code": 400,
+          "description": "请求格式错误或私钥无效",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "detail": {
+                    "type": "string"
+                  }
+                }
+              },
+              "example": {
+                "detail": "Invalid private key format"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "生成密钥",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-003",
+      "provider_component_id": "CMP-005",
+      "method": "POST",
+      "endpoint": "/api/keys/generate",
+      "description": "生成新的SSH密钥对，加密私钥并存储，返回元数据（不含私钥）。",
+      "parameters": [
+        {
+          "name": "body",
+          "type": "application/json",
+          "required": true,
+          "description": "生成密钥的请求体",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "密钥别名"
+              },
+              "is_default": {
+                "type": "boolean",
+                "description": "是否设为默认密钥"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        }
+      ],
+      "responses": [
+        {
+          "status_code": 201,
+          "description": "成功生成密钥",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "DO-004"
+              },
+              "example": {
+                "id": 2,
+                "name": "GeneratedKey",
+                "fingerprint": "SHA256:yyyyyyyy",
+                "is_default": false,
+                "created_at": "2025-03-19T14:30:00Z"
+              }
+            }
+          }
+        },
+        {
+          "status_code": 400,
+          "description": "请求格式错误"
+        }
+      ]
+    },
+    {
+      "id": "IF-003",
+      "name": "获取密钥列表",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-003",
+      "provider_component_id": "CMP-005",
+      "method": "GET",
+      "endpoint": "/api/keys",
+      "description": "获取所有密钥的列表，不包含私钥。",
+      "parameters": [],
+      "responses": [
+        {
+          "status_code": 200,
+          "description": "成功返回密钥列表",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "DO-004"
+                }
+              },
+              "example": [
+                {
+                  "id": 1,
+                  "name": "MyKey",
+                  "fingerprint": "SHA256:xxxxxxxx",
+                  "is_default": false,
+                  "created_at": "2025-03-19T14:30:00Z"
+                },
+                {
+                  "id": 2,
+                  "name": "GeneratedKey",
+                  "fingerprint": "SHA256:yyyyyyyy",
+                  "is_default": false,
+                  "created_at": "2025-03-19T14:30:00Z"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "IF-004",
+      "name": "获取密钥详情",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-003",
+      "provider_component_id": "CMP-005",
+      "method": "GET",
+      "endpoint": "/api/keys/{key_id}",
+      "description": "获取单个密钥的详情，不包含私钥。",
+      "parameters": [
+        {
+          "name": "key_id",
+          "type": "integer",
+          "required": true,
+          "in": "path",
+          "description": "密钥ID"
+        }
+      ],
+      "responses": [
+        {
+          "status_code": 200,
+          "description": "成功返回密钥详情",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "DO-004"
+              },
+              "example": {
+                "id": 1,
+                "name": "MyKey",
+                "fingerprint": "SHA256:xxxxxxxx",
+                "is_default": false,
+                "created_at": "2025-03-19T14:30:00Z"
+              }
+            }
+          }
+        },
+        {
+          "status_code": 404,
+          "description": "密钥不存在"
+        }
+      ]
+    },
+    {
+      "id": "IF-005",
+      "name": "更新密钥",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-003",
+      "provider_component_id": "CMP-005",
+      "method": "PUT",
+      "endpoint": "/api/keys/{key_id}",
+      "description": "更新密钥的名称和默认标记。",
+      "parameters": [
+        {
+          "name": "key_id",
+          "type": "integer",
+          "required": true,
+          "in": "path"
+        },
+        {
+          "name": "body",
+          "type": "application/json",
+          "required": true,
+          "description": "更新密钥的请求体",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "新的密钥别名"
+              },
+              "is_default": {
+                "type": "boolean",
+                "description": "新的默认标记"
+              }
+            }
+          }
+        }
+      ],
+      "responses": [
+        {
+          "status_code": 200,
+          "description": "更新成功，返回更新后的密钥元数据",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "DO-004"
+              },
+              "example": {
+                "id": 1,
+                "name": "UpdatedKey",
+                "fingerprint": "SHA256:xxxxxxxx",
+                "is_default": true,
+                "created_at": "2025-03-19T14:30:00Z"
+              }
+            }
+          }
+        },
+        {
+          "status_code": 400,
+          "description": "请求格式错误"
+        },
+        {
+          "status_code": 404,
+          "description": "密钥不存在"
+        }
+      ]
+    },
+    {
+      "id": "IF-006",
+      "name": "删除密钥",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-003",
+      "provider_component_id": "CMP-005",
+      "method": "DELETE",
+      "endpoint": "/api/keys/{key_id}",
+      "description": "删除指定密钥，若被环境引用则拒绝删除。",
+      "parameters": [
+        {
+          "name": "key_id",
+          "type": "integer",
+          "required": true,
+          "in": "path"
+        }
+      ],
+      "responses": [
+        {
+          "status_code": 204,
+          "description": "删除成功，无响应体"
+        },
+        {
+          "status_code": 409,
+          "description": "密钥被环境引用，无法删除",
+          "content": {
+            "application/json": {
+              "example": {
+                "detail": "Key is referenced by environments and cannot be deleted"
+              }
+            }
+          }
+        },
+        {
+          "status_code": 404,
+          "description": "密钥不存在"
+        }
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "密钥管理服务契约",
+      "status": "active",
+      "version": 1,
+      "description": "定义密钥管理服务提供的REST API接口契约，供桌面客户端使用。",
+      "interfaces": [
+        "IF-001",
+        "IF-002",
+        "IF-003",
+        "IF-004",
+        "IF-005",
+        "IF-006"
+      ],
+      "non_functional_requirements": {
+        "performance": {
+          "expected_response_time_ms": 200,
+          "max_concurrent_requests": 50
+        },
+        "security": {
+          "authentication": "JWT",
+          "authorization": "RBAC"
+        }
+      }
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "type": "invariant",
+      "description": "全局最多只能有一个默认密钥",
+      "rule": "设置任何密钥的is_default为true时，必须先清除所有其他密钥的is_default标记",
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "implementation": {
+        "method": "KeyService.update_key",
+        "logic": "在更新is_default为true时，先调用KeyRepository.clear_default()，再设置新默认"
+      }
+    },
+    {
+      "id": "BR-002",
+      "type": "invariant",
+      "description": "私钥指纹必须唯一",
+      "rule": "不能导入或生成具有相同指纹的密钥",
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "implementation": {
+        "method": "KeyService.import_key 和 KeyService.generate_key_pair",
+        "logic": "在保存前检查指纹是否已存在，若存在则抛出DuplicateFingerprintError"
+      }
+    },
+    {
+      "id": "BR-003",
+      "type": "invariant",
+      "description": "删除密钥前必须检查环境引用",
+      "rule": "如果任何环境的deploy_key_id字段引用了该密钥，则拒绝删除",
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "implementation": {
+        "method": "KeyService.delete_key",
+        "logic": "调用KeyRepository.is_referenced_by_environment检查，若为true则抛出KeyReferencedError"
+      }
+    }
+  ],
+  "error_handling": {
+    "strategy": "统一使用FastAPI异常处理机制，定义自定义业务异常类，在全局异常处理器中捕获并转换为标准HTTP响应。",
+    "exceptions": [
+      {
+        "exception_class": "InvalidPrivateKeyError",
+        "description": "私钥格式无效时抛出",
+        "http_status": 400,
+        "message": "Invalid private key format"
+      },
+      {
+        "exception_class": "DuplicateFingerprintError",
+        "description": "尝试导入或生成重复指纹的密钥时抛出",
+        "http_status": 409,
+        "message": "A key with this fingerprint already exists"
+      },
+      {
+        "exception_class": "KeyNotFoundError",
+        "description": "操作的密钥不存在时抛出",
+        "http_status": 404,
+        "message": "Key not found"
+      },
+      {
+        "exception_class": "KeyReferencedError",
+        "description": "删除被环境引用的密钥时抛出",
+        "http_status": 409,
+        "message": "Key is referenced by environments and cannot be deleted"
+      },
+      {
+        "exception_class": "EncryptionError",
+        "description": "密钥安全模块加密或解密失败时抛出",
+        "http_status": 500,
+        "message": "Internal encryption error"
+      }
+    ],
+    "logging": {
+      "level": "INFO",
+      "format": "JSON",
+      "details": "记录关键操作的开始、结束、异常，包含请求ID和用户信息"
+    }
+  }
+}
