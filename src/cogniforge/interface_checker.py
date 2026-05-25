@@ -363,3 +363,239 @@ def _has_contract(contracts: list[dict], module: str, endpoint: str) -> bool:
             if target in c.get("endpoint", "").strip().lower():
                 return True
     return False
+
+
+# =============================================================================
+# Cross-LLD consistency checks
+# =============================================================================
+
+
+def _latest_prd(repo_path: Path) -> Optional[dict]:
+    import glob
+    pattern = str(repo_path / ".cogniforge/wiki/prd/*.json")
+    files = sorted(glob.glob(pattern))
+    if not files:
+        return None
+    try:
+        return json.loads(Path(files[-1]).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _load_module_registry(repo_path: Path) -> list[dict]:
+    reg_path = repo_path / "config" / "module-registry.json"
+    if not reg_path.exists():
+        return []
+    try:
+        data = json.loads(reg_path.read_text(encoding="utf-8"))
+        return data.get("modules", [])
+    except Exception:
+        return []
+
+
+def _merge_results(violations: list, warnings: list, result: dict) -> None:
+    violations.extend(result.get("violations", []))
+    warnings.extend(result.get("warnings", []))
+
+
+# ------------------------------------------------------------------ sub-check 1
+
+def _check_lld_prd_version(llds: dict[str, dict], prd_ver) -> dict:
+    violations = []
+    for mod_name, mod_lld in llds.items():
+        source_prd = mod_lld.get("source", {}).get("prd", {})
+        lld_prd_ver = source_prd.get("version")
+        if lld_prd_ver is not None and lld_prd_ver != prd_ver:
+            violations.append({
+                "contract": "source.prd.version",
+                "module": mod_name,
+                "detail": (
+                    f"LLD 'source.prd.version' ({lld_prd_ver}) 不等于 "
+                    f"当前 PRD version ({prd_ver})"
+                ),
+            })
+    return {"violations": violations, "warnings": []}
+
+
+# ------------------------------------------------------------------ sub-check 2
+
+def _check_lld_sad_version(llds: dict[str, dict], sad_ver) -> dict:
+    violations = []
+    for mod_name, mod_lld in llds.items():
+        source_sad = mod_lld.get("source", {}).get("sad", {})
+        lld_sad_ver = source_sad.get("version")
+        if lld_sad_ver is not None and lld_sad_ver != sad_ver:
+            violations.append({
+                "contract": "source.sad.version",
+                "module": mod_name,
+                "detail": (
+                    f"LLD 'source.sad.version' ({lld_sad_ver}) 不等于 "
+                    f"当前 SAD version ({sad_ver})"
+                ),
+            })
+    return {"violations": violations, "warnings": []}
+
+
+# ------------------------------------------------------------------ sub-check 3
+
+def _check_endpoint_ownership(llds: dict[str, dict]) -> dict:
+    violations = []
+    endpoint_to_module: dict[str, str] = {}
+    for mod_name, mod_lld in llds.items():
+        meta = mod_lld.get("meta", {})
+        if meta.get("module_type") != "service":
+            continue
+        for iface in mod_lld.get("interfaces", []):
+            if iface.get("status", "active") not in ("active", "changed"):
+                continue
+            ep = iface.get("endpoint", "")
+            if not ep:
+                continue
+            if ep in endpoint_to_module:
+                violations.append({
+                    "contract": ep,
+                    "module": mod_name,
+                    "detail": (
+                        f"Endpoint '{ep}' 被多个 service LLD 同时声明为活动接口: "
+                        f"'{endpoint_to_module[ep]}' 和 '{mod_name}'"
+                    ),
+                })
+            else:
+                endpoint_to_module[ep] = mod_name
+    return {"violations": violations, "warnings": []}
+
+
+# ------------------------------------------------------------------ sub-check 4
+
+def _check_frontend_contract_refs(llds: dict[str, dict],
+                                  sad_contract_ids: set[str]) -> dict:
+    violations = []
+    for mod_name, mod_lld in llds.items():
+        meta = mod_lld.get("meta", {})
+        if meta.get("module_type") != "frontend":
+            continue
+        for entry in mod_lld.get("api_integration", []):
+            ctr_id = entry.get("source_contract_id", "")
+            if ctr_id and ctr_id not in sad_contract_ids:
+                violations.append({
+                    "contract": ctr_id,
+                    "module": mod_name,
+                    "detail": (
+                        f"前端模块 api_integration 引用的 source_contract_id "
+                        f"'{ctr_id}' 在 SAD contracts 中不存在"
+                    ),
+                })
+    return {"violations": violations, "warnings": []}
+
+
+# ------------------------------------------------------------------ sub-check 5
+
+def _check_db_contract_refs(llds: dict[str, dict],
+                            registry_modules: set[str]) -> dict:
+    violations = []
+    for mod_name, mod_lld in llds.items():
+        meta = mod_lld.get("meta", {})
+        if meta.get("module_type") not in ("database", "infrastructure"):
+            continue
+        cc = mod_lld.get("connection_contracts", {})
+        if not isinstance(cc, dict):
+            continue
+        # service_accounts[].service
+        for sa in cc.get("service_accounts", []):
+            if not isinstance(sa, dict):
+                continue
+            svc = sa.get("service", "")
+            if svc and svc not in registry_modules:
+                violations.append({
+                    "contract": svc,
+                    "module": mod_name,
+                    "detail": (
+                        f"connection_contracts.service_accounts 引用服务 "
+                        f"'{svc}'，但该模块在 module_registry 中不存在"
+                    ),
+                })
+        # direct consumer_module field
+        cm = cc.get("consumer_module", "")
+        if isinstance(cm, str) and cm and cm not in registry_modules:
+            violations.append({
+                "contract": cm,
+                "module": mod_name,
+                "detail": (
+                    f"connection_contracts.consumer_module 引用模块 "
+                    f"'{cm}'，但该模块在 module_registry 中不存在"
+                ),
+            })
+    return {"violations": violations, "warnings": []}
+
+
+# ------------------------------------------------------------------ orchestrator
+
+def check_cross_lld(repo_path: Path) -> dict:
+    """Run all cross-LLD consistency checks.
+
+    Returns:
+        {"status": "ok"|"conflict", "violations": list, "warnings": list}
+    """
+    llds = _all_llds(repo_path)
+    prd = _latest_prd(repo_path)
+    sad = _latest_sad(repo_path)
+    registry = _load_module_registry(repo_path)
+    registry_modules = {m.get("module") for m in registry if m.get("module")}
+
+    all_violations: list[dict] = []
+    all_warnings: list[dict] = []
+
+    if prd:
+        prd_ver = prd.get("meta", {}).get("version")
+        r = _check_lld_prd_version(llds, prd_ver)
+        _merge_results(all_violations, all_warnings, r)
+
+    if sad:
+        sad_ver = sad.get("meta", {}).get("version")
+        r = _check_lld_sad_version(llds, sad_ver)
+        _merge_results(all_violations, all_warnings, r)
+
+    r = _check_endpoint_ownership(llds)
+    _merge_results(all_violations, all_warnings, r)
+
+    if sad:
+        sad_contract_ids = {c.get("id") for c in sad.get("contracts", []) if c.get("id")}
+        r = _check_frontend_contract_refs(llds, sad_contract_ids)
+        _merge_results(all_violations, all_warnings, r)
+
+    if registry_modules:
+        r = _check_db_contract_refs(llds, registry_modules)
+        _merge_results(all_violations, all_warnings, r)
+
+    return {
+        "status": "conflict" if all_violations else "ok",
+        "violations": all_violations,
+        "warnings": all_warnings,
+    }
+
+
+def format_cross_lld_report(result: dict) -> str:
+    """Render a human-readable cross-LLD consistency report."""
+    lines = []
+    status = result["status"]
+    violations = result.get("violations", [])
+    warnings = result.get("warnings", [])
+
+    if status == "ok":
+        lines.append("✓ 跨 LLD 一致性检查通过")
+        if not warnings:
+            return "\n".join(lines)
+    else:
+        lines.append(f"✗ 跨 LLD 一致性检查失败 — {len(violations)} 个冲突")
+
+    if violations:
+        lines.append("\n--- 冲突 (必须修复) ---")
+        for v in violations:
+            lines.append(f"  ✗ [{v['module']}] {v['contract']}: {v['detail']}")
+
+    if warnings:
+        lines.append(f"\n--- 警告 ({len(warnings)}) ---")
+        for w in warnings:
+            lines.append(f"  ⚠ [{w['module']}] {w['contract']}: {w['detail']}")
+
+    return "\n".join(lines)

@@ -59,6 +59,18 @@ _REQUIRED_SECTIONS: dict[str, list[str]] = {
 # Infrastructure sub-type required sections
 _INFRA_MQ_SECTIONS = ["message_contracts", "reliability_strategy"]
 
+# Sections exclusive to each module type.  Sections not listed in any
+# exclusive set (data_models, interfaces, error_handling, connection_contracts,
+# workflow, security_design) are shared and allowed on all module types.
+_TYPE_EXCLUSIVE_SECTIONS: dict[str, set[str]] = {
+    "service":     {"domain_objects", "service_contracts", "business_rules"},
+    "frontend":    {"component_tree", "state_design", "route_design",
+                    "interaction_flows", "api_integration"},
+    "gateway":     {"route_table", "middleware_chain", "auth_policy", "rate_limiting"},
+    "database":    {"index_strategy", "migration_strategy", "capacity_estimation"},
+    "infrastructure": {"topology", "message_contracts", "reliability_strategy"},
+}
+
 
 def validate_lld_json(json_path: Path) -> dict:
     """Validate a single LLD JSON file.
@@ -109,6 +121,20 @@ def validate_lld_json(json_path: Path) -> dict:
             violations.append(_v(section, "existence", f"必需章节 '{section}' 缺失"))
         elif data[section] is None:
             violations.append(_v(section, "existence", f"必需章节 '{section}' 值为 null"))
+
+    # ── 3b. Module-type-exclusive sections — MDE agents must not design
+    #        outside their module boundary.
+    exclusive_others: set[str] = set()
+    for other_type, other_sections in _TYPE_EXCLUSIVE_SECTIONS.items():
+        if other_type != module_type:
+            exclusive_others.update(other_sections)
+    for section in data:
+        if section in exclusive_others:
+            violations.append(_v(
+                section, "boundary",
+                f"章节 '{section}' 仅属于其他 module_type，当前 module_type={module_type} "
+                f"不应包含此章节。MDE Agent 越界设计，请移除。"
+            ))
 
     # ── 4. Deep field checks per section ──
 

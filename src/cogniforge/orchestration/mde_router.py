@@ -37,7 +37,15 @@ class MDERouter:
         """Determine which MDE modules to trigger based on SE turn result.
 
         Returns a list of target_module dicts (from the registry).
+        Returns empty list if any coverage change is "blocked".
         """
+        # EARLY RETURN: blocked coverage means the feature cannot proceed —
+        # SE/PM must resolve the blockage before MDE agents are triggered.
+        coverage = se_turn_result.get("coverage_changes", [])
+        if any(isinstance(c, dict) and c.get("after") == "blocked"
+               for c in coverage):
+            return []
+
         registry = self.load_registry()
         all_modules = registry.get("modules", [])
 
