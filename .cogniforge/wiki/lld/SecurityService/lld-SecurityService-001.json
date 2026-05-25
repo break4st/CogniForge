@@ -1,0 +1,420 @@
+{
+  "meta": {
+    "doc_id": "lld-SecurityService-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "SecurityService",
+    "title": "安全服务详细设计",
+    "author": "design_agent",
+    "created": "2025-05-20T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": ["REQ-005"]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": ["CMP-106"],
+      "contracts": ["CTR-009"],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "主密码设置（首次）",
+      "主密码验证（每次启动/敏感操作前）",
+      "主密码修改（用户主动发起）",
+      "基于主密码的 AES-256-GCM 加密/解密",
+      "PBKDF2 密钥派生",
+      "修改主密码时触发所有凭据的重新加密"
+    ],
+    "out_of_scope": [
+      "凭据的存储与检索（由 DatabaseService/EnvironmentService 负责）",
+      "SSH 连接或部署执行",
+      "用户界面交互（前端负责）"
+    ],
+    "owned_components": ["CMP-106"],
+    "owned_contracts": ["CTR-009"],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": ["DM-001"]
+  },
+  "overview": {
+    "description": "SecurityService 负责主密码生命周期管理、凭据加密/解密、密钥派生，是系统安全核心。",
+    "dependencies": ["DatabaseService", "EnvironmentService", "LoggerService"],
+    "tech_stack": ["TypeScript", "Node.js crypto", "better-sqlite3"]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-005",
+      "sad_component_ids": ["CMP-106"],
+      "sad_contract_ids": ["CTR-009"],
+      "lld_objects": {
+        "data_models": ["DM-001"],
+        "interfaces": ["IF-001", "IF-002", "IF-003"],
+        "domain_objects": ["DO-001", "DO-002", "DO-003", "DO-004", "DO-005", "DO-006", "DO-007"],
+        "service_contracts": ["SC-001"]
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "master_password",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "master_password"
+      },
+      "description": "存储主密码的 PBKDF2 哈希及相关参数，本模块只关注如下字段视图。",
+      "fields": [
+        {"name": "id", "type": "INTEGER", "required": true, "description": "主键"},
+        {"name": "password_hash", "type": "TEXT", "required": true, "description": "PBKDF2 派生哈希，Base64 编码"},
+        {"name": "salt", "type": "TEXT", "required": true, "description": "随机盐值，Base64 编码"},
+        {"name": "iterations", "type": "INTEGER", "required": true, "description": "PBKDF2 迭代次数"},
+        {"name": "created_at", "type": "INTEGER", "required": true, "description": "创建时间戳（毫秒）"},
+        {"name": "updated_at", "type": "INTEGER", "required": true, "description": "更新时间戳（毫秒）"}
+      ],
+      "source_requirements": ["REQ-005"],
+      "source_components": [],
+      "source_contracts": [],
+      "constraints": ["最多存在一条记录"],
+      "lifecycle": {
+        "create": "首次设置主密码时 INSERT",
+        "update": "修改主密码时 UPDATE 哈希、盐、迭代次数",
+        "delete": "不支持删除",
+        "retention": "永久保留"
+      },
+      "change_history": [
+        {"version": 1, "change_type": "created", "summary": "初始创建", "reason": "首次生成 LLD"}
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "setMasterPassword",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-009",
+      "provider_component_id": "CMP-106",
+      "method": "INTERNAL",
+      "endpoint": "masterPassword:set",
+      "description": "首次设置主密码",
+      "parameters": [],
+      "request_body": {"newPassword": "string"},
+      "response": {"status": 200, "body": {"success": "boolean"}},
+      "error_codes": [
+        {"status": 403, "code": "INVALID_PASSWORD", "message": "密码强度不足"},
+        {"status": 409, "code": "CONFLICT", "message": "主密码已设置"}
+      ],
+      "auth": {"required": false, "policy": ""},
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": ["REQ-005"],
+      "change_history": [
+        {"version": 1, "change_type": "created", "summary": "初始创建", "reason": "首次生成 LLD"}
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "verifyMasterPassword",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-009",
+      "provider_component_id": "CMP-106",
+      "method": "INTERNAL",
+      "endpoint": "masterPassword:verify",
+      "description": "验证输入密码是否与已存储主密码一致",
+      "parameters": [],
+      "request_body": {"password": "string"},
+      "response": {"status": 200, "body": {"success": "boolean"}},
+      "error_codes": [
+        {"status": 403, "code": "INVALID_PASSWORD", "message": "密码错误"},
+        {"status": 500, "code": "STATE_ERROR", "message": "主密码尚未设置"}
+      ],
+      "auth": {"required": false, "policy": ""},
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": ["REQ-005"],
+      "change_history": [
+        {"version": 1, "change_type": "created", "summary": "初始创建", "reason": "首次生成 LLD"}
+      ]
+    },
+    {
+      "id": "IF-003",
+      "name": "changeMasterPassword",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-009",
+      "provider_component_id": "CMP-106",
+      "method": "INTERNAL",
+      "endpoint": "masterPassword:change",
+      "description": "修改主密码（需提供当前密码和新密码）",
+      "parameters": [],
+      "request_body": {"oldPassword": "string", "newPassword": "string"},
+      "response": {"status": 200, "body": {"success": "boolean"}},
+      "error_codes": [
+        {"status": 403, "code": "INVALID_PASSWORD", "message": "当前密码错误"},
+        {"status": 403, "code": "INVALID_NEW_PASSWORD", "message": "新密码强度不足"}
+      ],
+      "auth": {"required": false, "policy": ""},
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": ["REQ-005"],
+      "change_history": [
+        {"version": 1, "change_type": "created", "summary": "初始创建", "reason": "首次生成 LLD"}
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "MasterPasswordRecord",
+      "type": "entity",
+      "description": "主密码记录实体，对应master_password表",
+      "attributes": [
+        {"name": "id", "type": "number"},
+        {"name": "password_hash", "type": "string"},
+        {"name": "salt", "type": "string"},
+        {"name": "iterations", "type": "number"},
+        {"name": "created_at", "type": "number"},
+        {"name": "updated_at", "type": "number"}
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "PasswordChangeRequest",
+      "type": "dto",
+      "description": "修改主密码请求",
+      "attributes": [
+        {"name": "oldPassword", "type": "string"},
+        {"name": "newPassword", "type": "string"}
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "SetPasswordRequest",
+      "type": "dto",
+      "description": "设置主密码请求",
+      "attributes": [
+        {"name": "newPassword", "type": "string"}
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "VerifyPasswordRequest",
+      "type": "dto",
+      "description": "验证主密码请求",
+      "attributes": [
+        {"name": "password", "type": "string"}
+      ]
+    },
+    {
+      "id": "DO-005",
+      "name": "EncryptedData",
+      "type": "value_object",
+      "description": "加密后的数据包装",
+      "attributes": [
+        {"name": "ciphertext", "type": "string"},
+        {"name": "iv", "type": "string"},
+        {"name": "authTag", "type": "string"}
+      ]
+    },
+    {
+      "id": "DO-006",
+      "name": "DecryptedData",
+      "type": "value_object",
+      "description": "解密后的数据",
+      "attributes": [
+        {"name": "plaintext", "type": "string"}
+      ]
+    },
+    {
+      "id": "DO-007",
+      "name": "CryptoKey",
+      "type": "value_object",
+      "description": "派生的密钥及相关参数",
+      "attributes": [
+        {"name": "key", "type": "Buffer"},
+        {"name": "salt", "type": "string"},
+        {"name": "iterations", "type": "number"}
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "SecurityServiceContract",
+      "description": "安全服务契约，定义主密码管理和加解密方法",
+      "provider_component_id": "CMP-106",
+    "depends_on_contracts": [],
+      "methods": [
+        {
+          "name": "setMasterPassword",
+          "description": "首次设置主密码",
+          "parameters": [
+            {"name": "newPassword", "type": "string", "required": true}
+          ],
+          "returns": {"type": "boolean", "description": "操作是否成功"},
+          "preconditions": ["主密码未设置", "新密码符合强度要求"],
+          "postconditions": ["主密码哈希和盐保存到数据库"],
+          "exceptions": [
+            {"name": "InvalidPasswordError", "trigger": "密码强度不足", "type": "business"},
+            {"name": "MasterPasswordAlreadySetError", "trigger": "主密码已存在", "type": "business"}
+          ]
+        },
+        {
+          "name": "verifyMasterPassword",
+          "description": "验证输入密码是否与已存储主密码一致",
+          "parameters": [
+            {"name": "password", "type": "string", "required": true}
+          ],
+          "returns": {"type": "boolean", "description": "验证是否通过"},
+          "preconditions": ["主密码已设置"],
+          "postconditions": ["无"],
+          "exceptions": [
+            {"name": "InvalidPasswordError", "trigger": "密码验证失败", "type": "business"},
+            {"name": "MasterPasswordNotSetError", "trigger": "主密码未设置", "type": "state"}
+          ]
+        },
+        {
+          "name": "changeMasterPassword",
+          "description": "修改主密码，需提供当前密码和新密码",
+          "parameters": [
+            {"name": "oldPassword", "type": "string", "required": true},
+            {"name": "newPassword", "type": "string", "required": true}
+          ],
+          "returns": {"type": "boolean", "description": "修改是否成功"},
+          "preconditions": ["当前密码验证通过", "新密码符合强度要求"],
+          "postconditions": ["主密码哈希和盐更新", "所有凭据重新加密"],
+          "exceptions": [
+            {"name": "InvalidPasswordError", "trigger": "当前密码错误", "type": "business"},
+            {"name": "InvalidNewPasswordError", "trigger": "新密码强度不足", "type": "business"}
+          ]
+        },
+        {
+          "name": "encrypt",
+          "description": "使用派生密钥加密数据",
+          "parameters": [
+            {"name": "plaintext", "type": "string", "required": true},
+            {"name": "key", "type": "CryptoKey", "required": true}
+          ],
+          "returns": {"type": "EncryptedData", "description": "加密结果，含密文、IV和认证标签"},
+          "preconditions": ["提供的 CryptoKey 有效"],
+          "postconditions": ["返回 AES-256-GCM 加密数据"],
+          "exceptions": [
+            {"name": "EncryptionError", "trigger": "加密过程出错", "type": "system"}
+          ]
+        },
+        {
+          "name": "decrypt",
+          "description": "使用派生密钥解密数据",
+          "parameters": [
+            {"name": "encryptedData", "type": "EncryptedData", "required": true},
+            {"name": "key", "type": "CryptoKey", "required": true}
+          ],
+          "returns": {"type": "DecryptedData", "description": "解密后的明文"},
+          "preconditions": ["提供的 CryptoKey 有效"],
+          "postconditions": ["返回原始明文数据"],
+          "exceptions": [
+            {"name": "DecryptionError", "trigger": "解密失败（密钥错误或数据损坏）", "type": "system"}
+          ]
+        }
+      ],
+      "source_requirements": ["REQ-005"],
+      "change_history": [
+        {"version": 1, "change_type": "created", "summary": "初始创建", "reason": "首次生成 LLD"}
+      ]
+    }
+  ],
+  "business_rules": {
+    "rules": [
+      {
+        "id": "BR-001",
+        "description": "主密码强度必须满足：长度至少 8 位，包含大小写字母和数字",
+        "enforcement": "在 setMasterPassword 和 changeMasterPassword 中验证"
+      },
+      {
+        "id": "BR-002",
+        "description": "修改主密码后，必须使用新密码派生密钥重新加密所有凭据",
+        "enforcement": "changeMasterPassword 方法中执行"
+      },
+      {
+        "id": "BR-003",
+        "description": "敏感操作前必须验证主密码，验证通过后在一段时间内缓存密钥",
+        "enforcement": "由前端或编排服务控制验证时机"
+      }
+    ]
+  },
+  "workflow": {
+    "steps": [
+      {
+        "activity": "设置主密码",
+        "actor": "用户",
+        "input": "新密码",
+        "output": "成功/失败",
+        "resources": ["IF-001"]
+      },
+      {
+        "activity": "验证主密码",
+        "actor": "系统",
+        "input": "密码",
+        "output": "验证结果",
+        "resources": ["IF-002"]
+      },
+      {
+        "activity": "修改主密码",
+        "actor": "用户",
+        "input": "旧密码 + 新密码",
+        "output": "成功/失败",
+        "resources": ["IF-003"]
+      },
+      {
+        "activity": "加密凭据",
+        "actor": "SecurityService",
+        "input": "明文 + 密钥",
+        "output": "密文",
+        "resources": ["SC-001.encrypt"]
+      },
+      {
+        "activity": "解密凭据",
+        "actor": "SecurityService",
+        "input": "密文 + 密钥",
+        "output": "明文",
+        "resources": ["SC-001.decrypt"]
+      }
+    ]
+  },
+  "error_handling": {
+    "strategy": "所有方法通过抛出类型化异常进行错误处理，调用方须捕获相应异常并转换至接口错误码。",
+    "strategies": [
+      {
+        "component": "SecurityService",
+        "approach": "通过抛出类型化异常进行错误处理，调用方须捕获相应异常并转换至接口错误码。"
+      }
+    ],
+    "error_types": [
+      {"type": "InvalidPasswordError", "category": "business"},
+      {"type": "MasterPasswordAlreadySetError", "category": "state"},
+      {"type": "MasterPasswordNotSetError", "category": "state"},
+      {"type": "EncryptionError", "category": "system"},
+      {"type": "DecryptionError", "category": "system"}
+    ]
+  }
+}
