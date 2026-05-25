@@ -1,0 +1,701 @@
+{
+  "meta": {
+    "doc_id": "lld-部署页面-001",
+    "type": "lld",
+    "module_type": "frontend",
+    "module": "部署页面",
+    "title": "部署页面详细设计文档",
+    "author": "design_agent",
+    "created": "2025-04-13T00:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-003"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-103",
+        "CMP-107"
+      ],
+      "contracts": [
+        "CTR-005",
+        "CTR-006"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "部署表单UI",
+      "本地文件选择",
+      "版本标签输入",
+      "环境选择",
+      "实时日志展示面板",
+      "部署结果通知",
+      "前端表单验证",
+      "日志自动滚动控制"
+    ],
+    "out_of_scope": [
+      "项目CRUD操作",
+      "环境配置管理",
+      "SSH/部署执行引擎",
+      "日志推送服务实现",
+      "数据库记录",
+      "文件校验"
+    ],
+    "owned_components": [],
+    "owned_contracts": [],
+    "consumed_contracts": [
+      "CTR-005",
+      "CTR-006"
+    ],
+    "owned_data_models": [
+      "DM-001",
+      "DM-002"
+    ],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "部署页面是Electron渲染进程中的一个React单页组件，提供用户选择目标环境、指定本地可执行文件、输入版本标签并触发部署的交互界面。部署过程中通过面板实时显示远程执行日志，结束后给出成功或失败反馈。",
+    "dependencies": [
+      "ProjectContext",
+      "EnvironmentService"
+    ],
+    "tech_stack": [
+      "React",
+      "Ant Design",
+      "Vite",
+      "TypeScript"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-003",
+      "sad_component_ids": [
+        "CMP-103",
+        "CMP-107"
+      ],
+      "sad_contract_ids": [
+        "CTR-005",
+        "CTR-006"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002"
+        ],
+        "interfaces": [
+          "IF-001"
+        ],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": "前端页面作为CMP-103和CMP-107的消费者，通过IPC使用部署启动和日志流服务，实现REQ-003的部署UI及实时反馈。"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "DeployFormState",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "部署表单状态，绑定页面UI控件，控制部署流程和反馈",
+      "fields": [
+        {
+          "name": "projectId",
+          "type": "string",
+          "required": true,
+          "description": "从全局上下文获得的当前项目ID，只读"
+        },
+        {
+          "name": "environmentId",
+          "type": "string",
+          "required": true,
+          "description": "用户选中的目标环境ID"
+        },
+        {
+          "name": "filePath",
+          "type": "string",
+          "required": true,
+          "description": "通过文件选择器获取的本地可执行文件路径"
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "required": true,
+          "description": "用户输入的版本标签"
+        },
+        {
+          "name": "deployStatus",
+          "type": "string",
+          "required": true,
+          "description": "当前部署状态（idle/deploying/success/error）"
+        },
+        {
+          "name": "errorMessage",
+          "type": "string",
+          "required": false,
+          "description": "当deployStatus为error时存储的错误详情"
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [],
+      "source_contracts": [
+        "CTR-005"
+      ],
+      "constraints": [
+        "projectId必须来自全局上下文且非空",
+        "启动部署前所有字段必须非空"
+      ],
+      "lifecycle": {
+        "create": "页面加载时初始化",
+        "update": "用户交互或IPC回调时更新",
+        "delete": "页面卸载时销毁",
+        "retention": "不持久化"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "LogEntry",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "单条日志条目，用于LogViewer渲染",
+      "fields": [
+        {
+          "name": "id",
+          "type": "number",
+          "required": true,
+          "description": "自增序号，用于列表key"
+        },
+        {
+          "name": "timestamp",
+          "type": "string",
+          "required": true,
+          "description": "日志时间戳，ISO 8601格式"
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "required": true,
+          "description": "日志文本内容"
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [],
+      "source_contracts": [
+        "CTR-006"
+      ],
+      "constraints": [
+        "日志量超过1000条时应截断旧日志，仅保留最近500条"
+      ],
+      "lifecycle": {
+        "create": "接收到日志推送时创建",
+        "update": "不更新",
+        "delete": "页面卸载或部署结束后清空",
+        "retention": "不持久化"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "DeployPage",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-005",
+      "provider_component_id": "CMP-103",
+      "method": "frontend",
+      "endpoint": "/deploy",
+      "description": "部署页面路由入口，渲染DeployPage根组件",
+      "parameters": [],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {}
+      },
+      "error_codes": [],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    }
+  ],
+  "component_tree": [
+    {
+      "name": "DeployPage",
+      "props": [],
+      "events": [],
+      "state": [
+        {
+          "name": "deployFormState",
+          "type": "DeployFormState"
+        }
+      ],
+      "children": [
+        {
+          "name": "DeployForm",
+          "props": [
+            {
+              "name": "projectId",
+              "type": "string"
+            },
+            {
+              "name": "environmentId",
+              "type": "string"
+            },
+            {
+              "name": "filePath",
+              "type": "string"
+            },
+            {
+              "name": "version",
+              "type": "string"
+            },
+            {
+              "name": "deployStatus",
+              "type": "string"
+            },
+            {
+              "name": "errorMessage",
+              "type": "string"
+            },
+            {
+              "name": "onDeploy",
+              "type": "function"
+            }
+          ],
+          "events": [
+            "onDeploy"
+          ],
+          "state": [],
+          "children": [
+            {
+              "name": "EnvironmentSelector",
+              "props": [
+                {
+                  "name": "value",
+                  "type": "string"
+                },
+                {
+                  "name": "onChange",
+                  "type": "function"
+                }
+              ],
+              "events": [
+                "onChange"
+              ],
+              "state": [],
+              "children": []
+            },
+            {
+              "name": "FileSelector",
+              "props": [
+                {
+                  "name": "value",
+                  "type": "string"
+                },
+                {
+                  "name": "onChange",
+                  "type": "function"
+                }
+              ],
+              "events": [
+                "onChange"
+              ],
+              "state": [],
+              "children": []
+            },
+            {
+              "name": "VersionInput",
+              "props": [
+                {
+                  "name": "value",
+                  "type": "string"
+                },
+                {
+                  "name": "onChange",
+                  "type": "function"
+                }
+              ],
+              "events": [
+                "onChange"
+              ],
+              "state": [],
+              "children": []
+            },
+            {
+              "name": "DeployButton",
+              "props": [
+                {
+                  "name": "disabled",
+                  "type": "boolean"
+                },
+                {
+                  "name": "loading",
+                  "type": "boolean"
+                },
+                {
+                  "name": "onClick",
+                  "type": "function"
+                }
+              ],
+              "events": [
+                "onClick"
+              ],
+              "state": [],
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "LogViewer",
+          "props": [
+            {
+              "name": "logs",
+              "type": "LogEntry[]"
+            }
+          ],
+          "events": [],
+          "state": [
+            {
+              "name": "logs",
+              "type": "LogEntry[]"
+            }
+          ],
+          "children": []
+        }
+      ]
+    }
+  ],
+  "route_design": [
+    {
+      "page": "/deploy",
+      "mapping": "DeployPage",
+      "path": "/deploy",
+      "component": "DeployPage",
+      "auth_guard": false,
+      "meta": {
+        "title": "部署页面"
+      }
+    }
+  ],
+  "state_design": {
+    "state_variables": [
+      {
+        "name": "deployFormState",
+        "type": "DeployFormState",
+        "initial_value": {
+          "projectId": "",
+          "environmentId": "",
+          "filePath": "",
+          "version": "",
+          "deployStatus": "idle",
+          "errorMessage": ""
+        }
+      },
+      {
+        "name": "logs",
+        "type": "LogEntry[]",
+        "initial_value": []
+      }
+    ],
+    "state_machines": [
+      {
+        "name": "deployFlow",
+        "states": [
+          "idle",
+          "deploying",
+          "success",
+          "error"
+        ],
+        "transitions": [
+          {
+            "from": "idle",
+            "to": "deploying",
+            "trigger": "onDeploy"
+          },
+          {
+            "from": "deploying",
+            "to": "success",
+            "trigger": "deploySuccess"
+          },
+          {
+            "from": "deploying",
+            "to": "error",
+            "trigger": "deployError"
+          },
+          {
+            "from": "error",
+            "to": "idle",
+            "trigger": "reset"
+          },
+          {
+            "from": "success",
+            "to": "idle",
+            "trigger": "reset"
+          }
+        ]
+      }
+    ],
+    "derived_state": [
+      {
+        "name": "isFormValid",
+        "derivation": "deployFormState.projectId && deployFormState.environmentId && deployFormState.filePath && deployFormState.version",
+        "type": "boolean"
+      },
+      {
+        "name": "isDeploying",
+        "derivation": "deployFormState.deployStatus === 'deploying'",
+        "type": "boolean"
+      }
+    ]
+  },
+  "interaction_flows": [
+    {
+      "name": "选择环境",
+      "trigger_action": "用户点击环境下拉框",
+      "pre_conditions": [
+        "环境列表已加载"
+      ],
+      "steps": [
+        "用户点击环境下拉框",
+        "系统展示可用环境列表",
+        "用户选择一个环境",
+        "系统更新environmentId值"
+      ],
+      "post_conditions": [
+        "deployFormState.environmentId已更新"
+      ],
+      "alternative_paths": [
+        "如果环境列表为空，显示禁用提示"
+      ],
+      "error_handling": "如果加载环境列表失败，显示错误提示"
+    },
+    {
+      "name": "选择文件",
+      "trigger_action": "用户点击文件选择按钮",
+      "pre_conditions": [
+        "无"
+      ],
+      "steps": [
+        "用户点击文件选择按钮",
+        "系统打开文件选择对话框",
+        "用户选择本地可执行文件",
+        "系统更新filePath值"
+      ],
+      "post_conditions": [
+        "deployFormState.filePath已更新"
+      ],
+      "alternative_paths": [
+        "如果用户取消选择，不更新filePath"
+      ],
+      "error_handling": "如果文件选择失败，不做任何操作"
+    },
+    {
+      "name": "输入版本号",
+      "trigger_action": "用户在版本输入框中输入",
+      "pre_conditions": [
+        "无"
+      ],
+      "steps": [
+        "用户在版本输入框中输入",
+        "系统同步更新version值"
+      ],
+      "post_conditions": [
+        "deployFormState.version已更新"
+      ],
+      "alternative_paths": [],
+      "error_handling": "无"
+    },
+    {
+      "name": "启动部署",
+      "trigger_action": "用户点击部署按钮",
+      "pre_conditions": [
+        "表单验证通过（所有必填字段非空）"
+      ],
+      "steps": [
+        "用户点击部署按钮",
+        "系统将deployStatus设置为deploying",
+        "系统调用IPC start-deploy通道发送部署参数",
+        "系统等待部署结果和日志"
+      ],
+      "post_conditions": [
+        "部署启动",
+        "deployStatus变为deploying",
+        "日志面板开始接收日志"
+      ],
+      "alternative_paths": [
+        "如果表单未通过验证，不启动部署并显示验证错误"
+      ],
+      "error_handling": "如果IPC调用失败，捕获异常，设置deployStatus为error，显示错误信息"
+    }
+  ],
+  "error_handling": {
+    "strategy": "使用React Error Boundary捕获渲染错误，显示回退UI；IPC超时后置deployStatus为error；表单验证错误在字段下方显示红色提示；部署过程错误通过日志面板显示，最终错误通过通知和状态字段显示"
+  },
+  "api_integration": [
+    {
+      "page": "部署页面",
+      "name": "启动部署",
+      "description": "向主进程发送部署命令",
+      "type": "ipc",
+      "endpoint": "start-deploy",
+      "channel": "start-deploy",
+      "direction": "request",
+      "payload": {
+        "projectId": "string",
+        "environmentId": "string",
+        "filePath": "string",
+        "version": "string"
+      },
+      "response": {
+        "success": "boolean"
+      },
+      "error_channel": "deploy-error",
+      "timeout": 0,
+      "retry": 0,
+      "fallback": "显示错误提示"
+    },
+    {
+      "page": "部署页面",
+      "name": "接收日志",
+      "description": "接收部署实时日志",
+      "type": "ipc",
+      "endpoint": "deploy-log",
+      "channel": "deploy-log",
+      "direction": "subscribe",
+      "payload": {
+        "log": "LogEntry"
+      },
+      "response": {},
+      "error_channel": "",
+      "timeout": 0,
+      "retry": 0,
+      "fallback": ""
+    },
+    {
+      "page": "部署页面",
+      "name": "接收部署结果",
+      "description": "接收最终部署结果",
+      "type": "ipc",
+      "endpoint": "deploy-result",
+      "channel": "deploy-result",
+      "direction": "subscribe",
+      "payload": {
+        "status": "string",
+        "message": "string"
+      },
+      "response": {},
+      "error_channel": "",
+      "timeout": 0,
+      "retry": 0,
+      "fallback": ""
+    }
+  ],
+  "workflow": {
+    "title": "部署页面交互流程",
+    "steps": [
+      {
+        "id": "step1",
+        "type": "user_action",
+        "trigger": "用户点击环境下拉框",
+        "description": "选择目标环境",
+        "rules": [
+          "环境列表不能为空"
+        ],
+        "next": "step2"
+      },
+      {
+        "id": "step2",
+        "type": "user_action",
+        "trigger": "用户点击文件选择按钮",
+        "description": "选择本地可执行文件",
+        "rules": [],
+        "next": "step3"
+      },
+      {
+        "id": "step3",
+        "type": "user_action",
+        "trigger": "用户输入版本号",
+        "description": "输入版本标签",
+        "rules": [],
+        "next": "step4"
+      },
+      {
+        "id": "step4",
+        "type": "user_action",
+        "trigger": "用户点击部署按钮",
+        "description": "触发部署",
+        "rules": [
+          "所有必填字段非空"
+        ],
+        "next": "step5"
+      },
+      {
+        "id": "step5",
+        "type": "system_action",
+        "trigger": "部署启动",
+        "description": "显示部署状态和日志",
+        "rules": [],
+        "next": "step6"
+      },
+      {
+        "id": "step6",
+        "type": "system_action",
+        "trigger": "部署完成或错误",
+        "description": "显示最终结果",
+        "rules": [],
+        "next": null
+      }
+    ]
+  }
+}
