@@ -1,0 +1,1014 @@
+{
+  "meta": {
+    "doc_id": "lld-Environment-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "环境管理服务",
+    "title": "环境管理服务详细设计",
+    "author": "design_agent",
+    "created": "2025-04-09T09:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": ["REQ-001"]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": ["CMP-004"],
+      "contracts": ["CTR-002"],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "环境的创建、查询列表、按ID查询、更新、删除",
+      "创建/更新时对关联密钥的校验",
+      "删除前检查环境是否被部署引用",
+      "提供测试SSH连接端点"
+    ],
+    "out_of_scope": [
+      "密钥本身的增删改查",
+      "部署记录的创建与状态流转",
+      "实际SSH握手指令执行",
+      "项目本身的CRUD"
+    ],
+    "owned_components": ["CMP-004"],
+    "owned_contracts": ["CTR-002"],
+    "consumed_contracts": ["CTR-011", "CTR-012"],
+    "owned_data_models": ["DM-002", "DM-003"],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "环境管理服务负责目标服务器连接信息的CRUD，协调密钥服务与部署引擎，保证环境配置的唯一性与安全性。",
+    "dependencies": ["密钥管理服务", "SSH连接管理器", "部署引擎"],
+    "tech_stack": ["Python 3.11+", "FastAPI", "SQLAlchemy", "SQLite", "asyncio"]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": ["CMP-004"],
+      "sad_contract_ids": ["CTR-002"],
+      "lld_objects": {
+        "data_models": ["DM-001", "DM-002", "DM-003"],
+        "interfaces": ["IF-001", "IF-002", "IF-003", "IF-004", "IF-005", "IF-006"],
+        "domain_objects": ["DO-001", "DO-002", "DO-003", "DO-004", "DO-005", "DO-006"],
+        "service_contracts": ["SC-001"]
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "environments",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "environments"
+      },
+      "description": "环境配置表视图，存储目标SSH服务器信息",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "name",
+          "type": "String",
+          "required": true,
+          "description": "环境名称"
+        },
+        {
+          "name": "type_tag",
+          "type": "String",
+          "required": false,
+          "description": "类型标签"
+        },
+        {
+          "name": "host",
+          "type": "String",
+          "required": true,
+          "description": "主机地址"
+        },
+        {
+          "name": "port",
+          "type": "Integer",
+          "required": true,
+          "description": "SSH端口，默认22"
+        },
+        {
+          "name": "authType",
+          "type": "String",
+          "required": true,
+          "description": "认证方式，当前仅支持key"
+        },
+        {
+          "name": "keyId",
+          "type": "Integer",
+          "required": false,
+          "description": "关联密钥ID"
+        },
+        {
+          "name": "remoteBaseDir",
+          "type": "String",
+          "required": true,
+          "description": "远程部署根目录"
+        },
+        {
+          "name": "preScript",
+          "type": "String",
+          "required": false,
+          "description": "前置脚本"
+        },
+        {
+          "name": "postScript",
+          "type": "String",
+          "required": false,
+          "description": "后置脚本"
+        },
+        {
+          "name": "rollbackScript",
+          "type": "String",
+          "required": false,
+          "description": "回滚脚本"
+        },
+        {
+          "name": "projectId",
+          "type": "Integer",
+          "required": true,
+          "description": "所属项目ID"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DateTime",
+          "required": true,
+          "description": "更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "ix_environments_project_id",
+          "unique": false,
+          "columns": ["project_id"]
+        }
+      ],
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-004"],
+      "source_contracts": ["CTR-002"],
+      "constraints": ["同一项目下环境名称唯一"],
+      "lifecycle": {
+        "create": "创建时检查名称唯一性和密钥有效性",
+        "update": "更新时检查名称唯一性和密钥有效性",
+        "delete": "删除前检查无活跃部署引用",
+        "retention": "长期保留"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "TestConnectionResult",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "测试连接结果",
+      "fields": [
+        {
+          "name": "success",
+          "type": "Boolean",
+          "required": true,
+          "description": "连接是否成功"
+        },
+        {
+          "name": "message",
+          "type": "String",
+          "required": true,
+          "description": "结果描述，失败时包含详细原因"
+        }
+      ],
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-004"],
+      "source_contracts": ["CTR-002"],
+      "constraints": [],
+      "lifecycle": {},
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-003",
+      "name": "EnvironmentCreateRequest",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "创建环境的请求体",
+      "fields": [
+        {
+          "name": "name",
+          "type": "String",
+          "required": true,
+          "description": "环境名称"
+        },
+        {
+          "name": "typeTag",
+          "type": "String",
+          "required": false,
+          "description": "类型标签"
+        },
+        {
+          "name": "host",
+          "type": "String",
+          "required": true,
+          "description": "主机地址"
+        },
+        {
+          "name": "port",
+          "type": "Integer",
+          "required": true,
+          "description": "SSH端口"
+        },
+        {
+          "name": "authType",
+          "type": "String",
+          "required": true,
+          "description": "认证方式"
+        },
+        {
+          "name": "keyId",
+          "type": "Integer",
+          "required": false,
+          "description": "密钥ID"
+        },
+        {
+          "name": "remoteBaseDir",
+          "type": "String",
+          "required": true,
+          "description": "远程部署根目录"
+        },
+        {
+          "name": "preScript",
+          "type": "String",
+          "required": false,
+          "description": "前置脚本"
+        },
+        {
+          "name": "postScript",
+          "type": "String",
+          "required": false,
+          "description": "后置脚本"
+        },
+        {
+          "name": "rollbackScript",
+          "type": "String",
+          "required": false,
+          "description": "回滚脚本"
+        },
+        {
+          "name": "projectId",
+          "type": "Integer",
+          "required": true,
+          "description": "所属项目ID"
+        }
+      ],
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-004"],
+      "source_contracts": ["CTR-002"],
+      "constraints": [],
+      "lifecycle": {},
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "Environment",
+      "object_type": "entity",
+      "description": "环境实体",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "name",
+          "type": "String",
+          "required": true,
+          "description": "环境名称"
+        },
+        {
+          "name": "typeTag",
+          "type": "String",
+          "required": false,
+          "description": "类型标签"
+        },
+        {
+          "name": "host",
+          "type": "String",
+          "required": true,
+          "description": "主机地址"
+        },
+        {
+          "name": "port",
+          "type": "Integer",
+          "required": true,
+          "description": "SSH端口"
+        },
+        {
+          "name": "authType",
+          "type": "String",
+          "required": true,
+          "description": "认证方式"
+        },
+        {
+          "name": "keyId",
+          "type": "Integer",
+          "required": false,
+          "description": "关联密钥ID"
+        },
+        {
+          "name": "remoteBaseDir",
+          "type": "String",
+          "required": true,
+          "description": "远程部署根目录"
+        },
+        {
+          "name": "preScript",
+          "type": "String",
+          "required": false,
+          "description": "前置脚本"
+        },
+        {
+          "name": "postScript",
+          "type": "String",
+          "required": false,
+          "description": "后置脚本"
+        },
+        {
+          "name": "rollbackScript",
+          "type": "String",
+          "required": false,
+          "description": "回滚脚本"
+        },
+        {
+          "name": "projectId",
+          "type": "Integer",
+          "required": true,
+          "description": "所属项目ID"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DateTime",
+          "required": true,
+          "description": "更新时间"
+        }
+      ],
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-004"],
+      "source_contracts": ["CTR-002"],
+      "invariants": [
+        "同一项目下环境名称必须唯一",
+        "SSH端口必须为正整数且在有效范围",
+        "如果authType为key，则keyId必须存在"
+      ],
+      "business_rules": [
+        "创建环境时，必须验证密钥服务是否存在对应的密钥（如果keyId不为空）",
+        "更新环境时，必须验证新密钥是否存在",
+        "删除环境前，必须检查是否有活跃的部署记录引用该环境"
+      ],
+      "lifecycle": {
+        "create": "通过create_environment方法创建",
+        "update": "通过update_environment方法更新",
+        "delete": "通过delete_environment方法删除",
+        "retention": "长期保留"
+      }
+    },
+    {
+      "id": "DO-002",
+      "name": "EnvironmentListResponse",
+      "object_type": "value_object",
+      "description": "环境列表响应对象",
+      "attributes": [
+        {
+          "name": "environments",
+          "type": "List<Environment>",
+          "required": true,
+          "description": "环境列表"
+        }
+      ],
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-004"],
+      "source_contracts": ["CTR-002"],
+      "invariants": [],
+      "business_rules": [],
+      "lifecycle": {}
+    },
+    {
+      "id": "DO-003",
+      "name": "EnvironmentResponse",
+      "object_type": "value_object",
+      "description": "单个环境响应对象",
+      "attributes": [
+        {
+          "name": "environment",
+          "type": "Environment",
+          "required": true,
+          "description": "环境实体"
+        }
+      ],
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-004"],
+      "source_contracts": ["CTR-002"],
+      "invariants": [],
+      "business_rules": [],
+      "lifecycle": {}
+    },
+    {
+      "id": "DO-004",
+      "name": "TestConnectionRequest",
+      "object_type": "value_object",
+      "description": "测试连接请求对象",
+      "attributes": [
+        {
+          "name": "environmentId",
+          "type": "Integer",
+          "required": true,
+          "description": "环境ID"
+        }
+      ],
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-004"],
+      "source_contracts": ["CTR-002"],
+      "invariants": [],
+      "business_rules": [],
+      "lifecycle": {}
+    },
+    {
+      "id": "DO-005",
+      "name": "TestConnectionResponse",
+      "object_type": "value_object",
+      "description": "测试连接响应对象",
+      "attributes": [
+        {
+          "name": "success",
+          "type": "Boolean",
+          "required": true,
+          "description": "连接是否成功"
+        },
+        {
+          "name": "message",
+          "type": "String",
+          "required": true,
+          "description": "结果描述"
+        }
+      ],
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-004"],
+      "source_contracts": ["CTR-002"],
+      "invariants": [],
+      "business_rules": [],
+      "lifecycle": {}
+    },
+    {
+      "id": "DO-006",
+      "name": "EnvironmentUpdateRequest",
+      "object_type": "value_object",
+      "description": "更新环境请求对象",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "String",
+          "required": true,
+          "description": "环境名称"
+        },
+        {
+          "name": "typeTag",
+          "type": "String",
+          "required": false,
+          "description": "类型标签"
+        },
+        {
+          "name": "host",
+          "type": "String",
+          "required": true,
+          "description": "主机地址"
+        },
+        {
+          "name": "port",
+          "type": "Integer",
+          "required": true,
+          "description": "SSH端口"
+        },
+        {
+          "name": "authType",
+          "type": "String",
+          "required": true,
+          "description": "认证方式"
+        },
+        {
+          "name": "keyId",
+          "type": "Integer",
+          "required": false,
+          "description": "密钥ID"
+        },
+        {
+          "name": "remoteBaseDir",
+          "type": "String",
+          "required": true,
+          "description": "远程部署根目录"
+        },
+        {
+          "name": "preScript",
+          "type": "String",
+          "required": false,
+          "description": "前置脚本"
+        },
+        {
+          "name": "postScript",
+          "type": "String",
+          "required": false,
+          "description": "后置脚本"
+        },
+        {
+          "name": "rollbackScript",
+          "type": "String",
+          "required": false,
+          "description": "回滚脚本"
+        }
+      ],
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-004"],
+      "source_contracts": ["CTR-002"],
+      "invariants": [],
+      "business_rules": [],
+      "lifecycle": {}
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "创建环境",
+      "endpoint": "POST /environments",
+      "method": "POST",
+      "path": "/environments",
+      "description": "创建新环境配置",
+      "request": {
+        "type": "application/json",
+        "schema": "EnvironmentCreateRequest"
+      },
+      "response": {
+        "type": "application/json",
+        "schema": "EnvironmentResponse"
+      },
+      "source_contracts": ["CTR-002"],
+      "source_components": ["CMP-004"],
+      "errors": [
+        {
+          "code": "DuplicateEnvironmentException",
+          "description": "环境名称重复",
+          "http_status": 409
+        },
+        {
+          "code": "KeyNotFoundException",
+          "description": "关联的密钥ID不存在",
+          "http_status": 404
+        }
+      ],
+      "summary": "创建环境配置"
+    },
+    {
+      "id": "IF-002",
+      "name": "环境列表查询",
+      "endpoint": "GET /environments?projectId={projectId}",
+      "method": "GET",
+      "path": "/environments",
+      "description": "查询指定项目的环境列表",
+      "request": {
+        "type": "application/json",
+        "schema": "queryParam: projectId (Integer, required)"
+      },
+      "response": {
+        "type": "application/json",
+        "schema": "EnvironmentListResponse"
+      },
+      "source_contracts": ["CTR-002"],
+      "source_components": ["CMP-004"],
+      "errors": [],
+      "summary": "获取环境列表"
+    },
+    {
+      "id": "IF-003",
+      "name": "按ID查询环境",
+      "endpoint": "GET /environments/{environmentId}",
+      "method": "GET",
+      "path": "/environments/{environmentId}",
+      "description": "根据环境ID查询环境详情",
+      "request": {
+        "type": "application/json",
+        "schema": "pathParam: environmentId (Integer, required)"
+      },
+      "response": {
+        "type": "application/json",
+        "schema": "EnvironmentResponse"
+      },
+      "source_contracts": ["CTR-002"],
+      "source_components": ["CMP-004"],
+      "errors": [
+        {
+          "code": "EnvironmentNotFoundException",
+          "description": "环境ID不存在",
+          "http_status": 404
+        }
+      ],
+      "summary": "获取单个环境详情"
+    },
+    {
+      "id": "IF-004",
+      "name": "更新环境",
+      "endpoint": "PUT /environments/{environmentId}",
+      "method": "PUT",
+      "path": "/environments/{environmentId}",
+      "description": "更新指定环境配置",
+      "request": {
+        "type": "application/json",
+        "schema": "EnvironmentUpdateRequest"
+      },
+      "response": {
+        "type": "application/json",
+        "schema": "EnvironmentResponse"
+      },
+      "source_contracts": ["CTR-002"],
+      "source_components": ["CMP-004"],
+      "errors": [
+        {
+          "code": "EnvironmentNotFoundException",
+          "description": "环境ID不存在",
+          "http_status": 404
+        },
+        {
+          "code": "DuplicateEnvironmentException",
+          "description": "环境名称已在项目中存在",
+          "http_status": 409
+        },
+        {
+          "code": "KeyNotFoundException",
+          "description": "关联的密钥ID不存在",
+          "http_status": 404
+        }
+      ],
+      "summary": "更新环境配置"
+    },
+    {
+      "id": "IF-005",
+      "name": "删除环境",
+      "endpoint": "DELETE /environments/{environmentId}",
+      "method": "DELETE",
+      "path": "/environments/{environmentId}",
+      "description": "删除指定环境",
+      "request": {
+        "type": "application/json",
+        "schema": "pathParam: environmentId (Integer, required)"
+      },
+      "response": {
+        "type": "application/json",
+        "schema": "none"
+      },
+      "source_contracts": ["CTR-002"],
+      "source_components": ["CMP-004"],
+      "errors": [
+        {
+          "code": "EnvironmentNotFoundException",
+          "description": "环境ID不存在",
+          "http_status": 404
+        },
+        {
+          "code": "EnvironmentInUseException",
+          "description": "环境被部署引用，无法删除",
+          "http_status": 409
+        }
+      ],
+      "summary": "删除环境配置"
+    },
+    {
+      "id": "IF-006",
+      "name": "测试SSH连接",
+      "endpoint": "POST /environments/test-connection",
+      "method": "POST",
+      "path": "/environments/test-connection",
+      "description": "测试指定环境的SSH连接",
+      "request": {
+        "type": "application/json",
+        "schema": "TestConnectionRequest"
+      },
+      "response": {
+        "type": "application/json",
+        "schema": "TestConnectionResponse"
+      },
+      "source_contracts": ["CTR-002"],
+      "source_components": ["CMP-004"],
+      "errors": [
+        {
+          "code": "EnvironmentNotFoundException",
+          "description": "环境ID不存在",
+          "http_status": 404
+        }
+      ],
+      "summary": "测试SSH连接"
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "EnvironmentService",
+      "description": "环境管理服务契约",
+      "source_contract": "CTR-002",
+      "methods": [
+        {
+          "name": "create_environment",
+          "signature": "create_environment(data: EnvironmentCreateRequest) -> EnvironmentResponse",
+          "description": "创建新环境",
+          "parameters": [
+            {
+              "name": "data",
+              "type": "EnvironmentCreateRequest",
+              "required": true,
+              "description": "创建环境请求数据"
+            }
+          ],
+          "returns": {
+            "type": "EnvironmentResponse",
+            "description": "创建的环境信息"
+          },
+          "exceptions": [
+            {
+              "type": "DuplicateEnvironmentException",
+              "description": "环境名称重复"
+            },
+            {
+              "type": "KeyNotFoundException",
+              "description": "关联的密钥ID不存在"
+            }
+          ],
+          "precondition": "项目ID必须存在，环境名称在项目中唯一，如提供keyId则密钥必须存在",
+          "postcondition": "环境记录创建成功，返回环境详情",
+          "source_requirements": ["REQ-001"]
+        },
+        {
+          "name": "list_environments",
+          "signature": "list_environments(projectId: int) -> EnvironmentListResponse",
+          "description": "查询环境列表",
+          "parameters": [
+            {
+              "name": "projectId",
+              "type": "Integer",
+              "required": true,
+              "description": "项目ID"
+            }
+          ],
+          "returns": {
+            "type": "EnvironmentListResponse",
+            "description": "指定项目的环境列表"
+          },
+          "exceptions": [],
+          "precondition": "项目ID必须存在",
+          "postcondition": "返回该项目的所有环境列表",
+          "source_requirements": ["REQ-001"]
+        },
+        {
+          "name": "get_environment",
+          "signature": "get_environment(environmentId: int) -> EnvironmentResponse",
+          "description": "获取单个环境详情",
+          "parameters": [
+            {
+              "name": "environmentId",
+              "type": "Integer",
+              "required": true,
+              "description": "环境ID"
+            }
+          ],
+          "returns": {
+            "type": "EnvironmentResponse",
+            "description": "环境详情"
+          },
+          "exceptions": [
+            {
+              "type": "EnvironmentNotFoundException",
+              "description": "环境ID不存在"
+            }
+          ],
+          "precondition": "环境ID必须存在",
+          "postcondition": "返回指定环境的详细信息",
+          "source_requirements": ["REQ-001"]
+        },
+        {
+          "name": "update_environment",
+          "signature": "update_environment(environmentId: int, data: EnvironmentUpdateRequest) -> EnvironmentResponse",
+          "description": "更新环境配置",
+          "parameters": [
+            {
+              "name": "environmentId",
+              "type": "Integer",
+              "required": true,
+              "description": "环境ID"
+            },
+            {
+              "name": "data",
+              "type": "EnvironmentUpdateRequest",
+              "required": true,
+              "description": "更新环境请求数据"
+            }
+          ],
+          "returns": {
+            "type": "EnvironmentResponse",
+            "description": "更新后的环境信息"
+          },
+          "exceptions": [
+            {
+              "type": "EnvironmentNotFoundException",
+              "description": "环境ID不存在"
+            },
+            {
+              "type": "DuplicateEnvironmentException",
+              "description": "环境名称已在项目中存在"
+            },
+            {
+              "type": "KeyNotFoundException",
+              "description": "关联的密钥ID不存在"
+            }
+          ],
+          "precondition": "环境ID必须存在，如果更新名称则必须在项目中唯一，如果更新keyId则密钥必须存在",
+          "postcondition": "环境信息更新成功，返回更新后的环境详情",
+          "source_requirements": ["REQ-001"]
+        },
+        {
+          "name": "delete_environment",
+          "signature": "delete_environment(environmentId: int) -> void",
+          "description": "删除环境",
+          "parameters": [
+            {
+              "name": "environmentId",
+              "type": "Integer",
+              "required": true,
+              "description": "环境ID"
+            }
+          ],
+          "returns": {
+            "type": "void",
+            "description": "无返回值"
+          },
+          "exceptions": [
+            {
+              "type": "EnvironmentNotFoundException",
+              "description": "环境ID不存在"
+            },
+            {
+              "type": "EnvironmentInUseException",
+              "description": "环境被部署引用，无法删除"
+            }
+          ],
+          "precondition": "环境ID必须存在，且没有活跃的部署引用该环境",
+          "postcondition": "环境记录被删除",
+          "source_requirements": ["REQ-001"]
+        },
+        {
+          "name": "test_connection",
+          "signature": "test_connection(environmentId: int) -> TestConnectionResponse",
+          "description": "测试SSH连接",
+          "parameters": [
+            {
+              "name": "environmentId",
+              "type": "Integer",
+              "required": true,
+              "description": "环境ID"
+            }
+          ],
+          "returns": {
+            "type": "TestConnectionResponse",
+            "description": "连接测试结果"
+          },
+          "exceptions": [
+            {
+              "type": "EnvironmentNotFoundException",
+              "description": "环境ID不存在"
+            }
+          ],
+          "precondition": "环境ID必须存在",
+          "postcondition": "返回连接测试结果，不会修改环境状态",
+          "source_requirements": ["REQ-001"]
+        }
+      ]
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "name": "环境名称唯一性检查",
+      "description": "同一项目下环境名称必须唯一",
+      "scope": ["create_environment", "update_environment"],
+      "invariants": [
+        "创建或更新环境时，检查项目内是否已存在同名环境"
+      ],
+      "validation_logic": "在数据库层通过唯一约束保证，或者在服务层查询检查"
+    },
+    {
+      "id": "BR-002",
+      "name": "密钥有效性检查",
+      "description": "如果环境配置了密钥ID，则必须确保该密钥存在",
+      "scope": ["create_environment", "update_environment"],
+      "invariants": [
+        "当authType为key时，必须提供keyId，并且keyId必须存在于密钥管理服务中"
+      ],
+      "validation_logic": "调用密钥管理服务的接口验证密钥是否存在"
+    },
+    {
+      "id": "BR-003",
+      "name": "环境删除前置检查",
+      "description": "删除环境前，必须检查是否存在活跃的部署引用该环境",
+      "scope": ["delete_environment"],
+      "invariants": [
+        "环境不能有状态为'deploying'或'assigned'的部署记录"
+      ],
+      "validation_logic": "查询部署记录表，检查是否有引用该环境ID的活跃记录"
+    }
+  ],
+  "error_handling": [
+    {
+      "id": "ERR-001",
+      "name": "DuplicateEnvironmentException",
+      "strategy": "返回409状态码，提示环境名称重复",
+      "trigger": "创建或更新环境时，项目内已存在同名环境",
+      "http_status": 409,
+      "message": "环境名 '{name}' 在项目中已存在"
+    },
+    {
+      "id": "ERR-002",
+      "name": "KeyNotFoundException",
+      "strategy": "返回404状态码，提示密钥ID不存在",
+      "trigger": "创建或更新环境时，提供的keyId在密钥服务中不存在",
+      "http_status": 404,
+      "message": "密钥ID {keyId} 不存在"
+    },
+    {
+      "id": "ERR-003",
+      "name": "EnvironmentNotFoundException",
+      "strategy": "返回404状态码，提示环境ID不存在",
+      "trigger": "查询、更新、删除或测试连接时，环境ID不存在",
+      "http_status": 404,
+      "message": "环境ID {environmentId} 不存在"
+    },
+    {
+      "id": "ERR-004",
+      "name": "EnvironmentInUseException",
+      "strategy": "返回409状态码，提示环境被引用无法删除",
+      "trigger": "删除环境时，存在活跃的部署记录引用该环境",
+      "http_status": 409,
+      "message": "环境无法删除，因为仍有部署引用"
+    }
+  ]
+}
