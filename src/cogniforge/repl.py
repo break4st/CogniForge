@@ -778,6 +778,7 @@ class Repl:
             its own WBSAssembler so there is no shared mutable state."""
             assembler = WBSAssembler(
                 agent.wiki_system, agent.task_engine, agent.agent,
+                conventions=agent.config.build_repo_conventions(),
             )
             return assembler.assemble(mod_name, lld_path,
                                        progress_callback=progress_cb)

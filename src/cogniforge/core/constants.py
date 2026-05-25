@@ -16,12 +16,20 @@ class DocumentType(str, Enum):
 
 
 class TaskStatus(str, Enum):
-    """Task status"""
+    """Task status — extends through the full DEV→CR→TEST→DONE lifecycle."""
     PENDING = "pending"
+    QUEUED = "queued"
+    RUNNING = "running"
     IN_PROGRESS = "in_progress"
-    DONE = "done"
+    IMPLEMENTED = "implemented"
     BLOCKED = "blocked"
+    REVIEWING = "reviewing"
+    REVIEW_FAILED = "review_failed"
+    TESTING = "testing"
+    TEST_FAILED = "test_failed"
+    DONE = "done"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class TaskPriority(int, Enum):

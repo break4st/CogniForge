@@ -45,6 +45,33 @@ roles:
   # reviewer: agent.claude_code   # Reviewer（代码评审）
   # qa: agent.claude_code         # QA（测试用例+报告）
   # devops: agent.claude_code     # DevOps（部署，推荐 AGENT）
+
+# ----- 仓库规范（WBS 机械生成阶段使用）-----
+repo_conventions:
+  language: python
+  frameworks: [FastAPI]
+  src_dir: src
+  test_dir: tests
+  file_ext: .py
+  migration_dir: migrations
+  lint_commands:
+    - ruff check {paths}
+    - mypy {paths}
+  test_commands:
+    - pytest {paths} -v
+  forbidden_dirs:
+    - .cogniforge/wiki/
+    - schemas/
+
+# ----- WBS 约束 -----
+wbs_constraints:
+  target_task_hours_min: 1.0
+  target_task_hours_max: 4.0
+  hard_max_hours: 6.0
+  max_files_per_task: 6
+  preserve_lld_refs: true
+  require_acceptance_criteria: true
+  require_file_boundary: true
 """
 
 # Roles that strongly prefer AGENT-type providers
@@ -120,6 +147,34 @@ class Config(BaseModel):
     # ── Role → provider mapping ──
     roles: dict[str, str] = Field(
         default_factory=lambda: dict(DEFAULT_ROLE_PROVIDERS)
+    )
+
+    # ── Repo conventions (WBS mechanical generation) ──
+    repo_conventions: dict = Field(
+        default_factory=lambda: {
+            "language": "python",
+            "frameworks": ["FastAPI"],
+            "src_dir": "src",
+            "test_dir": "tests",
+            "file_ext": ".py",
+            "migration_dir": "migrations",
+            "lint_commands": ["ruff check {paths}", "mypy {paths}"],
+            "test_commands": ["pytest {paths} -v"],
+            "forbidden_dirs": [".cogniforge/wiki/", "schemas/"],
+        }
+    )
+
+    # ── WBS constraints ──
+    wbs_constraints: dict = Field(
+        default_factory=lambda: {
+            "target_task_hours_min": 1.0,
+            "target_task_hours_max": 4.0,
+            "hard_max_hours": 6.0,
+            "max_files_per_task": 6,
+            "preserve_lld_refs": True,
+            "require_acceptance_criteria": True,
+            "require_file_boundary": True,
+        }
     )
 
     # ── Legacy fields (kept for backward compatibility) ──
@@ -348,6 +403,21 @@ class Config(BaseModel):
     def resolve_src_path(self, *parts: str) -> Path:
         """Resolve source file path"""
         return self.repo_path / self.src_path / "/".join(parts)
+
+    def build_repo_conventions(self, sad_data: dict | None = None) -> dict:
+        """Build RepoConventions dict, optionally enriched from SAD tech_stack.
+
+        Returns a copy so callers can mutate without affecting the config.
+        """
+        conventions = dict(self.repo_conventions)
+        if sad_data:
+            overview = sad_data.get("overview", {})
+            tech_stack = overview.get("tech_stack", [])
+            if tech_stack:
+                conventions["frameworks"] = [
+                    t for t in tech_stack if isinstance(t, str)
+                ]
+        return conventions
 
     @classmethod
     def from_file(cls, path: Path) -> "Config":

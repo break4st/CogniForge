@@ -6,12 +6,13 @@ from cogniforge.wbs.decomposition_rules import decompose, TaskStub
 from cogniforge.wbs.lld_artifact_registry import LLDArtifactRegistry
 
 
-def generate(registry: LLDArtifactRegistry) -> list[TaskStub]:
+def generate(registry: LLDArtifactRegistry,
+             conventions: dict | None = None) -> list[TaskStub]:
     """Generate task stubs from an LLD registry.
 
     Returns a flat list of TaskStub ordered by layer then suggested_name.
     """
-    stubs = decompose(registry)
+    stubs = decompose(registry, conventions)
     # Sort: layer ascending, then by name
     stubs.sort(key=lambda s: (s.layer, s.suggested_name))
     return stubs

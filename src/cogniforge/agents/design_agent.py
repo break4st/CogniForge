@@ -224,7 +224,7 @@ class DesignAgent(BaseAgent):
             )
 
             _progress("LLM 生成中")
-            max_retries = 2
+            max_retries = 5
             last_error = None
             for attempt in range(max_retries + 1):
                 if attempt > 0:
@@ -232,7 +232,8 @@ class DesignAgent(BaseAgent):
                     prompt = (
                         f"你上一次输出的 JSON 有语法错误，无法解析：\n"
                         f"错误: {last_error}\n\n"
-                        f"请重新生成。确保 JSON 格式正确，输出纯 JSON。\n\n"
+                        f"请重新生成。确保 JSON 格式正确，输出纯 JSON。\n"
+                        f"常见错误：中文引号混入、字符串内双引号未转义、数组写成对象。\n\n"
                         f"原始任务:\n{prompt}"
                     )
                 response = self.agent.generate_think_then_json(
@@ -267,12 +268,12 @@ class DesignAgent(BaseAgent):
             # Validate written JSON
             json.loads(json_abs.read_text(encoding="utf-8"))
 
-            # ── Validation loop (max 2 retries) ──
+            # ── Validation loop (keep retrying until schema passes) ──
             correction_attempts = 0
-            max_corrections = 2
+            max_corrections = 10  # safety upper bound
             validation_report = ""
 
-            while correction_attempts <= max_corrections:
+            while True:
                 if not json_abs.exists():
                     return self.format_result(
                         status="failed",
@@ -287,26 +288,31 @@ class DesignAgent(BaseAgent):
                 if validation["passed"]:
                     break
 
-                if correction_attempts < max_corrections:
-                    correction_attempts += 1
-                    _progress("LLM 修正中")
-                    current_json = json_abs.read_text(encoding="utf-8")
-                    fix_prompt = (
-                        f"你刚才生成的 LLD JSON 校验未通过：\n\n"
-                        f"{validation_report}\n\n"
-                        f"当前 JSON:\n{current_json[:6000]}\n\n"
-                        f"请修正以上所有问题，返回完整的修正后 JSON。"
-                        f"只返回纯 JSON 对象，不要 markdown 代码块包裹。"
-                    )
-                    from cogniforge.llm.base import LLMMessage
-                    fix_response = self.agent.generate_messages([
-                        LLMMessage(role="system", content="你是 CogniForge 系统的 Design Agent。职责: 生成 LLD JSON。"),
-                        LLMMessage(role="user", content=fix_prompt),
-                    ], max_tokens=8192)
-                    json_text = _extract_json(fix_response.content)
-                    json_abs.write_text(json_text, encoding="utf-8")
-                else:
+                correction_attempts += 1
+                if correction_attempts > max_corrections:
                     break
+
+                _progress(f"JSON Schema 校验未通过，LLM 第 {correction_attempts}/{max_corrections} 次修正中")
+                current_json = json_abs.read_text(encoding="utf-8")
+                fix_prompt = (
+                    f"你刚才生成的 LLD JSON 校验未通过：\n\n"
+                    f"{validation_report}\n\n"
+                    f"当前 JSON:\n{current_json[:6000]}\n\n"
+                    f"请修正以上所有问题，返回完整的修正后 JSON。"
+                    f"特别检查：\n"
+                    f"- methods 必须是数组 [] 不是对象 {{}}，每个元素带 name 字段\n"
+                    f"- domain_objects 必须是数组 [] 不是对象 {{}}\n"
+                    f"- workflow 必须是对象 {{}} 不是数组 []\n"
+                    f"- 数组中不能混入裸字符串\n"
+                    f"只返回纯 JSON 对象，不要 markdown 代码块包裹。"
+                )
+                from cogniforge.llm.base import LLMMessage
+                fix_response = self.agent.generate_messages([
+                    LLMMessage(role="system", content="你是 CogniForge 系统的 Design Agent。职责: 生成 LLD JSON。"),
+                    LLMMessage(role="user", content=fix_prompt),
+                ], max_tokens=8192)
+                json_text = _extract_json(fix_response.content)
+                json_abs.write_text(json_text, encoding="utf-8")
 
             return self._commit_and_result(
                 json_path, title, response.content,

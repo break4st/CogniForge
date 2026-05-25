@@ -51,8 +51,54 @@ class TaskContext(BaseModel):
     external_contracts: list[dict] = Field(default_factory=list)
     cross_module_deps: list[str] = Field(default_factory=list)
     tech_stack: list[str] = Field(default_factory=list)
+    repo_conventions: list[str] = Field(default_factory=list,
+        description="File layout / naming / test conventions for DEV Agent")
+    existing_files_hint: list[str] = Field(default_factory=list,
+        description="Existing files DEV should read before starting")
+    do_not_touch: list[str] = Field(default_factory=list,
+        description="Paths DEV must not modify")
     upstream_artifacts: list[dict] = Field(default_factory=list,
         description="Artifacts from completed upstream tasks: [{task_id, name, files, category}]")
+
+
+# ── New models for enhanced task contract ──
+
+
+class TaskSource(BaseModel):
+    """Traceability chain back to design documents."""
+    wbs_id: str = ""
+    prd_doc_id: str = ""
+    sad_doc_id: str = ""
+    lld_doc_id: str = ""
+    lld_path: str = ""
+    requirements: list[str] = Field(default_factory=list)
+    components: list[str] = Field(default_factory=list)
+    contracts: list[str] = Field(default_factory=list)
+    mde_turn_id: str = ""
+
+
+class ImplementationBoundary(BaseModel):
+    """File-level permissions for DEV agent — defines what can and cannot be touched."""
+    allowed_paths: list[str] = Field(default_factory=list)
+    allowed_path_globs: list[str] = Field(default_factory=list)
+    forbidden_paths: list[str] = Field(default_factory=list)
+    expected_output_files: list[str] = Field(default_factory=list)
+    max_files_changed: int = 6
+    may_create_files: bool = True
+
+
+class TaskValidation(BaseModel):
+    """Verification commands the orchestrator runs after DEV completes."""
+    commands: list[dict] = Field(default_factory=list,
+        description="List of {name, command, timeout_seconds} dicts")
+
+
+class DevAgentConfig(BaseModel):
+    """Execution configuration for the DEV agent."""
+    agent_type: str = "claude_code"
+    allow_bash: bool = False
+    test_execution_owner: str = "orchestrator"
+    run_in_worktree: bool = False
 
 
 class Task(BaseModel):
@@ -86,6 +132,20 @@ class Task(BaseModel):
         description="Expected output file paths declared at WBS time")
     layer: int = Field(default=0,
         description="Decomposition layer: 0=model, 1=service, 2=endpoint, 3=test")
+
+    # ── Enhanced task contract (Tech Lead → DEV Agent) ──
+    source: Optional[TaskSource] = Field(default=None,
+        description="Traceability chain back to PRD/SAD/LLD")
+    implementation_boundary: Optional[ImplementationBoundary] = Field(default=None,
+        description="File-level permissions for DEV agent")
+    validation: Optional[TaskValidation] = Field(default=None,
+        description="Post-DEV verification commands")
+    dev_agent: Optional[DevAgentConfig] = Field(default=None,
+        description="DEV agent execution configuration")
+    file_locks: list[str] = Field(default_factory=list,
+        description="Files exclusively locked by this task during parallel execution")
+    definition_of_done: list[str] = Field(default_factory=list,
+        description="Human-readable completion criteria")
 
     def mark_in_progress(self) -> None:
         self.status = TaskStatus.IN_PROGRESS

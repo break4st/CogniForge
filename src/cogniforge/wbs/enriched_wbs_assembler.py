@@ -9,16 +9,60 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from cogniforge.wbs.decomposition_rules import TaskStub
+from cogniforge.wbs.decomposition_rules import TaskStub, _default_forbidden_paths
 from cogniforge.wbs.lld_artifact_registry import LLDArtifactRegistry
 from cogniforge.wbs.task_stub_generator import generate, generate_summary
-from cogniforge.wbs.coverage_validator import validate_coverage, CoverageReport
+from cogniforge.wbs.coverage_validator import (validate_coverage, CoverageReport,
+                                                 validate_executability,
+                                                 validate_file_boundary,
+                                                 validate_dag)
 from cogniforge.wbs.task_context_builder import build_context
 from cogniforge.core.constants import TaskPriority
 
 if TYPE_CHECKING:
     from cogniforge.llm.base import BaseLLMAdapter
     from cogniforge.wiki.wiki_system import WikiSystem
+
+
+# ── LLM whitelist: fields the LLM is allowed to modify ──
+
+_LLM_ALLOWED_FIELDS = {
+    "name", "description", "priority", "estimated_hours", "deps", "adjustments"
+}
+
+
+def _enforce_whitelist(stub: TaskStub, enriched: dict) -> TaskStub:
+    """Copy LLM-allowed fields from enriched dict back to stub.
+
+    Protected fields (lld_refs, expected_output_files, allowed_paths,
+    forbidden_paths, layer, category, section_data, source, file_locks,
+    acceptance_criteria structure, validation_commands) are preserved
+    from the original stub regardless of what the LLM returned.
+    """
+    if enriched.get("name"):
+        stub.suggested_name = enriched["name"]
+    if enriched.get("description"):
+        stub.description_guide = enriched["description"]
+    if enriched.get("deps"):
+        stub.inferred_deps = enriched["deps"]
+    # LLM priority and hours are advisory only — stored for later use
+    return stub
+
+
+def _merge_llm_ac_descriptions(stub: TaskStub, enriched: dict) -> None:
+    """Only update acceptance_criteria descriptions from LLM output.
+
+    The criteria structure (id, source_section, source_item, verification_type,
+    expected) is locked — only the human-readable description may change.
+    """
+    llm_acs = enriched.get("acceptance_criteria", [])
+    if not llm_acs:
+        return
+    for i, ac in enumerate(stub.acceptance_criteria):
+        if i < len(llm_acs) and isinstance(llm_acs[i], dict):
+            llm_desc = llm_acs[i].get("description", "")
+            if llm_desc:
+                ac["description"] = llm_desc
 
 
 @dataclass
@@ -37,15 +81,16 @@ class WBSAssembler:
       1. Parse LLD → ArtifactRegistry
       2. Generate TaskStubs mechanically
       3. LLM enriches descriptions, estimates, priority, deps
-      4. Validate coverage → retry if gaps (max 2 rounds)
+      4. Four-dimensional validation (coverage, executability, boundary, DAG)
       5. Build TaskContext for each task
     """
 
     def __init__(self, wiki_system: "WikiSystem", task_engine,
-                 llm_adapter: "BaseLLMAdapter"):
+                 llm_adapter: "BaseLLMAdapter", conventions: dict | None = None):
         self.wiki = wiki_system
         self.task_engine = task_engine
         self.llm = llm_adapter
+        self.conventions = conventions or {}
 
     def assemble(self, module: str, lld_path: Path,
                  max_llm_rounds: int = 2,
@@ -70,7 +115,7 @@ class WBSAssembler:
         # 2. Mechanical stub generation
         if progress_callback:
             progress_callback("机械任务生成")
-        stubs = generate(registry)
+        stubs = generate(registry, self.conventions)
         summary = generate_summary(stubs)
 
         # 3. LLM enrichment
@@ -104,6 +149,23 @@ class WBSAssembler:
             llm_rounds=max_llm_rounds if not (report and report.passed) else 0,
             mode="structured",
         )
+
+    def validate_all(self, tasks: list[dict]) -> dict:
+        """Run all four dimensions of validation against assembled task dicts.
+
+        Returns a dict suitable for wbs.json quality_gates.
+        """
+        exec_report = validate_executability(tasks)
+        boundary_report = validate_file_boundary(tasks)
+        dag_report = validate_dag(tasks)
+
+        return {
+            "executability": {"passed": exec_report.passed, "issues": exec_report.issues},
+            "file_boundary": {"passed": boundary_report.passed, "conflicts": boundary_report.conflicts},
+            "dag": {"passed": dag_report.passed, "missing_deps": dag_report.missing_deps,
+                     "layer_violations": dag_report.layer_violations,
+                     "cycle_found": dag_report.cycle_found},
+        }
 
     def assemble_batch(self, module_specs: list[tuple[str, Path]]) -> list[WBSResult]:
         """Assemble WBS for multiple modules with a single batched LLM call.
@@ -203,7 +265,11 @@ class WBSAssembler:
             f'"category": "model", "layer": 0, '
             f'"lld_refs": [...], "expected_output_files": [...], '
             f'"adjustments": [null]}}]\n\n'
-            f"要求: 只输出 JSON 数组，不输出其他内容。"
+            f"要求: 只输出 JSON 数组，不输出其他内容。\n\n"
+            f"## LLM 边界\n"
+            f"你只能修改以下字段: name, description, deps, priority, estimated_hours, adjustments\n"
+            f"禁止修改: lld_refs, expected_output_files, allowed_paths, forbidden_paths, "
+            f"layer, category, section_data, source, file_locks"
         )
 
         response = self.llm.generate_agentic(prompt, role="techlead")
@@ -240,6 +306,9 @@ class WBSAssembler:
                 if deps:
                     stub.inferred_deps = deps
                 stub.confidence = "high"
+                # Enforce whitelist: protected fields stay as-is from stub
+                stub = _enforce_whitelist(stub, ed)
+                _merge_llm_ac_descriptions(stub, ed)
                 merged[mod].append(stub)
             else:
                 # New stub from LLM split — put in its module
@@ -305,7 +374,11 @@ class WBSAssembler:
             f'"category": "model", "layer": 0, '
             f'"lld_refs": [...], "expected_output_files": [...], '
             f'"adjustments": ["拆分理由" 或 null]}}]\n\n'
-            f"要求: 只输出 JSON 数组，不输出其他内容。完成后不需要确认。"
+            f"要求: 只输出 JSON 数组，不输出其他内容。完成后不需要确认。\n\n"
+            f"## LLM 边界\n"
+            f"你只能修改以下字段: name, description, deps, priority, estimated_hours, adjustments\n"
+            f"禁止修改: lld_refs, expected_output_files, allowed_paths, forbidden_paths, "
+            f"layer, category, section_data, source, file_locks, acceptance_criteria 框架"
         )
 
         response = self.llm.generate_agentic(prompt, role="techlead",
@@ -319,31 +392,38 @@ class WBSAssembler:
         # Filter out any non-dict entries (LLM may embed strings in arrays)
         enriched_dicts = [d for d in enriched_dicts if isinstance(d, dict)]
 
-        # Merge LLM output back into stubs
+        # Merge LLM output back into stubs WITH whitelist enforcement
         merged: list[TaskStub] = []
         index_map = {d.get("index", -1): d for d in enriched_dicts}
 
         for i, s in enumerate(stubs):
             ed = index_map.get(i)
-            if ed and ed.get("name"):
-                s.suggested_name = ed["name"]
-                s.description_guide = ed.get("description", s.description_guide)
-                s.confidence = "high"
+            if ed:
+                s = _enforce_whitelist(s, ed)
+                if ed.get("name"):
+                    s.confidence = "high"
+                _merge_llm_ac_descriptions(s, ed)
             merged.append(s)
 
         # Handle newly-added stubs (LLM split a task)
+        # New stubs inherit the LLD refs from the original task that was split
         for d in enriched_dicts:
             idx = d.get("index", -1)
             if idx < 0 or idx >= len(stubs):
                 new_stub = TaskStub(
                     suggested_name=d.get("name", "new-task"),
                     category=d.get("category", "service"),
-                    lld_refs=d.get("lld_refs", []),
+                    lld_refs=d.get("lld_refs", stubs[0].lld_refs if stubs else []),
                     description_guide=d.get("description", ""),
                     inferred_deps=d.get("deps", []),
                     expected_output_files=d.get("expected_output_files", []),
                     layer=d.get("layer", 1),
                     confidence="medium",
+                    allowed_paths=d.get("allowed_paths", []),
+                    forbidden_paths=_default_forbidden_paths(),
+                    acceptance_criteria=d.get("acceptance_criteria", []),
+                    validation_commands=d.get("validation_commands", []),
+                    file_locks=d.get("file_locks", []),
                 )
                 merged.append(new_stub)
 
@@ -368,13 +448,29 @@ class WBSAssembler:
                     resolved_deps.append(f"{module}-{name_to_idx[dep_name] + 1:03d}")
 
             priority_val = 2  # default medium
-            # Use LLM-enriched description if available
             desc = getattr(s, "description_guide", "") or ""
 
             # Build context for implementation stubs (not tests)
             ctx = None
             if s.category != "test":
                 ctx = build_context(s, registry, lld_data, all_module_llds)
+
+            # Build ImplementationBoundary dict
+            boundary = {
+                "allowed_paths": list(s.allowed_paths),
+                "allowed_path_globs": [],
+                "forbidden_paths": list(s.forbidden_paths),
+                "expected_output_files": list(s.expected_output_files),
+                "max_files_changed": self.conventions.get("wbs_constraints", {}).get(
+                    "max_files_per_task", 6
+                ) if isinstance(self.conventions.get("wbs_constraints"), dict) else 6,
+                "may_create_files": True,
+            }
+
+            # Build TaskValidation dict
+            validation = {
+                "commands": list(s.validation_commands),
+            }
 
             tasks.append({
                 "name": s.suggested_name,
@@ -389,6 +485,18 @@ class WBSAssembler:
                 "context": ctx,
                 "expected_output_files": s.expected_output_files,
                 "layer": s.layer,
+                # ── New fields ──
+                "source": s.source or {},
+                "implementation_boundary": boundary,
+                "validation": validation,
+                "acceptance_criteria": s.acceptance_criteria,
+                "file_locks": s.file_locks,
+                "dev_agent": {
+                    "agent_type": "claude_code",
+                    "allow_bash": False,
+                    "test_execution_owner": "orchestrator",
+                    "run_in_worktree": False,
+                },
             })
 
         return tasks
