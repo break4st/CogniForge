@@ -186,6 +186,37 @@ class DesignAgent(BaseAgent):
             ownership_rules = _OWNERSHIP_RULES.get(module_type, _OWNERSHIP_RULES["service"])
             conditional_schema = _build_conditional_schema(module_type)
 
+            # ── Staged generation: blueprint → parallel sections → assemble ──
+            staged_sections = self._STAGED_SECTIONS.get(module_type, [])
+            if staged_sections:
+                _progress("蓝图规划")
+                blueprint = self._generate_blueprint(
+                    module, module_type, title, overview,
+                    ownership_rules, contract_context, _progress,
+                )
+                if blueprint:
+                    _progress("分段生成")
+                    sections = self._generate_sections_parallel(
+                        staged_sections, blueprint,
+                        module, module_type, _progress,
+                    )
+                    data = self._assemble_lld(blueprint, sections)
+                    data["data_models"] = self._assign_ids(data.get("data_models", []), "DM")
+                    data["interfaces"] = self._assign_ids(data.get("interfaces", []), "IF")
+
+                    json_abs = Path(self.config.repo_path) / json_path
+                    json_abs.parent.mkdir(parents=True, exist_ok=True)
+                    json_abs.write_text(
+                        json.dumps(data, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+
+                    return self._validate_and_commit(
+                        json_path, json_abs, title,
+                        progress_callback=_progress,
+                    )
+
+            # ── Fallback: single-shot generation ──
             prompt = (
                 f"为以下模块生成完整 LLD JSON。\n\n"
                 f"{ownership_rules}\n\n"
@@ -253,54 +284,9 @@ class DesignAgent(BaseAgent):
             # Validate written JSON
             json.loads(json_abs.read_text(encoding="utf-8"))
 
-            # ── Validation loop (keep retrying until schema passes) ──
-            correction_attempts = 0
-            max_corrections = 10  # safety upper bound
-            validation_report = ""
-
-            while True:
-                if not json_abs.exists():
-                    return self.format_result(
-                        status="failed",
-                        message=f"LLM did not produce {json_path}"
-                    )
-
-                _progress("校验 JSON")
-                from cogniforge.lld_validator import validate_lld_json, format_validation_report
-                validation = validate_lld_json(json_abs)
-                validation_report = format_validation_report(validation)
-
-                if validation["passed"]:
-                    break
-
-                correction_attempts += 1
-                if correction_attempts > max_corrections:
-                    break
-
-                _progress(f"JSON Schema 校验未通过，LLM 第 {correction_attempts}/{max_corrections} 次修正中")
-                current_json = json_abs.read_text(encoding="utf-8")
-                fix_prompt = (
-                    f"你刚才生成的 LLD JSON 校验未通过：\n\n"
-                    f"{validation_report}\n\n"
-                    f"当前 JSON（请检查违反规则的具体字段）:\n{current_json[:6000]}\n\n"
-                    f"请修正以上所有问题，返回完整的修正后 JSON。\n"
-                    f"只返回纯 JSON 对象，不要 markdown 代码块包裹。"
-                )
-                from cogniforge.llm.base import LLMMessage
-                fix_response = self.agent.generate_messages([
-                    LLMMessage(role="system", content=(
-                        "你是 CogniForge 系统的 Design Agent。职责: 生成 LLD JSON。\n"
-                        "输出格式请参照 system prompt 中的 EXAMPLE JSON OUTPUT 示例。"
-                    )),
-                    LLMMessage(role="user", content=fix_prompt),
-                ], max_tokens=8192)
-                json_text = _extract_json(fix_response.content)
-                json_abs.write_text(json_text, encoding="utf-8")
-
-            return self._commit_and_result(
-                json_path, title, response.content,
-                validation=validation_report,
-                correction_attempts=correction_attempts,
+            return self._validate_and_commit(
+                json_path, json_abs, title,
+                reasoning=response.content,
                 progress_callback=_progress,
             )
 
@@ -497,7 +483,264 @@ class DesignAgent(BaseAgent):
 
         return "\n".join(parts) if parts else ""
 
-    def _commit_and_result(self, json_path: Path, title: str, reasoning: str = "",
+    # ------------------------------------------------------------------
+    # Staged LLD generation: blueprint → parallel sections → assemble
+    # ------------------------------------------------------------------
+
+    _SECTION_MAP: dict[str, str] = {
+        "data_models":       "lld-data-models",
+        "interfaces":        "lld-interfaces",
+        "error_handling":    "lld-error-handling",
+        "domain_objects":    "lld-domain-objects",
+        "service_contracts": "lld-service-contracts",
+        "business_rules":    "lld-business-rules",
+        "route_table":       "lld-gateway",
+        "component_tree":    "lld-component-tree",
+        "state_design":      "lld-state-design",
+        "route_design":      "lld-route-design",
+        "interaction_flows": "lld-interaction-flows",
+        "api_integration":   "lld-api-integration",
+        "index_strategy":    "lld-database",
+        "migration_strategy":"lld-database",
+        "capacity_estimation":"lld-database",
+        "connection_contracts":"lld-database",
+        "topology":          "lld-infrastructure",
+        "message_contracts": "lld-infrastructure",
+        "reliability_strategy":"lld-infrastructure",
+    }
+
+    _STAGED_SECTIONS: dict[str, list[str]] = {
+        "service":        ["data_models", "interfaces", "error_handling",
+                           "domain_objects", "service_contracts", "business_rules"],
+        "gateway":        ["data_models", "interfaces", "error_handling",
+                           "route_table"],
+        "frontend":       ["data_models", "interfaces",
+                           "component_tree", "state_design", "route_design",
+                           "interaction_flows", "api_integration"],
+        "database":       ["data_models", "interfaces",
+                           "index_strategy", "migration_strategy",
+                           "capacity_estimation", "connection_contracts"],
+        "infrastructure": ["data_models", "interfaces",
+                           "topology", "message_contracts", "reliability_strategy"],
+    }
+
+    def _generate_blueprint(
+        self, module: str, module_type: str, title: str,
+        overview: str, ownership_rules: str, contract_context: str,
+        progress_callback,
+    ) -> dict | None:
+        """Phase 1: generate top-level fields + artifact_index."""
+        from cogniforge.llm.base import LLMMessage
+
+        prompt = (
+            f"为以下模块规划详细设计文档的顶层结构和 ID 分配。\n\n"
+            f"## 模块信息\n"
+            f"module: {module}\nmodule_type: {module_type}\n"
+            f"overview: {overview}\n\n"
+            f"{ownership_rules}\n\n"
+            f"{contract_context}\n\n"
+            f"## 你需要输出\n"
+            f"只包含以下字段的 JSON（不包含 data_models、interfaces 等具体内容，这些会在后续步骤由其他 Agent 生成）：\n\n"
+            f"```json\n"
+            f"{{\n"
+            f'  "meta": {{ "doc_id": "lld-{module}-001", "type": "lld", ... }},\n'
+            f'  "source": {{ "prd": {{...}}, "sad": {{...}} }},\n'
+            f'  "module_boundary": {{ "in_scope": [...], "out_of_scope": [...] }},\n'
+            f'  "overview": {{ "description": "...", "dependencies": [...], "tech_stack": [...] }},\n'
+            f'  "traceability": [ {{ "requirement_id": "REQ-001", ... }} ],\n'
+            f'  "artifact_index": {{\n'
+            f'    "data_models":       [ {{"id": "DM-001", "name": "...", "hint": "一句话用途"}} ],\n'
+            f'    "interfaces":        [ {{"id": "IF-001", "name": "...", "hint": "一句话用途"}} ],\n'
+            f'    "domain_objects":    [ {{"id": "DO-001", "name": "...", "hint": "一句话用途"}} ],\n'
+            f'    "service_contracts": [ {{"id": "SC-001", "name": "...", "hint": "一句话用途"}} ]\n'
+            f'  }}\n'
+            f'}}\n'
+            f'```\n\n'
+            f'artifact_index 是关键——它锁定所有后续 section 的 ID 分配。\n'
+            f'后续 Agent 只能用这些 ID，不能自造。\n'
+            f'- data_models: ID 从 DM-001 起\n'
+            f'- interfaces: ID 从 IF-001 起\n'
+            f'- domain_objects: ID 从 DO-001 起（仅 service）\n'
+            f'- service_contracts: ID 从 SC-001 起（仅 service）\n\n'
+            f'只返回 JSON 对象，不要代码块包裹。'
+        )
+
+        if progress_callback:
+            progress_callback("蓝图规划中")
+        response = self.agent.generate(prompt)
+        json_text = _extract_json(response.content)
+
+        try:
+            from cogniforge.wiki.wiki_renderer import repair_truncated_json
+            data, _ = repair_truncated_json(json_text)
+        except ValueError:
+            return None
+
+        if "artifact_index" not in data:
+            return None
+        return data
+
+    def _generate_section(
+        self, section: str, blueprint: dict,
+        module: str, module_type: str,
+        progress_callback,
+    ) -> tuple[str, list | dict | None]:
+        """Phase 2: generate a single section."""
+        from cogniforge.llm.base import LLMMessage
+
+        schema_name = self._SECTION_MAP.get(section, "")
+        schema_text = _load_schema_text(schema_name) if schema_name else ""
+
+        # Build cross-reference context from blueprint
+        bp = json.dumps(blueprint, ensure_ascii=False, indent=2)
+
+        prompt = (
+            f"你是 CogniForge Design Agent。你负责生成 LLD 的**一个 section**：{section}\n\n"
+            f"## 蓝图（全局上下文 + ID 分配）\n"
+            f"以下蓝图定义了模块的顶层结构和所有 ID。你必须严格使用蓝图分配的 ID。\n"
+            f"```json\n{bp}\n```\n\n"
+            f"## 你的任务：生成 {section}\n"
+        )
+        if schema_text:
+            prompt += f"结构模板（按此格式填充内容）:\n```json\n{schema_text}\n```\n\n"
+
+        prompt += (
+            f"## 规则\n"
+            f"- 只输出 {section} 的 JSON 内容，格式: {{\"{section}\": [...]}} 或 {{\"{section}\": {{...}}}}\n"
+            f"- 严格使用蓝图分配的 ID，不可自造新 ID\n"
+            f"- 字段内容根据蓝图中的 overview、SAD contracts 等上下文来设计\n"
+            f"- 使用中文。不要代码块包裹。"
+        )
+
+        if progress_callback:
+            progress_callback(f"生成 {section}")
+
+        response = self.agent.generate(prompt)
+        json_text = _extract_json(response.content)
+
+        try:
+            from cogniforge.wiki.wiki_renderer import repair_truncated_json
+            data, _ = repair_truncated_json(json_text)
+        except ValueError:
+            return section, None
+
+        value = data.get(section) if isinstance(data, dict) else data
+        return section, value
+
+    def _generate_sections_parallel(
+        self, sections: list[str], blueprint: dict,
+        module: str, module_type: str,
+        progress_callback,
+    ) -> dict[str, list | dict]:
+        """Phase 2: generate all sections in parallel."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        results: dict[str, list | dict] = {}
+        max_workers = min(len(sections), 8)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {}
+            for section in sections:
+                f = executor.submit(
+                    self._generate_section,
+                    section, blueprint, module, module_type, progress_callback,
+                )
+                futures[f] = section
+
+            for future in as_completed(futures):
+                section, value = future.result()
+                if value is not None:
+                    results[section] = value
+
+        return results
+
+    def _assemble_lld(
+        self, blueprint: dict, sections: dict[str, list | dict]
+    ) -> dict:
+        """Phase 3: merge blueprint + sections into complete LLD JSON."""
+        lld = {}
+
+        # Copy blueprint fields
+        for key in ("meta", "source", "module_boundary", "overview", "traceability"):
+            if key in blueprint:
+                lld[key] = blueprint[key]
+
+        # Merge sections
+        for section_name, section_data in sections.items():
+            if isinstance(section_data, list):
+                lld[section_name] = section_data
+            elif isinstance(section_data, dict):
+                lld[section_name] = section_data
+            else:
+                lld[section_name] = section_data
+
+        # Copy optional blueprint fields not covered by sections
+        for key in set(blueprint) - set(lld):
+            if key != "artifact_index":
+                lld[key] = blueprint[key]
+
+        return lld
+
+    def _validate_and_commit(
+        self, json_path: str, json_abs: Path, title: str,
+        reasoning: str = "",
+        progress_callback=None,
+    ) -> dict:
+        """Validate LLD JSON, retry up to 10 times, then commit + render HTML."""
+        from cogniforge.lld_validator import validate_lld_json, format_validation_report
+        from cogniforge.llm.base import LLMMessage
+
+        correction_attempts = 0
+        max_corrections = 10
+        validation_report = ""
+
+        while True:
+            if not json_abs.exists():
+                return self.format_result(
+                    status="failed",
+                    message=f"LLD did not produce {json_path}"
+                )
+
+            if progress_callback:
+                progress_callback("校验 JSON")
+            validation = validate_lld_json(json_abs)
+            validation_report = format_validation_report(validation)
+
+            if validation["passed"]:
+                break
+
+            correction_attempts += 1
+            if correction_attempts > max_corrections:
+                break
+
+            if progress_callback:
+                progress_callback(f"JSON Schema 校验未通过，LLM 第 {correction_attempts}/{max_corrections} 次修正中")
+            current_json = json_abs.read_text(encoding="utf-8")
+            fix_prompt = (
+                f"你刚才生成的 LLD JSON 校验未通过：\n\n"
+                f"{validation_report}\n\n"
+                f"当前 JSON（请检查违反规则的具体字段）:\n{current_json[:6000]}\n\n"
+                f"请修正以上所有问题，返回完整的修正后 JSON。\n"
+                f"只返回纯 JSON 对象，不要 markdown 代码块包裹。"
+            )
+            fix_response = self.agent.generate_messages([
+                LLMMessage(role="system", content=(
+                    "你是 CogniForge 系统的 Design Agent。职责: 生成 LLD JSON。\n"
+                    "输出格式请参照 system prompt 中的 EXAMPLE JSON OUTPUT 示例。"
+                )),
+                LLMMessage(role="user", content=fix_prompt),
+            ], max_tokens=8192)
+            json_text = _extract_json(fix_response.content)
+            json_abs.write_text(json_text, encoding="utf-8")
+
+        return self._commit_and_result(
+            json_path, title, reasoning,
+            validation=validation_report,
+            correction_attempts=correction_attempts,
+            progress_callback=progress_callback,
+        )
+
+    def _commit_and_result(self, json_path: str, title: str, reasoning: str = "",
                            validation: str = "", correction_attempts: int = 0,
                            progress_callback: Callable[[str], None] | None = None) -> dict:
         def _progress(phase: str) -> None:
