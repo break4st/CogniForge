@@ -1,0 +1,740 @@
+{
+  "meta": {
+    "doc_id": "lld-ProjectService-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "ProjectService",
+    "title": "ProjectService 模块详细设计",
+    "author": "design_agent",
+    "created": "2025-05-16T00:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001",
+        "REQ-007"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-011"
+      ],
+      "contracts": [
+        "CTR-001",
+        "CTR-002",
+        "CTR-003",
+        "CTR-004"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "项目的创建、查询、更新、删除（CRUD）逻辑",
+      "获取所有项目列表，支持按名称模糊搜索和按字段排序",
+      "切换当前项目时，提供项目状态查询依据"
+    ],
+    "out_of_scope": [
+      "环境、部署、密钥、脚本等关联实体的具体管理",
+      "基于项目的用户权限控制逻辑",
+      "项目间的资源隔离或配额管理"
+    ],
+    "owned_components": [
+      "CMP-011"
+    ],
+    "owned_contracts": [
+      "CTR-001",
+      "CTR-002",
+      "CTR-003",
+      "CTR-004"
+    ],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": [
+      "DM-001"
+    ]
+  },
+  "overview": {
+    "description": "处理项目的增删改查逻辑，包括项目列表的模糊搜索与排序，以及切换当前项目时的数据刷新支持。采用 FastAPI 提供 REST 接口，通过 SQLAlchemy ORM 与 SQLite 数据库交互。",
+    "dependencies": [
+      "SQLiteDatabase"
+    ],
+    "tech_stack": [
+      "Python 3.11",
+      "FastAPI",
+      "SQLite",
+      "SQLAlchemy"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-011"
+      ],
+      "sad_contract_ids": [
+        "CTR-002",
+        "CTR-003",
+        "CTR-004"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-002",
+          "IF-003",
+          "IF-004"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004"
+        ],
+        "service_contracts": [
+          "SC-001",
+          "SC-002",
+          "SC-003"
+        ]
+      },
+      "coverage": "full",
+      "notes": "实现项目的创建、更新、删除核心业务"
+    },
+    {
+      "requirement_id": "REQ-007",
+      "sad_component_ids": [
+        "CMP-011"
+      ],
+      "sad_contract_ids": [
+        "CTR-001"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-001"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-005",
+          "DO-006"
+        ],
+        "service_contracts": [
+          "SC-004"
+        ]
+      },
+      "coverage": "full",
+      "notes": "为仪表盘和导航栏提供项目列表及状态"
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "项目名称在活动项目中唯一",
+      "软删除的项目不显示在查询结果中",
+      "每个操作必须更新 updated_at 时间戳"
+    ],
+    "validation": [
+      "项目名称不能为空，长度不超过100字符",
+      "项目描述长度不超过500字符"
+    ],
+    "transactions": [],
+    "error_handling": []
+  },
+  "error_handling": {
+    "strategy": "使用统一的错误响应格式，包含错误码和消息。业务异常返回 HTTP 4xx，内部错误返回 HTTP 500。",
+    "errors": {
+      "validation_error": {
+        "code": 400,
+        "message": "输入参数验证失败",
+        "http_status": 400
+      },
+      "duplicate_project_name": {
+        "code": 409,
+        "message": "项目名称已存在",
+        "http_status": 409
+      },
+      "project_not_found": {
+        "code": 404,
+        "message": "项目不存在",
+        "http_status": 404
+      },
+      "internal_error": {
+        "code": 500,
+        "message": "服务器内部错误",
+        "http_status": 500
+      }
+    }
+  },
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "projects_view",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "projects"
+      },
+      "description": "ProjectService 对物理 projects 表的引用视图，仅列出本服务关心的字段。last_deploy_status 和 last_deploy_time 通过聚合查询获得。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "name",
+          "type": "String",
+          "required": true,
+          "description": "项目名称，唯一"
+        },
+        {
+          "name": "description",
+          "type": "String",
+          "required": false,
+          "description": "项目描述"
+        },
+        {
+          "name": "is_deleted",
+          "type": "Boolean",
+          "required": true,
+          "description": "软删除标记，默认 False"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_projects_name",
+          "unique": true,
+          "columns": [
+            "name",
+            "is_deleted"
+          ]
+        },
+        {
+          "name": "idx_projects_created_at",
+          "unique": false,
+          "columns": [
+            "created_at"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001",
+        "REQ-007"
+      ],
+      "source_components": [
+        "CMP-011"
+      ],
+      "source_contracts": [
+        "CTR-001",
+        "CTR-002",
+        "CTR-003",
+        "CTR-004"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "通过 create_project 服务创建新记录，is_deleted 初始为 False",
+        "update": "通过 update_project 服务更新 name/description，自动更新 updated_at",
+        "delete": "通过 delete_project 服务将 is_deleted 标记为 True（软删除）",
+        "retention": "软删除数据永久保留"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "Project",
+      "object_type": "entity",
+      "description": "项目实体",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "int",
+          "description": "唯一标识"
+        },
+        {
+          "name": "name",
+          "type": "str",
+          "description": "项目名称"
+        },
+        {
+          "name": "description",
+          "type": "str",
+          "description": "项目描述"
+        },
+        {
+          "name": "is_deleted",
+          "type": "bool",
+          "description": "软删除标记"
+        },
+        {
+          "name": "created_at",
+          "type": "datetime",
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "datetime",
+          "description": "更新时间"
+        }
+      ],
+      "relationships": [],
+      "business_rules": []
+    },
+    {
+      "id": "DO-002",
+      "name": "CreateProjectRequest",
+      "object_type": "value_object",
+      "description": "创建项目请求体",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "str",
+          "description": "项目名称"
+        },
+        {
+          "name": "description",
+          "type": "str",
+          "description": "项目描述"
+        }
+      ],
+      "relationships": [],
+      "business_rules": []
+    },
+    {
+      "id": "DO-003",
+      "name": "UpdateProjectRequest",
+      "object_type": "value_object",
+      "description": "更新项目请求体",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "str",
+          "description": "项目名称"
+        },
+        {
+          "name": "description",
+          "type": "str",
+          "description": "项目描述"
+        }
+      ],
+      "relationships": [],
+      "business_rules": []
+    },
+    {
+      "id": "DO-004",
+      "name": "DeleteProjectRequest",
+      "object_type": "value_object",
+      "description": "删除项目请求无请求体",
+      "attributes": [],
+      "relationships": [],
+      "business_rules": []
+    },
+    {
+      "id": "DO-005",
+      "name": "ProjectListResponse",
+      "object_type": "value_object",
+      "description": "项目列表响应体",
+      "attributes": [
+        {
+          "name": "projects",
+          "type": "list[ProjectListItem]",
+          "description": "项目列表"
+        }
+      ],
+      "relationships": [],
+      "business_rules": []
+    },
+    {
+      "id": "DO-006",
+      "name": "ProjectListItem",
+      "object_type": "value_object",
+      "description": "项目列表项",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "int",
+          "description": "项目ID"
+        },
+        {
+          "name": "name",
+          "type": "str",
+          "description": "项目名称"
+        },
+        {
+          "name": "description",
+          "type": "str",
+          "description": "项目描述"
+        },
+        {
+          "name": "last_deploy_status",
+          "type": "str",
+          "description": "最近部署状态"
+        },
+        {
+          "name": "last_deploy_time",
+          "type": "str",
+          "description": "最近部署时间"
+        }
+      ],
+      "relationships": [],
+      "business_rules": []
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "get_projects",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-011",
+      "method": "GET",
+      "endpoint": "/api/projects",
+      "description": "获取所有活动项目列表，支持按名称模糊搜索和按时间/名称排序，包含最近部署状态",
+      "parameters": [
+        {
+          "name": "search",
+          "type": "string",
+          "in": "query",
+          "required": false,
+          "description": "按项目名称模糊搜索关键字"
+        },
+        {
+          "name": "sort",
+          "type": "string",
+          "in": "query",
+          "required": false,
+          "description": "排序字段，例如 name_asc, name_desc, created_asc, created_desc"
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "成功返回项目列表",
+          "body": {
+            "type": "array",
+            "items": {
+              "$ref": "DO-006"
+            }
+          }
+        },
+        "500": {
+          "description": "服务器内部错误",
+          "body": {
+            "$ref": "error_response"
+          }
+        }
+      }
+    },
+    {
+      "id": "IF-002",
+      "name": "create_project",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-002",
+      "provider_component_id": "CMP-011",
+      "method": "POST",
+      "endpoint": "/api/projects",
+      "description": "创建新项目",
+      "parameters": [],
+      "responses": {
+        "201": {
+          "description": "项目创建成功",
+          "body": {
+            "$ref": "DO-001"
+          }
+        },
+        "400": {
+          "description": "请求参数错误",
+          "body": {
+            "$ref": "error_response"
+          }
+        },
+        "409": {
+          "description": "项目名重复",
+          "body": {
+            "$ref": "error_response"
+          }
+        },
+        "500": {
+          "description": "服务器内部错误",
+          "body": {
+            "$ref": "error_response"
+          }
+        }
+      }
+    },
+    {
+      "id": "IF-003",
+      "name": "update_project",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-003",
+      "provider_component_id": "CMP-011",
+      "method": "PUT",
+      "endpoint": "/api/projects/{project_id}",
+      "description": "更新项目信息",
+      "parameters": [
+        {
+          "name": "project_id",
+          "type": "integer",
+          "in": "path",
+          "required": true,
+          "description": "项目ID"
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "更新后的项目对象",
+          "body": {
+            "$ref": "DO-001"
+          }
+        },
+        "400": {
+          "description": "请求参数错误",
+          "body": {
+            "$ref": "error_response"
+          }
+        },
+        "404": {
+          "description": "项目不存在",
+          "body": {
+            "$ref": "error_response"
+          }
+        },
+        "500": {
+          "description": "服务器内部错误",
+          "body": {
+            "$ref": "error_response"
+          }
+        }
+      }
+    },
+    {
+      "id": "IF-004",
+      "name": "delete_project",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-004",
+      "provider_component_id": "CMP-011",
+      "method": "DELETE",
+      "endpoint": "/api/projects/{project_id}",
+      "description": "软删除项目",
+      "parameters": [
+        {
+          "name": "project_id",
+          "type": "integer",
+          "in": "path",
+          "required": true,
+          "description": "项目ID"
+        }
+      ],
+      "responses": {
+        "204": {
+          "description": "删除成功，无返回内容",
+          "body": null
+        },
+        "404": {
+          "description": "项目不存在",
+          "body": {
+            "$ref": "error_response"
+          }
+        },
+        "500": {
+          "description": "服务器内部错误",
+          "body": {
+            "$ref": "error_response"
+          }
+        }
+      }
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "ProjectService.create_project",
+      "methods": [
+        {
+          "id": "M-001",
+          "name": "create_project",
+          "description": "创建新项目",
+          "parameters": [
+            {
+              "name": "request",
+              "type": "CreateProjectRequest",
+              "required": true,
+              "description": "创建项目请求"
+            }
+          ],
+          "return_type": "Project",
+          "exceptions": [
+            "validation_error",
+            "duplicate_project_name"
+          ],
+          "business_logic": "验证项目名称唯一性，创建项目记录并返回。",
+          "source_components": ["CMP-011"],
+          "source_contracts": ["CTR-002"]
+        }
+      ],
+      "source_requirements": ["REQ-001"]
+    },
+    {
+      "id": "SC-002",
+      "name": "ProjectService.update_project",
+      "methods": [
+        {
+          "id": "M-002",
+          "name": "update_project",
+          "description": "更新项目信息",
+          "parameters": [
+            {
+              "name": "project_id",
+              "type": "int",
+              "required": true,
+              "description": "项目ID"
+            },
+            {
+              "name": "request",
+              "type": "UpdateProjectRequest",
+              "required": true,
+              "description": "更新项目请求"
+            }
+          ],
+          "return_type": "Project",
+          "exceptions": [
+            "project_not_found",
+            "validation_error"
+          ],
+          "business_logic": "查找项目，更新字段，保存并返回。",
+          "source_components": ["CMP-011"],
+          "source_contracts": ["CTR-003"]
+        }
+      ],
+      "source_requirements": ["REQ-001"]
+    },
+    {
+      "id": "SC-003",
+      "name": "ProjectService.delete_project",
+      "methods": [
+        {
+          "id": "M-003",
+          "name": "delete_project",
+          "description": "软删除项目",
+          "parameters": [
+            {
+              "name": "project_id",
+              "type": "int",
+              "required": true,
+              "description": "项目ID"
+            }
+          ],
+          "return_type": "None",
+          "exceptions": [
+            "project_not_found"
+          ],
+          "business_logic": "标记项目为已删除。",
+          "source_components": ["CMP-011"],
+          "source_contracts": ["CTR-004"]
+        }
+      ],
+      "source_requirements": ["REQ-001"]
+    },
+    {
+      "id": "SC-004",
+      "name": "ProjectService.get_project_list",
+      "methods": [
+        {
+          "id": "M-004",
+          "name": "get_project_list",
+          "description": "获取项目列表",
+          "parameters": [
+            {
+              "name": "search",
+              "type": "str",
+              "required": false,
+              "description": "搜索关键字"
+            },
+            {
+              "name": "sort",
+              "type": "str",
+              "required": false,
+              "description": "排序字段"
+            }
+          ],
+          "return_type": "List[ProjectListItem]",
+          "exceptions": [],
+          "business_logic": "查询未删除的项目，支持搜索和排序。",
+          "source_components": ["CMP-011"],
+          "source_contracts": ["CTR-001"]
+        }
+      ],
+      "source_requirements": ["REQ-007"]
+    }
+  ],
+  "components": [
+    {
+      "id": "CMP-011",
+      "name": "ProjectService",
+      "type": "service",
+      "description": "处理项目CRUD操作的服务",
+      "responsibilities": [
+        "实现项目创建、查询、更新、删除逻辑",
+        "提供REST API接口"
+      ],
+      "dependencies": [
+        "SQLiteDatabase"
+      ],
+      "interfaces": [
+        "IF-001",
+        "IF-002",
+        "IF-003",
+        "IF-004"
+      ],
+      "source_requirements": [
+        "REQ-001",
+        "REQ-007"
+      ]
+    }
+  ],
+  "change_history": [
+    {
+      "version": 1,
+      "change_type": "created",
+      "summary": "初始创建",
+      "reason": "首次生成 LLD"
+    }
+  ]
+}
