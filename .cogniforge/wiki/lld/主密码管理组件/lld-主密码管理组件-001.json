@@ -1,0 +1,517 @@
+{
+  "meta": {
+    "doc_id": "lld-MasterPasswordManagement-001",
+    "type": "lld",
+    "module_type": "frontend",
+    "module": "主密码管理组件",
+    "title": "主密码管理组件详细设计文档",
+    "author": "design_agent",
+    "created": "2025-03-27T10:00:00Z",
+    "version": 2,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-001"
+      ],
+      "contracts": [
+        "CTR-001"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "提供主密码输入界面（React组件+路由）",
+      "会话超时监听，超时后自动锁定并弹出重新验证界面",
+      "向后端凭证加密存储服务提交主密码验证",
+      "解锁成功后将令牌缓存至全局状态，失败则给出明确错误提示"
+    ],
+    "out_of_scope": [
+      "主密码的存储与加密算法实现（由后端的凭证加密存储服务负责）",
+      "令牌过期后的续期逻辑（由全局会话管理器统一处理）"
+    ],
+    "owned_components": [
+      "CMP-001"
+    ],
+    "owned_contracts": [],
+    "consumed_contracts": [
+      "CTR-001"
+    ],
+    "owned_data_models": [
+      "DM-001",
+      "DM-002",
+      "DM-003"
+    ],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "前端组件，应用启动时或会话超时后要求输入主密码以解锁加密凭证，使用React 18 + Ant Design构建。",
+    "dependencies": [
+      "凭证加密存储服务（后端API）",
+      "全局路由守卫与状态管理模块"
+    ],
+    "tech_stack": [
+      "React 18",
+      "Ant Design"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [
+        "CTR-001"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002",
+          "DM-003"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002"
+        ],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": "本模块实现主密码验证相关的完整前端交互流程"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "MasterPasswordFormData",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "主密码表单中用户输入的数据结构",
+      "fields": [
+        {
+          "name": "password",
+          "type": "string",
+          "required": true,
+          "description": "用户输入的主密码"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "用户在解锁表单中输入密码时创建，提交后即清理",
+        "update": "",
+        "delete": "提交成功后清理该结构",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "AuthState",
+      "type": "store",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "全局认证状态，由unlock流程产生并被路由守卫等消费",
+      "fields": [
+        {
+          "name": "isUnlocked",
+          "type": "boolean",
+          "required": true,
+          "description": "当前是否已解锁"
+        },
+        {
+          "name": "sessionToken",
+          "type": "string",
+          "required": true,
+          "description": "验证成功后返回的临时令牌"
+        },
+        {
+          "name": "lastActiveTime",
+          "type": "number",
+          "required": true,
+          "description": "最后一次用户交互时间戳，用于超时判定"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "应用初始化时创建默认值",
+        "update": "解锁成功/超时锁定时更新字段",
+        "delete": "应用卸载或重置时清除",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-003",
+      "name": "SessionConfig",
+      "type": "config",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "会话超时配置",
+      "fields": [
+        {
+          "name": "timeoutMinutes",
+          "type": "number",
+          "required": true,
+          "description": "会话超时分钟数，默认从环境变量或系统配置获取"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [],
+      "constraints": [],
+      "lifecycle": {
+        "create": "应用启动时从环境变量或配置API加载",
+        "update": "",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "解锁页面路由",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "frontend",
+      "endpoint": "/unlock",
+      "description": "全屏无导航布局，展示主密码输入框和提交按钮，用户输入主密码进行验证",
+      "parameters": [],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {}
+      },
+      "error_codes": [
+        {
+          "code": 401,
+          "description": "密码错误",
+          "type": "object",
+          "message": "密码错误，请重试"
+        },
+        {
+          "code": 500,
+          "description": "服务器内部错误",
+          "type": "object",
+          "message": "服务器内部错误，请稍后重试"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "主密码验证API",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-002",
+      "method": "POST",
+      "endpoint": "/api/verify-master-password",
+      "description": "向后端发送主密码进行验证",
+      "parameters": [],
+      "request_body": {
+        "type": "object",
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "主密码"
+          }
+        },
+        "required": ["password"]
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "object",
+          "properties": {
+            "sessionToken": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "error_codes": [
+        {
+          "code": 401,
+          "description": "密码错误",
+          "type": "object",
+          "message": "密码错误，请重试"
+        },
+        {
+          "code": 500,
+          "description": "服务器内部错误",
+          "type": "object",
+          "message": "服务器内部错误，请稍后重试"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    }
+  ],
+  "component_tree": {
+    "description": "主密码管理组件由两个主要部分构成：解锁页面组件和认证状态管理。解锁页面组件通过路由加载，包含表单组件和提交逻辑。状态管理部分包含认证状态存储和超时监听器。",
+    "components": [
+      {
+        "id": "unlock-page",
+        "name": "UnlockPage",
+        "type": "page",
+        "description": "全屏解锁页面，包含主密码输入表单和提交按钮",
+        "children": []
+      }
+    ]
+  },
+  "state_design": {
+    "stores": [
+      {
+        "id": "auth-store",
+        "name": "AuthStore",
+        "type": "store",
+        "description": "管理认证状态，包括解锁状态、令牌和最后活跃时间",
+        "initial_state": {
+          "isUnlocked": false,
+          "sessionToken": "",
+          "lastActiveTime": 0
+        },
+        "actions": [
+          {
+            "name": "unlock",
+            "description": "设置解锁状态，保存令牌和当前时间",
+            "payload": {
+              "sessionToken": "string"
+            }
+          },
+          {
+            "name": "lock",
+            "description": "重置为锁定状态，清除令牌"
+          }
+        ]
+      }
+    ],
+    "local_states": [
+      {
+        "id": "form-state",
+        "name": "formState",
+        "component": "UnlockPage",
+        "description": "管理表单输入值、加载状态和错误信息"
+      }
+    ]
+  },
+  "route_design": {
+    "routes": [
+      {
+        "path": "/unlock",
+        "component": "UnlockPage",
+        "auth_required": false,
+        "description": "解锁页面，用于输入主密码",
+        "meta": {
+          "title": "解锁"
+        }
+      }
+    ],
+    "guards": [
+      {
+        "type": "redirect",
+        "from": "*",
+        "to": "/unlock",
+        "condition": "当AuthStore.isUnlocked为false时，所有非/unlock路径重定向到/unlock"
+      }
+    ]
+  },
+  "interaction_flows": [
+    {
+      "id": "flow-unlock",
+      "name": "解锁主流程",
+      "description": "用户输入主密码并提交验证，成功后跳转，失败提示错误",
+      "steps": [
+        {
+          "order": 1,
+          "actor": "user",
+          "action": "在/unlock页面输入密码，点击提交",
+          "system_response": "表单验证非空，发起API请求"
+        },
+        {
+          "order": 2,
+          "actor": "system",
+          "action": "调用POST /api/verify-master-password",
+          "system_response": "等待后端响应"
+        },
+        {
+          "order": 3,
+          "actor": "system",
+          "action": "收到200响应，提取sessionToken",
+          "system_response": "调用AuthStore.unlock(token)，然后路由跳转到主页"
+        },
+        {
+          "order": 4,
+          "actor": "system",
+          "action": "收到401响应",
+          "system_response": "显示错误信息“密码错误”，清空输入框"
+        },
+        {
+          "order": 5,
+          "actor": "system",
+          "action": "收到其他错误",
+          "system_response": "显示通用错误提示"
+        }
+      ]
+    },
+    {
+      "id": "flow-timeout",
+      "name": "会话超时锁定流程",
+      "description": "定时检测用户不活动时间，超时后自动锁定",
+      "steps": [
+        {
+          "order": 1,
+          "actor": "system",
+          "action": "监听用户交互事件，更新lastActiveTime",
+          "system_response": ""
+        },
+        {
+          "order": 2,
+          "actor": "system",
+          "action": "定时检查当前时间与lastActiveTime的差值",
+          "system_response": "若超过timeoutMinutes，调用AuthStore.lock()"
+        },
+        {
+          "order": 3,
+          "actor": "system",
+          "action": "锁定后，路由守卫检测到isUnlocked=false",
+          "system_response": "重定向到/unlock页面"
+        }
+      ]
+    }
+  ],
+  "api_integration": {
+    "client": "axios",
+    "base_url": "/api",
+    "endpoints": [
+      {
+        "id": "api-verify-master-password",
+        "method": "POST",
+        "path": "/verify-master-password",
+        "description": "验证主密码",
+        "request": {
+          "body": {
+            "password": "string"
+          }
+        },
+        "response": {
+          "status": 200,
+          "body": {
+            "sessionToken": "string"
+          }
+        },
+        "error_handling": {
+          "401": "密码错误，提示用户重新输入",
+          "500": "服务器错误，显示通用错误提示",
+          "default": "显示网络或未知错误提示"
+        }
+      }
+    ]
+  },
+  "error_handling": {
+    "strategy": "全局错误边界捕获React组件错误，展示错误页面或可恢复提示。API请求错误在组件内捕获，根据状态码展示对应错误信息。表单验证错误即时反馈。",
+    "fallback_ui": {
+      "type": "component",
+      "id": "ErrorFallback",
+      "description": "用于显示意外错误，提供重试选项"
+    }
+  }
+}
