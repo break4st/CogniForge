@@ -2,180 +2,141 @@
   "meta": {
     "doc_id": "sad-001",
     "type": "sad",
-    "title": "CogniDeploy 系统架构文档",
+    "title": "根据已批准PRD自动设计系统架构",
     "author": "architect_agent",
-    "created": "2026-05-25 12:46",
+    "created": "2026-05-25 14:37",
     "version": 1,
     "incomplete": true
   },
-  "title": "CogniDeploy 系统架构方案",
+  "title": "根据已批准PRD自动设计系统架构",
   "source_prd": {
     "doc_id": "prd-current",
     "version": 1
   },
   "system_overview": {
-    "description": "CogniDeploy 是一款本地单用户自动化部署工具，采用前后端分离的分层架构。前端提供多项目管理、环境配置、一键部署及历史回溯等交互；后端通过 RESTful API 提供业务服务，并利用 SSH/SFTP 协议与远程服务器交互，所有敏感凭证使用 AES-256 加密存储。系统运行在本地，数据库使用 SQLite，整体强调安全性、易用性和部署过程的可视化。",
+    "description": "DeployOne 是一个面向开发团队的一键远程部署管理平台，通过可视化界面管理多个项目及多套部署环境，支持密钥安全连接远程服务器，上传软件包并实现自动化部署、进度实时展示，以及部署历史回溯与回滚。系统采用模块化单体架构 + 异步任务队列，前端为 SPA，后端提供 RESTful API 并通过 WebSocket 推送实时进度。",
     "roles": [
       {
-        "name": "开发者",
+        "name": "平台用户",
         "permissions": [
-          "创建项目",
-          "配置环境",
-          "触发部署",
-          "查看部署状态"
-        ]
-      },
-      {
-        "name": "运维人员",
-        "permissions": [
-          "管理多套环境",
-          "配置服务器及密钥"
-        ]
-      },
-      {
-        "name": "安全管理员",
-        "permissions": [
-          "确保密钥加密存储",
-          "限制密钥明文显示"
-        ]
-      },
-      {
-        "name": "日常使用者",
-        "permissions": [
-          "一键部署",
-          "查看部署进度"
-        ]
-      },
-      {
-        "name": "项目负责人",
-        "permissions": [
-          "查看部署历史",
-          "执行版本回滚"
-        ]
-      },
-      {
-        "name": "工程师",
-        "permissions": [
-          "管理启停脚本模板",
-          "远程执行脚本"
+          "创建、编辑、删除项目",
+          "切换当前项目",
+          "管理环境配置并测试连接",
+          "上传、下载、删除软件包",
+          "发起一键部署并查看实时进度",
+          "查询部署历史与日志",
+          "执行回滚操作"
         ]
       }
     ]
   },
   "architecture": {
-    "style": "分层架构 + 前后端分离",
-    "description": "系统划分为表现层、接入层、服务层、数据层和基础设施层。表现层为 React 单页应用，通过本地 HTTP/WebSocket 与接入层（FastAPI 网关）通信；服务层封装所有业务逻辑，依赖基础设施层实现 SSH 连接与加密；数据层采用 SQLite 持久化信息。各层职责清晰，便于维护和扩展。",
+    "style": "模块化单体架构",
+    "description": "后端整体作为一个服务，内部划分为项目管理、环境配置、软件包管理、部署编排、历史查询等模块。部署任务通过 Redis + Celery 异步执行，并通过 WebSocket 实时向前端推送步骤进度。前端为单页面应用（Vue 3），直接调用后端 API 并与 WebSocket 交互。",
     "layers": [
-      {
-        "name": "表现层",
-        "components": [
-          "Dashboard",
-          "ProjectManager",
-          "EnvironmentManager",
-          "KeyManager",
-          "DeployUI",
-          "DeployHistory",
-          "ScriptManager",
-          "Navigation"
-        ]
-      },
       {
         "name": "接入层",
         "components": [
-          "APIGateway"
+          "前端 SPA（Vue 3）"
+        ]
+      },
+      {
+        "name": "网关层",
+        "components": [
+          "Nginx（可选，亦可直接由后端服务提供静态资源）"
         ]
       },
       {
         "name": "服务层",
         "components": [
-          "ProjectService",
-          "EnvironmentService",
-          "KeyManagementService",
-          "DeploymentService",
-          "VersionService",
-          "ScriptTemplateService",
-          "SSHService"
+          "API 接口服务（FastAPI）",
+          "项目管理模块",
+          "环境配置模块",
+          "软件包管理模块",
+          "部署编排模块",
+          "历史与日志模块",
+          "实时通知模块（WebSocket）",
+          "认证模块（可选）",
+          "异步任务 Worker（Celery）",
+          "SSH 连接管理器"
         ]
       },
       {
         "name": "数据层",
         "components": [
-          "SQLiteDatabase"
-        ]
-      },
-      {
-        "name": "基础设施层",
-        "components": [
-          "EncryptionUtil",
-          "FileManager"
+          "PostgreSQL 数据库",
+          "文件存储（本地磁盘或对象存储）"
         ]
       }
     ],
     "connections": [
       {
         "protocol": "HTTPS / REST",
-        "description": "表现层通过本地的 HTTPS REST 调用接入层 API，获取数据或提交操作"
+        "description": "前端通过 REST API 与后端服务层通信"
       },
       {
         "protocol": "WebSocket",
-        "description": "部署进度等实时状态通过 WebSocket 从服务层推送至表现层"
+        "description": "前端与实时通知模块建立 WebSocket，接收部署进度和日志"
       },
       {
-        "protocol": "Python 函数调用",
-        "description": "接入层路由到服务层，以及服务层之间的内部调用"
+        "protocol": "TCP / SQL",
+        "description": "服务层通过 ORM 与 PostgreSQL 数据库交互"
       },
       {
-        "protocol": "SQL (via SQLAlchemy)",
-        "description": "服务层通过 ORM 查询和操作 SQLite 数据库"
+        "protocol": "AMQP / Redis",
+        "description": "服务层通过消息队列投递部署异步任务到 Celery Worker"
       },
       {
         "protocol": "SSH / SFTP",
-        "description": "SSHService 使用 paramiko 库通过 SSH 协议与远程服务器交互，包括命令执行和文件传输"
+        "description": "部署 Worker 通过 SSH 协议与远程服务器交互"
       }
     ],
     "features": [
-      "本地单机运行，无需独立服务器部署",
-      "前后端分离，前端可独立开发调试",
-      "基于 AES-256 的密钥加密存储，主密码由用户设定",
-      "部署过程事务化，失败自动回滚",
-      "支持通过模板生成标准化的启停脚本",
-      "简洁的 UI 交互，拖拽上传与进度可视化",
-      "基于 SQLite 的轻量级数据持久化"
+      "异步任务处理，保证部署过程不阻塞主服务",
+      "WebSocket 实时推送部署进度与日志",
+      "敏感信息加密存储",
+      "基于项目的多环境数据隔离",
+      "支持一键回滚至历史版本",
+      "前后端分离，界面实时更新"
     ]
   },
   "tech_stack": {
     "backend": {
-      "language": "Python 3.11",
+      "language": "Python 3.11+",
       "framework": "FastAPI"
     },
     "frontend": {
-      "framework": "React 18",
-      "ui_library": "Ant Design"
+      "framework": "Vue 3 + TypeScript",
+      "ui_library": "Element Plus"
     },
-    "database": "SQLite",
-    "orm": "SQLAlchemy",
-    "ssh_library": "paramiko",
-    "encryption": "cryptography (AES-256)",
-    "real_time": "FastAPI WebSocket"
+    "database": "PostgreSQL",
+    "file_storage": "本地文件系统（可扩展为 MinIO/S3）",
+    "message_queue": "Celery + Redis",
+    "ssh_library": "asyncssh",
+    "encryption": "Fernet 对称加密"
   },
   "components": [
     {
       "id": "CMP-001",
-      "name": "Dashboard",
+      "name": "前端项目管理面板",
       "type": "frontend",
       "status": "active",
       "version": 1,
-      "description": "全局仪表盘页面，展示所有项目卡片，显示最新部署状态和时间",
+      "description": "展示项目列表，支持按名称搜索，提供新增、编辑、删除项目功能以及切换当前激活项目。",
       "responsibilities": [
-        "展示项目概览",
-        "显示最近部署状态",
-        "支持点击卡片跳转"
+        "渲染项目列表并支持搜索",
+        "接收用户输入创建/编辑项目",
+        "切换当前激活项目并通知其他面板更新",
+        "删除项目前弹出确认对话框"
       ],
       "source_requirements": [
-        "REQ-007"
+        "REQ-001"
       ],
       "contracts": [
-        "CTR-001"
+        "CTR-001",
+        "CTR-002",
+        "CTR-003",
+        "CTR-004"
       ],
       "depends_on_components": [],
       "change_history": [
@@ -189,25 +150,26 @@
     },
     {
       "id": "CMP-002",
-      "name": "ProjectManager",
+      "name": "前端环境配置面板",
       "type": "frontend",
       "status": "active",
       "version": 1,
-      "description": "项目管理界面，支持项目的增删改查、搜索排序和项目切换",
+      "description": "管理当前项目下的所有部署环境，提供环境列表、新增、编辑、删除以及测试连接功能。",
       "responsibilities": [
-        "项目 CRUD",
-        "按名称模糊搜索",
-        "按时间/名称排序",
-        "左侧导航切换"
+        "展示环境列表",
+        "创建/编辑环境表单（含密钥上传、密码输入、环境变量键值对）",
+        "触发测试连接并在界面显示结果",
+        "编辑或删除已有环境"
       ],
       "source_requirements": [
-        "REQ-001",
-        "REQ-007"
+        "REQ-002"
       ],
       "contracts": [
-        "CTR-002",
-        "CTR-003",
-        "CTR-004"
+        "CTR-005",
+        "CTR-006",
+        "CTR-007",
+        "CTR-008",
+        "CTR-009"
       ],
       "depends_on_components": [
         "CMP-001"
@@ -223,28 +185,29 @@
     },
     {
       "id": "CMP-003",
-      "name": "EnvironmentManager",
+      "name": "前端软件包管理面板",
       "type": "frontend",
       "status": "active",
       "version": 1,
-      "description": "环境管理界面，展示项目下的所有环境卡片，提供增删改查、测试连接功能",
+      "description": "支持拖拽或点击上传软件包，自动提取版本号或手动输入，展示已上传包列表，提供下载与删除。",
       "responsibilities": [
-        "环境 CRUD",
-        "显示连接状态",
-        "提供测试连接按钮",
-        "拖拽/选择私钥文件"
+        "文件拖拽/点击上传",
+        "显示上传进度",
+        "展示包列表（版本、大小、上传时间）",
+        "下载或删除历史包"
       ],
       "source_requirements": [
-        "REQ-002",
         "REQ-003"
       ],
       "contracts": [
-        "CTR-005",
-        "CTR-006",
-        "CTR-007",
-        "CTR-008"
+        "CTR-010",
+        "CTR-011",
+        "CTR-012",
+        "CTR-013"
       ],
-      "depends_on_components": [],
+      "depends_on_components": [
+        "CMP-001"
+      ],
       "change_history": [
         {
           "version": 1,
@@ -256,24 +219,26 @@
     },
     {
       "id": "CMP-004",
-      "name": "KeyManager",
+      "name": "前端部署控制台",
       "type": "frontend",
       "status": "active",
       "version": 1,
-      "description": "密钥管理组件，用于上传、显示掩码、验证私钥格式",
+      "description": "在环境卡片上选择要部署的软件包，触发一键部署，并实时显示部署步骤进度和日志，支持部署前确认开关。",
       "responsibilities": [
-        "上传私钥文件",
-        "显示密钥指纹",
-        "拖拽文件支持",
-        "前端格式验证"
+        "环境与包选择，发起部署",
+        "实时展示部署步骤及日志滚动",
+        "处理部署完成后状态更新",
+        "提供部署前确认开关"
       ],
       "source_requirements": [
-        "REQ-003"
+        "REQ-004"
       ],
       "contracts": [
-        "CTR-008"
+        "CTR-014",
+        "CTR-015"
       ],
       "depends_on_components": [
+        "CMP-002",
         "CMP-003"
       ],
       "change_history": [
@@ -287,27 +252,25 @@
     },
     {
       "id": "CMP-005",
-      "name": "DeployUI",
+      "name": "前端部署历史面板",
       "type": "frontend",
       "status": "active",
       "version": 1,
-      "description": "部署模态框，允许用户拖拽或选择本地文件，显示部署步骤进度",
+      "description": "展示所有部署历史记录，按时间倒序，可查看详细信息与日志，并对成功记录提供回滚操作。",
       "responsibilities": [
-        "部署入口 UI",
-        "文件选择/拖拽",
-        "实时进度展示",
-        "错误信息高亮"
+        "列表展示历史记录（项目、环境、版本、状态、时间）",
+        "查看详细日志",
+        "回滚按钮（需二次确认）"
       ],
       "source_requirements": [
-        "REQ-004"
+        "REQ-005"
       ],
       "contracts": [
-        "CTR-009",
-        "CTR-010"
+        "CTR-016",
+        "CTR-017",
+        "CTR-018"
       ],
-      "depends_on_components": [
-        "CMP-003"
-      ],
+      "depends_on_components": [],
       "change_history": [
         {
           "version": 1,
@@ -319,27 +282,50 @@
     },
     {
       "id": "CMP-006",
-      "name": "DeployHistory",
-      "type": "frontend",
+      "name": "API 接口服务",
+      "type": "backend",
       "status": "active",
       "version": 1,
-      "description": "部署历史列表与详情界面，支持回滚操作和清理旧版本",
+      "description": "基于 FastAPI 的后端主服务，接收前端请求，调用各业务模块，返回数据或下发异步任务。",
       "responsibilities": [
-        "展示部署列表及状态",
-        "显示版本详情和日志",
-        "二次确认回滚",
-        "清理旧版本"
+        "提供 RESTful API 接口",
+        "路由请求到对应的业务模块",
+        "管理 HTTP 会话与认证令牌（可选）",
+        "与消息队列交互投递任务"
       ],
       "source_requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
         "REQ-005"
       ],
       "contracts": [
+        "CTR-001",
+        "CTR-002",
+        "CTR-003",
+        "CTR-004",
+        "CTR-005",
+        "CTR-006",
+        "CTR-007",
+        "CTR-008",
+        "CTR-009",
+        "CTR-010",
         "CTR-011",
         "CTR-012",
-        "CTR-013"
+        "CTR-013",
+        "CTR-014",
+        "CTR-016",
+        "CTR-017",
+        "CTR-018"
       ],
       "depends_on_components": [
-        "CMP-003"
+        "CMP-007",
+        "CMP-008",
+        "CMP-009",
+        "CMP-010",
+        "CMP-011",
+        "CMP-012"
       ],
       "change_history": [
         {
@@ -352,26 +338,26 @@
     },
     {
       "id": "CMP-007",
-      "name": "ScriptManager",
-      "type": "frontend",
+      "name": "项目管理模块",
+      "type": "backend",
       "status": "active",
       "version": 1,
-      "description": "启停脚本模板配置与远程执行界面",
+      "description": "处理项目的增删改查逻辑，维护当前激活项目的状态。",
       "responsibilities": [
-        "编辑脚本模板",
-        "远程执行启动/停止",
-        "显示脚本输出"
+        "项目 CRUD 操作的业务实现",
+        "搜索功能",
+        "数据校验与项目属主（如有多用户）"
       ],
       "source_requirements": [
-        "REQ-006"
+        "REQ-001"
       ],
       "contracts": [
-        "CTR-014",
-        "CTR-015"
+        "CTR-001",
+        "CTR-002",
+        "CTR-003",
+        "CTR-004"
       ],
-      "depends_on_components": [
-        "CMP-003"
-      ],
+      "depends_on_components": [],
       "change_history": [
         {
           "version": 1,
@@ -383,24 +369,63 @@
     },
     {
       "id": "CMP-008",
-      "name": "Navigation",
-      "type": "frontend",
+      "name": "环境配置模块",
+      "type": "backend",
       "status": "active",
       "version": 1,
-      "description": "全局搜索条和左侧固定项目导航栏",
+      "description": "管理部署环境信息，加密存储密钥/密码，提供测试连接功能。",
       "responsibilities": [
-        "全局搜索过滤",
-        "拖动排序/字母排序",
-        "高亮当前项目"
+        "环境 CRUD",
+        "加密/解密敏感字段",
+        "建立临时 SSH 连接并返回测试结果",
+        "环境变量键值对处理"
       ],
       "source_requirements": [
-        "REQ-007"
+        "REQ-002"
       ],
       "contracts": [
-        "CTR-001"
+        "CTR-005",
+        "CTR-006",
+        "CTR-007",
+        "CTR-008",
+        "CTR-009"
       ],
       "depends_on_components": [
-        "CMP-002"
+        "CMP-007"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CMP-009",
+      "name": "软件包管理模块",
+      "type": "backend",
+      "status": "active",
+      "version": 1,
+      "description": "处理软件包上传、存储、版本提取及列表查询。",
+      "responsibilities": [
+        "接收文件上传并存储到文件系统",
+        "提取或接受版本号",
+        "记录包元数据到数据库",
+        "提供下载与删除功能"
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "contracts": [
+        "CTR-010",
+        "CTR-011",
+        "CTR-012",
+        "CTR-013"
+      ],
+      "depends_on_components": [
+        "CMP-007"
       ],
       "change_history": [
         {
@@ -413,19 +438,28 @@
     },
     {
       "id": "CMP-010",
-      "name": "APIGateway",
+      "name": "部署编排模块",
       "type": "backend",
       "status": "active",
       "version": 1,
-      "description": "FastAPI 应用实例，汇聚所有路由，进行请求校验和响应封装",
+      "description": "接收部署请求，创建部署记录，并调用 Celery 异步任务执行部署流程。",
       "responsibilities": [
-        "路由分发",
-        "请求参数校验",
-        "错误统一处理"
+        "校验环境与软件包",
+        "创建 Deployment 记录（状态 pending）",
+        "向消息队列发送部署任务",
+        "返回 deployment_id 给前端"
       ],
-      "source_requirements": [],
-      "contracts": [],
-      "depends_on_components": [],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "contracts": [
+        "CTR-014"
+      ],
+      "depends_on_components": [
+        "CMP-008",
+        "CMP-009",
+        "CMP-012"
+      ],
       "change_history": [
         {
           "version": 1,
@@ -437,28 +471,26 @@
     },
     {
       "id": "CMP-011",
-      "name": "ProjectService",
-      "type": "service",
+      "name": "历史与日志模块",
+      "type": "backend",
       "status": "active",
       "version": 1,
-      "description": "处理项目的增删改查逻辑，包括切换当前项目时数据刷新",
+      "description": "提供部署历史查询、日志读取和回滚功能。",
       "responsibilities": [
-        "项目 CRUD",
-        "模糊搜索与排序",
-        "项目切换事件处理"
+        "按条件查询部署历史",
+        "读取部署日志文件内容",
+        "处理回滚请求：调用部署编排模块再次部署"
       ],
       "source_requirements": [
-        "REQ-001",
-        "REQ-007"
+        "REQ-005"
       ],
       "contracts": [
-        "CTR-002",
-        "CTR-003",
-        "CTR-004",
-        "CTR-001"
+        "CTR-016",
+        "CTR-017",
+        "CTR-018"
       ],
       "depends_on_components": [
-        "CMP-018"
+        "CMP-010"
       ],
       "change_history": [
         {
@@ -471,31 +503,23 @@
     },
     {
       "id": "CMP-012",
-      "name": "EnvironmentService",
-      "type": "service",
+      "name": "实时通知模块",
+      "type": "backend",
       "status": "active",
       "version": 1,
-      "description": "管理项目下的环境配置，包括连接测试的协调",
+      "description": "管理 WebSocket 连接，负责将部署 Worker 的进度推送至对应前端。",
       "responsibilities": [
-        "环境 CRUD",
-        "获取解密后的连接信息",
-        "调用 SSHService 测试连接"
+        "维护 WebSocket 连接映射（deployment_id -> connection）",
+        "接收来自 Worker 的进度消息并推送给前端",
+        "处理连接关闭与异常"
       ],
       "source_requirements": [
-        "REQ-002",
-        "REQ-003"
+        "REQ-004"
       ],
       "contracts": [
-        "CTR-005",
-        "CTR-006",
-        "CTR-007",
-        "CTR-008"
+        "CTR-015"
       ],
-      "depends_on_components": [
-        "CMP-013",
-        "CMP-017",
-        "CMP-018"
-      ],
+      "depends_on_components": [],
       "change_history": [
         {
           "version": 1,
@@ -507,26 +531,25 @@
     },
     {
       "id": "CMP-013",
-      "name": "KeyManagementService",
-      "type": "service",
+      "name": "异步任务 Worker",
+      "type": "backend",
       "status": "active",
       "version": 1,
-      "description": "负责主密码设定、密钥加密存储、解密提供内存使用，确保私钥不落盘",
+      "description": "Celery Worker，执行具体的部署任务，包括 SSH 连接、文件传输、解压、脚本生成与后置命令。",
       "responsibilities": [
-        "AES-256 加密/解密",
-        "主密码哈希存储",
-        "密钥指纹生成",
-        "私钥格式验证"
+        "从消息队列获取部署任务",
+        "执行多步骤 SSH 操作（创建文件夹、上传、解压、生成脚本、执行命令）",
+        "每步推送进度到实时通知模块",
+        "更新 Deployment 状态与日志文件"
       ],
       "source_requirements": [
-        "REQ-003"
+        "REQ-004"
       ],
-      "contracts": [
-        "CTR-008"
-      ],
+      "contracts": [],
       "depends_on_components": [
-        "CMP-019",
-        "CMP-018"
+        "CMP-012",
+        "CMP-008",
+        "CMP-009"
       ],
       "change_history": [
         {
@@ -539,34 +562,23 @@
     },
     {
       "id": "CMP-014",
-      "name": "DeploymentService",
-      "type": "service",
+      "name": "SSH 连接管理器",
+      "type": "backend",
       "status": "active",
       "version": 1,
-      "description": "编排完整的部署流程：磁盘检查、上传、解压、版本目录创建、软链接切换、脚本生成，并处理失败回滚",
+      "description": "封装 asyncssh 客户端，提供统一的 SSH 连接创建、命令执行、文件传输方法。",
       "responsibilities": [
-        "部署流程编排",
-        "远程磁盘空间检查",
-        "上传文件与解压",
-        "创建版本目录与软链接",
-        "部署失败自动回滚",
-        "记录部署版本"
+        "建立和维护 SSH 连接",
+        "执行远程命令并返回结果",
+        "SFTP 文件上传/下载",
+        "处理连接超时与重试"
       ],
       "source_requirements": [
+        "REQ-002",
         "REQ-004"
       ],
-      "contracts": [
-        "CTR-009",
-        "CTR-010"
-      ],
-      "depends_on_components": [
-        "CMP-012",
-        "CMP-013",
-        "CMP-015",
-        "CMP-016",
-        "CMP-017",
-        "CMP-018"
-      ],
+      "contracts": [],
+      "depends_on_components": [],
       "change_history": [
         {
           "version": 1,
@@ -578,28 +590,25 @@
     },
     {
       "id": "CMP-015",
-      "name": "VersionService",
-      "type": "service",
+      "name": "PostgreSQL 数据库",
+      "type": "database",
       "status": "active",
       "version": 1,
-      "description": "管理部署版本记录，支持历史查询、回滚和清理",
+      "description": "存储项目、环境、软件包、部署记录等核心业务数据。",
       "responsibilities": [
-        "部署版本记录 CRUD",
-        "回滚执行（切换软链接）",
-        "清理旧版本（远程删除）"
+        "持久化存储业务实体",
+        "提供事务支持",
+        "执行查询优化"
       ],
       "source_requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003",
+        "REQ-004",
         "REQ-005"
       ],
-      "contracts": [
-        "CTR-011",
-        "CTR-012",
-        "CTR-013"
-      ],
-      "depends_on_components": [
-        "CMP-017",
-        "CMP-018"
-      ],
+      "contracts": [],
+      "depends_on_components": [],
       "change_history": [
         {
           "version": 1,
@@ -611,130 +620,19 @@
     },
     {
       "id": "CMP-016",
-      "name": "ScriptTemplateService",
-      "type": "service",
-      "status": "active",
-      "version": 1,
-      "description": "管理环境的启停脚本模板，部署后生成脚本并支持远程执行",
-      "responsibilities": [
-        "模板变量填充",
-        "生成 start.sh / stop.sh",
-        "通过 SSH 远程执行脚本",
-        "返回执行输出"
-      ],
-      "source_requirements": [
-        "REQ-006"
-      ],
-      "contracts": [
-        "CTR-014",
-        "CTR-015"
-      ],
-      "depends_on_components": [
-        "CMP-017",
-        "CMP-018"
-      ],
-      "change_history": [
-        {
-          "version": 1,
-          "change_type": "created",
-          "summary": "初始创建",
-          "reason": "首次生成 SAD"
-        }
-      ]
-    },
-    {
-      "id": "CMP-017",
-      "name": "SSHService",
+      "name": "文件存储",
       "type": "infrastructure",
       "status": "active",
       "version": 1,
-      "description": "封装 paramiko 库，提供 SSH 连接、命令执行、SFTP 文件传输功能",
+      "description": "存储上传的软件包文件及部署日志文件，使用本地磁盘或对象存储。",
       "responsibilities": [
-        "建立/断开 SSH 连接",
-        "执行远程命令",
-        "通过 SFTP 上传/下载文件",
-        "获取连接状态"
+        "保存上传的二进制包文件",
+        "存储部署日志文本文件",
+        "支持文件访问与删除"
       ],
       "source_requirements": [
         "REQ-003",
-        "REQ-004"
-      ],
-      "contracts": [],
-      "depends_on_components": [],
-      "change_history": [
-        {
-          "version": 1,
-          "change_type": "created",
-          "summary": "初始创建",
-          "reason": "首次生成 SAD"
-        }
-      ]
-    },
-    {
-      "id": "CMP-018",
-      "name": "SQLiteDatabase",
-      "type": "database",
-      "status": "active",
-      "version": 1,
-      "description": "SQLite 数据库，通过 SQLAlchemy ORM 管理项目、环境、密钥、部署记录、脚本模板等数据",
-      "responsibilities": [
-        "持久化所有业务数据",
-        "提供事务支持",
-        "保证数据一致性"
-      ],
-      "source_requirements": [],
-      "contracts": [],
-      "depends_on_components": [],
-      "change_history": [
-        {
-          "version": 1,
-          "change_type": "created",
-          "summary": "初始创建",
-          "reason": "首次生成 SAD"
-        }
-      ]
-    },
-    {
-      "id": "CMP-019",
-      "name": "EncryptionUtil",
-      "type": "infrastructure",
-      "status": "active",
-      "version": 1,
-      "description": "加密工具模块，基于 cryptography 库实现 AES-256 加密/解密",
-      "responsibilities": [
-        "AES-256 加密/解密",
-        "密钥派生",
-        "指纹计算"
-      ],
-      "source_requirements": [
-        "REQ-003"
-      ],
-      "contracts": [],
-      "depends_on_components": [],
-      "change_history": [
-        {
-          "version": 1,
-          "change_type": "created",
-          "summary": "初始创建",
-          "reason": "首次生成 SAD"
-        }
-      ]
-    },
-    {
-      "id": "CMP-020",
-      "name": "FileManager",
-      "type": "infrastructure",
-      "status": "active",
-      "version": 1,
-      "description": "文件管理工具，负责本地文件的上传处理，如私钥文件保存和部署包临时管理",
-      "responsibilities": [
-        "本地文件暂存",
-        "私钥文件读取",
-        "安全删除临时文件"
-      ],
-      "source_requirements": [
-        "REQ-003",
-        "REQ-004"
+        "REQ-005"
       ],
       "contracts": [],
       "depends_on_components": [],
@@ -751,12 +649,11 @@
   "contracts": [
     {
       "id": "CTR-001",
-      "interface": "获取全局项目列表及状态",
-      "provider_component_id": "CMP-011",
-      "provider": "ProjectService",
+      "interface": "获取项目列表",
+      "provider_component_id": "CMP-006",
+      "provider": "API 接口服务",
       "consumers": [
-        "Dashboard",
-        "Navigation"
+        "前端项目管理面板"
       ],
       "type": "REST",
       "status": "active",
@@ -768,12 +665,8 @@
           {
             "name": "search",
             "type": "string",
-            "required": false
-          },
-          {
-            "name": "sort",
-            "type": "string",
-            "required": false
+            "required": false,
+            "description": "按名称搜索关键字"
           }
         ],
         "body": {}
@@ -781,13 +674,13 @@
       "response": {
         "status": 200,
         "body": {
-          "projects": [
+          "description": "项目列表 JSON 数组",
+          "content": [
             {
-              "id": "integer",
+              "id": "int",
               "name": "string",
               "description": "string",
-              "last_deploy_status": "string",
-              "last_deploy_time": "string"
+              "created_at": "datetime"
             }
           ]
         }
@@ -795,13 +688,13 @@
       "errors": [
         {
           "status": 500,
-          "code": "SERVER_ERROR",
+          "code": "INTERNAL_ERROR",
           "message": "服务器内部错误"
         }
       ],
-      "description": "获取所有项目列表，支持按名称模糊搜索和按时间/名称排序，用于仪表盘和导航栏",
+      "description": "获取平台所有项目，支持可选的搜索过滤。",
       "source_requirements": [
-        "REQ-007"
+        "REQ-001"
       ],
       "change_history": [
         {
@@ -815,10 +708,10 @@
     {
       "id": "CTR-002",
       "interface": "创建项目",
-      "provider_component_id": "CMP-011",
-      "provider": "ProjectService",
+      "provider_component_id": "CMP-006",
+      "provider": "API 接口服务",
       "consumers": [
-        "ProjectManager"
+        "前端项目管理面板"
       ],
       "type": "REST",
       "status": "active",
@@ -828,32 +721,43 @@
         "path_params": [],
         "query_params": [],
         "body": {
-          "name": {
-            "type": "string",
-            "required": true
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "项目名称"
+            },
+            "description": {
+              "type": "string",
+              "description": "项目描述"
+            }
           },
-          "description": {
-            "type": "string",
-            "required": false
-          }
+          "required": [
+            "name"
+          ]
         }
       },
       "response": {
         "status": 201,
         "body": {
-          "id": "integer",
-          "name": "string",
-          "description": "string"
+          "description": "string",
+          "id": "int",
+          "name": "string"
         }
       },
       "errors": [
         {
           "status": 400,
           "code": "VALIDATION_ERROR",
-          "message": "输入验证失败"
+          "message": "输入参数无效"
+        },
+        {
+          "status": 500,
+          "code": "INTERNAL_ERROR",
+          "message": "服务器内部错误"
         }
       ],
-      "description": "新建一个项目，必填项目名称，选填描述",
+      "description": "创建一个新的项目。",
       "source_requirements": [
         "REQ-001"
       ],
@@ -868,42 +772,42 @@
     },
     {
       "id": "CTR-003",
-      "interface": "更新项目",
-      "provider_component_id": "CMP-011",
-      "provider": "ProjectService",
+      "interface": "编辑项目",
+      "provider_component_id": "CMP-006",
+      "provider": "API 接口服务",
       "consumers": [
-        "ProjectManager"
+        "前端项目管理面板"
       ],
       "type": "REST",
       "status": "active",
       "version": 1,
-      "endpoint": "PUT /api/projects/{project_id}",
+      "endpoint": "PUT /api/projects/{id}",
       "request": {
         "path_params": [
           {
-            "name": "project_id",
-            "type": "integer",
-            "required": true
+            "name": "id",
+            "type": "int",
+            "required": true,
+            "description": "项目 ID"
           }
         ],
         "query_params": [],
         "body": {
-          "name": {
-            "type": "string",
-            "required": false
-          },
-          "description": {
-            "type": "string",
-            "required": false
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            }
           }
         }
       },
       "response": {
         "status": 200,
         "body": {
-          "id": "integer",
-          "name": "string",
-          "description": "string"
+          "description": "更新后的项目对象"
         }
       },
       "errors": [
@@ -911,9 +815,14 @@
           "status": 404,
           "code": "NOT_FOUND",
           "message": "项目不存在"
+        },
+        {
+          "status": 400,
+          "code": "VALIDATION_ERROR",
+          "message": "输入参数无效"
         }
       ],
-      "description": "编辑已有项目信息，变更后输入验证无误",
+      "description": "修改指定项目的名称或描述。",
       "source_requirements": [
         "REQ-001"
       ],
@@ -929,21 +838,22 @@
     {
       "id": "CTR-004",
       "interface": "删除项目",
-      "provider_component_id": "CMP-011",
-      "provider": "ProjectService",
+      "provider_component_id": "CMP-006",
+      "provider": "API 接口服务",
       "consumers": [
-        "ProjectManager"
+        "前端项目管理面板"
       ],
       "type": "REST",
       "status": "active",
       "version": 1,
-      "endpoint": "DELETE /api/projects/{project_id}",
+      "endpoint": "DELETE /api/projects/{id}",
       "request": {
         "path_params": [
           {
-            "name": "project_id",
-            "type": "integer",
-            "required": true
+            "name": "id",
+            "type": "int",
+            "required": true,
+            "description": "项目 ID"
           }
         ],
         "query_params": [],
@@ -960,7 +870,7 @@
           "message": "项目不存在"
         }
       ],
-      "description": "删除项目时有二次确认，确认后项目、所有环境及部署历史一并移除",
+      "description": "删除指定项目及其关联环境、包等数据。",
       "source_requirements": [
         "REQ-001"
       ],
@@ -975,11 +885,11 @@
     },
     {
       "id": "CTR-005",
-      "interface": "获取项目的环境列表",
-      "provider_component_id": "CMP-012",
-      "provider": "EnvironmentService",
+      "interface": "获取环境列表",
+      "provider_component_id": "CMP-006",
+      "provider": "API 接口服务",
       "consumers": [
-        "EnvironmentManager"
+        "前端环境配置面板"
       ],
       "type": "REST",
       "status": "active",
@@ -989,8 +899,9 @@
         "path_params": [
           {
             "name": "project_id",
-            "type": "integer",
-            "required": true
+            "type": "int",
+            "required": true,
+            "description": "项目 ID"
           }
         ],
         "query_params": [],
@@ -999,31 +910,30 @@
       "response": {
         "status": 200,
         "body": {
-          "environments": [
-            {
-              "id": "integer",
-              "name": "string",
-              "ip": "string",
-              "port": "integer",
-              "auth_type": "string",
-              "key_fingerprint": "string",
-              "deploy_root_path": "string",
-              "last_test_status": "string"
-            }
-          ]
+          "description": "环境列表 JSON 数组",
+          "environment": {
+            "id": "int",
+            "name": "string",
+            "host": "string",
+            "port": "int",
+            "auth_type": "string",
+            "base_path": "string",
+            "deploy_script_template": "string",
+            "post_deploy_command": "string",
+            "env_vars": "object"
+          }
         }
       },
       "errors": [
         {
           "status": 404,
-          "code": "PROJECT_NOT_FOUND",
+          "code": "NOT_FOUND",
           "message": "项目不存在"
         }
       ],
-      "description": "获取指定项目下的所有环境，不返回密钥明文，只返回指纹等掩码信息",
+      "description": "查询指定项目下所有部署环境。",
       "source_requirements": [
-        "REQ-002",
-        "REQ-003"
+        "REQ-002"
       ],
       "change_history": [
         {
@@ -1037,10 +947,10 @@
     {
       "id": "CTR-006",
       "interface": "创建环境",
-      "provider_component_id": "CMP-012",
-      "provider": "EnvironmentService",
+      "provider_component_id": "CMP-006",
+      "provider": "API 接口服务",
       "consumers": [
-        "EnvironmentManager"
+        "前端环境配置面板"
       ],
       "type": "REST",
       "status": "active",
@@ -1050,61 +960,50 @@
         "path_params": [
           {
             "name": "project_id",
-            "type": "integer",
+            "type": "int",
             "required": true
           }
         ],
         "query_params": [],
         "body": {
-          "name": {
-            "type": "string",
-            "required": true
+          "type": "object",
+          "properties": {
+            "name": "string",
+            "host": "string",
+            "port": "int",
+            "auth_type": "string (key/password)",
+            "key_file": "string (base64)",
+            "password": "string",
+            "base_path": "string",
+            "deploy_script_template": "string",
+            "post_deploy_command": "string",
+            "env_vars": "object"
           },
-          "ip": {
-            "type": "string",
-            "required": true
-          },
-          "port": {
-            "type": "integer",
-            "required": false,
-            "default": 22
-          },
-          "auth_type": {
-            "type": "string",
-            "required": true
-          },
-          "key_file": {
-            "type": "file",
-            "required": false
-          },
-          "password": {
-            "type": "string",
-            "required": false
-          },
-          "deploy_root_path": {
-            "type": "string",
-            "required": true
-          }
+          "required": [
+            "name",
+            "host",
+            "port",
+            "auth_type",
+            "base_path"
+          ]
         }
       },
       "response": {
         "status": 201,
         "body": {
-          "id": "integer",
-          "name": "string"
+          "description": "新创建的环境对象"
         }
       },
       "errors": [
         {
           "status": 400,
           "code": "VALIDATION_ERROR",
-          "message": "IP/端口格式错误或密钥无效"
+          "message": "参数错误"
         }
       ],
-      "description": "在指定项目下新建环境，支持上传私钥或输入密码，私钥在服务端加密存储",
+      "description": "在指定项目下新增一个部署环境，密钥/密码将被加密存储。",
       "source_requirements": [
-        "REQ-002",
-        "REQ-003"
+        "REQ-002"
       ],
       "change_history": [
         {
@@ -1117,45 +1016,45 @@
     },
     {
       "id": "CTR-007",
-      "interface": "测试连接",
-      "provider_component_id": "CMP-012",
-      "provider": "EnvironmentService",
+      "interface": "编辑环境",
+      "provider_component_id": "CMP-006",
+      "provider": "API 接口服务",
       "consumers": [
-        "EnvironmentManager"
+        "前端环境配置面板"
       ],
       "type": "REST",
       "status": "active",
       "version": 1,
-      "endpoint": "POST /api/environments/{environment_id}/test-connection",
+      "endpoint": "PUT /api/environments/{env_id}",
       "request": {
         "path_params": [
           {
-            "name": "environment_id",
-            "type": "integer",
+            "name": "env_id",
+            "type": "int",
             "required": true
           }
         ],
         "query_params": [],
-        "body": {}
+        "body": {
+          "similar to create body": "..."
+        }
       },
       "response": {
         "status": 200,
         "body": {
-          "os_info": "string",
-          "status": "string"
+          "description": "更新后的环境对象"
         }
       },
       "errors": [
         {
-          "status": 502,
-          "code": "CONNECTION_FAILED",
-          "message": "连接失败：认证失败/超时/主机不可达"
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "环境不存在"
         }
       ],
-      "description": "测试当前环境配置的 SSH 连接是否可用，返回服务器系统信息",
+      "description": "修改指定环境的配置信息。",
       "source_requirements": [
-        "REQ-002",
-        "REQ-003"
+        "REQ-002"
       ],
       "change_history": [
         {
@@ -1168,47 +1067,147 @@
     },
     {
       "id": "CTR-008",
-      "interface": "上传/更新密钥文件",
-      "provider_component_id": "CMP-013",
-      "provider": "KeyManagementService",
+      "interface": "删除环境",
+      "provider_component_id": "CMP-006",
+      "provider": "API 接口服务",
       "consumers": [
-        "EnvironmentManager",
-        "KeyManager"
+        "前端环境配置面板"
       ],
       "type": "REST",
       "status": "active",
       "version": 1,
-      "endpoint": "POST /api/environments/{environment_id}/key",
+      "endpoint": "DELETE /api/environments/{env_id}",
       "request": {
         "path_params": [
           {
-            "name": "environment_id",
-            "type": "integer",
+            "name": "env_id",
+            "type": "int",
             "required": true
           }
         ],
         "query_params": [],
-        "body": {
-          "key_file": {
-            "type": "file",
+        "body": {}
+      },
+      "response": {
+        "status": 204,
+        "body": {}
+      },
+      "errors": [
+        {
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "环境不存在"
+        }
+      ],
+      "description": "删除指定环境。",
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-009",
+      "interface": "测试环境连接",
+      "provider_component_id": "CMP-006",
+      "provider": "API 接口服务",
+      "consumers": [
+        "前端环境配置面板"
+      ],
+      "type": "REST",
+      "status": "active",
+      "version": 1,
+      "endpoint": "POST /api/environments/{env_id}/test_connection",
+      "request": {
+        "path_params": [
+          {
+            "name": "env_id",
+            "type": "int",
             "required": true
           }
-        }
+        ],
+        "query_params": [],
+        "body": {}
       },
       "response": {
         "status": 200,
         "body": {
-          "fingerprint": "string"
+          "description": "连接测试结果",
+          "success": "boolean",
+          "message": "string"
         }
       },
       "errors": [
         {
-          "status": 400,
-          "code": "INVALID_KEY",
-          "message": "私钥文件格式无效"
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "环境不存在"
         }
       ],
-      "description": "为指定环境上传或更新 SSH 私钥，服务端加密存储，返回指纹",
+      "description": "使用环境配置建立临时 SSH 连接，验证配置是否正确。",
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-010",
+      "interface": "获取软件包列表",
+      "provider_component_id": "CMP-006",
+      "provider": "API 接口服务",
+      "consumers": [
+        "前端软件包管理面板"
+      ],
+      "type": "REST",
+      "status": "active",
+      "version": 1,
+      "endpoint": "GET /api/projects/{project_id}/packages",
+      "request": {
+        "path_params": [
+          {
+            "name": "project_id",
+            "type": "int",
+            "required": true
+          }
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "description": "包列表 JSON",
+          "package": {
+            "id": "int",
+            "version": "string",
+            "file_name": "string",
+            "file_size": "int",
+            "uploaded_at": "datetime",
+            "note": "string"
+          }
+        }
+      },
+      "errors": [
+        {
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "项目不存在"
+        }
+      ],
+      "description": "获取指定项目下已上传的所有软件包元数据。",
       "source_requirements": [
         "REQ-003"
       ],
@@ -1222,48 +1221,216 @@
       ]
     },
     {
-      "id": "CTR-009",
-      "interface": "开始部署",
-      "provider_component_id": "CMP-014",
-      "provider": "DeploymentService",
+      "id": "CTR-011",
+      "interface": "上传软件包",
+      "provider_component_id": "CMP-006",
+      "provider": "API 接口服务",
       "consumers": [
-        "DeployUI"
+        "前端软件包管理面板"
       ],
       "type": "REST",
       "status": "active",
       "version": 1,
-      "endpoint": "POST /api/environments/{environment_id}/deploy",
+      "endpoint": "POST /api/projects/{project_id}/packages",
       "request": {
         "path_params": [
           {
-            "name": "environment_id",
-            "type": "integer",
+            "name": "project_id",
+            "type": "int",
             "required": true
           }
         ],
         "query_params": [],
         "body": {
-          "file": {
-            "type": "file",
+          "type": "multipart/form-data",
+          "fields": [
+            {
+              "name": "file",
+              "type": "file",
+              "description": "软件包文件"
+            },
+            {
+              "name": "version",
+              "type": "string",
+              "required": false,
+              "description": "手动指定版本号"
+            },
+            {
+              "name": "note",
+              "type": "string",
+              "required": false,
+              "description": "版本备注"
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "description": "上传后的包对象"
+        }
+      },
+      "errors": [
+        {
+          "status": 400,
+          "code": "INVALID_FILE",
+          "message": "文件格式不支持"
+        },
+        {
+          "status": 413,
+          "code": "FILE_TOO_LARGE",
+          "message": "文件大小超限"
+        }
+      ],
+      "description": "上传一个压缩包文件，系统自动或手动确定版本号。",
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-012",
+      "interface": "下载软件包",
+      "provider_component_id": "CMP-006",
+      "provider": "API 接口服务",
+      "consumers": [
+        "前端软件包管理面板"
+      ],
+      "type": "REST",
+      "status": "active",
+      "version": 1,
+      "endpoint": "GET /api/packages/{pkg_id}/download",
+      "request": {
+        "path_params": [
+          {
+            "name": "pkg_id",
+            "type": "int",
             "required": true
+          }
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "description": "文件流",
+          "content-type": "application/octet-stream"
+        }
+      },
+      "errors": [
+        {
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "包不存在"
+        }
+      ],
+      "description": "下载指定的软件包文件。",
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-013",
+      "interface": "删除软件包",
+      "provider_component_id": "CMP-006",
+      "provider": "API 接口服务",
+      "consumers": [
+        "前端软件包管理面板"
+      ],
+      "type": "REST",
+      "status": "active",
+      "version": 1,
+      "endpoint": "DELETE /api/packages/{pkg_id}",
+      "request": {
+        "path_params": [
+          {
+            "name": "pkg_id",
+            "type": "int",
+            "required": true
+          }
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 204,
+        "body": {}
+      },
+      "errors": [
+        {
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "包不存在"
+        }
+      ],
+      "description": "删除指定软件包及其文件。",
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-014",
+      "interface": "发起部署",
+      "provider_component_id": "CMP-006",
+      "provider": "API 接口服务",
+      "consumers": [
+        "前端部署控制台"
+      ],
+      "type": "REST",
+      "status": "active",
+      "version": 1,
+      "endpoint": "POST /api/deployments",
+      "request": {
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "type": "object",
+          "properties": {
+            "environment_id": "int",
+            "package_id": "int",
+            "confirm": "boolean"
           }
         }
       },
       "response": {
         "status": 202,
         "body": {
-          "deploy_id": "integer",
-          "status": "processing"
+          "description": "部署请求已接受",
+          "deployment_id": "int"
         }
       },
       "errors": [
         {
           "status": 400,
-          "code": "DISK_SPACE_LOW",
-          "message": "远程磁盘空间不足，阻止部署"
+          "code": "VALIDATION_ERROR",
+          "message": "参数无效"
         }
       ],
-      "description": "发起部署任务，接受部署文件并返回部署 ID，实际流程异步执行，通过 WebSocket 推送进度",
+      "description": "使用指定环境和软件包开启一键部署，返回部署 ID 供后续跟踪。",
       "source_requirements": [
         "REQ-004"
       ],
@@ -1275,7 +1442,511 @@
           "reason": "首次生成 SAD"
         }
       ]
+    },
+    {
+      "id": "CTR-015",
+      "interface": "部署进度 WebSocket",
+      "provider_component_id": "CMP-012",
+      "provider": "实时通知模块",
+      "consumers": [
+        "前端部署控制台"
+      ],
+      "type": "WebSocket",
+      "status": "active",
+      "version": 1,
+      "endpoint": "/ws/deployments/{deployment_id}",
+      "request": {
+        "path_params": [
+          {
+            "name": "deployment_id",
+            "type": "int",
+            "required": true
+          }
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "description": "实时推送 JSON 消息",
+        "message_format": {
+          "step": "string",
+          "status": "running|success|fail",
+          "log_line": "string"
+        }
+      },
+      "errors": [
+        {
+          "status": 4003,
+          "code": "FORBIDDEN",
+          "message": "无权访问"
+        }
+      ],
+      "description": "前端通过 WebSocket 连接实时接收部署步骤进度和日志。",
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-016",
+      "interface": "获取部署历史",
+      "provider_component_id": "CMP-006",
+      "provider": "API 接口服务",
+      "consumers": [
+        "前端部署历史面板"
+      ],
+      "type": "REST",
+      "status": "active",
+      "version": 1,
+      "endpoint": "GET /api/deployments",
+      "request": {
+        "path_params": [],
+        "query_params": [
+          {
+            "name": "project_id",
+            "type": "int",
+            "required": false
+          },
+          {
+            "name": "status",
+            "type": "string",
+            "required": false
+          }
+        ],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "description": "部署历史列表",
+          "deployment": {
+            "id": "int",
+            "project_id": "int",
+            "environment_name": "string",
+            "version": "string",
+            "status": "string",
+            "started_at": "datetime",
+            "operator": "string"
+          }
+        }
+      },
+      "errors": [
+        {
+          "status": 500,
+          "code": "INTERNAL_ERROR",
+          "message": "服务器错误"
+        }
+      ],
+      "description": "按条件查询所有部署历史记录。",
+      "source_requirements": [
+        "REQ-005"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-017",
+      "interface": "获取部署详情",
+      "provider_component_id": "CMP-006",
+      "provider": "API 接口服务",
+      "consumers": [
+        "前端部署历史面板"
+      ],
+      "type": "REST",
+      "status": "active",
+      "version": 1,
+      "endpoint": "GET /api/deployments/{id}",
+      "request": {
+        "path_params": [
+          {
+            "name": "id",
+            "type": "int",
+            "required": true
+          }
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "description": "部署详情，包括完整日志文本",
+          "id": "int",
+          "status": "string",
+          "log": "string"
+        }
+      },
+      "errors": [
+        {
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "部署记录不存在"
+        }
+      ],
+      "description": "获取某次部署的详细信息，包括完整日志内容。",
+      "source_requirements": [
+        "REQ-005"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
+    },
+    {
+      "id": "CTR-018",
+      "interface": "执行回滚",
+      "provider_component_id": "CMP-006",
+      "provider": "API 接口服务",
+      "consumers": [
+        "前端部署历史面板"
+      ],
+      "type": "REST",
+      "status": "active",
+      "version": 1,
+      "endpoint": "POST /api/deployments/{id}/rollback",
+      "request": {
+        "path_params": [
+          {
+            "name": "id",
+            "type": "int",
+            "required": true
+          }
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "description": "回滚已发起",
+          "new_deployment_id": "int"
+        }
+      },
+      "errors": [
+        {
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "部署记录不存在"
+        },
+        {
+          "status": 400,
+          "code": "CANNOT_ROLLBACK",
+          "message": "只有成功的部署才能回滚"
+        }
+      ],
+      "description": "基于指定成功部署记录重新发起一次部署（使用相同环境和包），实现回滚。",
+      "source_requirements": [
+        "REQ-005"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 SAD"
+        }
+      ]
     }
   ],
-  "data_models": []
+  "data_flow": [
+    {
+      "name": "一键部署主流程",
+      "steps": [
+        "用户在部署控制台选择环境与软件包，点击部署",
+        "前端 POST /api/deployments 携带 environment_id 和 package_id",
+        "后端部署编排模块创建 Deployment 记录，通过 Celery 异步发送任务",
+        "后端返回 deployment_id",
+        "前端建立 WebSocket 连接 /ws/deployments/{deployment_id}",
+        "Worker 依次执行：SSH 连接 → 创建版本文件夹 → 上传包 → 解压 → 生成脚本并赋权 → 执行后置命令",
+        "每一步通过实时通知模块推送进度和日志到前端",
+        "前端更新进度条和日志输出",
+        "任务完成或失败，Deployment 更新状态"
+      ]
+    },
+    {
+      "name": "回滚流程",
+      "steps": [
+        "用户从历史面板点击成功部署记录的回滚按钮",
+        "前端 POST /api/deployments/{id}/rollback",
+        "后端历史模块获取该记录的 environment_id 和 package_id",
+        "调用部署编排模块，创建新的 Deployment 并散发异步任务",
+        "返回新 deployment_id，前端跳转到部署控制台并连接 WebSocket"
+      ]
+    },
+    {
+      "name": "环境测试连接流程",
+      "steps": [
+        "用户在前端环境表单点击“测试连接”",
+        "前端 POST /api/environments/{env_id}/test_connection",
+        "后端环境模块解密凭据，使用 SSH 连接管理器建立临时 SSH",
+        "返回连接成功或失败详情"
+      ]
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "Project",
+      "description": "项目实体模型",
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "type": "int",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "项目名称"
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "required": false,
+          "description": "项目描述"
+        },
+        {
+          "name": "created_at",
+          "type": "datetime",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "datetime",
+          "required": true,
+          "description": "更新时间"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "Environment",
+      "description": "部署环境实体模型",
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "type": "int",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "project_id",
+          "type": "int",
+          "required": true,
+          "description": "所属项目 ID"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "环境名称（如测试线）"
+        },
+        {
+          "name": "host",
+          "type": "string",
+          "required": true,
+          "description": "服务器 IP 或域名"
+        },
+        {
+          "name": "port",
+          "type": "int",
+          "required": true,
+          "description": "SSH 端口"
+        },
+        {
+          "name": "auth_type",
+          "type": "enum(key,password)",
+          "required": true,
+          "description": "认证方式"
+        },
+        {
+          "name": "key_encrypted",
+          "type": "text",
+          "required": false,
+          "description": "加密后的私钥"
+        },
+        {
+          "name": "password_encrypted",
+          "type": "string",
+          "required": false,
+          "description": "加密后的密码"
+        },
+        {
+          "name": "base_path",
+          "type": "string",
+          "required": true,
+          "description": "部署基础路径"
+        },
+        {
+          "name": "deploy_script_template",
+          "type": "text",
+          "required": false,
+          "description": "启动脚本模板"
+        },
+        {
+          "name": "post_deploy_command",
+          "type": "text",
+          "required": false,
+          "description": "部署后执行命令"
+        },
+        {
+          "name": "env_vars",
+          "type": "json",
+          "required": false,
+          "description": "环境变量键值对"
+        },
+        {
+          "name": "created_at",
+          "type": "datetime",
+          "required": true
+        },
+        {
+          "name": "updated_at",
+          "type": "datetime",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "DM-003",
+      "name": "Package",
+      "description": "软件包实体模型",
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "type": "int",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "project_id",
+          "type": "int",
+          "required": true,
+          "description": "所属项目 ID"
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "required": true,
+          "description": "版本号"
+        },
+        {
+          "name": "file_name",
+          "type": "string",
+          "required": true,
+          "description": "原始文件名"
+        },
+        {
+          "name": "file_path",
+          "type": "string",
+          "required": true,
+          "description": "存储路径"
+        },
+        {
+          "name": "file_size",
+          "type": "int",
+          "required": true,
+          "description": "文件大小（字节）"
+        },
+        {
+          "name": "note",
+          "type": "string",
+          "required": false,
+          "description": "版本备注"
+        },
+        {
+          "name": "uploaded_at",
+          "type": "datetime",
+          "required": true,
+          "description": "上传时间"
+        }
+      ]
+    },
+    {
+      "id": "DM-004",
+      "name": "Deployment",
+      "description": "部署记录实体模型",
+      "source_requirements": [
+        "REQ-004",
+        "REQ-005"
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "type": "int",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "project_id",
+          "type": "int",
+          "required": true,
+          "description": "关联项目 ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "int",
+          "required": true,
+          "description": "关联环境 ID"
+        },
+        {
+          "name": "package_id",
+          "type": "int",
+          "required": true,
+          "description": "关联软件包 ID"
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "required": true,
+          "description": "部署的版本号"
+        },
+        {
+          "name": "status",
+          "type": "enum(pending,running,success,failed)",
+          "required": true,
+          "description": "部署状态"
+        },
+        {
+          "name": "started_at",
+          "type": "datetime",
+          "required": false
+        },
+        {
+          "name": "finished_at",
+          "type": "datetime",
+          "required": false
+        }
+      ]
+    }
+  ]
 }
