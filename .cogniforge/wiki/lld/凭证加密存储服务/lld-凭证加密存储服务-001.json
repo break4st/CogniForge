@@ -1,0 +1,991 @@
+{
+  "meta": {
+    "doc_id": "lld-Credential Service-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "凭证加密存储服务",
+    "title": "凭证加密存储服务详细设计",
+    "author": "design_agent",
+    "created": "2025-03-26T00:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-005"
+      ],
+      "contracts": [
+        "CTR-001",
+        "CTR-002",
+        "CTR-003",
+        "CTR-004"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "主密码的验证与派生密钥生成（PBKDF2）",
+      "使用派生密钥对私钥/密码进行AES-GCM加密与解密",
+      "加密凭证的持久化（存入数据库）",
+      "内存中密钥的安全管理（超时清除、手动清除）",
+      "对外提供加密/解密/主密码操作的REST API"
+    ],
+    "out_of_scope": [
+      "SSH连接执行（由SSH/SFTP连接管理器负责）",
+      "私钥的使用逻辑（由调用方自行处理解密后的明文）",
+      "SQLite数据库本身的schema设计（仅引用'credentials'表）",
+      "客户端主密码输入界面前端交互"
+    ],
+    "owned_components": [
+      "CMP-005"
+    ],
+    "owned_contracts": [
+      "CTR-001",
+      "CTR-002",
+      "CTR-003",
+      "CTR-004"
+    ],
+    "consumed_contracts": [],
+    "owned_data_models": [
+      "DM-002",
+      "DM-003"
+    ],
+    "consumed_data_models": [
+      "DM-001"
+    ]
+  },
+  "overview": {
+    "description": "凭证加密存储服务是一个后端微服务，负责将敏感凭证（SSH私钥、各类密码）以加密形态保存到SQLite数据库，并提供解密接口。加密密钥由用户提供的主密码通过PBKDF2派生，密钥仅在会话内存中保留，支持超时自动清除和手动清除，确保内存中不长期驻留明文密钥。",
+    "dependencies": [],
+    "tech_stack": [
+      "Python 3.11",
+      "FastAPI",
+      "cryptography (PBKDF2密钥派生)",
+      "SQLAlchemy"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-005"
+      ],
+      "sad_contract_ids": [
+        "CTR-001",
+        "CTR-002",
+        "CTR-003",
+        "CTR-004"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002",
+          "DM-003"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003",
+          "IF-004",
+          "IF-005"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005",
+          "DO-006",
+          "DO-007",
+          "DO-008",
+          "DO-009"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "credentials",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "credentials"
+      },
+      "description": "存储加密后的凭证信息，包括密文、盐、随机数和认证标签",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "name",
+          "type": "String",
+          "required": true,
+          "description": "凭证标识名称"
+        },
+        {
+          "name": "encrypted_data",
+          "type": "LargeBinary",
+          "required": true,
+          "description": "AES-GCM加密后的密文（base64编码存储为文本）"
+        },
+        {
+          "name": "salt",
+          "type": "LargeBinary",
+          "required": true,
+          "description": "PBKDF2派生密钥使用的盐值"
+        },
+        {
+          "name": "nonce",
+          "type": "LargeBinary",
+          "required": true,
+          "description": "AES-GCM加密使用的随机数"
+        },
+        {
+          "name": "tag",
+          "type": "LargeBinary",
+          "required": true,
+          "description": "AES-GCM认证标签"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "required": false,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DateTime",
+          "required": false,
+          "description": "更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "ix_credentials_name_unique",
+          "unique": true,
+          "columns": [
+            "name"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [],
+      "constraints": [],
+      "lifecycle": {
+        "create": "加密时写入",
+        "update": "需提供原主密码重新加密后覆盖",
+        "delete": "物理删除记录",
+        "retention": "无日志保留"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "KeyDerivationParams",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "内部使用的参数对象，存储主密码派生相关的配置和派生密钥",
+      "fields": [
+        {
+          "name": "master_password_hash",
+          "type": "String",
+          "required": true,
+          "description": "主密码的SHA-256哈希值，仅用于验证"
+        },
+        {
+          "name": "salt",
+          "type": "bytes",
+          "required": true,
+          "description": "派生密钥的盐值（随机生成，16字节）"
+        },
+        {
+          "name": "iteration_count",
+          "type": "int",
+          "required": true,
+          "description": "PBKDF2迭代次数，例如600000"
+        },
+        {
+          "name": "derived_key",
+          "type": "bytes",
+          "required": false,
+          "description": "内存中缓存的32字节派生密钥，超时后清空"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [],
+      "constraints": [],
+      "lifecycle": {
+        "create": "set_master_password时生成",
+        "update": "verify_master_password时刷新",
+        "delete": "显式清除或超时后清除derived_key字段",
+        "retention": "会话存活期间，derived_key超时后清空"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-003",
+      "name": "EncryptionResult",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "加密操作返回的结果对象，包含加密所需的全部持久化字段",
+      "fields": [
+        {
+          "name": "encrypted_data",
+          "type": "bytes",
+          "required": true,
+          "description": "加密后的密文"
+        },
+        {
+          "name": "salt",
+          "type": "bytes",
+          "required": true,
+          "description": "使用的盐值"
+        },
+        {
+          "name": "nonce",
+          "type": "bytes",
+          "required": true,
+          "description": "使用的随机数"
+        },
+        {
+          "name": "tag",
+          "type": "bytes",
+          "required": true,
+          "description": "认证标签"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [],
+      "constraints": [],
+      "lifecycle": {
+        "create": "每次加密操作创建",
+        "update": "不可变",
+        "delete": "由调用方使用后丢弃",
+        "retention": "不持久"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "MasterPasswordManager",
+      "object_type": "class",
+      "description": "负责主密码的验证、派生密钥生成与缓存管理",
+      "responsibilities": [
+        "存储主密码哈希和派生参数于KeyDerivationParams",
+        "提供set_master_password方法：接收主密码，生成随机盐，派生密钥，缓存并返回成功",
+        "提供verify_master_password方法：验证哈希并刷新派生密钥",
+        "提供clear_master_key方法：清空缓存的派生密钥",
+        "管理超时机制：使用后台线程监控空闲时间，超时后自动清空密钥"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "collaborations": [
+        "使用KeyDerivationParams作为内部状态"
+      ],
+      "states": [
+        {
+          "state_name": "Uninitialized",
+          "description": "主密码未设置，任何加密解密请求将被拒绝",
+          "transitions": [
+            {
+              "trigger": "set_master_password成功",
+              "target": "Active"
+            }
+          ]
+        },
+        {
+          "state_name": "Active",
+          "description": "派生密钥已缓存，可正常处理加密解密",
+          "transitions": [
+            {
+              "trigger": "超时或clear_master_key",
+              "target": "Uninitialized"
+            },
+            {
+              "trigger": "verify_master_password成功",
+              "target": "Active"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "CredentialEncryptor",
+      "object_type": "class",
+      "description": "执行AES-GCM加密逻辑",
+      "responsibilities": [
+        "从MasterPasswordManager获取当前派生密钥",
+        "生成随机nonce（12字节）",
+        "使用AES-256-GCM加密明文数据",
+        "返回EncryptionResult（密文、盐、nonce、tag）",
+        "不负责持久化"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "collaborations": [
+        "依赖MasterPasswordManager获取派生密钥",
+        "生成EncryptionResult对象"
+      ],
+      "states": []
+    },
+    {
+      "id": "DO-003",
+      "name": "CredentialDecryptor",
+      "object_type": "class",
+      "description": "执行AES-GCM解密逻辑",
+      "responsibilities": [
+        "从MasterPasswordManager获取当前派生密钥",
+        "接收密文、nonce、tag，执行解密和认证",
+        "解密失败时抛出特定异常（如InvalidTag）",
+        "返回原始明文数据"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "collaborations": [
+        "依赖MasterPasswordManager获取派生密钥"
+      ],
+      "states": []
+    },
+    {
+      "id": "DO-004",
+      "name": "CredentialRepository",
+      "object_type": "class",
+      "description": "负责credentials表的CRUD操作",
+      "responsibilities": [
+        "根据名称查询加密凭证记录",
+        "保存加密结果到credentials表",
+        "提供高级封装：save_encrypted_credential(EncryptionResult)"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "collaborations": [
+        "使用DM-001（credentials表映射）"
+      ],
+      "states": []
+    },
+    {
+      "id": "DO-005",
+      "name": "CredentialService",
+      "object_type": "class",
+      "description": "凭证加密存储服务的主门面，协调上述对象，提供业务方法",
+      "responsibilities": [
+        "init_master_password(master_password): void，调用MasterPasswordManager.set_master_password",
+        "verify_master_password(master_password): bool，调用MasterPasswordManager.verify_master_password",
+        "encrypt(name, plaintext): bool，调用CredentialEncryptor加密后通过CredentialRepository保存",
+        "decrypt(name): plaintext，通过CredentialRepository查询，调用CredentialDecryptor解密返回明文",
+        "clear_master_key(): void，调用MasterPasswordManager.clear_master_key"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "collaborations": [
+        "持有MasterPasswordManager、CredentialEncryptor、CredentialDecryptor、CredentialRepository实例"
+      ],
+      "states": []
+    },
+    {
+      "id": "DO-006",
+      "name": "SetMasterPasswordRequest",
+      "object_type": "dto",
+      "description": "设置主密码的请求体",
+      "properties": {
+        "master_password": {
+          "type": "string",
+          "format": "password",
+          "description": "用户输入的主密码"
+        }
+      },
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-005"
+      ]
+    },
+    {
+      "id": "DO-007",
+      "name": "VerifyMasterPasswordRequest",
+      "object_type": "dto",
+      "description": "验证主密码的请求体",
+      "properties": {
+        "master_password": {
+          "type": "string",
+          "format": "password",
+          "description": "用户输入的主密码"
+        }
+      },
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-005"
+      ]
+    },
+    {
+      "id": "DO-008",
+      "name": "EncryptRequest",
+      "object_type": "dto",
+      "description": "加密凭证的请求体",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "凭证名称"
+        },
+        "plaintext": {
+          "type": "string",
+          "description": "要加密的明文私钥或密码"
+        }
+      },
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-005"
+      ]
+    },
+    {
+      "id": "DO-009",
+      "name": "DecryptRequest",
+      "object_type": "dto",
+      "description": "解密凭证的请求体",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "要解密的凭证名称"
+        }
+      },
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-005"
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "contract_id": "CTR-001",
+      "method": "POST",
+      "endpoint": "/auth/set_master_password",
+      "description": "设置主密码，生成派生密钥并缓存",
+      "request": {
+        "body": {
+          "required": true,
+          "schema": {
+            "$ref": "DO-006"
+          }
+        }
+      },
+      "response": {
+        "status_codes": [
+          {
+            "code": 200,
+            "body": {
+              "description": "设置成功，无返回体",
+              "schema": {}
+            }
+          },
+          {
+            "code": 409,
+            "body": {
+              "description": "主密码已设置，不能重复设置",
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "detail": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-002",
+      "contract_id": "CTR-002",
+      "method": "POST",
+      "endpoint": "/auth/verify_master_password",
+      "description": "验证主密码并刷新派生密钥缓存",
+      "request": {
+        "body": {
+          "required": true,
+          "schema": {
+            "$ref": "DO-007"
+          }
+        }
+      },
+      "response": {
+        "status_codes": [
+          {
+            "code": 200,
+            "body": {
+              "description": "验证成功，无返回体",
+              "schema": {}
+            }
+          },
+          {
+            "code": 401,
+            "body": {
+              "description": "主密码验证失败",
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "detail": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [
+        "CTR-002"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-003",
+      "contract_id": "CTR-003",
+      "method": "POST",
+      "endpoint": "/credentials/encrypt",
+      "description": "加密凭证并持久化",
+      "request": {
+        "body": {
+          "required": true,
+          "schema": {
+            "$ref": "DO-008"
+          }
+        }
+      },
+      "response": {
+        "status_codes": [
+          {
+            "code": 200,
+            "body": {
+              "description": "加密成功，无返回体",
+              "schema": {}
+            }
+          },
+          {
+            "code": 400,
+            "body": {
+              "description": "请求无效（如名称为空）",
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "detail": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "code": 401,
+            "body": {
+              "description": "未设置主密码",
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "detail": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [
+        "CTR-003"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-004",
+      "contract_id": "CTR-004",
+      "method": "POST",
+      "endpoint": "/credentials/decrypt",
+      "description": "解密凭证返回明文",
+      "request": {
+        "body": {
+          "required": true,
+          "schema": {
+            "$ref": "DO-009"
+          }
+        }
+      },
+      "response": {
+        "status_codes": [
+          {
+            "code": 200,
+            "body": {
+              "description": "解密成功，返回明文数据",
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "plaintext": {
+                    "type": "string",
+                    "description": "解密后的明文"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "code": 401,
+            "body": {
+              "description": "未设置主密码或密钥已超时",
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "detail": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "code": 404,
+            "body": {
+              "description": "未找到指定凭证",
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "detail": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [
+        "CTR-004"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-005",
+      "contract_id": "",
+      "method": "POST",
+      "endpoint": "/auth/clear_master_key",
+      "description": "手动清除缓存的派生密钥",
+      "request": {
+        "body": {
+          "required": false,
+          "schema": {}
+        }
+      },
+      "response": {
+        "status_codes": [
+          {
+            "code": 200,
+            "body": {
+              "description": "清除成功，无返回体",
+              "schema": {}
+            }
+          },
+          {
+            "code": 401,
+            "body": {
+              "description": "当前无缓存的密钥",
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "detail": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "CredentialService",
+      "description": "凭证加密存储服务契约，定义接口方法",
+      "methods": [
+        {
+          "name": "init_master_password",
+          "description": "初始化主密码，调用set_master_password接口",
+          "operation": "set_master_password",
+          "source_components": [
+            "CMP-005"
+          ]
+        },
+        {
+          "name": "verify_master_password",
+          "description": "验证主密码，调用verify_master_password接口",
+          "operation": "verify_master_password",
+          "source_components": [
+            "CMP-005"
+          ]
+        },
+        {
+          "name": "encrypt",
+          "description": "加密凭证，调用encrypt接口",
+          "operation": "encrypt",
+          "source_components": [
+            "CMP-005"
+          ]
+        },
+        {
+          "name": "decrypt",
+          "description": "解密凭证，调用decrypt接口",
+          "operation": "decrypt",
+          "source_components": [
+            "CMP-005"
+          ]
+        },
+        {
+          "name": "clear_master_key",
+          "description": "清除密钥，调用clear_master_key接口",
+          "operation": "clear_master_key",
+          "source_components": [
+            "CMP-005"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "在任何加密或解密操作前，必须确保派生密钥已缓存且未超时",
+      "主密码验证成功后必须刷新派生密钥的缓存时间",
+      "凭证名称必须唯一",
+      "加密时使用的盐值必须与派生密钥的盐值相同（当前会话范围内）",
+      "同一会话中多次加密不同凭证使用相同的派生密钥",
+      "不得在日志或响应中泄漏明文密钥或明文凭证"
+    ]
+  },
+  "error_handling": {
+    "strategy": "使用FastAPI异常处理机制，所有业务异常转换为HTTP异常，记录详细日志但不暴露敏感信息。错误响应统一包含detail字段说明错误类型。",
+    "errors": [
+      {
+        "code": "MASTER_PASSWORD_NOT_SET",
+        "message": "主密码未设置，请先调用set_master_password",
+        "http_status": 401
+      },
+      {
+        "code": "INVALID_MASTER_PASSWORD",
+        "message": "主密码验证失败",
+        "http_status": 401
+      },
+      {
+        "code": "MASTER_PASSWORD_ALREADY_SET",
+        "message": "主密码已设置，当前会话不允许重复设置",
+        "http_status": 409
+      },
+      {
+        "code": "CREDENTIAL_NOT_FOUND",
+        "message": "未找到指定名称的凭证",
+        "http_status": 404
+      },
+      {
+        "code": "ENCRYPTION_FAILED",
+        "message": "加密过程发生内部错误",
+        "http_status": 500
+      },
+      {
+        "code": "DECRYPTION_FAILED",
+        "message": "解密失败，密文可能已损坏或密钥不匹配",
+        "http_status": 400
+      },
+      {
+        "code": "KEY_EXPIRED",
+        "message": "派生密钥已超时，请重新验证主密码",
+        "http_status": 401
+      },
+      {
+        "code": "INVALID_REQUEST",
+        "message": "请求格式无效或缺少必要字段",
+        "http_status": 400
+      }
+    ]
+  }
+}
