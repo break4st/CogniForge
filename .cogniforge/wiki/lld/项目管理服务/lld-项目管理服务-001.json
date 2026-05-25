@@ -1,0 +1,1151 @@
+{
+  "meta": {
+    "doc_id": "lld-ProjectManagement-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "项目管理服务",
+    "title": "项目管理服务详细设计文档",
+    "author": "design_agent",
+    "created": "2025-04-09T08:00:00Z",
+    "version": 2,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-003",
+        "REQ-007"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-003"
+      ],
+      "contracts": [
+        "CTR-006",
+        "CTR-007",
+        "CTR-008",
+        "CTR-009"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "项目的创建、唯一性校验",
+      "项目列表查询与模糊搜索",
+      "项目删除（自动解除所有环境绑定）",
+      "项目与环境的绑定/解绑（toggle 模式）",
+      "提供 REST API 供前端调用"
+    ],
+    "out_of_scope": [
+      "环境本身的创建、配置或删除",
+      "部署任务执行或远程文件管理",
+      "用户认证与授权",
+      "前端页面渲染"
+    ],
+    "owned_components": [
+      "CMP-003"
+    ],
+    "owned_contracts": [
+      "CTR-006",
+      "CTR-007",
+      "CTR-008",
+      "CTR-009"
+    ],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": [
+      "DM-001",
+      "DM-002"
+    ]
+  },
+  "overview": {
+    "description": "项目管理服务负责项目实体的生命周期管理，以及项目与环境的多对多绑定关系维护。通过 FastAPI 暴露 RESTful 接口，直接访问 PostgreSQL 数据库。",
+    "dependencies": [
+      "环境管理服务（验证环境 ID 是否存在）"
+    ],
+    "tech_stack": [
+      "Python 3.11+",
+      "FastAPI",
+      "PostgreSQL 15"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-003",
+      "sad_component_ids": [
+        "CMP-003"
+      ],
+      "sad_contract_ids": [
+        "CTR-006",
+        "CTR-007",
+        "CTR-008",
+        "CTR-009"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003",
+          "IF-004"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005",
+          "DO-006",
+          "DO-007"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": ""
+    },
+    {
+      "requirement_id": "REQ-007",
+      "sad_component_ids": [
+        "CMP-003"
+      ],
+      "sad_contract_ids": [
+        "CTR-009"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-002"
+        ],
+        "interfaces": [
+          "IF-004"
+        ],
+        "domain_objects": [
+          "DO-007",
+          "DO-005",
+          "DO-006"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "projects",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "projects"
+      },
+      "description": "项目主表，存储项目基本信息",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键，自动生成"
+        },
+        {
+          "name": "name",
+          "type": "String(255)",
+          "required": true,
+          "description": "项目名称，全局唯一"
+        },
+        {
+          "name": "description",
+          "type": "String(1000)",
+          "required": false,
+          "description": "项目描述"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "创建时间，自动记录"
+        },
+        {
+          "name": "updated_at",
+          "type": "DateTime",
+          "required": false,
+          "description": "最后更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_projects_name",
+          "unique": true,
+          "columns": [
+            "name"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-006",
+        "CTR-007",
+        "CTR-008"
+      ],
+      "constraints": [
+        "名称不允许为空",
+        "长度不超过255",
+        "全局唯一"
+      ],
+      "lifecycle": {
+        "create": "POST /api/projects",
+        "update": "无（暂不提供更新接口）",
+        "delete": "DELETE /api/projects/{id}，物理删除并级联删除绑定记录",
+        "retention": "删除后数据不再保留"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "project_environments",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "project_environments"
+      },
+      "description": "项目与环境的多对多绑定关系表",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键，自动生成"
+        },
+        {
+          "name": "project_id",
+          "type": "Integer",
+          "required": true,
+          "description": "外键 -> projects.id"
+        },
+        {
+          "name": "environment_id",
+          "type": "Integer",
+          "required": true,
+          "description": "外键 -> environments.id"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "绑定创建时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_project_env",
+          "unique": true,
+          "columns": [
+            "project_id",
+            "environment_id"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-003",
+        "REQ-007"
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-009"
+      ],
+      "constraints": [
+        "project_id 和 environment_id 的组合唯一",
+        "外键约束：project_id 引用 projects(id)，environment_id 引用 environments(id)",
+        "级联删除：删除项目时，相关记录自动删除"
+      ],
+      "lifecycle": {
+        "create": "POST /api/projects/{id}/environments (绑定) 或 DELETE (解绑)",
+        "update": "无更新操作，仅插入或删除",
+        "delete": "DELETE /api/projects/{id}/environments/{env_id} 或跟随项目删除",
+        "retention": "删除后即移除绑定"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "ProjectCreate",
+      "object_type": "value_object",
+      "description": "创建项目请求体",
+      "properties": [
+        {
+          "name": "name",
+          "type": "str",
+          "required": true,
+          "description": "项目名称"
+        },
+        {
+          "name": "description",
+          "type": "str | None",
+          "required": false,
+          "description": "项目描述"
+        }
+      ],
+      "validation_rules": [
+        "name 不能为空，长度 1-255",
+        "description 可选，最大长度 1000"
+      ],
+      "state_transitions": [],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-006"
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "ProjectResponse",
+      "object_type": "value_object",
+      "description": "项目信息响应体",
+      "properties": [
+        {
+          "name": "id",
+          "type": "int",
+          "required": true,
+          "description": "项目 ID"
+        },
+        {
+          "name": "name",
+          "type": "str",
+          "required": true,
+          "description": "项目名称"
+        },
+        {
+          "name": "description",
+          "type": "str | None",
+          "required": false,
+          "description": "项目描述"
+        },
+        {
+          "name": "created_at",
+          "type": "datetime",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "datetime | None",
+          "required": false,
+          "description": "更新时间"
+        }
+      ],
+      "validation_rules": [],
+      "state_transitions": [],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-006",
+        "CTR-007"
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "ProjectListResponse",
+      "object_type": "value_object",
+      "description": "项目列表响应体，包括分页信息",
+      "properties": [
+        {
+          "name": "items",
+          "type": "list[ProjectResponse]",
+          "required": true,
+          "description": "项目列表"
+        },
+        {
+          "name": "total",
+          "type": "int",
+          "required": true,
+          "description": "总条目数"
+        },
+        {
+          "name": "page",
+          "type": "int",
+          "required": true,
+          "description": "当前页码"
+        },
+        {
+          "name": "size",
+          "type": "int",
+          "required": true,
+          "description": "每页大小"
+        }
+      ],
+      "validation_rules": [],
+      "state_transitions": [],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-007"
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "DeleteProjectResponse",
+      "object_type": "value_object",
+      "description": "删除项目响应体",
+      "properties": [
+        {
+          "name": "message",
+          "type": "str",
+          "required": true,
+          "description": "操作结果消息"
+        },
+        {
+          "name": "project_id",
+          "type": "int",
+          "required": true,
+          "description": "被删除的项目 ID"
+        }
+      ],
+      "validation_rules": [],
+      "state_transitions": [],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-008"
+      ]
+    },
+    {
+      "id": "DO-005",
+      "name": "EnvironmentBindRequest",
+      "object_type": "value_object",
+      "description": "绑定/解绑环境请求体",
+      "properties": [
+        {
+          "name": "environment_id",
+          "type": "int",
+          "required": true,
+          "description": "环境 ID"
+        },
+        {
+          "name": "action",
+          "type": "str",
+          "required": true,
+          "description": "操作类型：'bind' 或 'unbind'"
+        }
+      ],
+      "validation_rules": [
+        "action 必须是 'bind' 或 'unbind'"
+      ],
+      "state_transitions": [],
+      "source_requirements": [
+        "REQ-007"
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-009"
+      ]
+    },
+    {
+      "id": "DO-006",
+      "name": "EnvironmentBindResponse",
+      "object_type": "value_object",
+      "description": "绑定/解绑环境响应体",
+      "properties": [
+        {
+          "name": "message",
+          "type": "str",
+          "required": true,
+          "description": "操作结果信息"
+        },
+        {
+          "name": "project_id",
+          "type": "int",
+          "required": true,
+          "description": "项目 ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "int",
+          "required": true,
+          "description": "环境 ID"
+        },
+        {
+          "name": "action",
+          "type": "str",
+          "required": true,
+          "description": "执行的操作"
+        }
+      ],
+      "validation_rules": [],
+      "state_transitions": [],
+      "source_requirements": [
+        "REQ-007"
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-009"
+      ]
+    },
+    {
+      "id": "DO-007",
+      "name": "ProjectEnvironmentRelation",
+      "object_type": "entity",
+      "description": "项目与环境绑定关系实体",
+      "properties": [
+        {
+          "name": "id",
+          "type": "int",
+          "required": true,
+          "description": "关系 ID"
+        },
+        {
+          "name": "project_id",
+          "type": "int",
+          "required": true,
+          "description": "项目 ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "int",
+          "required": true,
+          "description": "环境 ID"
+        },
+        {
+          "name": "created_at",
+          "type": "datetime",
+          "required": true,
+          "description": "绑定时间"
+        }
+      ],
+      "validation_rules": [],
+      "state_transitions": [],
+      "source_requirements": [
+        "REQ-007"
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-009"
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "ProjectService",
+      "type": "internal",
+      "description": "项目管理服务核心业务逻辑接口",
+      "dependencies": [],
+      "methods": [
+        {
+          "name": "create_project",
+          "description": "创建新项目",
+          "parameters": [
+            {
+              "name": "data",
+              "type": "ProjectCreate",
+              "required": true,
+              "description": "项目数据"
+            }
+          ],
+          "return_type": "ProjectResponse",
+          "exceptions": [
+            "ProjectNameDuplicateError",
+            "ValidationError"
+          ],
+          "source_contracts": [
+            "CTR-006"
+          ],
+          "preconditions": [
+            "name 非空且在全局唯一"
+          ],
+          "postconditions": [
+            "数据库中存在新项目记录",
+            "返回完整项目信息"
+          ]
+        },
+        {
+          "name": "list_projects",
+          "description": "分页查询项目列表，支持名称模糊搜索",
+          "parameters": [
+            {
+              "name": "page",
+              "type": "int",
+              "required": true,
+              "description": "页码"
+            },
+            {
+              "name": "size",
+              "type": "int",
+              "required": true,
+              "description": "每页大小"
+            },
+            {
+              "name": "search",
+              "type": "str | None",
+              "required": false,
+              "description": "名称搜索关键词"
+            }
+          ],
+          "return_type": "ProjectListResponse",
+          "exceptions": [
+            "ValidationError"
+          ],
+          "source_contracts": [
+            "CTR-007"
+          ],
+          "preconditions": [],
+          "postconditions": [
+            "返回符合条件的分页项目列表"
+          ]
+        },
+        {
+          "name": "delete_project",
+          "description": "删除指定项目及其所有环境绑定",
+          "parameters": [
+            {
+              "name": "project_id",
+              "type": "int",
+              "required": true,
+              "description": "项目 ID"
+            }
+          ],
+          "return_type": "DeleteProjectResponse",
+          "exceptions": [
+            "ProjectNotFoundError"
+          ],
+          "source_contracts": [
+            "CTR-008"
+          ],
+          "preconditions": [
+            "project_id 对应的项目必须存在"
+          ],
+          "postconditions": [
+            "项目及其所有环境绑定已被删除",
+            "数据库不再包含该项目相关记录"
+          ]
+        },
+        {
+          "name": "toggle_environment_binding",
+          "description": "根据 action 绑定或解绑环境（toggle 模式）",
+          "parameters": [
+            {
+              "name": "project_id",
+              "type": "int",
+              "required": true,
+              "description": "项目 ID"
+            },
+            {
+              "name": "data",
+              "type": "EnvironmentBindRequest",
+              "required": true,
+              "description": "绑定/解绑请求数据"
+            }
+          ],
+          "return_type": "EnvironmentBindResponse",
+          "exceptions": [
+            "ProjectNotFoundError",
+            "EnvironmentNotFoundError",
+            "EnvironmentBindingConflictError",
+            "EnvironmentBindingNotFoundError",
+            "ValidationError"
+          ],
+          "source_contracts": [
+            "CTR-009"
+          ],
+          "preconditions": [
+            "project_id 对应的项目存在",
+            "environment_id 对应的环境存在"
+          ],
+          "postconditions": [
+            "若 action='bind'，则 project_environments 中存在相应记录；若 action='unbind'，则相应记录被删除"
+          ]
+        }
+      ]
+    }
+  ],
+  "workflow": {
+    "project_lifecycle": {
+      "steps": [
+        "1. 接收创建请求",
+        "2. 校验项目名唯一性",
+        "3. 写入数据库",
+        "4. 返回创建结果"
+      ],
+      "states": [
+        "active",
+        "deleted"
+      ],
+      "transitions": [
+        {
+          "from": "active",
+          "to": "deleted",
+          "trigger": "delete_project",
+          "actions": [
+            "级联删除绑定关系",
+            "删除项目记录"
+          ]
+        }
+      ]
+    },
+    "bind_toggle": {
+      "description": "环境绑定/解绑通过同一接口，根据 action 字段决定操作。若绑定已存在则忽略或报错（根据业务决定），解绑时若关系不存在则报错。",
+      "steps": [
+        "1. 验证项目和环境存在",
+        "2. 根据 action 执行插入或删除",
+        "3. 返回操作结果"
+      ]
+    },
+    "project_deletion": {
+      "description": "删除项目时，先删除所有相关的 project_environments 记录，再删除项目本身。在一个事务内完成，保证原子性。"
+    }
+  },
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "创建项目",
+      "endpoint": "POST /api/projects",
+      "method": "POST",
+      "description": "创建一个新的项目",
+      "path": "/api/projects",
+      "request": {
+        "body": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "项目名称"
+            },
+            "description": {
+              "type": "string",
+              "description": "项目描述（可选）"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      "response": {
+        "body": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string",
+              "nullable": true
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time",
+              "nullable": true
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "status": 400,
+          "description": "请求参数校验失败或项目名重复"
+        }
+      ],
+      "source_contracts": [
+        "CTR-006"
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "查询项目列表",
+      "endpoint": "GET /api/projects",
+      "method": "GET",
+      "description": "分页查询项目列表，支持名称模糊搜索",
+      "path": "/api/projects",
+      "request": {
+        "query": {
+          "type": "object",
+          "properties": {
+            "page": {
+              "type": "integer",
+              "default": 1
+            },
+            "size": {
+              "type": "integer",
+              "default": 20
+            },
+            "search": {
+              "type": "string",
+              "description": "名称搜索关键词"
+            }
+          }
+        }
+      },
+      "response": {
+        "body": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "updated_at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "nullable": true
+                  }
+                }
+              }
+            },
+            "total": {
+              "type": "integer"
+            },
+            "page": {
+              "type": "integer"
+            },
+            "size": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "errors": [],
+      "source_contracts": [
+        "CTR-007"
+      ]
+    },
+    {
+      "id": "IF-003",
+      "name": "删除项目",
+      "endpoint": "DELETE /api/projects/{project_id}",
+      "method": "DELETE",
+      "description": "删除指定项目及其所有环境绑定",
+      "path": "/api/projects/{project_id}",
+      "request": {
+        "path": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "integer",
+              "description": "项目 ID"
+            }
+          },
+          "required": [
+            "project_id"
+          ]
+        }
+      },
+      "response": {
+        "body": {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "project_id": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "status": 404,
+          "description": "项目不存在"
+        }
+      ],
+      "source_contracts": [
+        "CTR-008"
+      ]
+    },
+    {
+      "id": "IF-004",
+      "name": "绑定/解绑环境",
+      "endpoint": "POST /api/projects/{project_id}/environments",
+      "method": "POST",
+      "description": "根据请求中的 action 字段绑定或解绑环境",
+      "path": "/api/projects/{project_id}/environments",
+      "request": {
+        "path": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "project_id"
+          ]
+        },
+        "body": {
+          "type": "object",
+          "properties": {
+            "environment_id": {
+              "type": "integer"
+            },
+            "action": {
+              "type": "string",
+              "enum": [
+                "bind",
+                "unbind"
+              ]
+            }
+          },
+          "required": [
+            "environment_id",
+            "action"
+          ]
+        }
+      },
+      "response": {
+        "body": {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "project_id": {
+              "type": "integer"
+            },
+            "environment_id": {
+              "type": "integer"
+            },
+            "action": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "status": 400,
+          "description": "请求参数错误"
+        },
+        {
+          "status": 404,
+          "description": "项目或环境不存在"
+        },
+        {
+          "status": 409,
+          "description": "绑定冲突或解绑时关系不存在"
+        }
+      ],
+      "source_contracts": [
+        "CTR-009"
+      ]
+    }
+  ],
+  "business_rules": [
+    {
+      "rule_id": "BR-001",
+      "description": "项目名称全局唯一",
+      "type": "invariant",
+      "conditions": "在创建项目时检查名称是否已存在",
+      "actions": "若重复则返回 400 错误",
+      "source_requirements": [
+        "REQ-003"
+      ]
+    },
+    {
+      "rule_id": "BR-002",
+      "description": "项目名称不能为空且长度不超过255",
+      "type": "invariant",
+      "conditions": "创建项目时校验",
+      "actions": "不符合则返回 400 错误",
+      "source_requirements": [
+        "REQ-003"
+      ]
+    },
+    {
+      "rule_id": "BR-003",
+      "description": "删除项目时级联删除其所有环境绑定",
+      "type": "invariant",
+      "conditions": "执行删除项目操作",
+      "actions": "在事务中先删除 project_environments 中相关记录，再删除项目",
+      "source_requirements": [
+        "REQ-003"
+      ]
+    },
+    {
+      "rule_id": "BR-004",
+      "description": "绑定环境前验证环境存在",
+      "type": "invariant",
+      "conditions": "action='bind' 且目标关系不存在",
+      "actions": "调用环境管理服务验证环境 ID，若不存在则返回 404",
+      "source_requirements": [
+        "REQ-007"
+      ]
+    },
+    {
+      "rule_id": "BR-005",
+      "description": "解绑环境前验证关系存在",
+      "type": "invariant",
+      "conditions": "action='unbind'",
+      "actions": "检查 project_environments 表中是否存在对应记录，若不存在则返回 404",
+      "source_requirements": [
+        "REQ-007"
+      ]
+    },
+    {
+      "rule_id": "BR-006",
+      "description": "不允许重复绑定同一环境",
+      "type": "invariant",
+      "conditions": "action='bind' 且目标关系已存在",
+      "actions": "返回 409 冲突错误",
+      "source_requirements": [
+        "REQ-007"
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "FastAPI 全局异常处理，返回统一的错误响应格式：{ \"detail\": [{ \"loc\": [\"field\"], \"msg\": \"错误信息\", \"type\": \"错误类型\" }] }",
+    "error_codes": [
+      {
+        "code": "PROJECT_NAME_DUPLICATE",
+        "status": 400,
+        "message": "项目名称已存在"
+      },
+      {
+        "code": "PROJECT_NOT_FOUND",
+        "status": 404,
+        "message": "项目不存在"
+      },
+      {
+        "code": "ENVIRONMENT_NOT_FOUND",
+        "status": 404,
+        "message": "环境不存在"
+      },
+      {
+        "code": "BINDING_ALREADY_EXISTS",
+        "status": 409,
+        "message": "绑定关系已存在"
+      },
+      {
+        "code": "BINDING_NOT_FOUND",
+        "status": 404,
+        "message": "绑定关系不存在"
+      },
+      {
+        "code": "VALIDATION_ERROR",
+        "status": 400,
+        "message": "请求参数验证失败"
+      }
+    ]
+  },
+  "dependencies": {
+    "service_dependencies": [
+      {
+        "service": "环境管理服务",
+        "interface": "验证环境是否存在",
+        "type": "sync_http",
+        "criticality": "high"
+      }
+    ],
+    "external_systems": [
+      {
+        "name": "PostgreSQL",
+        "type": "database",
+        "connection": "主数据库连接池"
+      }
+    ]
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "structured json",
+    "events": [
+      "项目创建成功/失败",
+      "项目查询",
+      "项目删除成功/失败",
+      "环境绑定/解绑操作"
+    ]
+  },
+  "testing": {
+    "unit": "pytest + asyncpg mock",
+    "integration": "docker-compose 启动 PostgreSQL，测试 API 端到端行为",
+    "coverage_target": "> 85%"
+  },
+  "deployment": {
+    "runtime": "uvicorn",
+    "container": "docker"
+  }
+}
