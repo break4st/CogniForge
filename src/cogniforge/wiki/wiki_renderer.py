@@ -2858,6 +2858,8 @@ def _render_lld(d: dict) -> str:
         parts.append(_section_header("📨", f"消息契约 ({len(d['message_contracts'])})",
                                       "rgba(91,141,239,0.12)", "message-contracts"))
         for mc in d["message_contracts"]:
+            if isinstance(mc, str):
+                continue
             schema_rows = ""
             for k, v in mc.get("schema", {}).items():
                 schema_rows += f'<tr><td>{_esc(k)}</td><td class="field-type">{_esc(v)}</td></tr>'
@@ -3046,6 +3048,8 @@ def _render_lld(d: dict) -> str:
                 attrs = dobj.get("attributes", [])
                 attr_rows = ""
                 for a in attrs:
+                    if isinstance(a, str):
+                        continue
                     required = a.get("required", False)
                     req_mark = ' <span style="color:var(--c-red);font-size:0.75em">*</span>' if required else ""
                     src = a.get("source", "")
@@ -3084,6 +3088,8 @@ def _render_lld(d: dict) -> str:
                 excs = meth.get("exceptions", [])
                 exc_tags = ""
                 for e in excs:
+                    if isinstance(e, str):
+                        continue
                     exc_tags += (
                         f'<span class="exc-item">'
                         f'<span class="exc-name">{_esc(e.get("name",""))}</span>'
@@ -3400,6 +3406,8 @@ def _render_lld(d: dict) -> str:
             # Parameters table
             params_rows = ""
             for p in iface.get("parameters", []):
+                if isinstance(p, str):
+                    continue
                 params_rows += (
                     f"<tr><td>{_esc(p.get('name',''))}</td>"
                     f"<td class=\"field-type\">{_esc(p.get('type',''))}</td>"
