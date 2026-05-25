@@ -1,0 +1,591 @@
+{
+  "meta": {
+    "doc_id": "lld-KeyManagementService-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "KeyManagementService",
+    "title": "密钥管理服务详细设计",
+    "author": "design_agent",
+    "created": "2025-03-26T12:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-003"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-013"
+      ],
+      "contracts": [
+        "CTR-008"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "主密码设定与哈希存储",
+      "AES-256加密存储私钥",
+      "私钥解密并在内存中提供",
+      "私钥格式验证",
+      "密钥指纹生成",
+      "密钥上传/更新接口"
+    ],
+    "out_of_scope": [
+      "SSH连接管理（由SSHService负责）",
+      "环境管理（由EnvironmentService负责）",
+      "密钥的分发与定时轮换",
+      "用户认证与授权（由Gateway负责）"
+    ],
+    "owned_components": [
+      "CMP-013"
+    ],
+    "owned_contracts": [
+      "CTR-008"
+    ],
+    "consumed_contracts": [],
+    "owned_data_models": [
+      "DM-001"
+    ],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "密钥管理服务负责主密码设定、验证，对私钥进行AES-256加密后持久化存储，并提供内存解密接口供其他服务使用，确保私钥不落盘。",
+    "dependencies": [
+      "EncryptionUtil",
+      "FileManager"
+    ],
+    "tech_stack": [
+      "Python 3.11",
+      "FastAPI",
+      "cryptography (AES-256)"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-003",
+      "sad_component_ids": [
+        "CMP-013"
+      ],
+      "sad_contract_ids": [
+        "CTR-008"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-001"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005",
+          "DO-006"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": "CTR-008对应接口IF-001"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "MasterPasswordConfig",
+      "type": "config",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "主密码哈希配置，用于验证主密码的正确性，存储于加密配置文件中",
+      "fields": [
+        {
+          "name": "hashed_password",
+          "type": "string",
+          "required": true,
+          "description": "主密码的SHA-256哈希值, hex编码"
+        },
+        {
+          "name": "salt",
+          "type": "string",
+          "required": true,
+          "description": "加密用的盐值"
+        },
+        {
+          "name": "algorithm",
+          "type": "string",
+          "required": true,
+          "description": "哈希算法, 固定为sha256"
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-013"
+      ],
+      "source_contracts": [],
+      "constraints": [
+        "salt长度至少128位随机"
+      ],
+      "lifecycle": {
+        "create": "首次设定主密码时创建",
+        "update": "修改主密码时更新",
+        "delete": "不允许删除",
+        "retention": "永久"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "upload_key",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-008",
+      "provider_component_id": "CMP-013",
+      "method": "POST",
+      "endpoint": "/api/environments/{environment_id}/key",
+      "description": "为指定环境上传或更新 SSH 私钥，服务端验证主密码后加密存储，返回密钥指纹",
+      "parameters": [
+        {
+          "name": "environment_id",
+          "type": "integer",
+          "in": "path",
+          "required": true,
+          "description": "环境ID"
+        },
+        {
+          "name": "X-Master-Password",
+          "type": "string",
+          "in": "header",
+          "required": true,
+          "description": "主密码，用于解锁密钥存储"
+        }
+      ],
+      "request_body": {
+        "key_file": {
+          "type": "file",
+          "required": true,
+          "description": "PEM格式私钥文件"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "fingerprint": "string"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "INVALID_KEY",
+          "message": "私钥文件格式无效"
+        },
+        {
+          "status": 401,
+          "code": "UNAUTHORIZED",
+          "message": "主密码错误或未提供"
+        },
+        {
+          "status": 404,
+          "code": "ENV_NOT_FOUND",
+          "message": "环境不存在"
+        },
+        {
+          "status": 500,
+          "code": "ENCRYPTION_FAILED",
+          "message": "密钥加密失败"
+        }
+      ],
+      "auth": {
+        "required": true,
+        "policy": "master_password_header"
+      },
+      "validation_rules": [
+        "私钥文件必须为PEM格式，包含有效RSA/DSA/ECDSA/Ed25519私钥",
+        "主密码长度至少8字符"
+      ],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "MasterPassword",
+      "description": "主密码值对象，封装主密码及其验证逻辑",
+      "attributes": [
+        {
+          "name": "plaintext",
+          "type": "string",
+          "description": "主密码明文，仅在内存中短暂存在，验证后立即丢弃"
+        }
+      ],
+      "methods": [
+        {
+          "name": "verify",
+          "description": "使用存储的盐值和哈希算法验证主密码是否正确",
+          "parameters": [
+            {
+              "name": "stored_hash",
+              "type": "string"
+            },
+            {
+              "name": "salt",
+              "type": "string"
+            }
+          ],
+          "return_type": "boolean"
+        }
+      ],
+      "invariants": [
+        "明文密码长度至少8字符",
+        "明文密码不能为空"
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "EncryptionKey",
+      "description": "加密密钥实体，由主密码和盐派生而来，用于加密私钥",
+      "attributes": [
+        {
+          "name": "key",
+          "type": "bytes",
+          "description": "AES-256密钥字节"
+        },
+        {
+          "name": "iv",
+          "type": "bytes",
+          "description": "初始化向量，每次加密随机生成"
+        }
+      ],
+      "methods": [
+        {
+          "name": "derive_from_password",
+          "description": "使用PBKDF2从主密码和盐派生密钥",
+          "parameters": [
+            {
+              "name": "password",
+              "type": "string"
+            },
+            {
+              "name": "salt",
+              "type": "string"
+            }
+          ],
+          "return_type": "EncryptionKey"
+        }
+      ],
+      "invariants": [
+        "密钥长度必须为256位",
+        "IV长度必须为128位"
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "EncryptedPrivateKey",
+      "description": "加密后的私钥实体，包含密文和加密元数据",
+      "attributes": [
+        {
+          "name": "ciphertext",
+          "type": "bytes",
+          "description": "AES-256加密后的私钥密文"
+        },
+        {
+          "name": "iv",
+          "type": "bytes",
+          "description": "加密使用的初始化向量，需与密文一起存储"
+        },
+        {
+          "name": "salt",
+          "type": "string",
+          "description": "派生密钥使用的盐值"
+        }
+      ],
+      "methods": [
+        {
+          "name": "encrypt",
+          "description": "使用EncryptionKey加密明文私钥",
+          "parameters": [
+            {
+              "name": "plaintext_key",
+              "type": "bytes"
+            },
+            {
+              "name": "encryption_key",
+              "type": "EncryptionKey"
+            }
+          ],
+          "return_type": "EncryptedPrivateKey"
+        },
+        {
+          "name": "decrypt",
+          "description": "使用EncryptionKey解密为明文私钥",
+          "parameters": [
+            {
+              "name": "encryption_key",
+              "type": "EncryptionKey"
+            }
+          ],
+          "return_type": "bytes"
+        }
+      ],
+      "invariants": [
+        "密文不能为空",
+        "IV必须与加密时一致",
+        "解密时必须提供相同的盐值"
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "PrivateKey",
+      "description": "原始私钥值对象，负责格式验证和指纹生成",
+      "attributes": [
+        {
+          "name": "pem_data",
+          "type": "bytes",
+          "description": "PEM格式私钥数据"
+        },
+        {
+          "name": "fingerprint",
+          "type": "string",
+          "description": "私钥的SHA-256指纹，用于标识"
+        }
+      ],
+      "methods": [
+        {
+          "name": "validate",
+          "description": "验证PEM格式私钥是否有效",
+          "return_type": "boolean"
+        },
+        {
+          "name": "generate_fingerprint",
+          "description": "根据公钥生成指纹",
+          "return_type": "string"
+        }
+      ],
+      "invariants": [
+        "私钥必须为有效PEM格式",
+        "私钥类型可以是RSA/DSA/ECDSA/Ed25519",
+        "指纹为SHA-256哈希值"
+      ]
+    },
+    {
+      "id": "DO-005",
+      "name": "Environment",
+      "description": "环境标识值对象，与私钥关联",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "integer",
+          "description": "环境唯一标识"
+        }
+      ],
+      "methods": [],
+      "invariants": [
+        "ID必须为正整数"
+      ]
+    },
+    {
+      "id": "DO-006",
+      "name": "KeyFingerprint",
+      "description": "密钥指纹值对象",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "description": "指纹哈希字符串"
+        }
+      ],
+      "methods": [],
+      "invariants": [
+        "指纹必须为有效哈希值"
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "KeyManagementServiceContract",
+      "description": "定义KeyManagementService提供的业务操作契约",
+      "operations": [
+        {
+          "name": "upload_key",
+          "description": "上传或更新指定环境的SSH私钥",
+          "parameters": [
+            {
+              "name": "environment_id",
+              "type": "integer"
+            },
+            {
+              "name": "master_password",
+              "type": "string"
+            },
+            {
+              "name": "key_file",
+              "type": "file"
+            }
+          ],
+          "preconditions": [
+            "环境必须存在",
+            "主密码必须已设置且正确",
+            "上传文件必须是有效PEM格式私钥"
+          ],
+          "postconditions": [
+            "私钥加密后安全存储",
+            "返回密钥指纹"
+          ],
+          "exceptions": [
+            "ENV_NOT_FOUND",
+            "UNAUTHORIZED",
+            "INVALID_KEY",
+            "ENCRYPTION_FAILED"
+          ]
+        },
+        {
+          "name": "set_master_password",
+          "description": "首次设置或修改主密码",
+          "parameters": [
+            {
+              "name": "new_password",
+              "type": "string"
+            }
+          ],
+          "preconditions": [
+            "如果是修改，需提供旧密码验证"
+          ],
+          "postconditions": [
+            "主密码哈希和盐值更新保存"
+          ],
+          "exceptions": [
+            "WEAK_PASSWORD",
+            "AUTH_FAILED"
+          ]
+        },
+        {
+          "name": "decrypt_key",
+          "description": "内部解密私钥并在内存中提供（非API）",
+          "parameters": [
+            {
+              "name": "environment_id",
+              "type": "integer"
+            },
+            {
+              "name": "master_password",
+              "type": "string"
+            }
+          ],
+          "preconditions": [
+            "私钥存在且加密存储",
+            "主密码正确"
+          ],
+          "postconditions": [
+            "返回解密后的私钥对象（仅内存）"
+          ],
+          "exceptions": [
+            "ENV_NOT_FOUND",
+            "DECRYPTION_FAILED"
+          ]
+        }
+      ]
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "name": "主密码强度规则",
+      "description": "主密码必须满足最低强度要求",
+      "invariants": [
+        "主密码长度至少8个字符",
+        "主密码必须包含至少一个大写字母、一个小写字母和一个数字"
+      ]
+    },
+    {
+      "id": "BR-002",
+      "name": "私钥加密规则",
+      "description": "私钥必须使用AES-256加密后存储",
+      "invariants": [
+        "加密算法必须为AES-256-CBC",
+        "加密密钥由主密码和随机盐通过PBKDF2派生",
+        "每次加密必须使用新的随机IV",
+        "密文、IV和盐必须一起存储"
+      ]
+    },
+    {
+      "id": "BR-003",
+      "name": "私钥处理规则",
+      "description": "私钥在内存中的处理要求",
+      "invariants": [
+        "解密后的私钥只能存在于内存中",
+        "私钥使用后应立即从内存中擦除",
+        "禁止将解密后的私钥写入磁盘或日志"
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "所有API错误返回统一JSON格式，包含错误码和详情；内部使用异常类映射到HTTP状态码。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "400",
+        "name": "客户端错误",
+        "description": "请求参数格式错误或私钥无效"
+      },
+      {
+        "code": "401",
+        "name": "认证失败",
+        "description": "主密码缺失或验证失败"
+      },
+      {
+        "code": "404",
+        "name": "资源未找到",
+        "description": "请求的环境ID不存在"
+      },
+      {
+        "code": "500",
+        "name": "服务端错误",
+        "description": "密钥加密或解密过程失败"
+      }
+    ]
+  }
+}
