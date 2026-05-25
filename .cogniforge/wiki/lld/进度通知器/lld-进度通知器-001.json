@@ -1,0 +1,277 @@
+{
+  "meta": {
+    "doc_id": "lld-进度通知器-001",
+    "type": "lld",
+    "module_type": "infrastructure",
+    "module": "进度通知器",
+    "title": "进度通知器详细设计",
+    "author": "design_agent",
+    "created": "2024-06-15T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-004"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-008"
+      ],
+      "contracts": [
+        "CTR-011"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "接收 DeploymentOrchestrator 产生的实时进度事件，通过 Redis pub/sub 频道广播",
+      "提供 SSE 端点供前端部署面板订阅，实时推送部署进度",
+      "管理部署任务的状态变更通知，支持 progress、step、complete、error 事件类型"
+    ],
+    "out_of_scope": [
+      "不负责部署流程的执行、编排或业务逻辑决策",
+      "不负责持久化部署历史记录",
+      "不负责环境配置、密钥管理或文件传输等核心部署操作"
+    ],
+    "owned_components": [
+      "CMP-008"
+    ],
+    "owned_contracts": [
+      "CTR-011"
+    ],
+    "consumed_contracts": [],
+    "owned_data_models": [
+      "DM-001"
+    ],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "进度通知器是实时通信基础设施，采用 Redis 发布/订阅机制，解耦部署执行与前端展示。DeploymentOrchestrator 在部署过程中将进度事件发布到特定 Redis 频道，本模块作为订阅方接收事件，并通过 FastAPI 的 SSE 响应流式推送给已建立连接的前端客户端。",
+    "dependencies": [
+      "DeploymentOrchestrator",
+      "Redis"
+    ],
+    "tech_stack": [
+      "Python 3.11+",
+      "FastAPI",
+      "Redis 7",
+      "EventSource (SSE)"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-004",
+      "sad_component_ids": [
+        "CMP-008"
+      ],
+      "sad_contract_ids": [
+        "CTR-011"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-001"
+        ],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "DeploymentProgressChannel",
+      "type": "store",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "用于传递部署进度事件的 Redis 频道，命名遵循 deployment:progress:{deployment_id} 模式，消息体为 JSON 格式。",
+      "fields": [
+        {
+          "name": "event_type",
+          "type": "string",
+          "required": true,
+          "description": "事件类型: progress, step, complete, error"
+        },
+        {
+          "name": "deployment_id",
+          "type": "string",
+          "required": true,
+          "description": "部署任务 ID"
+        },
+        {
+          "name": "timestamp",
+          "type": "string",
+          "required": true,
+          "description": "ISO 8601 格式时间戳"
+        },
+        {
+          "name": "data",
+          "type": "object",
+          "required": true,
+          "description": "事件载荷，根据 event_type 变化"
+        }
+      ],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-008"
+      ],
+      "source_contracts": [
+        "CTR-011"
+      ],
+      "constraints": [
+        "频道由 DeploymentOrchestrator 动态创建和销毁，无持久化保留"
+      ],
+      "lifecycle": {
+        "create": "部署开始时通过发布第一条消息创建",
+        "update": "",
+        "delete": "部署结束时自动消失",
+        "retention": "无"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "部署进度 SSE 流",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-011",
+      "provider_component_id": "CMP-008",
+      "method": "GET",
+      "endpoint": "/api/deployments/{id}/progress",
+      "description": "建立 SSE 连接以接收指定部署的实时进度事件。事件类型包括 progress, step, complete, error。",
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "in": "path",
+          "required": true,
+          "description": "部署任务 ID"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "event_type": {
+            "type": "string",
+            "enum": [
+              "progress",
+              "step",
+              "complete",
+              "error"
+            ]
+          },
+          "deployment_id": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "percent": {
+                "type": "integer",
+                "description": "仅 progress 事件"
+              },
+              "step_name": {
+                "type": "string",
+                "description": "仅 step 事件"
+              },
+              "step_detail": {
+                "type": "string",
+                "description": "仅 step 事件"
+              },
+              "result": {
+                "type": "object",
+                "description": "仅 complete 事件"
+              },
+              "error_code": {
+                "type": "string",
+                "description": "仅 error 事件"
+              },
+              "error_message": {
+                "type": "string",
+                "description": "仅 error 事件"
+              }
+            }
+          }
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "INVALID_DEPLOYMENT_ID",
+          "message": "部署 ID 格式无效"
+        },
+        {
+          "status": 404,
+          "code": "DEPLOYMENT_NOT_FOUND",
+          "message": "指定的部署任务不存在或已过期"
+        },
+        {
+          "status": 500,
+          "code": "INTERNAL_ERROR",
+          "message": "Redis 连接异常或流式传输中断"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": "由网关统一认证"
+      },
+      "validation_rules": [
+        "部署 ID 必须符合 UUID 格式"
+      ],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "topology": {
+    "namespaces": [
+      "deployment"
+    ]
+  },
+  "business_rules": {
+    "invariants": [
+      "每个部署任务对应一个唯一的进度频道，频道名称为 deployment:progress:{deployment_id}",
+      "SSE 连接在部署任务完成后最多保持 5 分钟，之后强制关闭"
+    ]
+  }
+}
