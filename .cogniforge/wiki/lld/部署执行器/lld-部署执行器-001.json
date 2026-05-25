@@ -1,0 +1,754 @@
+{
+  "meta": {
+    "doc_id": "lld-部署执行器-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "部署执行器",
+    "title": "部署执行器详细设计",
+    "author": "design_agent",
+    "created": "2025-03-26T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-003"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-005"
+      ],
+      "contracts": [
+        "CTR-012",
+        "CTR-013"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "接收部署请求，解析参数（项目、环境、版本）",
+      "前置检查：验证项目与环境存在性，远程主机可达性",
+      "编排部署流程：通过 SFTP 上传文件 → 创建远程版本目录 → 调用脚本引擎生成启动脚本 → 远程执行脚本 → 原子替换软链接",
+      "全程状态更新与日志记录（progress、current_step、log）",
+      "失败处理：保留原有版本，不更新软链接，仅标记部署失败",
+      "生产环境二次确认预留（状态机停留点）"
+    ],
+    "out_of_scope": [
+      "用户的认证与授权（由网关或 OAuth 处理）",
+      "项目管理（增删改查项目）—— 属于项目管理服务",
+      "环境信息的维护（增删改环境配置）—— 属于环境管理服务",
+      "脚本模板语法解析与生成具体命令—— 属于脚本引擎",
+      "历史日志的持久化与查询聚合—— 属于历史日志服务"
+    ],
+    "owned_components": [
+      "CMP-005"
+    ],
+    "owned_contracts": [
+      "CTR-012",
+      "CTR-013"
+    ],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "负责一键部署流程的编排，包括前置检查、文件上传、远程目录创建、脚本生成与执行、软链接更新，并记录部署结果。",
+    "dependencies": [
+      "项目管理服务",
+      "环境管理服务",
+      "脚本引擎",
+      "历史与日志服务",
+      "SSH/SFTP 基础设施"
+    ],
+    "tech_stack": [
+      "TypeScript",
+      "Node.js",
+      "Express",
+      "SQLite 3",
+      "ssh2 + ssh2-sftp-client",
+      "winston"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-003",
+      "sad_component_ids": [
+        "CMP-005"
+      ],
+      "sad_contract_ids": [
+        "CTR-012",
+        "CTR-013"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "DeploymentOrchestrator",
+      "object_type": "domain_service",
+      "description": "核心部署编排服务，负责整个部署生命周期管理",
+      "responsibilities": [
+        "接收部署请求",
+        "执行前置检查（项目、环境、主机可达性）",
+        "编排部署步骤，调用 SSH/SFTP 与脚本引擎",
+        "管理部署状态与进度",
+        "处理失败逻辑与回滚",
+        "生产环境二次确认"
+      ],
+      "dependencies": [
+        "ProjectRepository",
+        "EnvironmentRepository",
+        "SSHService",
+        "ScriptEngine",
+        "DeploymentRepository",
+        "HistoryLogger"
+      ],
+      "attributes": [],
+      "operations": [
+        {
+          "name": "initiateDeployment",
+          "parameters": [
+            {
+              "name": "projectId",
+              "type": "string"
+            },
+            {
+              "name": "environmentId",
+              "type": "string"
+            },
+            {
+              "name": "version",
+              "type": "string"
+            }
+          ],
+          "return_type": "DeploymentResult",
+          "description": "发起部署流程，返回部署标识与初始状态"
+        },
+        {
+          "name": "getDeploymentStatus",
+          "parameters": [
+            {
+              "name": "deploymentId",
+              "type": "string"
+            }
+          ],
+          "return_type": "DeploymentStatus",
+          "description": "查询部署状态与日志"
+        }
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "Deployment",
+      "object_type": "entity",
+      "description": "部署实体，记录一次部署的所有信息",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "description": "唯一标识"
+        },
+        {
+          "name": "projectId",
+          "type": "string",
+          "description": "关联项目ID"
+        },
+        {
+          "name": "environmentId",
+          "type": "string",
+          "description": "关联环境ID"
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "description": "部署版本号"
+        },
+        {
+          "name": "status",
+          "type": "DeploymentStatus",
+          "description": "部署状态枚举：pending, in_progress, awaiting_confirmation, success, failed"
+        },
+        {
+          "name": "progress",
+          "type": "integer",
+          "description": "进度百分比 0-100"
+        },
+        {
+          "name": "currentStep",
+          "type": "string",
+          "description": "当前执行的步骤描述"
+        },
+        {
+          "name": "log",
+          "type": "string",
+          "description": "累积的日志文本"
+        },
+        {
+          "name": "createdAt",
+          "type": "datetime",
+          "description": "创建时间"
+        },
+        {
+          "name": "updatedAt",
+          "type": "datetime",
+          "description": "最后更新时间"
+        }
+      ],
+      "operations": [
+        {
+          "name": "updateStatus",
+          "parameters": [
+            {
+              "name": "newStatus",
+              "type": "DeploymentStatus"
+            }
+          ],
+          "return_type": "void",
+          "description": "更新部署状态"
+        },
+        {
+          "name": "appendLog",
+          "parameters": [
+            {
+              "name": "logEntry",
+              "type": "string"
+            }
+          ],
+          "return_type": "void",
+          "description": "追加日志信息"
+        }
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "DeploymentStateMachine",
+      "object_type": "domain_service",
+      "description": "管理部署状态转换逻辑，确保状态流转符合业务规则",
+      "responsibilities": [
+        "验证状态转换合法性",
+        "控制生产环境二次确认状态",
+        "触发状态变更的副作用（如记录日志）"
+      ],
+      "dependencies": [],
+      "attributes": [],
+      "operations": [
+        {
+          "name": "transition",
+          "parameters": [
+            {
+              "name": "deployment",
+              "type": "Deployment"
+            },
+            {
+              "name": "targetStatus",
+              "type": "DeploymentStatus"
+            }
+          ],
+          "return_type": "void",
+          "description": "执行状态转换，若不合法则抛出异常",
+          "preconditions": [
+            "当前状态允许转换至 targetStatus"
+          ],
+          "postconditions": [
+            "deployment.status 变更为 targetStatus",
+            "若转换失败记录错误日志"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "SSHExecutor",
+      "object_type": "domain_service",
+      "description": "封装 SSH 和 SFTP 操作，提供远程命令执行、文件上传、目录管理等能力",
+      "responsibilities": [
+        "建立 SSH 连接",
+        "执行远程命令",
+        "通过 SFTP 上传文件",
+        "管理远程目录（创建、删除）",
+        "执行原子化软链接替换"
+      ],
+      "dependencies": [],
+      "attributes": [],
+      "operations": [
+        {
+          "name": "executeCommand",
+          "parameters": [
+            {
+              "name": "command",
+              "type": "string"
+            }
+          ],
+          "return_type": "CommandResult",
+          "description": "在远程主机执行 shell 命令",
+          "preconditions": [
+            "SSH 连接已建立"
+          ],
+          "postconditions": [
+            "命令执行完毕，返回标准输出与错误输出"
+          ]
+        },
+        {
+          "name": "uploadFile",
+          "parameters": [
+            {
+              "name": "localPath",
+              "type": "string"
+            },
+            {
+              "name": "remotePath",
+              "type": "string"
+            }
+          ],
+          "return_type": "void",
+          "description": "通过 SFTP 上传文件",
+          "preconditions": [
+            "SFTP 连接已建立"
+          ],
+          "postconditions": [
+            "远程路径上存在上传的文件"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "DO-005",
+      "name": "ScriptGenerator",
+      "object_type": "domain_service",
+      "description": "调用脚本引擎生成部署所需的启动脚本，屏蔽模板与语法细节",
+      "responsibilities": [
+        "根据项目、环境参数生成脚本内容",
+        "将脚本保存为远程可执行文件"
+      ],
+      "dependencies": [
+        "脚本引擎外部服务"
+      ],
+      "attributes": [],
+      "operations": [
+        {
+          "name": "generate",
+          "parameters": [
+            {
+              "name": "project",
+              "type": "Project"
+            },
+            {
+              "name": "environment",
+              "type": "Environment"
+            },
+            {
+              "name": "versionDir",
+              "type": "string"
+            }
+          ],
+          "return_type": "string",
+          "description": "生成脚本内容并返回脚本在远程主机上的路径",
+          "preconditions": [
+            "脚本引擎服务可用"
+          ],
+          "postconditions": [
+            "远程主机上存在生成的脚本文件"
+          ]
+        }
+      ]
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "deployment_record",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "deployments"
+      },
+      "description": "部署记录视图，仅包含本模块关心的字段",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "description": "部署唯一标识"
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "required": true,
+          "description": "关联项目 ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "string",
+          "required": true,
+          "description": "关联环境 ID"
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "required": true,
+          "description": "部署版本号"
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "required": true,
+          "description": "部署状态：pending|running|success|failed"
+        },
+        {
+          "name": "progress",
+          "type": "integer",
+          "required": true,
+          "description": "进度百分比 0-100"
+        },
+        {
+          "name": "current_step",
+          "type": "string",
+          "required": false,
+          "description": "当前步骤描述"
+        },
+        {
+          "name": "log",
+          "type": "text",
+          "required": false,
+          "description": "部署日志文本"
+        },
+        {
+          "name": "created_at",
+          "type": "datetime",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "datetime",
+          "required": true,
+          "description": "更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_deployments_project_env",
+          "unique": false,
+          "columns": [
+            "project_id",
+            "environment_id"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-005"
+      ],
+      "source_contracts": [
+        "CTR-012",
+        "CTR-013"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "由 initiateDeployment 方法创建",
+        "update": "部署流程中实时更新 status/progress/log",
+        "delete": "不删除，保留历史记录",
+        "retention": "永久保留"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "发起部署",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-012",
+      "provider_component_id": "CMP-005",
+      "method": "POST",
+      "endpoint": "/api/deployments",
+      "description": "开始一键部署流程，返回部署 ID 用于跟踪状态和日志",
+      "parameters": [],
+      "request_body": {
+        "project_id": "string",
+        "environment_id": "string",
+        "version": "string"
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "deployment_id": "string",
+          "message": "部署已启动"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "VALIDATION_ERROR",
+          "message": "参数错误"
+        },
+        {
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "项目或环境不存在"
+        },
+        {
+          "status": 500,
+          "code": "INTERNAL_ERROR",
+          "message": "服务器内部错误"
+        }
+      ],
+      "auth": {
+        "required": true,
+        "type": "bearer"
+      },
+      "rate_limit": {
+        "max_requests": 10,
+        "window": "1m"
+      }
+    },
+    {
+      "id": "IF-002",
+      "name": "查询部署状态",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-013",
+      "provider_component_id": "CMP-005",
+      "method": "GET",
+      "endpoint": "/api/deployments/{deployment_id}",
+      "description": "获取指定部署的详细状态、进度和日志",
+      "parameters": [
+        {
+          "name": "deployment_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "部署ID"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "id": "string",
+          "project_id": "string",
+          "environment_id": "string",
+          "version": "string",
+          "status": "string",
+          "progress": "number",
+          "current_step": "string",
+          "log": "string",
+          "created_at": "datetime",
+          "updated_at": "datetime"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 404,
+          "code": "NOT_FOUND",
+          "message": "部署记录不存在"
+        },
+        {
+          "status": 500,
+          "code": "INTERNAL_ERROR",
+          "message": "服务器内部错误"
+        }
+      ],
+      "auth": {
+        "required": true,
+        "type": "bearer"
+      },
+      "rate_limit": {
+        "max_requests": 100,
+        "window": "1m"
+      }
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "DeploymentOrchestratorService",
+      "description": "部署执行器对外提供的服务契约",
+      "status": "active",
+      "version": 1,
+      "methods": [
+        {
+          "name": "initiateDeployment",
+          "description": "启动一次部署流程",
+          "signature": "initiateDeployment(projectId: string, environmentId: string, version: string): DeploymentResult",
+          "parameters": [
+            {
+              "name": "projectId",
+              "type": "string",
+              "required": true,
+              "description": "项目唯一标识"
+            },
+            {
+              "name": "environmentId",
+              "type": "string",
+              "required": true,
+              "description": "环境唯一标识"
+            },
+            {
+              "name": "version",
+              "type": "string",
+              "required": true,
+              "description": "部署版本号"
+            }
+          ],
+          "return": {
+            "type": "DeploymentResult",
+            "description": "包含 deploymentId 和初始状态"
+          },
+          "preconditions": [
+            "projectId 对应的项目存在且状态为 active",
+            "environmentId 对应的环境存在且属于该项目，且处于可部署状态",
+            "version 格式有效",
+            "SSH 主机可达"
+          ],
+          "postconditions": [
+            "创建了一条状态为 pending 的部署记录",
+            "返回唯一的 deploymentId",
+            "若任何前置条件不满足，返回明确的错误信息，不创建部署记录"
+          ]
+        },
+        {
+          "name": "getDeploymentStatus",
+          "description": "查询部署的当前状态和日志",
+          "signature": "getDeploymentStatus(deploymentId: string): DeploymentStatus",
+          "parameters": [
+            {
+              "name": "deploymentId",
+              "type": "string",
+              "required": true,
+              "description": "部署唯一标识"
+            }
+          ],
+          "return": {
+            "type": "DeploymentStatus",
+            "description": "部署的完整状态信息，包括进度、当前步骤和日志"
+          },
+          "preconditions": [
+            "deploymentId 对应的部署记录存在"
+          ],
+          "postconditions": [
+            "返回部署记录的状态快照",
+            "若部署记录不存在，返回 404 错误"
+          ]
+        }
+      ]
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "description": "只有在项目和环境均存在且状态为 active 时，才能发起部署",
+      "type": "precondition",
+      "related_methods": [
+        "initiateDeployment"
+      ]
+    },
+    {
+      "id": "BR-002",
+      "description": "部署状态流转必须遵循: pending -> in_progress -> (awaiting_confirmation ->) success/failed",
+      "type": "invariant",
+      "related_methods": [
+        "initiateDeployment",
+        "getDeploymentStatus"
+      ]
+    },
+    {
+      "id": "BR-003",
+      "description": "生产环境部署时，必须在版本文件上传与脚本生成后、软链接更新前，进入 awaiting_confirmation 状态，等待人工确认",
+      "type": "workflow",
+      "related_methods": [
+        "initiateDeployment"
+      ]
+    },
+    {
+      "id": "BR-004",
+      "description": "部署失败时，不得更新软链接，保持原有版本运行，只记录失败状态",
+      "type": "error_handling",
+      "related_methods": [
+        "initiateDeployment"
+      ]
+    },
+    {
+      "id": "BR-005",
+      "description": "同项目同环境下，同时只允许一个部署进行中（in_progress 或 awaiting_confirmation），新部署请求需等待或拒绝",
+      "type": "concurrency",
+      "related_methods": [
+        "initiateDeployment"
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "分层错误处理，对外统一错误格式，对内细化错误类型并记录日志",
+    "error_codes": [
+      {
+        "code": "PROJECT_NOT_FOUND",
+        "message": "指定的项目不存在",
+        "http_status": 404
+      },
+      {
+        "code": "ENVIRONMENT_NOT_FOUND",
+        "message": "指定的环境不存在或不属于该项目",
+        "http_status": 404
+      },
+      {
+        "code": "HOST_UNREACHABLE",
+        "message": "远程主机不可达",
+        "http_status": 502
+      },
+      {
+        "code": "AWAITING_CONFIRMATION_REQUIRED",
+        "message": "生产环境部署需要人工确认",
+        "http_status": 202
+      },
+      {
+        "code": "DEPLOYMENT_IN_PROGRESS",
+        "message": "同环境下已有部署正在进行",
+        "http_status": 409
+      }
+    ],
+    "logging_policy": "所有错误均需记录到日志系统，包含错误码、消息、堆栈信息（开发环境）、请求上下文"
+  }
+}
