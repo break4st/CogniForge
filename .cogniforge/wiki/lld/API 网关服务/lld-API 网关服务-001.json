@@ -1,0 +1,1063 @@
+{
+  "meta": {
+    "doc_id": "lld-API网关服务-001",
+    "type": "lld",
+    "module_type": "gateway",
+    "module": "API 网关服务",
+    "title": "API 网关服务详细设计",
+    "author": "design_agent",
+    "created": "2025-03-22T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": ["REQ-001"]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": ["CMP-002"],
+      "contracts": ["SC-001", "SC-002"],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "所有前端请求的路由转发（HTTP 反向代理）",
+      "WebSocket 连接管理：建立连接、按 deployment_id 订阅日志、实时推送日志流给客户端",
+      "用户认证（JWT 签发与验证）和基于角色的路径授权",
+      "统一限流、请求/响应日志、错误处理"
+    ],
+    "out_of_scope": [
+      "业务逻辑（项目管理、部署执行、密钥加解密等）",
+      "数据持久化（除网关自身认证配置外，不存储业务数据）"
+    ],
+    "owned_components": ["CMP-002"],
+    "owned_contracts": ["SC-001", "SC-002"],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "基于 FastAPI 构建的轻量级 API 网关，是桌面客户端与后端微服务之间的唯一入口。它负责将 HTTPS 请求路由到指定的业务服务，并通过 WSS 管理部署日志的实时推送。所有请求须先通过 JWT 鉴权和角色权限检查。",
+    "dependencies": [
+      "项目管理服务 (CMP-003)",
+      "环境管理服务 (CMP-004)",
+      "密钥管理服务 (CMP-005)",
+      "部署引擎 (CMP-006)",
+      "日志服务 (CMP-007)",
+      "版本历史服务 (CMP-008)"
+    ],
+    "tech_stack": ["Python 3.11+", "FastAPI"]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": ["CMP-002"],
+      "sad_contract_ids": ["SC-001", "SC-002"],
+      "lld_objects": {
+        "data_models": ["DM-001", "DM-002", "DM-003", "DM-004"],
+        "interfaces": ["IF-001", "IF-002", "IF-003", "IF-004", "IF-005", "IF-006", "IF-007", "IF-008", "IF-009", "IF-010"],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": "完整覆盖 API 接入需求"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "路由规则配置",
+      "type": "config",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "定义网关路由表，按最长前缀匹配决定转发目标",
+      "fields": [
+        {
+          "name": "path_pattern",
+          "type": "string",
+          "required": true,
+          "description": "匹配路径模式"
+        },
+        {
+          "name": "upstream",
+          "type": "string",
+          "required": true,
+          "description": "目标服务地址"
+        },
+        {
+          "name": "methods",
+          "type": "list of string",
+          "required": true,
+          "description": "允许的 HTTP 方法列表"
+        },
+        {
+          "name": "auth_required",
+          "type": "boolean",
+          "required": false,
+          "description": "是否需要认证"
+        },
+        {
+          "name": "roles_allowed",
+          "type": "list of string",
+          "required": false,
+          "description": "允许访问的角色列表"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-002"],
+      "source_contracts": ["SC-001"],
+      "constraints": [],
+      "lifecycle": {
+        "create": "",
+        "update": "",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "用户凭据",
+      "type": "store",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "存储用户认证信息，用于登录校验",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID",
+          "required": true,
+          "description": "用户唯一标识"
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "required": true,
+          "description": "登录用户名，唯一"
+        },
+        {
+          "name": "password_hash",
+          "type": "string",
+          "required": true,
+          "description": "bcrypt 格式的密码哈希"
+        },
+        {
+          "name": "roles",
+          "type": "list of string",
+          "required": true,
+          "description": "用户拥有的角色列表"
+        },
+        {
+          "name": "created_at",
+          "type": "datetime",
+          "required": true,
+          "description": "创建时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_username",
+          "unique": true,
+          "columns": ["username"]
+        }
+      ],
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-002"],
+      "source_contracts": ["SC-001"],
+      "constraints": [],
+      "lifecycle": {
+        "create": "管理员通过后台接口创建",
+        "update": "支持修改角色和重置密码",
+        "delete": "管理员可删除用户",
+        "retention": "长期保留"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-003",
+      "name": "JWT 令牌结构",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "登录或刷新时返回给客户端的令牌对象",
+      "fields": [
+        {
+          "name": "access_token",
+          "type": "string",
+          "required": true,
+          "description": "访问令牌"
+        },
+        {
+          "name": "refresh_token",
+          "type": "string",
+          "required": true,
+          "description": "刷新令牌"
+        },
+        {
+          "name": "token_type",
+          "type": "string",
+          "required": true,
+          "description": "令牌类型，固定为 bearer"
+        },
+        {
+          "name": "expires_in",
+          "type": "integer",
+          "required": true,
+          "description": "过期时间（秒）"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-002"],
+      "source_contracts": ["SC-001"],
+      "constraints": [],
+      "lifecycle": {
+        "create": "",
+        "update": "",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-004",
+      "name": "WebSocket 连接状态",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "记录 WebSocket 连接相关信息",
+      "fields": [
+        {
+          "name": "connection_id",
+          "type": "string",
+          "required": true,
+          "description": "连接唯一标识"
+        },
+        {
+          "name": "user_id",
+          "type": "UUID",
+          "required": true,
+          "description": "关联的用户 ID"
+        },
+        {
+          "name": "deployment_id",
+          "type": "string",
+          "required": false,
+          "description": "订阅的部署 ID"
+        },
+        {
+          "name": "created_at",
+          "type": "datetime",
+          "required": true,
+          "description": "连接创建时间"
+        },
+        {
+          "name": "last_active",
+          "type": "datetime",
+          "required": true,
+          "description": "最后活跃时间"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-002"],
+      "source_contracts": ["SC-002"],
+      "constraints": [],
+      "lifecycle": {
+        "create": "",
+        "update": "",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "代理转发请求",
+      "type": "inbound/http",
+      "status": "active",
+      "endpoint": {
+        "path": "/api/{path:path}",
+        "method": "ALL",
+        "description": "捕获所有以 /api 开头的请求，按路由规则转发到相应的后端服务"
+      },
+      "auth": {
+        "type": "bearer",
+        "required": true,
+        "roles_allowed": ["admin", "developer", "viewer"]
+      },
+      "request": {
+        "headers": [
+          {
+            "name": "Authorization",
+            "type": "string",
+            "required": true,
+            "description": "Bearer <token>"
+          }
+        ],
+        "path_params": [
+          {
+            "name": "path",
+            "type": "string",
+            "required": true,
+            "description": "剩余路径，例如 projects/123"
+          }
+        ],
+        "query_params": [],
+        "body": {
+          "type": "object",
+          "description": "转发原请求体，不解析",
+          "required": false
+        }
+      },
+      "response": {
+        "status": "200",
+        "headers": [],
+        "body": {
+          "type": "object",
+          "description": "后端返回的原始响应体"
+        }
+      },
+      "errors": [],
+      "validation": {
+        "rules": [],
+        "schema": {}
+      },
+      "examples": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "用户登录",
+      "type": "inbound/http",
+      "status": "active",
+      "endpoint": {
+        "path": "/auth/login",
+        "method": "POST",
+        "description": "用户凭据登录，返回 JWT 令牌对"
+      },
+      "auth": {
+        "type": "none",
+        "required": false,
+        "roles_allowed": []
+      },
+      "request": {
+        "headers": [],
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "type": "object",
+          "required": true,
+          "properties": {
+            "username": "string",
+            "password": "string"
+          },
+          "description": "用户名和密码"
+        }
+      },
+      "response": {
+        "status": "200",
+        "headers": [],
+        "body": {
+          "type": "object",
+          "description": "JWT 令牌结构"
+        }
+      },
+      "errors": [],
+      "validation": {
+        "rules": [],
+        "schema": {}
+      },
+      "examples": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-003",
+      "name": "刷新令牌",
+      "type": "inbound/http",
+      "status": "active",
+      "endpoint": {
+        "path": "/auth/refresh",
+        "method": "POST",
+        "description": "使用 refresh_token 刷新访问令牌"
+      },
+      "auth": {
+        "type": "none",
+        "required": false,
+        "roles_allowed": []
+      },
+      "request": {
+        "headers": [],
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "type": "object",
+          "required": true,
+          "properties": {
+            "refresh_token": "string"
+          },
+          "description": "刷新令牌"
+        }
+      },
+      "response": {
+        "status": "200",
+        "headers": [],
+        "body": {
+          "type": "object",
+          "description": "JWT 令牌结构"
+        }
+      },
+      "errors": [],
+      "validation": {
+        "rules": [],
+        "schema": {}
+      },
+      "examples": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-004",
+      "name": "创建用户",
+      "type": "inbound/http",
+      "status": "active",
+      "endpoint": {
+        "path": "/auth/users",
+        "method": "POST",
+        "description": "创建新用户，仅管理员可操作"
+      },
+      "auth": {
+        "type": "bearer",
+        "required": true,
+        "roles_allowed": ["admin"]
+      },
+      "request": {
+        "headers": [
+          {
+            "name": "Authorization",
+            "type": "string",
+            "required": true,
+            "description": "Bearer <token>"
+          }
+        ],
+        "path_params": [],
+        "query_params": [],
+        "body": {
+          "type": "object",
+          "required": true,
+          "properties": {
+            "username": "string",
+            "password": "string",
+            "roles": ["string"]
+          },
+          "description": "新用户信息"
+        }
+      },
+      "response": {
+        "status": "201",
+        "headers": [],
+        "body": {
+          "type": "object",
+          "description": "用户凭据对象（不含密码哈希）"
+        }
+      },
+      "errors": [],
+      "validation": {
+        "rules": [],
+        "schema": {}
+      },
+      "examples": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-005",
+      "name": "获取用户列表",
+      "type": "inbound/http",
+      "status": "active",
+      "endpoint": {
+        "path": "/auth/users",
+        "method": "GET",
+        "description": "获取所有用户列表，仅管理员可操作"
+      },
+      "auth": {
+        "type": "bearer",
+        "required": true,
+        "roles_allowed": ["admin"]
+      },
+      "request": {
+        "headers": [
+          {
+            "name": "Authorization",
+            "type": "string",
+            "required": true,
+            "description": "Bearer <token>"
+          }
+        ],
+        "path_params": [],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": "200",
+        "headers": [],
+        "body": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "description": "用户凭据对象列表（不含密码哈希）"
+          }
+        }
+      },
+      "errors": [],
+      "validation": {
+        "rules": [],
+        "schema": {}
+      },
+      "examples": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-006",
+      "name": "更新用户",
+      "type": "inbound/http",
+      "status": "active",
+      "endpoint": {
+        "path": "/auth/users/{user_id}",
+        "method": "PUT",
+        "description": "更新用户信息，仅管理员可操作"
+      },
+      "auth": {
+        "type": "bearer",
+        "required": true,
+        "roles_allowed": ["admin"]
+      },
+      "request": {
+        "headers": [
+          {
+            "name": "Authorization",
+            "type": "string",
+            "required": true,
+            "description": "Bearer <token>"
+          }
+        ],
+        "path_params": [
+          {
+            "name": "user_id",
+            "type": "string",
+            "required": true,
+            "description": "用户 ID"
+          }
+        ],
+        "query_params": [],
+        "body": {
+          "type": "object",
+          "required": true,
+          "properties": {
+            "roles": ["string"],
+            "password": "string"
+          },
+          "description": "更新的字段"
+        }
+      },
+      "response": {
+        "status": "200",
+        "headers": [],
+        "body": {
+          "type": "object",
+          "description": "更新后的用户凭据对象（不含密码哈希）"
+        }
+      },
+      "errors": [],
+      "validation": {
+        "rules": [],
+        "schema": {}
+      },
+      "examples": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-007",
+      "name": "删除用户",
+      "type": "inbound/http",
+      "status": "active",
+      "endpoint": {
+        "path": "/auth/users/{user_id}",
+        "method": "DELETE",
+        "description": "删除指定用户，仅管理员可操作"
+      },
+      "auth": {
+        "type": "bearer",
+        "required": true,
+        "roles_allowed": ["admin"]
+      },
+      "request": {
+        "headers": [
+          {
+            "name": "Authorization",
+            "type": "string",
+            "required": true,
+            "description": "Bearer <token>"
+          }
+        ],
+        "path_params": [
+          {
+            "name": "user_id",
+            "type": "string",
+            "required": true,
+            "description": "用户 ID"
+          }
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": "204",
+        "headers": [],
+        "body": {
+          "type": "null",
+          "description": "无内容"
+        }
+      },
+      "errors": [],
+      "validation": {
+        "rules": [],
+        "schema": {}
+      },
+      "examples": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-008",
+      "name": "获取当前用户信息",
+      "type": "inbound/http",
+      "status": "active",
+      "endpoint": {
+        "path": "/auth/me",
+        "method": "GET",
+        "description": "获取当前认证用户的信息"
+      },
+      "auth": {
+        "type": "bearer",
+        "required": true,
+        "roles_allowed": ["admin", "developer", "viewer"]
+      },
+      "request": {
+        "headers": [
+          {
+            "name": "Authorization",
+            "type": "string",
+            "required": true,
+            "description": "Bearer <token>"
+          }
+        ],
+        "path_params": [],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": "200",
+        "headers": [],
+        "body": {
+          "type": "object",
+          "description": "当前用户凭据对象（不含密码哈希）"
+        }
+      },
+      "errors": [],
+      "validation": {
+        "rules": [],
+        "schema": {}
+      },
+      "examples": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-009",
+      "name": "建立 WebSocket 连接",
+      "type": "inbound/ws",
+      "status": "active",
+      "endpoint": {
+        "path": "/ws/deployments/{deployment_id}/logs",
+        "method": "WEBSOCKET",
+        "description": "建立 WebSocket 连接，订阅对应部署的日志流"
+      },
+      "auth": {
+        "type": "bearer",
+        "required": true,
+        "roles_allowed": ["admin", "developer", "viewer"]
+      },
+      "request": {
+        "headers": [
+          {
+            "name": "Authorization",
+            "type": "string",
+            "required": true,
+            "description": "Bearer <token>"
+          }
+        ],
+        "path_params": [
+          {
+            "name": "deployment_id",
+            "type": "string",
+            "required": true,
+            "description": "部署 ID"
+          }
+        ],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": "101",
+        "headers": [],
+        "body": {
+          "type": "stream",
+          "description": "实时推送日志条目文本流"
+        }
+      },
+      "errors": [],
+      "validation": {
+        "rules": [],
+        "schema": {}
+      },
+      "examples": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-010",
+      "name": "关闭 WebSocket 连接",
+      "type": "inbound/ws",
+      "status": "active",
+      "endpoint": {
+        "path": "/ws/deployments/{deployment_id}/logs",
+        "method": "WEBSOCKET",
+        "description": "客户端主动关闭 WebSocket 连接，清理订阅"
+      },
+      "auth": {
+        "type": "bearer",
+        "required": true,
+        "roles_allowed": ["admin", "developer", "viewer"]
+      },
+      "request": {
+        "headers": [],
+        "path_params": [],
+        "query_params": [],
+        "body": {}
+      },
+      "response": {
+        "status": "1000",
+        "headers": [],
+        "body": {
+          "type": "null",
+          "description": "连接正常关闭"
+        }
+      },
+      "errors": [],
+      "validation": {
+        "rules": [],
+        "schema": {}
+      },
+      "examples": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "route_table": {
+    "routes": [
+      {
+        "path_pattern": "/auth/*",
+        "upstream": "localhost:8001",
+        "methods": ["GET", "POST", "PUT", "DELETE"],
+        "auth_required": true,
+        "roles_allowed": ["admin"],
+        "description": "认证相关接口路由到网关本地处理"
+      },
+      {
+        "path_pattern": "/api/projects/*",
+        "upstream": "project-service:8000",
+        "methods": ["GET", "POST", "PUT", "DELETE"],
+        "auth_required": true,
+        "roles_allowed": ["admin", "developer", "viewer"],
+        "description": "项目资源路由到项目管理服务"
+      },
+      {
+        "path_pattern": "/api/deployments/*",
+        "upstream": "deployment-engine:8000",
+        "methods": ["GET", "POST"],
+        "auth_required": true,
+        "roles_allowed": ["admin", "developer"],
+        "description": "部署资源路由到部署引擎"
+      },
+      {
+        "path_pattern": "/api/environments/*",
+        "upstream": "environment-service:8000",
+        "methods": ["GET", "POST", "PUT", "DELETE"],
+        "auth_required": true,
+        "roles_allowed": ["admin", "developer"],
+        "description": "环境资源路由到环境管理服务"
+      },
+      {
+        "path_pattern": "/api/secrets/*",
+        "upstream": "secret-service:8000",
+        "methods": ["GET", "POST", "PUT", "DELETE"],
+        "auth_required": true,
+        "roles_allowed": ["admin"],
+        "description": "密钥资源路由到密钥管理服务"
+      },
+      {
+        "path_pattern": "/api/versions/*",
+        "upstream": "version-service:8000",
+        "methods": ["GET", "POST"],
+        "auth_required": true,
+        "roles_allowed": ["admin", "developer", "viewer"],
+        "description": "版本历史资源路由到版本历史服务"
+      },
+      {
+        "path_pattern": "/ws/deployments/*",
+        "upstream": "log-service:8000",
+        "methods": ["WEBSOCKET"],
+        "auth_required": true,
+        "roles_allowed": ["admin", "developer", "viewer"],
+        "description": "WebSocket 代理到日志服务"
+      }
+    ],
+    "strategy": "longest_prefix_match",
+    "fallback": {
+      "status": 404,
+      "message": "No matching route"
+    }
+  },
+  "middleware_chain": {
+    "chain": [
+      {
+        "name": "RequestIDMiddleware",
+        "type": "builtin",
+        "config": {},
+        "order": 0,
+        "description": "为每个请求生成唯一 Request ID 并附加到响应头"
+      },
+      {
+        "name": "CORSMiddleware",
+        "type": "builtin",
+        "config": {
+          "allow_origins": ["*"],
+          "allow_methods": ["*"],
+          "allow_headers": ["*"]
+        },
+        "order": 1,
+        "description": "处理跨域请求"
+      },
+      {
+        "name": "AuthMiddleware",
+        "type": "custom",
+        "config": {},
+        "order": 2,
+        "description": "验证 JWT 令牌，提取用户身份和角色"
+      },
+      {
+        "name": "AuthorizationMiddleware",
+        "type": "custom",
+        "config": {},
+        "order": 3,
+        "description": "根据路由规则检查角色权限"
+      },
+      {
+        "name": "RateLimitMiddleware",
+        "type": "custom",
+        "config": {
+          "max_requests": 100,
+          "window_seconds": 60
+        },
+        "order": 4,
+        "description": "基于 IP 的全局请求速率限制"
+      },
+      {
+        "name": "RequestLoggingMiddleware",
+        "type": "custom",
+        "config": {},
+        "order": 5,
+        "description": "记录请求方法、路径、状态码和处理时间"
+      },
+      {
+        "name": "ProxyMiddleware",
+        "type": "custom",
+        "config": {},
+        "order": 6,
+        "description": "按路由表将请求转发到上游服务"
+      }
+    ]
+  },
+  "auth_policy": {
+    "scheme": "JWT Bearer Token",
+    "token_lifetime": 3600,
+    "refresh_token_lifetime": 86400,
+    "role_path_map": {
+      "admin": {
+        "methods": ["GET", "POST", "PUT", "DELETE"],
+        "paths": ["/auth/*", "/api/*", "/ws/*"]
+      },
+      "developer": {
+        "methods": ["GET", "POST", "PUT"],
+        "paths": ["/api/projects/*", "/api/deployments/*", "/api/environments/*", "/api/versions/*", "/ws/deployments/*"]
+      },
+      "viewer": {
+        "methods": ["GET"],
+        "paths": ["/api/projects/*", "/api/versions/*", "/ws/deployments/*"]
+      }
+    }
+  },
+  "rate_limiting": {
+    "default_policy": {
+      "max_requests": 100,
+      "window_seconds": 60,
+      "strategy": "fixed_window",
+      "identifier": "ip"
+    },
+    "route_overrides": [
+      {
+        "path_pattern": "/auth/login",
+        "max_requests": 10,
+        "window_seconds": 60
+      },
+      {
+        "path_pattern": "/auth/refresh",
+        "max_requests": 10,
+        "window_seconds": 60
+      }
+    ],
+    "storage_backend": "memory"
+  },
+  "error_handling": {
+    "strategy": "全局异常处理中间件捕获所有未处理异常，返回统一 JSON 错误响应",
+    "error_codes": {
+      "401": "未认证或令牌无效",
+      "403": "权限不足",
+      "429": "请求过于频繁",
+      "502": "上游服务不可用",
+      "504": "上游服务超时"
+    },
+    "retry": {
+      "enabled": true,
+      "max_retries": 2,
+      "backoff": "exponential"
+    },
+    "circuit_breaker": {
+      "enabled": true,
+      "failure_threshold": 5,
+      "recovery_timeout": 30,
+      "half_open_requests": 3
+    },
+    "logging": {
+      "level": "error",
+      "format": "json"
+    }
+  }
+}
