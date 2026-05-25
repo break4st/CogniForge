@@ -1,0 +1,838 @@
+{
+  "meta": {
+    "doc_id": "lld-环境管理服务-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "环境管理服务",
+    "title": "环境管理服务 详细设计文档",
+    "author": "design_agent",
+    "created": "2025-03-28T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-001"
+      ],
+      "contracts": [
+        "CTR-001",
+        "CTR-002",
+        "CTR-003",
+        "CTR-004"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "环境的完整CRUD操作",
+      "环境连接参数的校验",
+      "调用KeyManager加密私钥并存储",
+      "保存前触发连通性测试，测试不通过拒绝保存或更新连接参数",
+      "删除环境时检查项目引用，有引用则拒绝删除",
+      "环境名称全局唯一性检查"
+    ],
+    "out_of_scope": [
+      "实际的SSH/TCP连通性测试逻辑",
+      "私钥加密算法的实现细节",
+      "项目与环境绑定的管理",
+      "部署流程、进度通知、日志等"
+    ],
+    "owned_components": [
+      "CMP-001"
+    ],
+    "owned_contracts": [
+      "CTR-001",
+      "CTR-002",
+      "CTR-003",
+      "CTR-004"
+    ],
+    "consumed_contracts": [
+      "CTR-005"
+    ],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "提供环境的CRUD操作，保存时校验连接参数并调用密钥管理组件加密私钥，环境连通性测试委托ConnectivityTester处理，删除时检查是否有项目引用。",
+    "dependencies": [
+      "连通性测试服务",
+      "密钥管理组件",
+      "项目管理服务（查询引用关系）",
+      "PostgreSQL数据库"
+    ],
+    "tech_stack": [
+      "Python 3.11+",
+      "FastAPI",
+      "PostgreSQL 15",
+      "httpx",
+      "cryptography (AES‑256‑GCM)"
+    ]
+  },
+  "business_rules": {
+    "invariants": [
+      "环境名称全局唯一",
+      "auth_type只能为ssh_key",
+      "port范围1~65535",
+      "status只能为PENDING或ACTIVE"
+    ],
+    "rules": [
+      "创建环境时状态为PENDING，连通性测试通过后方可变为ACTIVE",
+      "更新连接参数时状态回退到PENDING，测试通过再置回ACTIVE",
+      "删除环境前必须检查是否有项目引用，有引用则拒绝删除",
+      "保存环境时必须先加密私钥"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [
+        "CTR-001",
+        "CTR-002",
+        "CTR-003",
+        "CTR-004"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003",
+          "IF-004",
+          "IF-005"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005",
+          "DO-006",
+          "DO-007"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "environments",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "environments"
+      },
+      "description": "存储环境连接信息和加密私钥",
+      "fields": [
+        {
+          "name": "id",
+          "type": "INT",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(100)",
+          "required": true,
+          "description": "环境名称，唯一"
+        },
+        {
+          "name": "server_address",
+          "type": "VARCHAR(255)",
+          "required": true,
+          "description": "服务器地址"
+        },
+        {
+          "name": "port",
+          "type": "INT",
+          "required": true,
+          "description": "SSH端口，默认22"
+        },
+        {
+          "name": "auth_type",
+          "type": "VARCHAR(20)",
+          "required": true,
+          "description": "认证类型，当前固定ssh_key"
+        },
+        {
+          "name": "encrypted_private_key",
+          "type": "BYTEA",
+          "required": true,
+          "description": "使用AES‑256‑GCM加密的私钥密文"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(20)",
+          "required": true,
+          "description": "状态：PENDING | ACTIVE"
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMP",
+          "required": false,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "TIMESTAMP",
+          "required": false,
+          "description": "最后更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_env_name",
+          "unique": true,
+          "columns": [
+            "name"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001",
+        "CTR-002",
+        "CTR-003",
+        "CTR-004"
+      ],
+      "constraints": [
+        "auth_type只能为ssh_key",
+        "port范围1~65535",
+        "status只能为PENDING或ACTIVE"
+      ],
+      "lifecycle": {
+        "create": "创建时状态为PENDING",
+        "update": "更新连接参数时状态先回退到PENDING，测试通过再置回ACTIVE",
+        "delete": "物理删除",
+        "retention": "无"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "project_environments",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "project_environments"
+      },
+      "description": "项目与环境绑定关系，本服务仅查询以验证删除",
+      "fields": [
+        {
+          "name": "project_id",
+          "type": "INT",
+          "required": true,
+          "description": "项目ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "INT",
+          "required": true,
+          "description": "环境ID"
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMP",
+          "required": false,
+          "description": "创建时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_project_env",
+          "unique": false,
+          "columns": [
+            "project_id",
+            "environment_id"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001",
+        "CTR-003"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "",
+        "update": "",
+        "delete": "",
+        "retention": ""
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "EnvironmentCreateRequest",
+      "object_type": "value_object",
+      "description": "创建环境请求参数",
+      "fields": [
+        {
+          "name": "name",
+          "type": "str",
+          "required": true,
+          "description": "环境名称"
+        },
+        {
+          "name": "server_address",
+          "type": "str",
+          "required": true,
+          "description": "服务器地址"
+        },
+        {
+          "name": "port",
+          "type": "int",
+          "required": false,
+          "description": "SSH端口，默认22"
+        },
+        {
+          "name": "auth_type",
+          "type": "str",
+          "required": true,
+          "description": "认证类型，固定ssh_key"
+        },
+        {
+          "name": "private_key",
+          "type": "str",
+          "required": true,
+          "description": "PEM格式私钥原文"
+        }
+      ],
+      "validations": [
+        "name非空且长度不超过100",
+        "server_address非空且为有效域名或IP",
+        "port范围1~65535",
+        "auth_type必须为ssh_key",
+        "private_key非空且为有效PEM格式"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "EnvironmentUpdateRequest",
+      "object_type": "value_object",
+      "description": "更新环境请求参数，所有字段可选，至少提供一个"
+    },
+    {
+      "id": "DO-003",
+      "name": "EnvironmentResponse",
+      "object_type": "value_object",
+      "description": "环境响应对象，不包含私钥原文"
+    },
+    {
+      "id": "DO-004",
+      "name": "Environment",
+      "object_type": "entity",
+      "description": "环境实体，包含业务逻辑"
+    },
+    {
+      "id": "DO-005",
+      "name": "EnvironmentRepository",
+      "object_type": "repository",
+      "description": "环境持久化接口"
+    },
+    {
+      "id": "DO-006",
+      "name": "ConnectivityTester",
+      "object_type": "domain_service",
+      "description": "连通性测试接口，定义test_connectivity方法，由基础设施层实现"
+    },
+    {
+      "id": "DO-007",
+      "name": "KeyManager",
+      "object_type": "domain_service",
+      "description": "密钥管理接口，定义encrypt和decrypt方法"
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "创建环境",
+      "endpoint": {
+        "method": "POST",
+        "path": "/environments",
+        "summary": "创建新环境",
+        "description": "接收环境参数，校验后加密私钥，触发连通性测试，成功则保存并返回环境"
+      },
+      "request_body": {
+        "content_type": "application/json",
+        "schema_ref": "DO-001",
+        "required": true
+      },
+      "responses": {
+        "201": {
+          "description": "创建成功",
+          "schema_ref": "DO-003"
+        },
+        "400": {
+          "description": "请求参数校验失败",
+          "schema_ref": "ValidationError"
+        },
+        "409": {
+          "description": "环境名称重复",
+          "schema_ref": "DuplicateNameError"
+        },
+        "502": {
+          "description": "连通性测试失败",
+          "schema_ref": "ConnectivityError"
+        },
+        "500": {
+          "description": "加密失败或内部错误",
+          "schema_ref": "EncryptionError"
+        }
+      },
+      "authentication": true,
+      "rate_limit": {
+        "max_requests": 30,
+        "window_seconds": 60
+      },
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "获取环境列表",
+      "endpoint": {
+        "method": "GET",
+        "path": "/environments",
+        "summary": "获取所有环境列表",
+        "description": "返回所有环境的基本信息，不包含私钥"
+      },
+      "request_body": {},
+      "responses": {
+        "200": {
+          "description": "成功返回环境列表",
+          "schema_ref": "List[DO-003]"
+        }
+      },
+      "authentication": true,
+      "rate_limit": {
+        "max_requests": 100,
+        "window_seconds": 60
+      },
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-002"
+      ]
+    },
+    {
+      "id": "IF-003",
+      "name": "获取单个环境",
+      "endpoint": {
+        "method": "GET",
+        "path": "/environments/{environment_id}",
+        "summary": "根据ID获取环境详情",
+        "description": "返回指定环境信息"
+      },
+      "request_body": {},
+      "path_params": [
+        {
+          "name": "environment_id",
+          "type": "integer",
+          "required": true,
+          "description": "环境唯一标识"
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "成功返回环境信息",
+          "schema_ref": "DO-003"
+        },
+        "404": {
+          "description": "环境不存在",
+          "schema_ref": "NotFoundError"
+        }
+      },
+      "authentication": true,
+      "rate_limit": {
+        "max_requests": 100,
+        "window_seconds": 60
+      },
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-003"
+      ]
+    },
+    {
+      "id": "IF-004",
+      "name": "更新环境",
+      "endpoint": {
+        "method": "PATCH",
+        "path": "/environments/{environment_id}",
+        "summary": "更新环境信息",
+        "description": "更新环境名称或连接参数，若提供连接参数则重新测试连通性"
+      },
+      "request_body": {
+        "content_type": "application/json",
+        "schema_ref": "DO-002",
+        "required": true
+      },
+      "path_params": [
+        {
+          "name": "environment_id",
+          "type": "integer",
+          "required": true,
+          "description": "环境唯一标识"
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "更新成功",
+          "schema_ref": "DO-003"
+        },
+        "400": {
+          "description": "请求参数校验失败",
+          "schema_ref": "ValidationError"
+        },
+        "404": {
+          "description": "环境不存在",
+          "schema_ref": "NotFoundError"
+        },
+        "409": {
+          "description": "环境名称重复",
+          "schema_ref": "DuplicateNameError"
+        },
+        "502": {
+          "description": "连通性测试失败",
+          "schema_ref": "ConnectivityError"
+        },
+        "500": {
+          "description": "加密失败或内部错误",
+          "schema_ref": "EncryptionError"
+        }
+      },
+      "authentication": true,
+      "rate_limit": {
+        "max_requests": 30,
+        "window_seconds": 60
+      },
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-003"
+      ]
+    },
+    {
+      "id": "IF-005",
+      "name": "删除环境",
+      "endpoint": {
+        "method": "DELETE",
+        "path": "/environments/{environment_id}",
+        "summary": "删除环境",
+        "description": "删除指定环境，若被项目引用则拒绝删除"
+      },
+      "request_body": {},
+      "path_params": [
+        {
+          "name": "environment_id",
+          "type": "integer",
+          "required": true,
+          "description": "环境唯一标识"
+        }
+      ],
+      "responses": {
+        "204": {
+          "description": "删除成功，无返回内容"
+        },
+        "404": {
+          "description": "环境不存在",
+          "schema_ref": "NotFoundError"
+        },
+        "409": {
+          "description": "环境被项目引用，无法删除",
+          "schema_ref": "EnvironmentInUseError"
+        }
+      },
+      "authentication": true,
+      "rate_limit": {
+        "max_requests": 30,
+        "window_seconds": 60
+      },
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-004"
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "EnvironmentService",
+      "description": "环境管理核心业务逻辑",
+      "methods": {
+        "create_environment": {
+          "signature": "create_environment(request: EnvironmentCreateRequest) -> EnvironmentResponse",
+          "precondition": "request.name全局唯一且参数校验通过，连通性测试通过，加密成功",
+          "postcondition": "数据库中新增一条环境记录，状态为PENDING，返回EnvironmentResponse",
+          "parameters": [
+            {
+              "name": "request",
+              "type": "EnvironmentCreateRequest",
+              "required": true,
+              "description": "创建环境请求参数"
+            }
+          ],
+          "returns": {
+            "type": "EnvironmentResponse",
+            "description": "新创建的环境信息"
+          },
+          "exceptions": [
+            {
+              "name": "ValidationError",
+              "description": "参数校验失败"
+            },
+            {
+              "name": "DuplicateNameError",
+              "description": "环境名称已存在"
+            },
+            {
+              "name": "ConnectivityError",
+              "description": "连通性测试失败"
+            },
+            {
+              "name": "EncryptionError",
+              "description": "加密失败"
+            }
+          ]
+        },
+        "get_environments": {
+          "signature": "get_environments() -> List[EnvironmentResponse]",
+          "precondition": "无",
+          "postcondition": "返回所有环境列表",
+          "parameters": [],
+          "returns": {
+            "type": "List[EnvironmentResponse]",
+            "description": "环境列表"
+          },
+          "exceptions": []
+        },
+        "get_environment": {
+          "signature": "get_environment(environment_id: int) -> EnvironmentResponse",
+          "precondition": "environment_id对应的环境存在",
+          "postcondition": "返回环境信息",
+          "parameters": [
+            {
+              "name": "environment_id",
+              "type": "int",
+              "required": true,
+              "description": "环境ID"
+            }
+          ],
+          "returns": {
+            "type": "EnvironmentResponse",
+            "description": "环境信息"
+          },
+          "exceptions": [
+            {
+              "name": "NotFoundError",
+              "description": "环境不存在"
+            }
+          ]
+        },
+        "update_environment": {
+          "signature": "update_environment(environment_id: int, request: EnvironmentUpdateRequest) -> EnvironmentResponse",
+          "precondition": "环境存在，若更新名称则名称唯一，若更新连接参数则连通性测试通过",
+          "postcondition": "环境信息已更新，若连接参数变更则状态可能变为PENDING或ACTIVE",
+          "parameters": [
+            {
+              "name": "environment_id",
+              "type": "int",
+              "required": true,
+              "description": "环境ID"
+            },
+            {
+              "name": "request",
+              "type": "EnvironmentUpdateRequest",
+              "required": true,
+              "description": "更新内容"
+            }
+          ],
+          "returns": {
+            "type": "EnvironmentResponse",
+            "description": "更新后的环境信息"
+          },
+          "exceptions": [
+            {
+              "name": "NotFoundError",
+              "description": "环境不存在"
+            },
+            {
+              "name": "ValidationError",
+              "description": "参数校验失败"
+            },
+            {
+              "name": "DuplicateNameError",
+              "description": "名称重复"
+            },
+            {
+              "name": "ConnectivityError",
+              "description": "连通性测试失败"
+            },
+            {
+              "name": "EncryptionError",
+              "description": "加密失败"
+            }
+          ]
+        },
+        "delete_environment": {
+          "signature": "delete_environment(environment_id: int) -> None",
+          "precondition": "环境存在且未被任何项目引用",
+          "postcondition": "环境记录被删除",
+          "parameters": [
+            {
+              "name": "environment_id",
+              "type": "int",
+              "required": true,
+              "description": "环境ID"
+            }
+          ],
+          "returns": {
+            "type": "None"
+          },
+          "exceptions": [
+            {
+              "name": "NotFoundError",
+              "description": "环境不存在"
+            },
+            {
+              "name": "EnvironmentInUseError",
+              "description": "环境被项目引用，无法删除"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "error_handling": {
+    "strategy": "使用结构化异常，每个异常包含错误码、消息和HTTP状态码，通过FastAPI异常处理器统一捕获并返回JSON响应",
+    "error_codes": {
+      "ValidationError": {
+        "http_status": 400,
+        "code": "VALIDATION_ERROR",
+        "message": "请求参数校验失败：{detail}"
+      },
+      "DuplicateNameError": {
+        "http_status": 409,
+        "code": "DUPLICATE_NAME",
+        "message": "环境名称已存在"
+      },
+      "ConnectivityError": {
+        "http_status": 502,
+        "code": "CONNECTIVITY_FAILED",
+        "message": "连通性测试失败：{detail}"
+      },
+      "EncryptionError": {
+        "http_status": 500,
+        "code": "ENCRYPTION_FAILED",
+        "message": "加密失败：{detail}"
+      },
+      "NotFoundError": {
+        "http_status": 404,
+        "code": "NOT_FOUND",
+        "message": "环境不存在"
+      },
+      "EnvironmentInUseError": {
+        "http_status": 409,
+        "code": "ENVIRONMENT_IN_USE",
+        "message": "环境被项目引用，无法删除"
+      }
+    }
+  },
+  "change_history": [
+    {
+      "version": 1,
+      "change_type": "created",
+      "summary": "初始创建",
+      "reason": "首次生成 LLD"
+    }
+  ]
+}
