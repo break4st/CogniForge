@@ -1,0 +1,350 @@
+{
+  "meta": {
+    "doc_id": "lld-部署引擎-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "部署引擎",
+    "title": "部署引擎详细设计",
+    "author": "design_agent",
+    "created": "2025-04-03T10:30:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-003"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-006"
+      ],
+      "contracts": [
+        "CTR-004"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "接收来自API网关的HTTP部署触发请求（POST /api/deployments）",
+      "创建部署任务记录（状态pending），并返回部署任务ID给客户端",
+      "异步执行部署流水线：构建产物检查 -> 远程目录创建 -> SFTP文件上传 -> 前置脚本执行 -> 后置脚本执行 -> 软链接更新",
+      "每一步的进度和输出通过内部回调通知日志服务",
+      "成功完成后更新部署记录状态为success，并通知版本历史服务生成版本记录",
+      "失败时更新部署记录状态为failed，记录错误详情，并通知日志服务发送失败消息",
+      "同一环境在同一时刻只允许有一个进行中的部署任务（并发控制）",
+      "处理因网络、权限、脚本错误等导致的异常，提供明确的错误码和日志"
+    ],
+    "out_of_scope": [
+      "日志的持久化存储与WebSocket实时推送（由日志服务CMP-007负责）",
+      "版本历史记录的创建与管理（由版本历史服务CMP-008负责）",
+      "SSH连接的建立、认证、命令执行和文件传输的底层实现（由SSH连接管理器CMP-009提供封装）",
+      "项目与环境的全生命周期管理、密钥加密存储等（分别由项目管理CMP-003、环境管理CMP-004、密钥管理CMP-005负责）",
+      "前端的交互与轮询（由桌面客户端CMP-001负责）"
+    ],
+    "owned_components": [
+      "CMP-006"
+    ],
+    "owned_contracts": [
+      "CTR-004"
+    ],
+    "consumed_contracts": [
+      "CTR-003",
+      "CTR-005",
+      "CTR-006",
+      "CTR-007",
+      "CTR-008"
+    ],
+    "owned_data_models": [],
+    "consumed_data_models": [
+      "DM-001",
+      "DM-002",
+      "DM-003"
+    ]
+  },
+  "overview": {
+    "description": "部署引擎是系统的核心调度器，负责将预构建的产物部署到远程服务器。它暴露一个REST API接受部署请求，内部采用异步任务机制，按顺序执行检查、传输、脚本执行等步骤，并通过回调接口将日志流式传递至日志服务。它不直接连接WebSocket，不存储日志，不管理版本历史，只专注于部署流程的编排与执行。",
+    "dependencies": [
+      "API网关服务 (CMP-002)",
+      "项目管理服务 (CMP-003)",
+      "环境管理服务 (CMP-004)",
+      "密钥管理服务 (CMP-005)",
+      "日志服务 (CMP-007)",
+      "版本历史服务 (CMP-008)",
+      "SSH连接管理器 (CMP-009)"
+    ],
+    "tech_stack": [
+      "Python 3.11+",
+      "FastAPI",
+      "asyncio + BackgroundTasks",
+      "Paramiko",
+      "cryptography"
+    ]
+  },
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "Deployment",
+      "description": "部署任务实体，封装部署生命周期和状态",
+      "attributes": [
+        {"name": "id", "type": "Integer", "description": "部署任务ID"},
+        {"name": "project_id", "type": "Integer", "description": "项目ID"},
+        {"name": "environment_id", "type": "Integer", "description": "环境ID"},
+        {"name": "type", "type": "String", "description": "部署类型: deploy/rollback"},
+        {"name": "status", "type": "String", "description": "状态: pending/running/success/failed"},
+        {"name": "version_num", "type": "Integer", "description": "版本号(成功时生成)"},
+        {"name": "build_artifact_path", "type": "String", "description": "本地构建产物路径"},
+        {"name": "remote_version_dir", "type": "String", "description": "远程版本目录"},
+        {"name": "error_message", "type": "Text", "description": "错误信息"},
+        {"name": "started_at", "type": "DateTime", "description": "开始时间"},
+        {"name": "finished_at", "type": "DateTime", "description": "完成时间"},
+        {"name": "created_at", "type": "DateTime", "description": "创建时间"}
+      ],
+      "behavior": [
+        "start(): 将状态从pending转为running",
+        "complete(version_num): 将状态设为success，设置版本号",
+        "fail(error): 将状态设为failed，记录错误信息"
+      ],
+      "constraints": [
+        "status 只能是 pending, running, success, failed 之一",
+        "同一环境同时只能有一个pending或running的部署"
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "DeploymentPipeline",
+      "description": "部署流水线执行器，负责按顺序执行各步骤",
+      "attributes": [
+        {"name": "steps", "type": "List of PipelineStep", "description": "有序步骤列表"}
+      ],
+      "behavior": [
+        "execute(): 依次执行所有步骤",
+        "rollback(): 失败时执行回滚操作"
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "PipelineStep",
+      "description": "流水线中的一个步骤",
+      "attributes": [
+        {"name": "name", "type": "String", "description": "步骤名称"},
+        {"name": "action", "type": "Callable", "description": "步骤执行函数"},
+        {"name": "on_success", "type": "Callable", "description": "成功回调"},
+        {"name": "on_error", "type": "Callable", "description": "错误回调"}
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "LogCallback",
+      "description": "日志回调接口，用于将日志推送到日志服务",
+      "attributes": [
+        {"name": "deployment_id", "type": "Integer", "description": "关联部署ID"},
+        {"name": "message", "type": "String", "description": "日志消息"},
+        {"name": "level", "type": "String", "description": "日志级别: info/warn/error"},
+        {"name": "timestamp", "type": "DateTime", "description": "时间戳"}
+      ]
+    },
+    {
+      "id": "DO-005",
+      "name": "DeployRequest",
+      "description": "部署请求DTO",
+      "attributes": [
+        {"name": "project_id", "type": "Integer", "description": "项目ID"},
+        {"name": "environment_id", "type": "Integer", "description": "环境ID"},
+        {"name": "type", "type": "String", "description": "部署类型: deploy/rollback"},
+        {"name": "build_artifact_path", "type": "String", "description": "构建产物路径(可选)"}
+      ]
+    },
+    {
+      "id": "DO-006",
+      "name": "DeployResponse",
+      "description": "部署响应DTO",
+      "attributes": [
+        {"name": "deployment_id", "type": "Integer", "description": "部署任务ID"},
+        {"name": "status", "type": "String", "description": "初始状态"},
+        {"name": "message", "type": "String", "description": "提示信息"}
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "DeploymentService",
+      "method": "create_deployment",
+      "endpoint": "POST /api/deployments",
+      "request": {
+        "body": "DeployRequest (DO-005)"
+      },
+      "response": "DeployResponse (DO-006)",
+      "description": "创建并触发部署任务",
+      "errors": [
+        "409 Conflict: 同一环境已有进行中的部署",
+        "400 Bad Request: 无效的部署类型或缺少必要参数",
+        "503 Service Unavailable: 远程服务器不可达"
+      ],
+      "async": true,
+      "source_requirements": ["REQ-003"],
+      "source_components": ["CMP-006"],
+      "source_contracts": ["CTR-004"]
+    },
+    {
+      "id": "SC-002",
+      "name": "DeploymentService",
+      "method": "get_deployment_status",
+      "endpoint": "GET /api/deployments/{id}",
+      "response": "Deployment (DO-001)",
+      "description": "查询部署任务状态",
+      "errors": [
+        "404 Not Found: 部署任务不存在"
+      ],
+      "async": false
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "description": "并发控制：同一环境同一时间只允许一个进行中(pending/running)的部署",
+      "expression": "环境锁(project_id, environment_id) 在部署开始前获取，完成后释放",
+      "invariants": [
+        "在任何时刻，对于给定的 (project_id, environment_id)，deployments 表中 status IN ('pending','running') 的记录数 ≤ 1"
+      ]
+    },
+    {
+      "id": "BR-002",
+      "description": "状态转换规则",
+      "expression": "pending -> running -> success; pending -> running -> failed",
+      "invariants": [
+        "status 只能按允许的方向转换",
+        "不能从 success 或 failed 回退到其他状态"
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "DeploymentAPI",
+      "description": "部署引擎对外提供的HTTP接口",
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/api/deployments",
+          "handler": "create_deployment",
+          "description": "触发部署"
+        },
+        {
+          "method": "GET",
+          "path": "/api/deployments/{id}",
+          "handler": "get_deployment_status",
+          "description": "查询部署状态"
+        }
+      ],
+      "dependencies": [
+        "认证中间件(来自API网关)",
+        "数据库连接池"
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "InternalCallbacks",
+      "description": "部署引擎对外部服务的回调接口",
+      "endpoints": [
+        {
+          "method": "CALLBACK",
+          "path": "log_service.append_log(deployment_id, msg, level)",
+          "description": "向日志服务推送日志"
+        },
+        {
+          "method": "CALLBACK",
+          "path": "version_service.create_version(deployment)",
+          "description": "部署成功后通知版本历史服务创建版本"
+        }
+      ],
+      "dependencies": [
+        "日志服务(CMP-007)",
+        "版本历史服务(CMP-008)"
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "分层错误处理：API层捕获业务异常并映射HTTP状态码；流水线内部捕获操作异常并转换为失败状态，记录日志",
+    "error_codes": [
+      {"code": "DEPLOY_CONFLICT", "http_status": 409, "description": "同一环境已有进行中的部署"},
+      {"code": "DEPLOY_INVALID_TYPE", "http_status": 400, "description": "无效的部署类型"},
+      {"code": "DEPLOY_SSH_ERROR", "http_status": 503, "description": "远程服务器连接或操作失败"},
+      {"code": "DEPLOY_SCRIPT_FAILED", "http_status": 500, "description": "部署脚本执行失败"}
+    ],
+    "logging": "所有异常均通过LogCallback发送至日志服务，包含deployment_id和详细堆栈"
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-003",
+      "sad_component_ids": ["CMP-006"],
+      "sad_contract_ids": ["CTR-004"],
+      "lld_objects": {
+        "data_models": ["DM-001", "DM-002", "DM-003"],
+        "interfaces": ["IF-001", "IF-002"],
+        "domain_objects": ["DO-001", "DO-002", "DO-003", "DO-004", "DO-005", "DO-006"],
+        "service_contracts": ["SC-001", "SC-002"]
+      },
+      "coverage": "full",
+      "notes": "覆盖一键部署核心需求"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "deployments",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "deployments"
+      },
+      "description": "部署任务表，存储每次部署的详细信息",
+      "fields": [
+        {"name": "id", "type": "Integer", "required": true, "description": "部署任务主键，自增"},
+        {"name": "project_id", "type": "Integer", "required": true, "description": "关联项目ID"},
+        {"name": "environment_id", "type": "Integer", "required": true, "description": "关联环境ID"},
+        {"name": "type", "type": "String", "required": true, "description": "部署类型：'deploy' 或 'rollback'"},
+        {"name": "status", "type": "String", "required": true, "description": "部署状态：'pending', 'running', 'success', 'failed'"},
+        {"name": "version_num", "type": "Integer", "required": false, "description": "部署生成的版本号，成功时生成"},
+        {"name": "build_artifact_path", "type": "String", "required": false, "description": "本地构建产物路径"},
+        {"name": "remote_version_dir", "type": "String", "required": false, "description": "远程版本目录路径"},
+        {"name": "error_message", "type": "Text", "required": false, "description": "失败时的错误信息"},
+        {"name": "started_at", "type": "DateTime", "required": false, "description": "任务开始时间"},
+        {"name": "finished_at", "type": "DateTime", "required": false, "description": "任务完成时间"},
+        {"name": "created_at", "type": "DateTime", "required": true, "description": "记录创建时间"}
+      ],
+      "indexes": [
+        {"name": "idx_env_status", "unique": false, "columns": ["project_id", "environment_id", "status"]}
+      ],
+      "source_requirements": ["REQ-003"],
+      "source_components": ["CMP-006"],
+      "source_contracts": ["CTR-004"],
+      "constraints": [
+        "status 只能为 'pending', 'running', 'success', 'failed' 之一",
+        "type 只能为 'deploy' 或 'rollback'",
+        "同一环境同一时间只能有一个 pending 或 running 的部署"
+      ],
+      "lifecycle": {
+        "create": "部署请求接受时创建，初始状态 pending",
+        "update": "任务开始后更新为 running，成功或失败后更新最终状态",
+        "delete": "记录永久保留，定期归档策略由DBA定义",
+        "retention": "永久保留，定期归档"
+      },
+      "change_history": [
+        {"version": 1, "change_type": "created", "summary": "初始创建", "reason": "首次生成LLD"}
+      ]
+    }
+  ]
+}
