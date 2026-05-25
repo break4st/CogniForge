@@ -1,0 +1,1069 @@
+{
+  "meta": {
+    "doc_id": "lld-版本历史服务-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "版本历史服务",
+    "title": "版本历史服务详细设计文档",
+    "author": "design_agent",
+    "created": "2025-03-20T10:00:00Z",
+    "version": 2,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-004"
+      ],
+      "contracts": [
+        "IF-001",
+        "IF-002",
+        "IF-003",
+        "IF-004"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "记录部署历史",
+      "查询部署历史列表",
+      "提供日志详情",
+      "为回滚提供源版本信息",
+      "管理部署状态转换"
+    ],
+    "out_of_scope": [
+      "项目和环境的管理",
+      "实际部署任务的执行",
+      "用户认证与权限",
+      "密钥和凭证的加密存储"
+    ],
+    "owned_components": [
+      "CMP-004"
+    ],
+    "owned_contracts": [
+      "IF-001",
+      "IF-002",
+      "IF-003",
+      "IF-004"
+    ],
+    "consumed_contracts": [
+      "IF-005",
+      "IF-006",
+      "IF-007"
+    ],
+    "owned_data_models": [],
+    "consumed_data_models": [
+      "DM-001",
+      "DM-002"
+    ]
+  },
+  "overview": {
+    "description": "版本历史服务负责记录每次部署的版本信息、状态及相关日志，提供历史查询和回滚所需的源数据。它是部署自动化平台中「记忆」能力的核心。",
+    "dependencies": [
+      "项目管理服务",
+      "环境配置服务",
+      "部署执行服务"
+    ],
+    "tech_stack": [
+      "Python 3.11",
+      "FastAPI",
+      "SQLite",
+      "SQLAlchemy"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-004"
+      ],
+      "sad_contract_ids": [
+        "IF-001",
+        "IF-002",
+        "IF-003",
+        "IF-004"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003",
+          "IF-004"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "DeployHistory",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "deploy_histories"
+      },
+      "description": "部署历史记录表，存储每次部署的元数据及状态。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键，唯一标识一条部署历史"
+        },
+        {
+          "name": "project_id",
+          "type": "Integer",
+          "required": true,
+          "description": "关联的项目ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "Integer",
+          "required": true,
+          "description": "关联的环境ID"
+        },
+        {
+          "name": "version",
+          "type": "String",
+          "required": true,
+          "description": "部署的版本号"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "required": true,
+          "description": "部署状态，枚举值见DeployStatus"
+        },
+        {
+          "name": "started_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "部署开始时间"
+        },
+        {
+          "name": "finished_at",
+          "type": "DateTime",
+          "required": false,
+          "description": "部署结束时间，终态时非空"
+        },
+        {
+          "name": "operator",
+          "type": "String",
+          "required": true,
+          "description": "操作人标识"
+        },
+        {
+          "name": "commit_sha",
+          "type": "String",
+          "required": false,
+          "description": "代码提交哈希"
+        },
+        {
+          "name": "rollback_from_id",
+          "type": "Integer",
+          "required": false,
+          "description": "回滚来源的部署历史ID"
+        },
+        {
+          "name": "created_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "记录创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "记录更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_deploy_histories_project_id",
+          "unique": false,
+          "columns": [
+            "project_id"
+          ]
+        },
+        {
+          "name": "idx_deploy_histories_environment_id",
+          "unique": false,
+          "columns": [
+            "environment_id"
+          ]
+        },
+        {
+          "name": "idx_deploy_histories_status",
+          "unique": false,
+          "columns": [
+            "status"
+          ]
+        },
+        {
+          "name": "idx_deploy_histories_created_at",
+          "unique": false,
+          "columns": [
+            "created_at"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "IF-001",
+        "IF-002",
+        "IF-003",
+        "IF-004"
+      ],
+      "constraints": [
+        "finished_at 仅在终态时非空",
+        "status 必须为有效枚举值",
+        "rollback_from_id 若存在必须指向有效的历史记录"
+      ],
+      "lifecycle": {
+        "create": "部署执行服务调用创建",
+        "update": "状态随部署进度更新",
+        "delete": "逻辑删除（状态置为 REMOVED）",
+        "retention": "永久保留，不做物理删除"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "DeployLog",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "deploy_logs"
+      },
+      "description": "部署日志表，存储每次部署过程中产生的详细步骤日志。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "deploy_history_id",
+          "type": "Integer",
+          "required": true,
+          "description": "关联的部署历史ID"
+        },
+        {
+          "name": "timestamp",
+          "type": "DateTime",
+          "required": true,
+          "description": "日志记录时间"
+        },
+        {
+          "name": "level",
+          "type": "String",
+          "required": true,
+          "description": "日志级别"
+        },
+        {
+          "name": "message",
+          "type": "Text",
+          "required": true,
+          "description": "日志内容"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_deploy_logs_deploy_history_id",
+          "unique": false,
+          "columns": [
+            "deploy_history_id"
+          ]
+        },
+        {
+          "name": "idx_deploy_logs_timestamp",
+          "unique": false,
+          "columns": [
+            "timestamp"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "IF-004"
+      ],
+      "constraints": [
+        "deploy_history_id 必须引用有效的部署历史"
+      ],
+      "lifecycle": {
+        "create": "部署执行服务在部署过程中追加日志",
+        "update": "日志不可修改",
+        "delete": "随关联部署历史逻辑删除",
+        "retention": "与部署历史保留策略相同"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "DeployHistory",
+      "object_type": "entity",
+      "description": "部署历史聚合根，维护部署状态机及关联日志",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "Integer",
+          "required": true,
+          "description": "唯一标识"
+        },
+        {
+          "name": "project_id",
+          "type": "Integer",
+          "required": true,
+          "description": "项目ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "Integer",
+          "required": true,
+          "description": "环境ID"
+        },
+        {
+          "name": "version",
+          "type": "String",
+          "required": true,
+          "description": "版本号"
+        },
+        {
+          "name": "status",
+          "type": "DeployStatus",
+          "required": true,
+          "description": "当前状态"
+        },
+        {
+          "name": "started_at",
+          "type": "DateTime",
+          "required": true,
+          "description": "开始时间"
+        },
+        {
+          "name": "finished_at",
+          "type": "DateTime",
+          "required": false,
+          "description": "完成时间"
+        },
+        {
+          "name": "operator",
+          "type": "String",
+          "required": true,
+          "description": "操作人"
+        },
+        {
+          "name": "commit_sha",
+          "type": "String",
+          "required": false,
+          "description": "提交哈希"
+        },
+        {
+          "name": "rollback_from_id",
+          "type": "Integer",
+          "required": false,
+          "description": "回滚来源ID"
+        }
+      ],
+      "behaviors": [
+        {
+          "name": "create",
+          "description": "新增一条部署历史"
+        },
+        {
+          "name": "update_status",
+          "description": "根据事件推进状态"
+        },
+        {
+          "name": "add_log",
+          "description": "关联部署日志"
+        }
+      ],
+      "state_machine": {
+        "states": [
+          "pending",
+          "running",
+          "success",
+          "failed",
+          "cancelled",
+          "rollback"
+        ],
+        "transitions": [
+          {
+            "from": "pending",
+            "to": "running",
+            "event": "start"
+          },
+          {
+            "from": "running",
+            "to": "success",
+            "event": "finish_success"
+          },
+          {
+            "from": "running",
+            "to": "failed",
+            "event": "finish_failure"
+          },
+          {
+            "from": "running",
+            "to": "cancelled",
+            "event": "cancel"
+          },
+          {
+            "from": "success",
+            "to": "rollback",
+            "event": "rollback"
+          },
+          {
+            "from": "failed",
+            "to": "rollback",
+            "event": "rollback"
+          }
+        ]
+      },
+      "invariants": [
+        "状态必须为预定义枚举之一",
+        "终态不可逆（除回滚外）",
+        "操作人不可为空"
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "DeployLog",
+      "object_type": "value_object",
+      "description": "单条部署日志值对象，不可变",
+      "attributes": [
+        {
+          "name": "timestamp",
+          "type": "DateTime",
+          "required": true,
+          "description": "时间戳"
+        },
+        {
+          "name": "level",
+          "type": "LogLevel",
+          "required": true,
+          "description": "日志级别"
+        },
+        {
+          "name": "message",
+          "type": "String",
+          "required": true,
+          "description": "日志内容"
+        }
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "CreateDeployHistoryCommand",
+      "object_type": "command",
+      "description": "创建部署历史命令对象",
+      "attributes": [
+        {
+          "name": "project_id",
+          "type": "Integer",
+          "required": true,
+          "description": "项目ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "Integer",
+          "required": true,
+          "description": "环境ID"
+        },
+        {
+          "name": "version",
+          "type": "String",
+          "required": true,
+          "description": "版本号"
+        },
+        {
+          "name": "operator",
+          "type": "String",
+          "required": true,
+          "description": "操作人"
+        },
+        {
+          "name": "commit_sha",
+          "type": "String",
+          "required": false,
+          "description": "提交哈希"
+        }
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "DeployHistoryQuery",
+      "object_type": "query",
+      "description": "部署历史查询对象",
+      "attributes": [
+        {
+          "name": "project_id",
+          "type": "Integer",
+          "required": false,
+          "description": "按项目过滤"
+        },
+        {
+          "name": "environment_id",
+          "type": "Integer",
+          "required": false,
+          "description": "按环境过滤"
+        },
+        {
+          "name": "status",
+          "type": "DeployStatus",
+          "required": false,
+          "description": "按状态过滤"
+        },
+        {
+          "name": "page",
+          "type": "Integer",
+          "required": false,
+          "description": "分页页码"
+        },
+        {
+          "name": "size",
+          "type": "Integer",
+          "required": false,
+          "description": "每页大小"
+        }
+      ]
+    },
+    {
+      "id": "DO-005",
+      "name": "DeployStatus",
+      "object_type": "enumeration",
+      "description": "部署状态枚举",
+      "attributes": [
+        {
+          "name": "values",
+          "type": "set",
+          "required": true,
+          "description": "['pending', 'running', 'success', 'failed', 'cancelled', 'rollback']"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "Create Deploy History",
+      "type": "api",
+      "method": "POST",
+      "endpoint": "/deployments",
+      "description": "创建一条部署历史记录",
+      "verb": "POST",
+      "path": "/deployments",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "integer"
+          },
+          "environment_id": {
+            "type": "integer"
+          },
+          "version": {
+            "type": "string"
+          },
+          "operator": {
+            "type": "string"
+          },
+          "commit_sha": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "environment_id",
+          "version",
+          "operator"
+        ]
+      },
+      "response_schema": {
+        "200": {
+          "description": "创建成功",
+          "body": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              },
+              "started_at": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "authenticated": true,
+      "rate_limited": false,
+      "consumers": [
+        "部署执行服务"
+      ],
+      "errors": [
+        "400: 请求参数错误",
+        "401: 未认证",
+        "404: 项目或环境不存在"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "IF-001"
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "List Deploy Histories",
+      "type": "api",
+      "method": "GET",
+      "endpoint": "/deployments",
+      "description": "按条件分页查询部署历史列表",
+      "verb": "GET",
+      "path": "/deployments",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "integer"
+          },
+          "environment_id": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "size": {
+            "type": "integer"
+          }
+        }
+      },
+      "response_schema": {
+        "200": {
+          "description": "查询成功",
+          "body": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "DO-001"
+                }
+              },
+              "total": {
+                "type": "integer"
+              },
+              "page": {
+                "type": "integer"
+              },
+              "size": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      },
+      "authenticated": true,
+      "rate_limited": false,
+      "consumers": [
+        "部署执行服务",
+        "Web UI"
+      ],
+      "errors": [
+        "400: 参数错误",
+        "401: 未认证"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "IF-002"
+      ]
+    },
+    {
+      "id": "IF-003",
+      "name": "Get Deploy History Detail",
+      "type": "api",
+      "method": "GET",
+      "endpoint": "/deployments/{id}",
+      "description": "获取单个部署历史详细信息",
+      "verb": "GET",
+      "path": "/deployments/{id}",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "response_schema": {
+        "200": {
+          "description": "查询成功",
+          "body": {
+            "$ref": "DO-001"
+          }
+        }
+      },
+      "authenticated": true,
+      "rate_limited": false,
+      "consumers": [
+        "部署执行服务",
+        "Web UI"
+      ],
+      "errors": [
+        "401: 未认证",
+        "404: 未找到记录"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "IF-003"
+      ]
+    },
+    {
+      "id": "IF-004",
+      "name": "Get Deploy Logs",
+      "type": "api",
+      "method": "GET",
+      "endpoint": "/deployments/{id}/logs",
+      "description": "获取指定部署历史的所有日志",
+      "verb": "GET",
+      "path": "/deployments/{id}/logs",
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "response_schema": {
+        "200": {
+          "description": "查询成功",
+          "body": {
+            "type": "array",
+            "items": {
+              "$ref": "DO-002"
+            }
+          }
+        }
+      },
+      "authenticated": true,
+      "rate_limited": false,
+      "consumers": [
+        "部署执行服务",
+        "Web UI"
+      ],
+      "errors": [
+        "401: 未认证",
+        "404: 部署历史不存在"
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "IF-004"
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "DeployHistoryService",
+      "description": "部署历史领域服务接口",
+      "methods": [
+        {
+          "name": "create_history",
+          "description": "创建部署历史",
+          "signature": "create_history(command: CreateDeployHistoryCommand) -> DeployHistory",
+          "parameters": [
+            {
+              "name": "command",
+              "type": "CreateDeployHistoryCommand",
+              "description": "创建命令"
+            }
+          ],
+          "returns": {
+            "type": "DeployHistory",
+            "description": "新创建的部署历史聚合"
+          },
+          "precondition": "command 参数校验通过；项目和环境存在",
+          "postcondition": "返回新创建的 DeployHistory，状态为 pending；持久化至数据库",
+          "errors": [
+            "ValidationError",
+            "EntityNotFoundError"
+          ]
+        },
+        {
+          "name": "list_histories",
+          "description": "分页查询部署历史",
+          "signature": "list_histories(query: DeployHistoryQuery) -> PaginatedResult<DeployHistory>",
+          "parameters": [
+            {
+              "name": "query",
+              "type": "DeployHistoryQuery",
+              "description": "查询条件"
+            }
+          ],
+          "returns": {
+            "type": "PaginatedResult<DeployHistory>",
+            "description": "分页结果"
+          },
+          "precondition": "query 参数合法",
+          "postcondition": "返回符合条件的分页部署历史列表",
+          "errors": [
+            "ValidationError"
+          ]
+        },
+        {
+          "name": "get_history",
+          "description": "获取单个部署历史",
+          "signature": "get_history(history_id: int) -> DeployHistory",
+          "parameters": [
+            {
+              "name": "history_id",
+              "type": "int",
+              "description": "部署历史ID"
+            }
+          ],
+          "returns": {
+            "type": "DeployHistory",
+            "description": "部署历史聚合"
+          },
+          "precondition": "history_id 存在",
+          "postcondition": "返回对应的部署历史",
+          "errors": [
+            "EntityNotFoundError"
+          ]
+        },
+        {
+          "name": "update_status",
+          "description": "更新部署历史状态",
+          "signature": "update_status(history_id: int, event: str) -> DeployHistory",
+          "parameters": [
+            {
+              "name": "history_id",
+              "type": "int",
+              "description": "部署历史ID"
+            },
+            {
+              "name": "event",
+              "type": "str",
+              "description": "触发事件名"
+            }
+          ],
+          "returns": {
+            "type": "DeployHistory",
+            "description": "更新后的部署历史"
+          },
+          "precondition": "history_id 存在；事件合法；状态转换有效",
+          "postcondition": "状态按状态机推进，返回更新后的部署历史",
+          "errors": [
+            "EntityNotFoundError",
+            "InvalidTransitionError"
+          ]
+        },
+        {
+          "name": "add_log",
+          "description": "向部署历史追加日志",
+          "signature": "add_log(history_id: int, log: DeployLog) -> DeployLog",
+          "parameters": [
+            {
+              "name": "history_id",
+              "type": "int",
+              "description": "部署历史ID"
+            },
+            {
+              "name": "log",
+              "type": "DeployLog",
+              "description": "日志值对象"
+            }
+          ],
+          "returns": {
+            "type": "DeployLog",
+            "description": "持久化后的日志记录"
+          },
+          "precondition": "history_id 存在",
+          "postcondition": "将日志关联到部署历史并持久化，返回带ID的日志",
+          "errors": [
+            "EntityNotFoundError"
+          ]
+        },
+        {
+          "name": "get_logs",
+          "description": "获取指定部署历史的所有日志",
+          "signature": "get_logs(history_id: int) -> List[DeployLog]",
+          "parameters": [
+            {
+              "name": "history_id",
+              "type": "int",
+              "description": "部署历史ID"
+            }
+          ],
+          "returns": {
+            "type": "List[DeployLog]",
+            "description": "日志列表"
+          },
+          "precondition": "history_id 存在",
+          "postcondition": "返回按时间排序的日志列表",
+          "errors": [
+            "EntityNotFoundError"
+          ]
+        }
+      ]
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "description": "每次部署历史创建时状态必须为 pending",
+      "enforcement": "hard",
+      "scope": "create_history"
+    },
+    {
+      "id": "BR-002",
+      "description": "状态转换必须遵循状态机定义，不允许非法跳转",
+      "enforcement": "hard",
+      "scope": "update_status"
+    },
+    {
+      "id": "BR-003",
+      "description": "只能为自己管辖的部署历史添加日志",
+      "enforcement": "hard",
+      "scope": "add_log"
+    },
+    {
+      "id": "BR-004",
+      "description": "回滚时必须提供 rollback_from_id，且该记录状态为 success 或 failed",
+      "enforcement": "hard",
+      "scope": "rollback"
+    }
+  ],
+  "error_handling": {
+    "strategy": "统一错误码与异常层次化处理",
+    "error_codes": [
+      {
+        "code": "NOT_FOUND",
+        "http_status": 404,
+        "message_template": "{resource} not found"
+      },
+      {
+        "code": "VALIDATION_ERROR",
+        "http_status": 400,
+        "message_template": "Invalid {field}: {reason}"
+      },
+      {
+        "code": "INVALID_STATE_TRANSITION",
+        "http_status": 422,
+        "message_template": "Cannot transition from {current} to {target} via {event}"
+      },
+      {
+        "code": "INTERNAL_ERROR",
+        "http_status": 500,
+        "message_template": "Internal server error"
+      }
+    ],
+    "exceptions": [
+      {
+        "name": "EntityNotFoundError",
+        "parent": "NOT_FOUND"
+      },
+      {
+        "name": "ValidationError",
+        "parent": "VALIDATION_ERROR"
+      },
+      {
+        "name": "InvalidTransitionError",
+        "parent": "INVALID_STATE_TRANSITION"
+      }
+    ]
+  }
+}
