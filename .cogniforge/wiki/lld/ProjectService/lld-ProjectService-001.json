@@ -1,710 +1,177 @@
 {
   "meta": {
     "doc_id": "lld-ProjectService-001",
-    "type": "lld",
-    "module_type": "service",
     "module": "ProjectService",
-    "title": "ProjectService 详细设计文档",
-    "author": "design_agent",
-    "created": "2025-04-09T10:30:00Z",
-    "version": 1,
-    "status": "active"
+    "module_type": "service",
+    "title": "ProjectService 详细设计",
+    "type": "lld",
+    "author": "CogniForge",
+    "created": "2025-03-26T00:00:00Z",
+    "version": 1
   },
   "source": {
     "prd": {
-      "doc_id": "prd-current",
-      "version": 1,
-      "requirements": [
-        "REQ-001",
-        "REQ-006"
-      ]
+      "doc_id": "PRD-整体"
     },
     "sad": {
-      "doc_id": "sad-001",
-      "version": 1,
-      "components": [
-        "CMP-101"
-      ],
-      "contracts": [
-        "CTR-001",
-        "CTR-002"
-      ],
-      "data_models": []
-    },
-    "pm_turn_id": "",
-    "se_turn_id": ""
+      "doc_id": "SAD-整体"
+    }
   },
   "module_boundary": {
     "in_scope": [
-      "项目实体的完整生命周期管理（创建、查询、更新、删除）",
-      "活动项目记忆与切换",
-      "最后使用时间维护",
-      "提供 IPC 接口供 UI 调用"
+      "项目(Project)的创建、查询、更新、删除业务逻辑",
+      "当前激活项目的上下文管理（存储/切换/获取激活项目ID）",
+      "项目数据的JSON文件存储与读取（通过ConfigStore基础设施）",
+      "项目相关的领域实体、DTO、值对象、枚举定义",
+      "API接口层（IPC/REST）与业务逻辑之间的服务层契约"
     ],
     "out_of_scope": [
-      "前端页面交互逻辑",
-      "与部署/环境/SSH 等服务的跨模块协调"
-    ],
-    "owned_components": [
-      "CMP-101"
-    ],
-    "owned_contracts": [
-      "CTR-001",
-      "CTR-002"
-    ],
-    "consumed_contracts": [],
-    "owned_data_models": [],
-    "consumed_data_models": [
-      "DM-001"
+      "UI表现层（ProjectListView等）",
+      "前端组件的状态管理或路由",
+      "环境、部署、版本历史等其他业务领域",
+      "数据持久化的底层文件I/O操作（由ConfigStore负责）",
+      "加密、主密码验证等安全基础设施",
+      "SSH连接与远程命令执行"
     ]
   },
   "overview": {
-    "description": "ProjectService 是 Electron 主进程中的应用服务，封装项目管理核心逻辑，向上通过 IPC 通道与 React 前端通信，向下通过 DataBaseService 访问 SQLite 数据库。它负责维护项目记录，确保项目名唯一，并实现活动项目的唯一性约束，自动更新最后使用时间。",
+    "description": "ProjectService 负责项目管理的核心业务逻辑，包括项目的创建、查询、更新、删除，以及激活项目的上下文管理。",
     "dependencies": [
-      "DatabaseService"
+      "ConfigStore"
     ],
     "tech_stack": [
+      "Node.js 18+",
       "TypeScript",
-      "Node.js (Electron runtime)",
-      "better-sqlite3"
+      "本地JSON文件（通过ConfigStore管理）"
     ]
   },
   "traceability": [
     {
       "requirement_id": "REQ-001",
       "sad_component_ids": [
-        "CMP-101"
+        "CMP-001"
       ],
       "sad_contract_ids": [
-        "CTR-001",
-        "CTR-002"
+        "CMP-001"
       ],
-      "lld_objects": {
-        "data_models": [
-          "DM-001"
-        ],
-        "interfaces": [
-          "IF-001",
-          "IF-002",
-          "IF-003",
-          "IF-004"
-        ],
-        "domain_objects": [
-          "DO-001"
-        ],
-        "service_contracts": [
-          "SC-001"
-        ]
-      },
-      "coverage": "full",
-      "notes": ""
+      "lld_objects": {},
+      "coverage": "full"
     },
     {
-      "requirement_id": "REQ-006",
+      "requirement_id": "REQ-007",
       "sad_component_ids": [
-        "CMP-101"
+        "CMP-002",
+        "CMP-003",
+        "CMP-004"
       ],
       "sad_contract_ids": [
-        "CTR-001"
+        "CMP-002",
+        "CMP-003",
+        "CMP-004"
       ],
-      "lld_objects": {
-        "data_models": [
-          "DM-001"
-        ],
-        "interfaces": [
-          "IF-001"
-        ],
-        "domain_objects": [
-          "DO-001"
-        ],
-        "service_contracts": [
-          "SC-001"
-        ]
-      },
-      "coverage": "full",
-      "notes": ""
+      "lld_objects": {},
+      "coverage": "full"
     }
   ],
-  "data_models": [
-    {
-      "id": "DM-001",
-      "name": "Project",
-      "type": "reference",
-      "status": "active",
-      "version": 1,
-      "ownership": "derived",
-      "source": {
-        "doc_id": "lld-Primary Database-001",
-        "model_name": "projects"
-      },
-      "description": "项目实体引用，映射主数据库中的 projects 表，包含项目元数据及活动状态",
-      "fields": [
-        {
-          "name": "id",
-          "type": "integer",
-          "required": true,
-          "description": "主键，自增 ID"
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "required": true,
-          "description": "项目名称，全局唯一，1-100 字符"
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "required": false,
-          "description": "项目描述，允许为空"
-        },
-        {
-          "name": "created_at",
-          "type": "datetime",
-          "required": true,
-          "description": "创建时间戳"
-        },
-        {
-          "name": "updated_at",
-          "type": "datetime",
-          "required": true,
-          "description": "最后更新时间戳"
-        },
-        {
-          "name": "last_used_at",
-          "type": "datetime",
-          "required": false,
-          "description": "最近一次被设为活动项目的时间"
-        },
-        {
-          "name": "is_active",
-          "type": "boolean",
-          "required": true,
-          "description": "是否为当前活动项目，全局最多一个为 true"
-        }
-      ],
-      "indexes": [
-        {
-          "name": "idx_project_name",
-          "unique": true,
-          "columns": [
-            "name"
-          ]
-        },
-        {
-          "name": "idx_project_active",
-          "unique": false,
-          "columns": [
-            "is_active"
-          ]
-        }
-      ],
-      "source_requirements": [
-        "REQ-001"
-      ],
-      "source_components": [
-        "CMP-101"
-      ],
-      "source_contracts": [
-        "CTR-001",
-        "CTR-002"
-      ],
-      "constraints": [
-        "name 唯一性",
-        "is_active 全局最多一个为 true（业务逻辑保证）"
-      ],
-      "lifecycle": {
-        "create": "插入新记录",
-        "update": "更新字段",
-        "delete": "硬删除",
-        "retention": "永久保留，直到显式删除"
-      }
-    }
-  ],
-  "domain_objects": [
-    {
-      "id": "DO-001",
-      "name": "Project",
-      "description": "项目实体",
-      "object_type": "entity",
-      "attributes": [
-        {
-          "name": "id",
-          "type": "integer",
-          "required": true,
-          "description": "主键",
-          "source": "db"
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "required": true,
-          "description": "项目名称",
-          "source": "db"
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "required": false,
-          "description": "项目描述",
-          "source": "db"
-        },
-        {
-          "name": "created_at",
-          "type": "datetime",
-          "required": true,
-          "description": "创建时间",
-          "source": "db"
-        },
-        {
-          "name": "updated_at",
-          "type": "datetime",
-          "required": true,
-          "description": "更新时间",
-          "source": "db"
-        },
-        {
-          "name": "last_used_at",
-          "type": "datetime",
-          "required": false,
-          "description": "最近使用时间",
-          "source": "db"
-        },
-        {
-          "name": "is_active",
-          "type": "boolean",
-          "required": true,
-          "description": "是否活动",
-          "source": "db"
-        }
-      ],
-      "relations": [],
-      "state_diagram": null
-    }
-  ],
-  "interfaces": [
-    {
-      "id": "IF-001",
-      "name": "IProjectService",
-      "type": "service",
-      "description": "项目服务接口，供前端通过 IPC 调用",
-      "methods": [
-        {
-          "name": "createProject",
-          "signature": "createProject(name: string, description?: string): Promise<Project>",
-          "description": "创建新项目",
-          "parameters": [
-            {
-              "name": "name",
-              "type": "string",
-              "required": true,
-              "description": "项目名称"
-            },
-            {
-              "name": "description",
-              "type": "string",
-              "required": false,
-              "description": "项目描述"
-            }
-          ],
-          "return_type": "Promise<Project>",
-          "errors": [
-            "DuplicateNameError"
-          ]
-        },
-        {
-          "name": "getAllProjects",
-          "signature": "getAllProjects(): Promise<Project[]>",
-          "description": "获取所有项目列表",
-          "parameters": [],
-          "return_type": "Promise<Project[]>",
-          "errors": []
-        },
-        {
-          "name": "getProjectById",
-          "signature": "getProjectById(id: number): Promise<Project>",
-          "description": "根据ID获取项目",
-          "parameters": [
-            {
-              "name": "id",
-              "type": "number",
-              "required": true,
-              "description": "项目ID"
-            }
-          ],
-          "return_type": "Promise<Project>",
-          "errors": [
-            "NotFoundError"
-          ]
-        },
-        {
-          "name": "updateProject",
-          "signature": "updateProject(id: number, updates: Partial<Pick<Project, 'name' | 'description'>>): Promise<Project>",
-          "description": "更新项目信息",
-          "parameters": [
-            {
-              "name": "id",
-              "type": "number",
-              "required": true,
-              "description": "项目ID"
-            },
-            {
-              "name": "updates",
-              "type": "Partial<Pick<Project, 'name' | 'description'>>",
-              "required": true,
-              "description": "要更新的字段"
-            }
-          ],
-          "return_type": "Promise<Project>",
-          "errors": [
-            "NotFoundError",
-            "DuplicateNameError"
-          ]
-        },
-        {
-          "name": "deleteProject",
-          "signature": "deleteProject(id: number): Promise<void>",
-          "description": "删除项目",
-          "parameters": [
-            {
-              "name": "id",
-              "type": "number",
-              "required": true,
-              "description": "项目ID"
-            }
-          ],
-          "return_type": "Promise<void>",
-          "errors": [
-            "NotFoundError"
-          ]
-        },
-        {
-          "name": "setActiveProject",
-          "signature": "setActiveProject(id: number): Promise<Project>",
-          "description": "设置活动项目并更新最后使用时间",
-          "parameters": [
-            {
-              "name": "id",
-              "type": "number",
-              "required": true,
-              "description": "项目ID"
-            }
-          ],
-          "return_type": "Promise<Project>",
-          "errors": [
-            "NotFoundError"
-          ]
-        },
-        {
-          "name": "getActiveProject",
-          "signature": "getActiveProject(): Promise<Project | null>",
-          "description": "获取当前活动项目，可能为null",
-          "parameters": [],
-          "return_type": "Promise<Project | null>",
-          "errors": []
-        }
-      ],
-      "response": {
-        "body": {
-          "description": "方法返回的 Promise 结果",
-          "schema": "参见各方法 return_type"
-        }
-      }
-    },
-    {
-      "id": "IF-002",
-      "name": "IProjectRepository",
-      "type": "repository",
-      "description": "项目仓储接口，封装数据库操作",
-      "methods": [
-        {
-          "name": "insert",
-          "signature": "insert(project: Omit<Project, 'id'>): Project",
-          "description": "插入新项目"
-        },
-        {
-          "name": "findAll",
-          "signature": "findAll(): Project[]",
-          "description": "查询所有项目"
-        },
-        {
-          "name": "findById",
-          "signature": "findById(id: number): Project | undefined",
-          "description": "根据ID查询项目"
-        },
-        {
-          "name": "update",
-          "signature": "update(id: number, updates: Partial<Project>): Project",
-          "description": "更新项目"
-        },
-        {
-          "name": "deleteById",
-          "signature": "deleteById(id: number): boolean",
-          "description": "删除项目"
-        },
-        {
-          "name": "findActive",
-          "signature": "findActive(): Project | undefined",
-          "description": "查询活动项目"
-        }
-      ],
-      "response": {
-        "body": {
-          "description": "方法返回的直接结果",
-          "schema": "参见各方法签名"
-        }
-      }
-    },
-    {
-      "id": "IF-003",
-      "name": "IActiveProjectManager",
-      "type": "service",
-      "description": "活动项目管理器接口",
-      "methods": [
-        {
-          "name": "setActive",
-          "signature": "setActive(id: number): Promise<Project>",
-          "description": "设置活动项目"
-        },
-        {
-          "name": "getActive",
-          "signature": "getActive(): Promise<Project | null>",
-          "description": "获取活动项目"
-        }
-      ],
-      "response": {
-        "body": {
-          "description": "方法返回的 Promise 结果",
-          "schema": "参见各方法签名"
-        }
-      }
-    },
-    {
-      "id": "IF-004",
-      "name": "IDatabaseService",
-      "type": "service",
-      "description": "数据库服务接口",
-      "methods": [
-        {
-          "name": "getDb",
-          "signature": "getDb(): Database",
-          "description": "获取数据库实例"
-        }
-      ],
-      "response": {
-        "body": {
-          "description": "返回数据库实例",
-          "schema": "Database"
-        }
-      }
-    }
-  ],
+  "data_models": [],
+  "interfaces": [],
+  "domain_objects": [],
   "service_contracts": [
     {
-      "id": "SC-001",
-      "name": "ProjectServiceContracts",
-      "description": "ProjectService 的服务契约，定义所有业务方法的前置/后置条件和业务规则",
-      "applies_to": "IF-001",
+      "id": "CMP-001",
+      "name": "createProject",
+      "description": "创建新项目",
       "methods": [
         {
           "name": "createProject",
-          "signature": "createProject(name: string, description?: string): Promise<Project>",
-          "preconditions": [
-            "name 非空且长度在1-100字符之间"
-          ],
-          "postconditions": [
-            "返回的 Project 对象含有有效的 id 和创建时间",
-            "数据库中存在唯一 name 的新记录"
-          ],
-          "business_rules": [
-            "项目名称全局唯一，若重复抛出 DuplicateNameError"
-          ],
-          "parameters": [
-            {
-              "name": "name",
-              "type": "string",
-              "required": true,
-              "description": "项目名称"
-            },
-            {
-              "name": "description",
-              "type": "string",
-              "required": false,
-              "description": "项目描述"
-            }
-          ],
-          "return_type": "Promise<Project>",
-          "errors": [
-            "DuplicateNameError"
-          ]
-        },
+          "description": "创建项目并持久化",
+          "precondition": "项目名称唯一且参数有效",
+          "postcondition": "项目被持久化到存储中",
+          "signature": "createProject(name: string, description?: string): Project"
+        }
+      ]
+    },
+    {
+      "id": "CMP-002",
+      "name": "getAllProjects",
+      "description": "获取所有项目列表",
+      "methods": [
         {
           "name": "getAllProjects",
-          "signature": "getAllProjects(): Promise<Project[]>",
-          "preconditions": [],
-          "postconditions": [
-            "返回所有项目的数组，可能为空"
-          ],
-          "business_rules": [],
-          "parameters": [],
-          "return_type": "Promise<Project[]>",
-          "errors": []
-        },
-        {
-          "name": "getProjectById",
-          "signature": "getProjectById(id: number): Promise<Project>",
-          "preconditions": [
-            "id 必须为正整数"
-          ],
-          "postconditions": [
-            "若存在返回 Project，否则抛出 NotFoundError"
-          ],
-          "business_rules": [],
-          "parameters": [
-            {
-              "name": "id",
-              "type": "number",
-              "required": true,
-              "description": "项目ID"
-            }
-          ],
-          "return_type": "Promise<Project>",
-          "errors": [
-            "NotFoundError"
-          ]
-        },
+          "description": "返回所有项目的数组",
+          "precondition": "无",
+          "postcondition": "返回项目数组",
+          "signature": "getAllProjects(): Project[]"
+        }
+      ]
+    },
+    {
+      "id": "CMP-003",
+      "name": "updateProject",
+      "description": "更新指定项目",
+      "methods": [
         {
           "name": "updateProject",
-          "signature": "updateProject(id: number, updates: Partial<Pick<Project, 'name' | 'description'>>): Promise<Project>",
-          "preconditions": [
-            "id 必须为正整数",
-            "updates 至少包含一个字段"
-          ],
-          "postconditions": [
-            "返回更新后的 Project",
-            "若更新 name，确保新名称全局唯一"
-          ],
-          "business_rules": [
-            "若更新名称，检查重复，若重复抛出 DuplicateNameError"
-          ],
-          "parameters": [
-            {
-              "name": "id",
-              "type": "number",
-              "required": true,
-              "description": "项目ID"
-            },
-            {
-              "name": "updates",
-              "type": "Partial<Pick<Project, 'name' | 'description'>>",
-              "required": true,
-              "description": "更新字段"
-            }
-          ],
-          "return_type": "Promise<Project>",
-          "errors": [
-            "NotFoundError",
-            "DuplicateNameError"
-          ]
-        },
+          "description": "更新项目名称和/或描述",
+          "precondition": "项目存在且参数有效",
+          "postcondition": "项目信息被更新并持久化",
+          "signature": "updateProject(id: string, name?: string, description?: string): Project"
+        }
+      ]
+    },
+    {
+      "id": "CMP-004",
+      "name": "deleteProject",
+      "description": "删除指定项目",
+      "methods": [
         {
           "name": "deleteProject",
-          "signature": "deleteProject(id: number): Promise<void>",
-          "preconditions": [
-            "id 必须为正整数"
-          ],
-          "postconditions": [
-            "项目已从数据库移除"
-          ],
-          "business_rules": [
-            "若项目不存在，抛出 NotFoundError"
-          ],
-          "parameters": [
-            {
-              "name": "id",
-              "type": "number",
-              "required": true,
-              "description": "项目ID"
-            }
-          ],
-          "return_type": "Promise<void>",
-          "errors": [
-            "NotFoundError"
-          ]
-        },
-        {
-          "name": "setActiveProject",
-          "signature": "setActiveProject(id: number): Promise<Project>",
-          "preconditions": [
-            "id 必须为正整数"
-          ],
-          "postconditions": [
-            "指定项目成为活动项目，其 last_used_at 更新为当前时间",
-            "前一个活动项目的 is_active 设为 false"
-          ],
-          "business_rules": [
-            "项目必须存在，否则抛出 NotFoundError",
-            "自动切换活动项目状态"
-          ],
-          "parameters": [
-            {
-              "name": "id",
-              "type": "number",
-              "required": true,
-              "description": "项目ID"
-            }
-          ],
-          "return_type": "Promise<Project>",
-          "errors": [
-            "NotFoundError"
-          ]
-        },
-        {
-          "name": "getActiveProject",
-          "signature": "getActiveProject(): Promise<Project | null>",
-          "preconditions": [],
-          "postconditions": [
-            "返回当前活动项目，若不存在则返回 null"
-          ],
-          "business_rules": [],
-          "parameters": [],
-          "return_type": "Promise<Project | null>",
-          "errors": []
+          "description": "删除项目并清理激活状态",
+          "precondition": "项目存在",
+          "postcondition": "项目从存储中移除，若为激活项目则清除激活状态",
+          "signature": "deleteProject(id: string): void"
         }
       ]
     }
   ],
-  "business_rules": [
-    {
-      "id": "BR-001",
-      "description": "项目名称唯一性",
-      "rule": "创建或更新项目时，名称在系统中全局唯一，不区分大小写"
-    },
-    {
-      "id": "BR-002",
-      "description": "活动项目唯一性",
-      "rule": "全局最多只能有一个活动项目，设置新活动项目时自动取消旧活动项目"
-    },
-    {
-      "id": "BR-003",
-      "description": "最后使用时间",
-      "rule": "当项目被设为活动时，自动更新其 last_used_at 为当前时间"
-    }
-  ],
-  "error_handling": {
-    "errors": [
-      {
-        "name": "DuplicateNameError",
-        "description": "项目名称重复时抛出",
-        "handling": "前端提示名称已存在"
-      },
-      {
-        "name": "NotFoundError",
-        "description": "项目不存在时抛出",
-        "handling": "前端提示项目不存在"
-      }
+  "business_rules": {
+    "invariants": [
+      "项目名称必须唯一。",
+      "项目ID格式为UUID v4，不可变。",
+      "项目名称不能为空，长度1-100字符。",
+      "项目描述可选，最大长度500字符。"
     ]
   },
-  "workflow": {
-    "steps": []
+  "error_handling": {
+    "strategy": "服务层统一捕获并分类处理业务异常和底层基础设施错误，通过标准response_format返回给调用方。对于非预期错误记录错误日志并屏蔽内部细节。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "400",
+        "name": "参数校验失败",
+        "description": "当创建/更新项目时，必要参数缺失（如创建项目缺少name）或格式不正确（如id非有效UUID），返回具体校验错误信息。"
+      },
+      {
+        "code": "404",
+        "name": "资源不存在",
+        "description": "当更新/删除项目时，指定的项目ID在存储中不存在，返回‘项目未找到’错误信息。"
+      },
+      {
+        "code": "409",
+        "name": "资源冲突",
+        "description": "当创建项目时，项目名称已存在（业务要求唯一性），返回‘项目名已存在’错误信息。"
+      },
+      {
+        "code": "500",
+        "name": "内部服务错误",
+        "description": "底层ConfigStore读取或写入JSON文件失败、数据序列化/反序列化异常、或未预期的运行时错误，记录详细错误日志，返回通用‘内部服务错误’信息。"
+      }
+    ]
   }
 }
