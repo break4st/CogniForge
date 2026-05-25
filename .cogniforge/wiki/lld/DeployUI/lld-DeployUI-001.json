@@ -1,0 +1,630 @@
+{
+  "meta": {
+    "doc_id": "lld-DeployUI-001",
+    "type": "lld",
+    "module_type": "frontend",
+    "module": "DeployUI",
+    "title": "DeployUI 详细设计文档",
+    "author": "design_agent",
+    "created": "2024-01-15T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-004"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-012"
+      ],
+      "contracts": [
+        "CTR-009"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "部署模态框的显示与关闭控制",
+      "文件选择/拖拽交互",
+      "部署 API 调用(上传文件并获取 deploy_id)",
+      "WebSocket 连接建立与进度消息解析",
+      "进度步骤的界面渲染",
+      "错误信息的格式化与高亮显示",
+      "部署过程中的用户操作(取消、重试等)"
+    ],
+    "out_of_scope": [
+      "环境管理页面的其他功能(如环境配置、监控)",
+      "部署任务的真实执行逻辑(由 DeploymentService 处理)",
+      "部署历史记录的管理",
+      "项目管理、密钥管理等功能"
+    ],
+    "owned_components": [
+      "CMP-012"
+    ],
+    "owned_contracts": [],
+    "consumed_contracts": [
+      "CTR-009"
+    ],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "部署入口的模态框组件，作为环境管理页面的一部分，为用户提供文件选择/拖拽、部署触发及实时进度展示功能。",
+    "dependencies": [
+      "DeploymentService"
+    ],
+    "tech_stack": [
+      "React 18",
+      "Ant Design"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-004",
+      "sad_component_ids": [
+        "CMP-012"
+      ],
+      "sad_contract_ids": [
+        "CTR-009"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002"
+        ],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": "部署入口 UI 实现"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "DeployProgress",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "描述从 WebSocket 接收的进度快照",
+      "fields": [
+        {
+          "name": "deploy_id",
+          "type": "number",
+          "required": true,
+          "description": "部署任务 ID"
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "required": true,
+          "description": "部署状态,如 running, completed, failed"
+        },
+        {
+          "name": "current_step",
+          "type": "number",
+          "required": true,
+          "description": "当前步骤序号"
+        },
+        {
+          "name": "total_steps",
+          "type": "number",
+          "required": true,
+          "description": "总步骤数"
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "required": false,
+          "description": "步骤描述消息"
+        },
+        {
+          "name": "error",
+          "type": "ErrorInfo",
+          "required": false,
+          "description": "错误信息,仅当 status 为 failed 时存在"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-012"
+      ],
+      "source_contracts": [
+        "CTR-009"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "WebSocket 推送进度时创建",
+        "update": "每次收到新的进度消息更新字段",
+        "delete": "组件卸载或部署完成后清除",
+        "retention": "不持久化"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "ErrorInfo",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "标准化的错误表示",
+      "fields": [
+        {
+          "name": "code",
+          "type": "string",
+          "required": true,
+          "description": "错误码,如 DISK_SPACE_LOW"
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "required": true,
+          "description": "错误简要描述"
+        },
+        {
+          "name": "detail",
+          "type": "string",
+          "required": false,
+          "description": "详细错误说明"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-012"
+      ],
+      "source_contracts": [
+        "CTR-009"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "请求失败或 WebSocket 错误时创建",
+        "update": "不可变",
+        "delete": "错误解决后清除",
+        "retention": "不持久化"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "开始部署",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-009",
+      "provider_component_id": "CMP-014",
+      "method": "POST",
+      "endpoint": "/api/environments/{environment_id}/deploy",
+      "description": "发起部署任务,接受部署文件并返回部署 ID,实际流程异步执行,通过 WebSocket 推送进度",
+      "parameters": [
+        {
+          "name": "environment_id",
+          "type": "integer",
+          "in": "path",
+          "required": true,
+          "description": "目标环境 ID"
+        },
+        {
+          "name": "file",
+          "type": "file",
+          "in": "body",
+          "required": true,
+          "description": "部署文件"
+        }
+      ],
+      "request_body": {
+        "file": {
+          "type": "file",
+          "required": true
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "deploy_id": "integer",
+          "status": "processing"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "DISK_SPACE_LOW",
+          "message": "远程磁盘空间不足,阻止部署"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [
+        "文件大小限制(如 100MB)",
+        "文件类型校验(.zip)"
+      ],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "部署进度推送",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-009",
+      "provider_component_id": "CMP-014",
+      "method": "WS",
+      "endpoint": "/ws/deploy/{deploy_id}",
+      "description": "通过 WebSocket 实时推送部署进度信息",
+      "parameters": [
+        {
+          "name": "deploy_id",
+          "type": "integer",
+          "in": "path",
+          "required": true,
+          "description": "部署任务 ID"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 101,
+        "body": {
+          "current_step": "integer",
+          "total_steps": "integer",
+          "message": "string",
+          "status": "string"
+        }
+      },
+      "error_codes": [],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "所有 API 错误按后端约定格式 {code: integer, error: \"string\", detail: \"string\"} 解析,并映射为用户可读的中文提示。WebSocket 异常采用重连加降级提示的方式,部署关键错误直接阻断流程并高亮显示。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "4xx",
+        "name": "客户端错误",
+        "description": "如文件类型错误、磁盘空间不足等,在模态框内展示具体错误信息,禁止继续部署"
+      },
+      {
+        "code": "5xx",
+        "name": "服务端错误",
+        "description": "提示「服务器繁忙,请稍后重试」,保留重试入口"
+      },
+      {
+        "code": "WebSocket",
+        "name": "WebSocket 连接错误",
+        "description": "连接断开自动重试 3 次(间隔 2 秒),仍失败则提示连接异常,停止进度动画,允许用户手动刷新状态"
+      }
+    ]
+  },
+  "component_tree": [
+    {
+      "name": "DeployModal",
+      "path": "环境详情页内嵌模态框",
+      "description": "模态框外壳,管理部署生命周期状态,协调子组件通信",
+      "props": [
+        {
+          "name": "visible",
+          "type": "boolean",
+          "required": true,
+          "description": "控制显隐"
+        },
+        {
+          "name": "environmentId",
+          "type": "number",
+          "required": true,
+          "description": "目标环境 ID"
+        },
+        {
+          "name": "onClose",
+          "type": "function",
+          "required": true,
+          "description": "关闭回调"
+        }
+      ],
+      "events": [
+        {
+          "name": "onDeploySuccess",
+          "payload_type": "{ deploy_id: number }"
+        },
+        {
+          "name": "onDeployError",
+          "payload_type": "ErrorInfo"
+        }
+      ],
+      "state": [
+        {
+          "name": "phase",
+          "type": "string",
+          "description": "阶段: idle / uploading / deploying / completed / failed"
+        },
+        {
+          "name": "file",
+          "type": "File / null",
+          "description": "选中的文件对象"
+        },
+        {
+          "name": "progress",
+          "type": "DeployProgress / null",
+          "description": "部署进度"
+        },
+        {
+          "name": "error",
+          "type": "ErrorInfo / null",
+          "description": "错误信息"
+        },
+        {
+          "name": "ws",
+          "type": "WebSocket / null",
+          "description": "WebSocket 实例引用"
+        }
+      ],
+      "behavior": [
+        "打开模态框后焦点自动落于文件上传区域",
+        "用户点击「开始部署」:校验文件,发起 POST 请求上传,phase 变为 uploading",
+        "上传成功返回 deploy_id 后,建立 WebSocket 连接,phase 变为 deploying",
+        "收到 WebSocket 消息更新 progress,直至 status 变为 completed 或 failed,对应 phase 切换",
+        "部署完成后 3 秒自动关闭模态框,并回调 onClose / onDeploySuccess",
+        "任何环节出错设置 error 并切换 phase 到 failed"
+      ],
+      "edge_cases": [
+        "文件大小超过前端限制(100MB):提示「文件过大,请压缩后重试」,阻止提交",
+        "部署过程中用户强行关闭模态框:弹出确认对话框,确认后断开 WebSocket 并重置状态",
+        "短时间内重复打开模态框:重置内部状态,允许重新部署",
+        "WebSocket 断线重连失败后,保留最后进度,并显示「连接已中断,部署可能仍在后台执行」"
+      ],
+      "children": [
+        {
+          "name": "FileUploader",
+          "path": "DeployModal 的子组件",
+          "description": "提供文件拖放和点击选择功能,并反馈选中文件名",
+          "props": [
+            {
+              "name": "onChange",
+              "type": "function",
+              "required": true,
+              "description": "文件变更回调,传递 File 对象"
+            },
+            {
+              "name": "disabled",
+              "type": "boolean",
+              "required": false,
+              "description": "禁用状态"
+            },
+            {
+              "name": "accept",
+              "type": "string",
+              "required": false,
+              "description": "允许的文件类型,如 .zip"
+            }
+          ],
+          "events": [
+            {
+              "name": "onDragEnter",
+              "payload_type": "none"
+            },
+            {
+              "name": "onDragLeave",
+              "payload_type": "none"
+            }
+          ],
+          "state": [
+            {
+              "name": "dragOver",
+              "type": "boolean",
+              "description": "当前拖拽悬停态"
+            },
+            {
+              "name": "fileName",
+              "type": "string / null",
+              "description": "选中文件名"
+            }
+          ],
+          "behavior": [
+            "支持 HTML5 drag & drop 及 input[type=file] 点击选择",
+            "拖拽文件到区域时高亮边框,离开时恢复",
+            "选择/放置文件后,读取 File 对象并通过 onChange 向上传递,同时显示文件名",
+            "当处于 disabled 状态时,禁止所有交互"
+          ],
+          "edge_cases": [
+            "用户拖拽多个文件:仅取第一个文件,忽略其余并提示「一次只能部署一个文件」",
+            "选择的文件类型不符合 accept:由浏览器原生筛选过滤,同时前端二次校验,显示「文件类型不支持」提示",
+            "拖拽区域与模态框滚动/点击无冲突(阻止事件冒泡)"
+          ],
+          "children": []
+        },
+        {
+          "name": "ProgressDisplay",
+          "path": "DeployModal 的子组件",
+          "description": "以步骤条形式展示部署进度,实时反映当前状态",
+          "props": [
+            {
+              "name": "progress",
+              "type": "DeployProgress",
+              "required": true,
+              "description": "包含部署步骤信息"
+            },
+            {
+              "name": "phase",
+              "type": "string",
+              "required": true,
+              "description": "部署阶段"
+            }
+          ],
+          "events": [],
+          "state": [],
+          "behavior": [
+            "使用 Ant Design Steps 组件渲染步骤列表,current_step 控制当前激活步骤",
+            "每个步骤展示名称(如「校验环境」「上传文件」「执行部署」「更新版本」)和状态(wait/process/finish/error)",
+            "当 phase 为 failed 且 progress.error 存在时,对应步骤标记为错误,并在步骤下显示错误详情",
+            "progress.message 实时显示在步骤条下方区域"
+          ],
+          "edge_cases": [
+            "如果 WebSocket 推送的步骤数量与前端预设步骤数不一致,以推送为准并动态调整步骤条",
+            "部署已完成但 progress.status 未及时更新,保持最后状态,不重复标记"
+          ],
+          "children": []
+        },
+        {
+          "name": "ErrorDisplay",
+          "path": "DeployModal 的子组件",
+          "description": "当部署过程中出现错误时,高亮显示错误信息,并允许关闭或重试",
+          "props": [
+            {
+              "name": "error",
+              "type": "ErrorInfo / null",
+              "required": true,
+              "description": "错误信息"
+            },
+            {
+              "name": "onRetry",
+              "type": "function",
+              "required": false,
+              "description": "重试回调"
+            },
+            {
+              "name": "onClose",
+              "type": "function",
+              "required": false,
+              "description": "关闭错误提示"
+            }
+          ],
+          "events": [],
+          "state": [],
+          "behavior": [
+            "当 error 不为 null 时,以 Ant Design Alert 或 Result 呈现,包含错误码、详情,并提供关闭按钮",
+            "如果错误可重试(如网络错误),提供「重试」按钮调用 onRetry",
+            "错误消失后,父组件需重置相关状态"
+          ],
+          "edge_cases": [
+            "连续出现多个错误:只显示最近一个,旧的自动清除",
+            "用户主动关闭错误后,允许其手动重新部署,不清除文件选择"
+          ],
+          "children": []
+        }
+      ]
+    }
+  ],
+  "state_design": {
+    "global": [],
+    "caching_strategy": "不缓存,模态框关闭后状态清空"
+  },
+  "route_design": [],
+  "interaction_flows": [
+    {
+      "name": "上传并部署文件",
+      "description": "用户触发部署的主要流程",
+      "steps": [
+        "步骤1: 用户在环境详情页点击「部署」按钮,调用父组件方法显示 DeployModal",
+        "步骤2: 模态框展示 FileUploader,用户将 .zip 文件拖入区域或点击选择",
+        "步骤3: 文件验证后,下方显示文件名,用户点击「开始部署」",
+        "步骤4: 前端通过 POST /api/environments/{environment_id}/deploy 发送文件,请求头 Content-Type: multipart/form-data",
+        "步骤5: 接口响应 202,返回 {deploy_id: xxx, status: processing}",
+        "步骤6: 立即建立 WebSocket 连接至 /ws/deploy/{deploy_id},并切换到 ProgressDisplay 视图",
+        "步骤7: WebSocket 逐条推送进度消息,格式预期为 {current_step, total_steps, message, status},客户端更新步骤条",
+        "步骤8: 最终推送 status: completed,模态框提示部署成功,3 秒后自动关闭,环境详情页刷新数据",
+        "步骤9: 若推送 status: failed 并携带 error,ErrorDisplay 高亮错误,部署流程终止"
+      ]
+    },
+    {
+      "name": "上传失败",
+      "description": "部署文件上传阶段发生错误",
+      "steps": [
+        "步骤1: POST 请求返回 4xx(如 400 DISK_SPACE_LOW)",
+        "步骤2: 前端解析错误体,ErrorDisplay 展示「磁盘空间不足」,阻止后续步骤",
+        "步骤3: 用户可关闭错误提示,重新选择文件或关闭模态框"
+      ]
+    },
+    {
+      "name": "WebSocket 中断",
+      "description": "部署过程中 WebSocket 连接意外断开",
+      "steps": [
+        "步骤1: 部署过程中 WebSocket 连接意外断开",
+        "步骤2: 前端尝试自动重连(最多 3 次),期间保留当前进度显示",
+        "步骤3: 重连成功则继续接收消息;失败则显示「实时进度连接丢失」,但不影响后台实际部署,用户可稍后手动查看结果"
+      ]
+    }
+  ],
+  "api_integration": [
+    {
+      "page": "DeployModal",
+      "endpoint": "POST /api/environments/{environment_id}/deploy",
+      "maps_to": "DeployModal 内部发起,传入文件进行上传"
+    },
+    {
+      "page": "DeployModal",
+      "endpoint": "ws://<host>/ws/deploy/{deploy_id}",
+      "maps_to": "DeployModal 内部建立 WebSocket 连接,接收进度并更新 ProgressDisplay"
+    }
+  ]
+}
