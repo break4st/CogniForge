@@ -1,533 +1,327 @@
 {
   "meta": {
     "doc_id": "lld-DeploymentService-001",
+    "title": "DeploymentService 低层设计文档",
+    "author": "System",
+    "created": "2025-04-07",
     "type": "lld",
-    "module_type": "service",
     "module": "DeploymentService",
-    "title": "DeploymentService 详细设计文档",
-    "author": "design_agent",
-    "created": "2025-03-27T08:00:00Z",
-    "version": 1,
-    "status": "active"
+    "module_type": "service",
+    "version": 1
   },
   "source": {
     "prd": {
-      "doc_id": "prd-current",
-      "version": 1,
-      "requirements": [
-        "REQ-003"
-      ]
+      "doc_id": "prd-EasyDeploy-001",
+      "version": 1
     },
     "sad": {
-      "doc_id": "sad-001",
-      "version": 1,
-      "components": [
-        "CMP-103"
+      "doc_id": "sad-EasyDeploy-001",
+      "version": 1
+    }
+  },
+  "overview": {
+    "description": "DeploymentService 负责编排部署流程，包括创建版本目录、上传文件、执行脚本和更新软链接，并通过 IPC 推送实时日志。"
+  },
+  "lld_objects": {
+    "deployment_executor": {
+      "type": "deployment_executor",
+      "functions": [
+        {
+          "name": "executeDeploy",
+          "description": "执行部署流程：创建目录、上传文件、生成脚本、执行前后脚本、更新软链接",
+          "parameters": {
+            "request": "DeployExecuteRequest"
+          },
+          "returns": "DeployExecuteResponse",
+          "implementation": "依次调用内部步骤，捕获异常并转换为统一错误响应",
+          "errors": [
+            "SSH_CONNECTION_FAILED",
+            "SFTP_TRANSFER_FAILED",
+            "SCRIPT_EXECUTION_FAILED",
+            "DIRECTORY_OPERATION_FAILED",
+            "INVALID_REQUEST",
+            "ENV_CONFIG_UNAVAILABLE"
+          ]
+        }
       ],
-      "contracts": [
-        "CTR-005"
+      "dependencies": [
+        "CryptoService",
+        "EnvironmentService",
+        "SshClient"
       ],
-      "data_models": []
+      "methods": {
+        "createVersionDir": {
+          "name": "createVersionDir",
+          "description": "在目标服务器创建带时间戳的版本目录",
+          "parameters": {
+            "path": "string",
+            "timestamp": "string"
+          },
+          "returns": "string"
+        },
+        "uploadPackage": {
+          "name": "uploadPackage",
+          "description": "将部署包上传到目标目录",
+          "parameters": {
+            "localPath": "string",
+            "remotePath": "string"
+          },
+          "returns": "void"
+        },
+        "executeScript": {
+          "name": "executeScript",
+          "description": "执行指定脚本",
+          "parameters": {
+            "script": "string",
+            "cwd": "string"
+          },
+          "returns": "ScriptExecutionResult"
+        },
+        "updateSymlink": {
+          "name": "updateSymlink",
+          "description": "更新符号链接指向新版本目录",
+          "parameters": {
+            "target": "string",
+            "link": "string"
+          },
+          "returns": "void"
+        }
+      },
+      "events": [
+        {
+          "name": "deploy:log",
+          "description": "推送实时部署日志",
+          "payload": {
+            "message": "string",
+            "level": "string"
+          }
+        }
+      ]
+    }
+  },
+  "data_models": {
+    "DeploymentConfigView": {
+      "type": "object",
+      "description": "部署配置视图，包含脚本内容和密钥引用",
+      "fields": {
+        "preScript": {
+          "type": "string",
+          "description": "前置脚本内容"
+        },
+        "postScript": {
+          "type": "string",
+          "description": "后置脚本内容"
+        },
+        "secretRefs": {
+          "type": "array",
+          "description": "敏感信息引用列表",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     },
-    "pm_turn_id": "",
-    "se_turn_id": ""
+    "ScriptExecutionResult": {
+      "type": "object",
+      "description": "脚本执行结果",
+      "fields": {
+        "exitCode": {
+          "type": "integer",
+          "description": "退出码"
+        },
+        "stdout": {
+          "type": "string",
+          "description": "标准输出"
+        },
+        "stderr": {
+          "type": "string",
+          "description": "标准错误"
+        }
+      }
+    },
+    "ErrorResponse": {
+      "type": "object",
+      "description": "统一错误响应格式",
+      "fields": {
+        "code": {
+          "type": "integer",
+          "description": "错误码"
+        },
+        "error": {
+          "type": "string",
+          "description": "错误类型"
+        },
+        "detail": {
+          "type": "string",
+          "description": "错误详情"
+        }
+      }
+    }
+  },
+  "domain_objects": {
+    "Deployment": {
+      "description": "部署领域对象，封装单次部署的上下文",
+      "attributes": {
+        "environmentId": "string",
+        "packageId": "string",
+        "config": "DeploymentConfigView",
+        "versionDir": "string"
+      }
+    },
+    "DeployLog": {
+      "description": "部署日志事件对象",
+      "attributes": {
+        "message": "string",
+        "level": "string",
+        "timestamp": "string"
+      }
+    }
+  },
+  "service_contracts": {
+    "DeploymentExecutorContract": {
+      "interface_id": "IF-001",
+      "description": "部署执行契约，定义同步请求/响应",
+      "preconditions": [
+        "环境ID有效且已配置SSH凭据",
+        "项目包路径可访问且校验和正确"
+      ],
+      "postconditions": [
+        "版本目录已创建",
+        "文件已上传",
+        "脚本已执行",
+        "软链接已更新或回滚"
+      ]
+    },
+    "DeployLogContract": {
+      "interface_id": "IF-002",
+      "description": "部署日志事件契约，定义异步事件推送",
+      "preconditions": [],
+      "postconditions": [
+        "日志事件已成功推送到订阅者"
+      ]
+    }
+  },
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "DeployExecuteRequest",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "ipc://deploy:execute",
+      "description": "接收来自 UI 的部署请求，包含目标环境ID、项目包路径及部署配置。",
+      "parameters": [],
+      "request_body": {
+        "environmentId": "string",
+        "packageId": "string",
+        "config": "DeploymentConfigView"
+      },
+      "response": {
+        "success": "boolean",
+        "versionDir": "string",
+        "message": "string",
+        "body": {
+          "versionDir": "string",
+          "message": "string"
+        }
+      },
+      "error_codes": [
+        "4001",
+        "4002",
+        "5001",
+        "5002",
+        "5003",
+        "5004"
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "DeployLogEvent",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-002",
+      "provider_component_id": "CMP-001",
+      "method": "EVENT",
+      "endpoint": "ipc://deploy:log",
+      "description": "推送实时部署日志到渲染进程。",
+      "parameters": [],
+      "request_body": {},
+      "response": {
+        "message": "string",
+        "level": "string",
+        "timestamp": "string",
+        "body": {
+          "message": "string",
+          "level": "string",
+          "timestamp": "string"
+        }
+      },
+      "error_codes": []
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "部署流程必须按顺序执行：创建版本目录 -> 上传文件 -> 执行前置脚本 -> 更新软链接 -> 执行后置脚本",
+      "版本目录名称格式为：项目名_版本_时间戳",
+      "部署包上传前必须校验MD5或SHA256值与前端传入值一致",
+      "脚本执行失败（非零返回码）必须立即终止部署并回滚（可选）",
+      "软链接更新必须原子操作（先创建临时链接，再原子替换）",
+      "所有远程操作必须通过SSH连接，且连接超时设为10秒"
+    ]
   },
   "module_boundary": {
     "in_scope": [
-      "全生命周期部署流程编排：解析请求 → 获取环境凭据 → 建立 SSH 连接 → 创建远程版本目录 → 上传文件并校验 → 生成启停脚本 → 执行前置脚本 → 更新 current 软链 → 执行后置脚本 → 记录结果",
-      "部署失败时的远程资源清理与错误状态持久化",
-      "部署记录的创建与状态更新"
+      "编排部署步骤：目录创建、文件上传、脚本生成、前后脚本执行、软链更新",
+      "生成时间戳版本目录名",
+      "通过 node-ssh 与远程服务器交互（SFTP/SSH）",
+      "从 EnvironmentService 获取解密后的环境配置",
+      "根据模板生成 start.sh 并赋予执行权限",
+      "调用 CryptoService 解密敏感信息",
+      "推送实时部署日志（通过 IPC 事件）",
+      "返回部署结果（成功/失败、版本目录名）"
     ],
     "out_of_scope": [
-      "SSH 连接的底层实现",
-      "环境配置的存储与解密",
-      "具体日志推送机制管理",
-      "部署历史页面的回滚逻辑"
-    ],
-    "owned_components": [
-      "CMP-103"
-    ],
-    "owned_contracts": [
-      "CTR-005"
-    ],
-    "consumed_contracts": [
-      "CTR-010"
-    ],
-    "owned_data_models": [
-      "DM-002"
-    ],
-    "consumed_data_models": [
-      "DM-001"
-    ]
-  },
-  "overview": {
-    "description": "处理一键部署流程：连接服务器、创建目录、上传文件、生成脚本、执行前后置脚本、更新软链接，并在失败时清理。",
-    "dependencies": [
-      "SSHService",
-      "EnvironmentService",
-      "LoggerService",
-      "DatabaseService"
-    ],
-    "tech_stack": [
-      "TypeScript (Node.js Electron main process, libraries: ssh2, node-crypto)",
-      "SQLite (via DatabaseService)"
+      "UI 渲染与用户交互（由 DeployPanel 负责）",
+      "环境配置的增删改查（由 EnvironmentService 负责）",
+      "版本历史持久化（由 VersionHistoryService 负责）",
+      "SSH 连接池管理（由 SshClient 基础设施提供）",
+      "日志存储或历史查询（由 DeploymentLogService 负责）"
     ]
   },
   "traceability": [
     {
-      "requirement_id": "REQ-003",
+      "requirement_id": "REQ-004",
+      "description": "用户应能通过 UI 触发部署流程，系统自动完成文件上传、脚本执行和软链更新，并实时显示日志。",
+      "coverage": "full",
+      "notes": "DeploymentService 的 deploy:execute 接口实现整个部署流水线，并通过 IPC 事件推送日志。",
       "sad_component_ids": [
-        "CMP-103"
+        "CMP-001"
       ],
       "sad_contract_ids": [
-        "CTR-005"
-      ],
-      "lld_objects": {
-        "data_models": [
-          "DM-001",
-          "DM-002"
-        ],
-        "interfaces": [
-          "IF-001"
-        ],
-        "domain_objects": [
-          "DO-001",
-          "DO-002",
-          "DO-003",
-          "DO-004",
-          "DO-005"
-        ],
-        "service_contracts": [
-          "SC-001"
-        ]
-      },
+        "CTR-001"
+      ]
+    },
+    {
+      "requirement_id": "REQ-005",
+      "description": "部署应支持自定义前后脚本，脚本执行输出应实时反馈给用户。",
       "coverage": "full",
-      "notes": ""
-    }
-  ],
-  "data_models": [
-    {
-      "id": "DM-001",
-      "name": "DeploymentRecord",
-      "type": "table",
-      "status": "active",
-      "version": 1,
-      "ownership": "derived",
-      "source": {
-        "doc_id": "lld-Primary Database-001",
-        "model_name": "deployment"
-      },
-      "description": "部署记录持久化实体，对应主数据库 deployment 表",
-      "fields": [
-        {
-          "name": "id",
-          "type": "string",
-          "required": true,
-          "description": "部署记录唯一标识"
-        },
-        {
-          "name": "projectId",
-          "type": "string",
-          "required": true,
-          "description": "关联项目ID"
-        },
-        {
-          "name": "environmentId",
-          "type": "string",
-          "required": true,
-          "description": "关联环境ID"
-        },
-        {
-          "name": "filePath",
-          "type": "string",
-          "required": true,
-          "description": "上传的本地文件路径"
-        },
-        {
-          "name": "version",
-          "type": "string",
-          "required": true,
-          "description": "部署版本标签"
-        },
-        {
-          "name": "status",
-          "type": "string",
-          "required": true,
-          "description": "部署状态，可选值: PENDING, IN_PROGRESS, SUCCESS, FAILED, ROLLING_BACK, ROLLED_BACK"
-        },
-        {
-          "name": "startTime",
-          "type": "datetime",
-          "required": true,
-          "description": "部署开始时间"
-        },
-        {
-          "name": "endTime",
-          "type": "datetime",
-          "required": false,
-          "description": "部署结束时间，允许为空"
-        },
-        {
-          "name": "errorMessage",
-          "type": "string",
-          "required": false,
-          "description": "失败时的错误详情"
-        }
+      "notes": "deploy 方法在执行前/后脚本时，通过 SshClient 流式获取输出，并转换为 IPC 日志事件。",
+      "sad_component_ids": [
+        "CMP-001"
       ],
-      "source_requirements": [
-        "REQ-003"
-      ],
-      "constraints": [
-        "status 必须属于预定义枚举值: PENDING, IN_PROGRESS, SUCCESS, FAILED, ROLLING_BACK, ROLLED_BACK",
-        "projectId 和 environmentId 组合必须存在",
-        "同一项目同一环境不能有多个 IN_PROGRESS 状态的记录"
-      ],
-      "lifecycle": {
-        "create": "INSERT 新部署记录，初始状态 PENDING",
-        "update": "UPDATE status、endTime、errorMessage",
-        "delete": "不直接删除，仅状态标记为 FAILED",
-        "retention": "持久保留所有记录"
-      }
-    },
-    {
-      "id": "DM-002",
-      "name": "DeploymentConfig",
-      "type": "config",
-      "status": "active",
-      "version": 1,
-      "ownership": "owned",
-      "description": "部署流程内部配置，不可持久化",
-      "fields": [
-        {
-          "name": "maxRetries",
-          "type": "int",
-          "required": true,
-          "description": "SSH命令最大重试次数"
-        },
-        {
-          "name": "retryIntervalMs",
-          "type": "int",
-          "required": true,
-          "description": "重试间隔毫秒"
-        },
-        {
-          "name": "md5CheckEnabled",
-          "type": "boolean",
-          "required": true,
-          "description": "是否启用MD5校验"
-        },
-        {
-          "name": "scriptTemplates",
-          "type": "object",
-          "required": true,
-          "description": "管理脚本模板，包含start.sh等键值对"
-        }
-      ],
-      "source_requirements": [
-        "REQ-003"
-      ],
-      "constraints": [
-        "maxRetries 默认3",
-        "retryIntervalMs 默认5000",
-        "md5CheckEnabled 默认true"
-      ],
-      "lifecycle": {
-        "create": "在服务初始化时加载默认配置",
-        "update": "可通过管理接口动态调整",
-        "delete": "不可删除"
-      }
-    }
-  ],
-  "domain_objects": [
-    {
-      "id": "DO-001",
-      "name": "DeploymentRequest",
-      "object_type": "dto",
-      "description": "部署请求输入值对象",
-      "fields": [
-        {
-          "name": "projectId",
-          "type": "string",
-          "required": true,
-          "description": "项目ID"
-        },
-        {
-          "name": "environmentId",
-          "type": "string",
-          "required": true,
-          "description": "环境ID"
-        },
-        {
-          "name": "filePath",
-          "type": "string",
-          "required": true,
-          "description": "要部署的本地文件路径"
-        },
-        {
-          "name": "version",
-          "type": "string",
-          "required": true,
-          "description": "版本标签"
-        }
-      ]
-    },
-    {
-      "id": "DO-002",
-      "name": "DeploymentResult",
-      "object_type": "dto",
-      "description": "部署结果输出值对象",
-      "fields": [
-        {
-          "name": "deploymentId",
-          "type": "string",
-          "required": true,
-          "description": "部署记录ID"
-        },
-        {
-          "name": "status",
-          "type": "string",
-          "required": true,
-          "description": "最终状态"
-        },
-        {
-          "name": "errorMessage",
-          "type": "string",
-          "required": false,
-          "description": "错误信息"
-        }
-      ]
-    },
-    {
-      "id": "DO-003",
-      "name": "SshConnection",
-      "object_type": "entity",
-      "description": "SSH连接封装对象",
-      "fields": [
-        {
-          "name": "host",
-          "type": "string",
-          "required": true,
-          "description": "主机地址"
-        },
-        {
-          "name": "port",
-          "type": "number",
-          "required": true,
-          "description": "端口"
-        },
-        {
-          "name": "username",
-          "type": "string",
-          "required": true,
-          "description": "用户名"
-        },
-        {
-          "name": "client",
-          "type": "Client",
-          "required": true,
-          "description": "SSH2客户端实例"
-        }
-      ]
-    },
-    {
-      "id": "DO-004",
-      "name": "RemoteDirectory",
-      "object_type": "value_object",
-      "description": "远程目录信息",
-      "fields": [
-        {
-          "name": "basePath",
-          "type": "string",
-          "required": true,
-          "description": "部署根路径"
-        },
-        {
-          "name": "versionDir",
-          "type": "string",
-          "required": true,
-          "description": "版本目录名称，格式 versions/{version}_{timestamp}"
-        },
-        {
-          "name": "currentLink",
-          "type": "string",
-          "required": true,
-          "description": "current 软链接名称"
-        }
-      ]
-    },
-    {
-      "id": "DO-005",
-      "name": "DeploymentScript",
-      "object_type": "value_object",
-      "description": "部署脚本模板",
-      "fields": [
-        {
-          "name": "startScript",
-          "type": "string",
-          "required": true,
-          "description": "启动脚本内容"
-        },
-        {
-          "name": "stopScript",
-          "type": "string",
-          "required": false,
-          "description": "停止脚本内容"
-        }
+      "sad_contract_ids": [
+        "CTR-001"
       ]
     }
   ],
-  "interfaces": [
-    {
-      "id": "IF-001",
-      "name": "IDeploymentService",
-      "description": "部署服务接口",
-      "method": "startDeployment",
-      "endpoint": "/deploy/start",
-      "request": {
-        "content_type": "application/json",
-        "body": "DeploymentRequest"
-      },
-      "response": {
-        "content_type": "application/json",
-        "body": "DeploymentResult"
-      },
-      "errors": [
-        {
-          "status_code": "400",
-          "condition": "请求参数无效"
-        },
-        {
-          "status_code": "409",
-          "condition": "已有正在进行的部署"
-        },
-        {
-          "status_code": "500",
-          "condition": "部署过程异常"
-        }
-      ]
-    }
-  ],
-  "service_contracts": [
-    {
-      "id": "SC-001",
-      "name": "DeploymentServiceContract",
-      "description": "部署服务规约",
-      "methods": [
-        {
-          "name": "startDeployment",
-          "description": "启动部署流程",
-          "signature": "startDeployment(request: DeploymentRequest): Promise<DeploymentResult>",
-          "preconditions": "请求参数有效，且相同项目环境无进行中的部署",
-          "postconditions": "记录状态为 SUCCESS 或 FAILED，远程环境状态确定",
-          "parameters": [
-            {
-              "name": "request",
-              "type": "DeploymentRequest",
-              "required": true,
-              "description": "部署请求参数"
-            }
-          ],
-          "return_type": "Promise<DeploymentResult>",
-          "exceptions": [
-            {
-              "name": "InvalidRequestError",
-              "trigger": "参数校验失败时",
-              "description": "请求参数非法",
-              "type": "validation"
-            },
-            {
-              "name": "DeploymentConflictError",
-              "trigger": "存在进行中的部署时",
-              "description": "部署冲突",
-              "type": "conflict"
-            },
-            {
-              "name": "DeploymentFailedError",
-              "trigger": "任一步骤失败时",
-              "description": "部署执行失败",
-              "type": "runtime"
-            }
-          ]
-        }
-      ]
-    }
-  ],
-  "business_rules": {
-    "BR-001": {
-      "id": "BR-001",
-      "description": "同一项目同一环境不能同时进行部署",
-      "enforcement": "在 startDeployment 入口检查 DeploymentRecord 是否已有 IN_PROGRESS 记录"
-    },
-    "BR-002": {
-      "id": "BR-002",
-      "description": "部署版本目录命名规则为 versions/{version}_{timestamp}",
-      "enforcement": "在创建远程目录时使用此规则生成目录名称"
-    }
-  },
   "error_handling": {
-    "strategy": "捕获并封装为 DeploymentFailedError，记录日志，清理远程资源，更新部署记录状态",
-    "rules": [
-      {
-        "error_type": "InvalidRequestError",
-        "scenario": "参数校验失败",
-        "action": "返回 400 错误"
-      },
-      {
-        "error_type": "DeploymentConflictError",
-        "scenario": "存在进行中的部署",
-        "action": "返回 409 错误"
-      },
-      {
-        "error_type": "DeploymentFailedError",
-        "scenario": "SSH连接或命令执行失败",
-        "action": "远程清理，记录日志，更新状态为 FAILED，返回 500"
-      }
-    ]
-  },
-  "workflow": {
-    "name": "deployment_workflow",
-    "description": "一键部署主流程",
-    "steps": [
-      {
-        "name": "validate_request",
-        "action": "校验请求参数和业务规则"
-      },
-      {
-        "name": "create_deployment_record",
-        "action": "创建初始部署记录"
-      },
-      {
-        "name": "fetch_environment_credentials",
-        "action": "获取目标环境凭据"
-      },
-      {
-        "name": "establish_ssh_connection",
-        "action": "建立 SSH 连接"
-      },
-      {
-        "name": "create_remote_directory",
-        "action": "创建远程版本目录"
-      },
-      {
-        "name": "upload_file",
-        "action": "上传文件并校验"
-      },
-      {
-        "name": "generate_scripts",
-        "action": "生成启停脚本"
-      },
-      {
-        "name": "execute_pre_script",
-        "action": "执行前置脚本"
-      },
-      {
-        "name": "update_symlink",
-        "action": "更新 current 软链"
-      },
-      {
-        "name": "execute_post_script",
-        "action": "执行后置脚本"
-      }
-    ]
+    "strategy": "采用分层错误处理：部署步骤失败时捕获底层异常并转换为统一错误响应，同时通过 IPC 推送错误日志后终止流水线，确保错误信息可追溯且不泄露敏感细节。",
+    "response_format": {
+      "code": "integer",
+      "error": "string",
+      "detail": "string"
+    }
   }
 }
