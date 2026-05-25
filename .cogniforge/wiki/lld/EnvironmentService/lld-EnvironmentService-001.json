@@ -1,0 +1,851 @@
+{
+  "meta": {
+    "doc_id": "lld-EnvironmentService-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "EnvironmentService",
+    "title": "EnvironmentService 详细设计",
+    "author": "design_agent",
+    "created": "2025-03-22T10:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-002",
+        "REQ-003"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-012"
+      ],
+      "contracts": [
+        "CTR-005",
+        "CTR-006",
+        "CTR-007"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "环境配置的创建与查询（面向项目维度）",
+      "私钥/密码的加密存储（借助 EncryptionUtil）",
+      "凭证指纹的生成（私钥公钥指纹或密码哈希摘要）",
+      "提供 RESTful 接口供前端 EnvironmentManager 调用",
+      "协调测试连接流程：解密凭据 → 调用 SSHService → 更新状态 → 返回结果",
+      "校验项目存在性（通过内部调用 ProjectService 或数据库查询）"
+    ],
+    "out_of_scope": [
+      "实际的 SSH 连接、会话管理、命令执行（由 SSHService 负责）",
+      "项目本身的管理（创建、删除、列表等，由 ProjectService 负责）",
+      "前端 UI 渲染、路由、状态管理",
+      "API 网关的认证与鉴权（由 APIGateway 统一处理）",
+      "文件上传的物理存储及持久化（私钥只在内存中短暂停留，加密后即丢弃明文文件）"
+    ],
+    "owned_components": [
+      "CMP-012"
+    ],
+    "owned_contracts": [
+      "CTR-005",
+      "CTR-006",
+      "CTR-007"
+    ],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": [
+      "DM-001"
+    ]
+  },
+  "overview": {
+    "description": "管理项目下的环境配置，包括环境的 CRUD、凭证加密存储、指纹生成，以及通过协调 SSHService 完成连接测试。",
+    "dependencies": [
+      "ProjectService",
+      "SSHService",
+      "EncryptionUtil"
+    ],
+    "tech_stack": [
+      "Python 3.11",
+      "FastAPI",
+      "SQLAlchemy",
+      "SQLite",
+      "paramiko",
+      "cryptography (AES-256)"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-002",
+      "sad_component_ids": [
+        "CMP-012"
+      ],
+      "sad_contract_ids": [
+        "CTR-005",
+        "CTR-006"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003"
+        ],
+        "service_contracts": [
+          "SC-001",
+          "SC-002"
+        ]
+      },
+      "coverage": "full",
+      "notes": "覆盖环境的基本管理需求"
+    },
+    {
+      "requirement_id": "REQ-003",
+      "sad_component_ids": [
+        "CMP-012"
+      ],
+      "sad_contract_ids": [
+        "CTR-007"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-003"
+        ],
+        "domain_objects": [
+          "DO-004",
+          "DO-005"
+        ],
+        "service_contracts": [
+          "SC-003"
+        ]
+      },
+      "coverage": "full",
+      "notes": "覆盖连接测试需求"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "environments",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "environments"
+      },
+      "description": "环境配置表，存储项目关联的 SSH 连接信息和加密凭证",
+      "fields": [
+        {
+          "name": "id",
+          "type": "integer",
+          "required": true,
+          "description": "主键"
+        },
+        {
+          "name": "project_id",
+          "type": "integer",
+          "required": true,
+          "description": "所属项目 ID"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "环境名称，项目内唯一"
+        },
+        {
+          "name": "ip",
+          "type": "string",
+          "required": true,
+          "description": "SSH 主机 IP"
+        },
+        {
+          "name": "port",
+          "type": "integer",
+          "required": true,
+          "description": "SSH 端口"
+        },
+        {
+          "name": "auth_type",
+          "type": "string",
+          "required": true,
+          "description": "认证类型：password 或 key"
+        },
+        {
+          "name": "encrypted_credential",
+          "type": "text",
+          "required": true,
+          "description": "加密后的凭证：私钥或密码"
+        },
+        {
+          "name": "credential_fingerprint",
+          "type": "string",
+          "required": true,
+          "description": "凭证指纹"
+        },
+        {
+          "name": "deploy_root_path",
+          "type": "string",
+          "required": true,
+          "description": "部署根目录"
+        },
+        {
+          "name": "last_test_status",
+          "type": "string",
+          "required": true,
+          "description": "最近一次连接测试状态：unknown, success, failed"
+        },
+        {
+          "name": "created_at",
+          "type": "datetime",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "datetime",
+          "required": true,
+          "description": "更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_project_id",
+          "unique": false,
+          "columns": [
+            "project_id"
+          ]
+        },
+        {
+          "name": "uq_project_name",
+          "unique": true,
+          "columns": [
+            "project_id",
+            "name"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-002",
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-012"
+      ],
+      "source_contracts": [
+        "CTR-005",
+        "CTR-006",
+        "CTR-007"
+      ],
+      "constraints": [
+        "auth_type 必须为 'password' 或 'key'",
+        "last_test_status 必须为 'unknown', 'success', 'failed' 之一"
+      ],
+      "lifecycle": {
+        "create": "通过服务层调用 SQLAlchemy 模型创建",
+        "update": "通过服务层调用 SQLAlchemy 模型更新",
+        "delete": "通过服务层调用 SQLAlchemy 模型删除"
+      }
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "endpoint": "GET /projects/{project_id}/environments",
+      "description": "获取指定项目下的所有环境列表",
+      "parameters": [
+        {
+          "name": "project_id",
+          "in": "path",
+          "type": "integer",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ],
+      "request": {
+        "body": {
+          "required": false
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "array",
+          "items": {
+            "$ref": "#/domain_objects/DO-001"
+          }
+        },
+        "description": "成功返回环境列表"
+      },
+      "errors": [
+        {
+          "status": 404,
+          "description": "项目不存在"
+        }
+      ],
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-012"
+      ],
+      "source_contracts": [
+        "CTR-005"
+      ]
+    },
+    {
+      "id": "IF-002",
+      "endpoint": "POST /projects/{project_id}/environments",
+      "description": "在指定项目下创建新环境",
+      "parameters": [
+        {
+          "name": "project_id",
+          "in": "path",
+          "type": "integer",
+          "required": true,
+          "description": "项目 ID"
+        }
+      ],
+      "request": {
+        "body": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/domain_objects/DO-003"
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "integer",
+              "description": "新创建的环境 ID"
+            },
+            "name": {
+              "type": "string",
+              "description": "环境名称"
+            }
+          }
+        },
+        "description": "成功创建环境"
+      },
+      "errors": [
+        {
+          "status": 404,
+          "description": "项目不存在"
+        },
+        {
+          "status": 409,
+          "description": "项目内名称重复"
+        }
+      ],
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-012"
+      ],
+      "source_contracts": [
+        "CTR-006"
+      ]
+    },
+    {
+      "id": "IF-003",
+      "endpoint": "POST /environments/{environment_id}/test-connection",
+      "description": "对指定环境发起连接测试",
+      "parameters": [
+        {
+          "name": "environment_id",
+          "in": "path",
+          "type": "integer",
+          "required": true,
+          "description": "环境 ID"
+        }
+      ],
+      "request": {
+        "body": {
+          "required": false
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "description": "测试结果：success 或 failed"
+            },
+            "message": {
+              "type": "string",
+              "description": "附加信息"
+            }
+          }
+        },
+        "description": "返回测试结果"
+      },
+      "errors": [
+        {
+          "status": 404,
+          "description": "环境不存在"
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-012"
+      ],
+      "source_contracts": [
+        "CTR-007"
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "EnvironmentResponse",
+      "description": "环境列表项的响应结构",
+      "object_type": "data_transfer_object",
+      "fields": [
+        {
+          "name": "id",
+          "type": "integer",
+          "required": true,
+          "description": "环境 ID"
+        },
+        {
+          "name": "project_id",
+          "type": "integer",
+          "required": true,
+          "description": "所属项目 ID"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "环境名称"
+        },
+        {
+          "name": "ip",
+          "type": "string",
+          "required": true,
+          "description": "SSH 主机 IP"
+        },
+        {
+          "name": "port",
+          "type": "integer",
+          "required": true,
+          "description": "SSH 端口"
+        },
+        {
+          "name": "auth_type",
+          "type": "string",
+          "required": true,
+          "description": "认证类型"
+        },
+        {
+          "name": "credential_fingerprint",
+          "type": "string",
+          "required": true,
+          "description": "凭证指纹"
+        },
+        {
+          "name": "deploy_root_path",
+          "type": "string",
+          "required": true,
+          "description": "部署根目录"
+        },
+        {
+          "name": "last_test_status",
+          "type": "string",
+          "required": true,
+          "description": "最近一次连接测试状态"
+        },
+        {
+          "name": "created_at",
+          "type": "string",
+          "format": "date-time",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "string",
+          "format": "date-time",
+          "required": true,
+          "description": "更新时间"
+        }
+      ],
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-012"
+      ],
+      "source_contracts": [
+        "CTR-005"
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "EnvironmentCreateBody",
+      "description": "创建环境的请求体 (不含凭证，凭证单独通过密钥文件上传)",
+      "object_type": "data_transfer_object",
+      "fields": [
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "环境名称"
+        },
+        {
+          "name": "ip",
+          "type": "string",
+          "required": true,
+          "description": "SSH 主机 IP"
+        },
+        {
+          "name": "port",
+          "type": "integer",
+          "required": true,
+          "description": "SSH 端口"
+        },
+        {
+          "name": "auth_type",
+          "type": "string",
+          "required": true,
+          "description": "认证类型：password 或 key"
+        },
+        {
+          "name": "deploy_root_path",
+          "type": "string",
+          "required": true,
+          "description": "部署根目录"
+        }
+      ],
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-012"
+      ],
+      "source_contracts": [
+        "CTR-006"
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "EnvironmentCreateRequest",
+      "description": "创建环境的完整请求，包含基本信息和凭证文件上传",
+      "object_type": "data_transfer_object",
+      "fields": [
+        {
+          "name": "body",
+          "type": "object",
+          "required": true,
+          "description": "基本环境信息",
+          "schema": {
+            "$ref": "#/domain_objects/DO-002"
+          }
+        },
+        {
+          "name": "credential_file",
+          "type": "file",
+          "required": true,
+          "description": "凭证文件：私钥或密码文本"
+        }
+      ],
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-012"
+      ],
+      "source_contracts": [
+        "CTR-006"
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "TestConnectionResponse",
+      "description": "连接测试的响应结构",
+      "object_type": "data_transfer_object",
+      "fields": [
+        {
+          "name": "status",
+          "type": "string",
+          "required": true,
+          "description": "测试结果：success 或 failed"
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "required": false,
+          "description": "附加信息，失败时提供原因"
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-012"
+      ],
+      "source_contracts": [
+        "CTR-007"
+      ]
+    },
+    {
+      "id": "DO-005",
+      "name": "TestConnectionRequest",
+      "description": "连接测试请求，无需请求体，通过路径参数指定环境",
+      "object_type": "data_transfer_object",
+      "fields": [],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-012"
+      ],
+      "source_contracts": [
+        "CTR-007"
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "get_environments",
+      "description": "获取项目下的所有环境列表",
+      "methods": [
+        {
+          "method": "get_environments",
+          "description": "根据项目 ID 查询环境列表",
+          "parameters": [
+            {
+              "name": "project_id",
+              "type": "integer",
+              "required": true,
+              "description": "项目 ID"
+            }
+          ],
+          "return_type": "list",
+          "return_description": "环境列表，每项为 EnvironmentResponse",
+          "implementation": "查询数据库 environments 表，返回列表",
+          "source_requirements": [
+            "REQ-002"
+          ],
+          "source_components": [
+            "CMP-012"
+          ],
+          "source_contracts": [
+            "CTR-005"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-012"
+      ],
+      "source_contracts": [
+        "CTR-005"
+      ]
+    },
+    {
+      "id": "SC-002",
+      "name": "create_environment",
+      "description": "在指定项目下创建新环境",
+      "methods": [
+        {
+          "method": "create_environment",
+          "description": "创建环境并加密存储凭证",
+          "parameters": [
+            {
+              "name": "project_id",
+              "type": "integer",
+              "required": true,
+              "description": "项目 ID"
+            },
+            {
+              "name": "env_data",
+              "type": "EnvironmentCreateRequest",
+              "required": true,
+              "description": "环境创建请求数据"
+            }
+          ],
+          "return_type": "object",
+          "return_description": "包含新创建环境 ID 和名称",
+          "implementation": "校验项目存在性，加密凭证，生成指纹，写入数据库",
+          "source_requirements": [
+            "REQ-002"
+          ],
+          "source_components": [
+            "CMP-012"
+          ],
+          "source_contracts": [
+            "CTR-006"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-012"
+      ],
+      "source_contracts": [
+        "CTR-006"
+      ]
+    },
+    {
+      "id": "SC-003",
+      "name": "test_connection",
+      "description": "对指定环境执行连接测试",
+      "methods": [
+        {
+          "method": "test_connection",
+          "description": "解密凭证，调用 SSHService 测试连接，更新状态并返回结果",
+          "parameters": [
+            {
+              "name": "environment_id",
+              "type": "integer",
+              "required": true,
+              "description": "环境 ID"
+            }
+          ],
+          "return_type": "object",
+          "return_description": "TestConnectionResponse 结构",
+          "implementation": "查询环境，解密凭证，调用 SSHService.test_connection()，更新 last_test_status，返回结果",
+          "source_requirements": [
+            "REQ-003"
+          ],
+          "source_components": [
+            "CMP-012"
+          ],
+          "source_contracts": [
+            "CTR-007"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "source_components": [
+        "CMP-012"
+      ],
+      "source_contracts": [
+        "CTR-007"
+      ]
+    }
+  ],
+  "business_rules": [
+    {
+      "id": "BR-001",
+      "description": "环境名称在项目内唯一",
+      "scope": "create_environment",
+      "enforcement": "数据库唯一约束 + 应用层校验",
+      "source_requirements": [
+        "REQ-002"
+      ]
+    },
+    {
+      "id": "BR-002",
+      "description": "创建环境时必须提供有效的凭证文件",
+      "scope": "create_environment",
+      "enforcement": "接口参数校验",
+      "source_requirements": [
+        "REQ-002"
+      ]
+    },
+    {
+      "id": "BR-003",
+      "description": "连接测试更新环境状态",
+      "scope": "test_connection",
+      "enforcement": "服务方法实现",
+      "source_requirements": [
+        "REQ-003"
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "面向切面的统一异常处理，基于 FastAPI 的异常处理器和自定义异常类。",
+    "error_catalog": [
+      {
+        "code": "PROJECT_NOT_FOUND",
+        "http_status": 404,
+        "message_template": "Project with ID {project_id} not found",
+        "scenarios": [
+          "创建环境时项目不存在",
+          "查询环境列表时项目不存在"
+        ]
+      },
+      {
+        "code": "ENVIRONMENT_NOT_FOUND",
+        "http_status": 404,
+        "message_template": "Environment with ID {environment_id} not found",
+        "scenarios": [
+          "连接测试时环境 ID 无效"
+        ]
+      },
+      {
+        "code": "DUPLICATE_ENVIRONMENT_NAME",
+        "http_status": 409,
+        "message_template": "Environment name '{name}' already exists in project {project_id}",
+        "scenarios": [
+          "创建环境时名称重复"
+        ]
+      },
+      {
+        "code": "CREDENTIAL_ENCRYPTION_ERROR",
+        "http_status": 500,
+        "message_template": "Failed to encrypt credential",
+        "scenarios": [
+          "加密凭证时出现内部错误"
+        ]
+      },
+      {
+        "code": "SSH_CONNECTION_ERROR",
+        "http_status": 502,
+        "message_template": "SSH connection failed: {reason}",
+        "scenarios": [
+          "连接测试中 SSH 连接失败"
+        ]
+      }
+    ],
+    "recovery_mechanisms": {
+      "transaction_rollback": true,
+      "circuit_breaker": false,
+      "retry": false
+    },
+    "source_requirements": [
+      "REQ-002",
+      "REQ-003"
+    ]
+  }
+}
