@@ -1,0 +1,783 @@
+{
+  "meta": {
+    "doc_id": "lld-SSH-SFTP-Client-001",
+    "type": "lld",
+    "module_type": "infrastructure",
+    "module": "SSH/SFTP 客户端",
+    "title": "SSH/SFTP 客户端详细设计文档",
+    "author": "design_agent",
+    "created": "2025-03-27T10:30:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-001"
+      ],
+      "contracts": [
+        "CTR-001"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "SSH 会话生命周期管理",
+      "远程命令执行",
+      "SFTP 文件上传与下载",
+      "实时进度事件",
+      "连接超时与重试处理"
+    ],
+    "out_of_scope": [
+      "部署任务编排",
+      "凭据加密",
+      "UI 交互",
+      "状态持久化"
+    ],
+    "owned_components": [
+      "CMP-001"
+    ],
+    "owned_contracts": [],
+    "consumed_contracts": [],
+    "owned_data_models": [
+      "DM-001",
+      "DM-002",
+      "DM-003"
+    ],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "封装 ssh2 和 ssh2-sftp-client 库，提供 SSH 连接、命令执行和 SFTP 文件传输能力，支持进度回调、超时和重试。",
+    "dependencies": [],
+    "tech_stack": [
+      "TypeScript",
+      "Node.js",
+      "ssh2",
+      "ssh2-sftp-client",
+      "winston"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [
+        "CTR-001"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002",
+          "DM-003"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002",
+          "IF-003",
+          "IF-004",
+          "IF-005"
+        ],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": "基础设施模块，无业务契约，仅内部接口"
+    }
+  ],
+  "topology": {
+    "exchanges": [],
+    "namespaces": [
+      "SSH-Client"
+    ],
+    "buckets": [],
+    "description": "SSH 客户端模块内部接口拓扑，所有接口属于同一命名空间"
+  },
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "SSHConnectionConfig",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "SSH 连接配置参数",
+      "fields": [
+        {
+          "name": "host",
+          "type": "string",
+          "required": true,
+          "description": "远程主机 IP 或域名"
+        },
+        {
+          "name": "port",
+          "type": "number",
+          "required": true,
+          "description": "SSH 端口，默认 22"
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "required": true,
+          "description": "登录用户名"
+        },
+        {
+          "name": "password",
+          "type": "string",
+          "required": false,
+          "description": "密码认证时使用"
+        },
+        {
+          "name": "privateKey",
+          "type": "string",
+          "required": false,
+          "description": "私钥内容（PEM 格式），用于密钥认证"
+        },
+        {
+          "name": "passphrase",
+          "type": "string",
+          "required": false,
+          "description": "私钥密码"
+        },
+        {
+          "name": "connectTimeout",
+          "type": "number",
+          "required": false,
+          "description": "连接超时毫秒数，默认 10000"
+        },
+        {
+          "name": "readyTimeout",
+          "type": "number",
+          "required": false,
+          "description": "等待 SSH 协议就绪超时毫秒，默认 20000"
+        },
+        {
+          "name": "keepaliveInterval",
+          "type": "number",
+          "required": false,
+          "description": "心跳间隔毫秒，默认 0 表示不开启"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "调用方实例化 SshClient 时传入",
+        "update": "不可变",
+        "delete": "方法调用结束后由 GC 回收",
+        "retention": "不适用"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建 SSH 连接配置结构",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "SSHCommandResult",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "命令执行结果",
+      "fields": [
+        {
+          "name": "stdout",
+          "type": "string",
+          "required": true,
+          "description": "命令标准输出"
+        },
+        {
+          "name": "stderr",
+          "type": "string",
+          "required": true,
+          "description": "错误输出"
+        },
+        {
+          "name": "exitCode",
+          "type": "number | null",
+          "required": false,
+          "description": "进程退出码，可能为空（如超时强制终止）"
+        },
+        {
+          "name": "signal",
+          "type": "string | null",
+          "required": false,
+          "description": "若被信号终止，记录信号名"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "exec 方法返回实例",
+        "update": "不可变",
+        "delete": "方法调用结束后由 GC 回收",
+        "retention": "不适用"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建命令执行结果结构",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-003",
+      "name": "ProgressEvent",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "SFTP 传输进度事件",
+      "fields": [
+        {
+          "name": "transferred",
+          "type": "number",
+          "required": true,
+          "description": "已传输字节数"
+        },
+        {
+          "name": "total",
+          "type": "number",
+          "required": true,
+          "description": "总字节数"
+        },
+        {
+          "name": "percent",
+          "type": "number",
+          "required": false,
+          "description": "完成百分比"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001"
+      ],
+      "source_components": [
+        "CMP-001"
+      ],
+      "source_contracts": [
+        "CTR-001"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "由传输过程产生，通过事件回调传递",
+        "update": "不可变",
+        "delete": "事件处理后由 GC 回收",
+        "retention": "不适用"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建进度事件结构",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "ISshClient",
+      "type": "service",
+      "description": "SSH 客户端主接口，提供连接、断开、命令执行",
+      "method": "混合",
+      "endpoint": {
+        "uri": "",
+        "protocol": "in-process",
+        "authentication": "none",
+        "rate_limiting": "none"
+      },
+      "request": {
+        "headers": {},
+        "parameters": {},
+        "body": {}
+      },
+      "response": {
+        "headers": {},
+        "status_codes": {},
+        "body": {
+          "description": "返回 Promise<SSHCommandResult> 或 void",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "stdout": {
+                "type": "string"
+              },
+              "stderr": {
+                "type": "string"
+              },
+              "exitCode": {
+                "type": "number",
+                "nullable": true
+              },
+              "signal": {
+                "type": "string",
+                "nullable": true
+              }
+            }
+          },
+          "examples": []
+        }
+      },
+      "contract_id": "",
+      "methods": [
+        {
+          "name": "connect",
+          "description": "建立 SSH 连接",
+          "parameters": [
+            {
+              "name": "config",
+              "type": "SSHConnectionConfig",
+              "required": true,
+              "description": "连接配置"
+            }
+          ],
+          "return_type": "Promise<void>",
+          "throws": ["SSHConnectionError", "SSHAuthenticationError"],
+          "async": true,
+          "idempotency": false
+        },
+        {
+          "name": "disconnect",
+          "description": "断开 SSH 连接",
+          "parameters": [],
+          "return_type": "Promise<void>",
+          "throws": ["SSHDisconnectError"],
+          "async": true,
+          "idempotency": false
+        },
+        {
+          "name": "exec",
+          "description": "执行远程命令",
+          "parameters": [
+            {
+              "name": "command",
+              "type": "string",
+              "required": true,
+              "description": "要执行的命令"
+            },
+            {
+              "name": "options",
+              "type": "ExecOptions",
+              "required": false,
+              "description": "执行选项（超时等）"
+            }
+          ],
+          "return_type": "Promise<SSHCommandResult>",
+          "throws": ["SSHExecError", "SSHTimeoutError"],
+          "async": true,
+          "idempotency": false
+        }
+      ],
+      "schema_version": "1.0",
+      "status": "active",
+      "version": 1,
+      "source_components": ["CMP-001"],
+      "source_contracts": ["CTR-001"],
+      "constraints": [
+        "仅支持密码和密钥认证",
+        "必须调用 connect 后才能执行其他操作"
+      ],
+      "lifecycle": {
+        "create": "通过 ISshClientFactory.createClient 创建",
+        "update": "状态变更通过方法调用实现",
+        "delete": "调用 disconnect 并释放资源"
+      }
+    },
+    {
+      "id": "IF-002",
+      "name": "ISshConnection",
+      "type": "service",
+      "description": "底层 SSH 连接管理接口",
+      "method": "混合",
+      "endpoint": {
+        "uri": "",
+        "protocol": "in-process",
+        "authentication": "none",
+        "rate_limiting": "none"
+      },
+      "request": {
+        "headers": {},
+        "parameters": {},
+        "body": {}
+      },
+      "response": {
+        "headers": {},
+        "status_codes": {},
+        "body": {
+          "description": "返回 Promise<void>",
+          "schema": {},
+          "examples": []
+        }
+      },
+      "contract_id": "",
+      "methods": [
+        {
+          "name": "open",
+          "description": "打开 SSH 连接",
+          "parameters": [
+            {
+              "name": "config",
+              "type": "SSHConnectionConfig",
+              "required": true,
+              "description": "连接配置"
+            }
+          ],
+          "return_type": "Promise<void>",
+          "throws": ["SSHConnectionError"],
+          "async": true,
+          "idempotency": false
+        },
+        {
+          "name": "close",
+          "description": "关闭 SSH 连接",
+          "parameters": [],
+          "return_type": "Promise<void>",
+          "throws": [],
+          "async": true,
+          "idempotency": false
+        },
+        {
+          "name": "isConnected",
+          "description": "检查连接是否活跃",
+          "parameters": [],
+          "return_type": "boolean",
+          "throws": [],
+          "async": false,
+          "idempotency": true
+        }
+      ],
+      "schema_version": "1.0",
+      "status": "active",
+      "version": 1,
+      "source_components": ["CMP-001"],
+      "source_contracts": ["CTR-001"],
+      "constraints": [
+        "客户端应通过 ISshClient 使用，而非直接依赖此接口"
+      ],
+      "lifecycle": {
+        "create": "由工厂创建",
+        "update": "状态变化通过方法调用",
+        "delete": "调用 close 释放资源"
+      }
+    },
+    {
+      "id": "IF-003",
+      "name": "ISftpClient",
+      "type": "service",
+      "description": "SFTP 文件传输接口",
+      "method": "混合",
+      "endpoint": {
+        "uri": "",
+        "protocol": "in-process",
+        "authentication": "none",
+        "rate_limiting": "none"
+      },
+      "request": {
+        "headers": {},
+        "parameters": {},
+        "body": {}
+      },
+      "response": {
+        "headers": {},
+        "status_codes": {},
+        "body": {
+          "description": "方法返回 void 或 string",
+          "schema": {},
+          "examples": []
+        }
+      },
+      "contract_id": "",
+      "methods": [
+        {
+          "name": "uploadFile",
+          "description": "上传文件到远程服务器",
+          "parameters": [
+            {
+              "name": "localPath",
+              "type": "string",
+              "required": true,
+              "description": "本地文件路径"
+            },
+            {
+              "name": "remotePath",
+              "type": "string",
+              "required": true,
+              "description": "远程目标路径"
+            },
+            {
+              "name": "progressCallback",
+              "type": "(event: ProgressEvent) => void",
+              "required": false,
+              "description": "进度回调函数"
+            }
+          ],
+          "return_type": "Promise<void>",
+          "throws": ["SFTPUploadError", "SSHConnectionError"],
+          "async": true,
+          "idempotency": false
+        },
+        {
+          "name": "downloadFile",
+          "description": "从远程服务器下载文件",
+          "parameters": [
+            {
+              "name": "remotePath",
+              "type": "string",
+              "required": true,
+              "description": "远程文件路径"
+            },
+            {
+              "name": "localPath",
+              "type": "string",
+              "required": true,
+              "description": "本地保存路径"
+            },
+            {
+              "name": "progressCallback",
+              "type": "(event: ProgressEvent) => void",
+              "required": false,
+              "description": "进度回调函数"
+            }
+          ],
+          "return_type": "Promise<void>",
+          "throws": ["SFTPDownloadError", "SSHConnectionError"],
+          "async": true,
+          "idempotency": false
+        }
+      ],
+      "schema_version": "1.0",
+      "status": "active",
+      "version": 1,
+      "source_components": ["CMP-001"],
+      "source_contracts": ["CTR-001"],
+      "constraints": [
+        "必须在 SSH 连接建立后使用",
+        "文件路径必须是绝对路径"
+      ],
+      "lifecycle": {
+        "create": "通过 ISshClient 获取 SFTP 会话",
+        "update": "无状态",
+        "delete": "操作完成后释放"
+      }
+    },
+    {
+      "id": "IF-004",
+      "name": "ISshClientFactory",
+      "type": "service",
+      "description": "SSH 客户端工厂接口",
+      "method": "混合",
+      "endpoint": {
+        "uri": "",
+        "protocol": "in-process",
+        "authentication": "none",
+        "rate_limiting": "none"
+      },
+      "request": {
+        "headers": {},
+        "parameters": {},
+        "body": {}
+      },
+      "response": {
+        "headers": {},
+        "status_codes": {},
+        "body": {
+          "description": "返回 ISshClient 实例",
+          "schema": {},
+          "examples": []
+        }
+      },
+      "contract_id": "",
+      "methods": [
+        {
+          "name": "createClient",
+          "description": "创建并配置 SSH 客户端实例",
+          "parameters": [
+            {
+              "name": "config",
+              "type": "SSHConnectionConfig",
+              "required": true,
+              "description": "连接配置"
+            }
+          ],
+          "return_type": "ISshClient",
+          "throws": [],
+          "async": false,
+          "idempotency": true
+        }
+      ],
+      "schema_version": "1.0",
+      "status": "active",
+      "version": 1,
+      "source_components": ["CMP-001"],
+      "source_contracts": ["CTR-001"],
+      "constraints": [
+        "返回的客户端未连接，需显式调用 connect"
+      ],
+      "lifecycle": {
+        "create": "单例或每次调用新建",
+        "update": "无状态",
+        "delete": "不适用"
+      }
+    },
+    {
+      "id": "IF-005",
+      "name": "ILogger",
+      "type": "service",
+      "description": "日志记录接口，用于内部组件日志输出",
+      "method": "混合",
+      "endpoint": {
+        "uri": "",
+        "protocol": "in-process",
+        "authentication": "none",
+        "rate_limiting": "none"
+      },
+      "request": {
+        "headers": {},
+        "parameters": {},
+        "body": {}
+      },
+      "response": {
+        "headers": {},
+        "status_codes": {},
+        "body": {
+          "description": "方法返回 void",
+          "schema": {},
+          "examples": []
+        }
+      },
+      "contract_id": "",
+      "methods": [
+        {
+          "name": "log",
+          "description": "记录日志消息",
+          "parameters": [
+            {
+              "name": "level",
+              "type": "string",
+              "required": true,
+              "description": "日志级别（info, error, debug）"
+            },
+            {
+              "name": "message",
+              "type": "string",
+              "required": true,
+              "description": "日志消息"
+            },
+            {
+              "name": "meta",
+              "type": "object",
+              "required": false,
+              "description": "附加元数据"
+            }
+          ],
+          "return_type": "void",
+          "throws": [],
+          "async": false,
+          "idempotency": false
+        }
+      ],
+      "schema_version": "1.0",
+      "status": "active",
+      "version": 1,
+      "source_components": [],
+      "source_contracts": [],
+      "constraints": [],
+      "lifecycle": {
+        "create": "作为依赖注入到组件中",
+        "update": "无状态",
+        "delete": "不适用"
+      }
+    }
+  ],
+  "business_rules": [],
+  "error_handling": {
+    "strategy": "fail-fast",
+    "exceptions": [
+      {
+        "name": "SSHConnectionError",
+        "description": "无法建立 SSH 连接",
+        "http_code": 502,
+        "retryable": true,
+        "message_template": "SSH connection failed: {reason}"
+      },
+      {
+        "name": "SSHAuthenticationError",
+        "description": "SSH 认证失败",
+        "http_code": 401,
+        "retryable": false,
+        "message_template": "SSH authentication failed for user {username}"
+      },
+      {
+        "name": "SSHExecError",
+        "description": "远程命令执行失败",
+        "http_code": 500,
+        "retryable": true,
+        "message_template": "Command execution failed: {command}"
+      },
+      {
+        "name": "SSHTimeoutError",
+        "description": "SSH 操作超时",
+        "http_code": 504,
+        "retryable": true,
+        "message_template": "SSH operation timed out"
+      },
+      {
+        "name": "SSHDisconnectError",
+        "description": "断开连接时出错",
+        "http_code": 500,
+        "retryable": false,
+        "message_template": "SSH disconnect error: {reason}"
+      },
+      {
+        "name": "SFTPUploadError",
+        "description": "SFTP 上传失败",
+        "http_code": 500,
+        "retryable": true,
+        "message_template": "SFTP upload failed: {reason}"
+      },
+      {
+        "name": "SFTPDownloadError",
+        "description": "SFTP 下载失败",
+        "http_code": 500,
+        "retryable": true,
+        "message_template": "SFTP download failed: {reason}"
+      }
+    ]
+  }
+}
