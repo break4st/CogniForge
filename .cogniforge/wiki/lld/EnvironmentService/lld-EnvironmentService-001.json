@@ -1,0 +1,893 @@
+{
+  "meta": {
+    "doc_id": "lld-EnvironmentService-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "EnvironmentService",
+    "title": "环境配置管理详细设计",
+    "author": "design_agent",
+    "created": "2025-03-21T10:30:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-002"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-102"
+      ],
+      "contracts": [
+        "CTR-003",
+        "CTR-004",
+        "CTR-010"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "环境的增删改查",
+      "按项目列出环境",
+      "测试 SSH 连接并返回远程目录",
+      "凭据加密存储与按需解密",
+      "确保环境操作限定在当前项目域内"
+    ],
+    "out_of_scope": [
+      "SSH 连接底层实现与命令执行（由 SSHService 提供）",
+      "数据库表的通用定义（归属 Primary Database）",
+      "主密码的密钥派生与哈希存储（依赖 SecurityService）"
+    ],
+    "owned_components": [
+      "CMP-102"
+    ],
+    "owned_contracts": [
+      "CTR-003",
+      "CTR-004",
+      "CTR-010"
+    ],
+    "consumed_contracts": [
+      "CTR-010",
+      "CTR-011",
+      "CTR-012"
+    ],
+    "owned_data_models": [],
+    "consumed_data_models": [
+      "DM-001"
+    ]
+  },
+  "overview": {
+    "description": "环境配置管理服务，提供环境实体的完整生命周期管理，并对登录凭据（密码、私钥）进行加密保护。通过与 SSHService 的内部契约完成连接测试，向 SecurityService 调用加解密工具。所有操作均绑定到具体项目，确保多项目隔离。",
+    "dependencies": [
+      "SSHService",
+      "SecurityService",
+      "DatabaseService"
+    ],
+    "tech_stack": [
+      "TypeScript",
+      "Electron (Node.js runtime)",
+      "better-sqlite3",
+      "ssh2 (indirect)",
+      "node-crypto (via SecurityService)"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-002",
+      "sad_component_ids": [
+        "CMP-102"
+      ],
+      "sad_contract_ids": [
+        "CTR-003",
+        "CTR-004"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005",
+          "DO-006",
+          "DO-007"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": "REQ-002 的环境管理需求被完全覆盖，包含列表、测试连接以及基础的加密存储 CRUD。"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "Environment (derived)",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "Environment"
+      },
+      "description": "引用自 Primary Database 的环境配置表，本服务仅关注环境管理的必要字段，敏感凭据以加密形态存储。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "TEXT",
+          "required": true,
+          "description": "UUID 主键，唯一标识环境"
+        },
+        {
+          "name": "projectId",
+          "type": "TEXT",
+          "required": true,
+          "description": "所属项目 ID，不可为空"
+        },
+        {
+          "name": "name",
+          "type": "TEXT",
+          "required": true,
+          "description": "环境名称，同项目下唯一"
+        },
+        {
+          "name": "host",
+          "type": "TEXT",
+          "required": true,
+          "description": "远程主机地址或 IP"
+        },
+        {
+          "name": "port",
+          "type": "INTEGER",
+          "required": true,
+          "description": "SSH 端口，如 22"
+        },
+        {
+          "name": "username",
+          "type": "TEXT",
+          "required": true,
+          "description": "登录用户名"
+        },
+        {
+          "name": "authType",
+          "type": "TEXT",
+          "required": true,
+          "description": "认证类型：password 或 key"
+        },
+        {
+          "name": "encryptedPassword",
+          "type": "TEXT",
+          "required": false,
+          "description": "使用主密码加密后的密码"
+        },
+        {
+          "name": "encryptedPrivateKey",
+          "type": "TEXT",
+          "required": false,
+          "description": "使用主密码加密后的私钥文本"
+        },
+        {
+          "name": "createdAt",
+          "type": "TEXT",
+          "required": true,
+          "description": "创建时间 ISO 字符串"
+        },
+        {
+          "name": "updatedAt",
+          "type": "TEXT",
+          "required": true,
+          "description": "更新时间 ISO 字符串"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_env_projectId",
+          "unique": false,
+          "columns": [
+            "projectId"
+          ]
+        },
+        {
+          "name": "idx_env_project_name",
+          "unique": true,
+          "columns": [
+            "projectId",
+            "name"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "constraints": [
+        "authType 必须为 'password' 或 'key'",
+        "projectId 不可修改",
+        "name 在同一 projectId 下唯一"
+      ],
+      "lifecycle": {
+        "create": "新建环境记录，通过 SecurityService 加密凭据后插入",
+        "update": "更新非加密字段时可选择更新凭据，若更换凭据则重新加密",
+        "delete": "物理删除或逻辑删除（需与部署状态检查配合）",
+        "retention": "至少保留至关联部署记录清理"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建引用视图",
+          "reason": "首次生成 EnvironmentService LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "ConnectionConfig (struct)",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "source": {},
+      "description": "服务内部使用的临时结构，用于封装 SSH 连接配置，便于传递给 SSHService。",
+      "fields": [
+        {
+          "name": "host",
+          "type": "string",
+          "required": true,
+          "description": "SSH 主机地址"
+        },
+        {
+          "name": "port",
+          "type": "number",
+          "required": true,
+          "description": "SSH 端口"
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "required": true,
+          "description": "SSH 用户名"
+        },
+        {
+          "name": "authType",
+          "type": "string",
+          "required": true,
+          "description": "认证类型，password 或 key"
+        },
+        {
+          "name": "password",
+          "type": "string",
+          "required": false,
+          "description": "已解密的密码（仅当 authType 为 password）"
+        },
+        {
+          "name": "privateKey",
+          "type": "string",
+          "required": false,
+          "description": "已解密的私钥（仅当 authType 为 key）"
+        }
+      ],
+      "indexes": [],
+      "source_requirements": [],
+      "constraints": [],
+      "lifecycle": {
+        "create": "临时构造",
+        "update": "不可变",
+        "delete": "方法调用后释放",
+        "retention": "一次性"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 EnvironmentService LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "IEnvironmentRepository",
+      "description": "数据库访问接口，封装所有环境实体的持久化操作。",
+      "method": "POST",
+      "endpoint": "/api/environments",
+      "request": {
+        "body": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      "response": {
+        "body": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      "errors": []
+    },
+    {
+      "id": "IF-002",
+      "name": "ISecurityService",
+      "description": "安全服务接口，提供主密码管理及加解密功能。",
+      "method": "POST",
+      "endpoint": "/api/security",
+      "request": {
+        "body": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      "response": {
+        "body": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      "errors": []
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "Environment",
+      "object_type": "entity",
+      "description": "环境实体，聚合根",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "description": "唯一标识"
+        },
+        {
+          "name": "projectId",
+          "type": "string",
+          "required": true,
+          "description": "所属项目 ID"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "环境名称"
+        },
+        {
+          "name": "host",
+          "type": "string",
+          "required": true,
+          "description": "主机地址"
+        },
+        {
+          "name": "port",
+          "type": "number",
+          "required": true,
+          "description": "SSH 端口"
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "required": true,
+          "description": "用户名"
+        },
+        {
+          "name": "authType",
+          "type": "string",
+          "required": true,
+          "description": "认证类型"
+        },
+        {
+          "name": "encryptedPassword",
+          "type": "string",
+          "required": false,
+          "description": "加密后的密码"
+        },
+        {
+          "name": "encryptedPrivateKey",
+          "type": "string",
+          "required": false,
+          "description": "加密后的私钥"
+        },
+        {
+          "name": "createdAt",
+          "type": "string",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updatedAt",
+          "type": "string",
+          "required": true,
+          "description": "更新时间"
+        }
+      ],
+      "relationships": [],
+      "rules": [],
+      "states": []
+    },
+    {
+      "id": "DO-002",
+      "name": "CreateEnvironmentDTO",
+      "object_type": "value_object",
+      "description": "创建环境数据传输对象",
+      "attributes": [
+        {
+          "name": "projectId",
+          "type": "string",
+          "required": true,
+          "description": "项目 ID"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "环境名称"
+        },
+        {
+          "name": "host",
+          "type": "string",
+          "required": true,
+          "description": "主机地址"
+        },
+        {
+          "name": "port",
+          "type": "number",
+          "required": true,
+          "description": "端口"
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "required": true,
+          "description": "用户名"
+        },
+        {
+          "name": "authType",
+          "type": "string",
+          "required": true,
+          "description": "认证类型"
+        },
+        {
+          "name": "password",
+          "type": "string",
+          "required": false,
+          "description": "明文密码（将被加密）"
+        },
+        {
+          "name": "privateKey",
+          "type": "string",
+          "required": false,
+          "description": "明文私钥（将被加密）"
+        }
+      ],
+      "relationships": [],
+      "rules": [],
+      "states": []
+    },
+    {
+      "id": "DO-003",
+      "name": "UpdateEnvironmentDTO",
+      "object_type": "value_object",
+      "description": "更新环境数据传输对象",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "description": "环境 ID"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description": "环境名称"
+        },
+        {
+          "name": "host",
+          "type": "string",
+          "required": false,
+          "description": "主机地址"
+        },
+        {
+          "name": "port",
+          "type": "number",
+          "required": false,
+          "description": "端口"
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "required": false,
+          "description": "用户名"
+        },
+        {
+          "name": "authType",
+          "type": "string",
+          "required": false,
+          "description": "认证类型"
+        },
+        {
+          "name": "password",
+          "type": "string",
+          "required": false,
+          "description": "新明文密码"
+        },
+        {
+          "name": "privateKey",
+          "type": "string",
+          "required": false,
+          "description": "新明文私钥"
+        }
+      ],
+      "relationships": [],
+      "rules": [],
+      "states": []
+    },
+    {
+      "id": "DO-004",
+      "name": "EnvironmentFilterDTO",
+      "object_type": "value_object",
+      "description": "环境查询过滤条件",
+      "attributes": [
+        {
+          "name": "projectId",
+          "type": "string",
+          "required": true,
+          "description": "必须指定项目 ID"
+        }
+      ],
+      "relationships": [],
+      "rules": [],
+      "states": []
+    },
+    {
+      "id": "DO-005",
+      "name": "EnvironmentIdDTO",
+      "object_type": "value_object",
+      "description": "环境 ID 标识",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "description": "环境 ID"
+        },
+        {
+          "name": "projectId",
+          "type": "string",
+          "required": true,
+          "description": "所属项目 ID，用于权限校验"
+        }
+      ],
+      "relationships": [],
+      "rules": [],
+      "states": []
+    },
+    {
+      "id": "DO-006",
+      "name": "TestConnectionDTO",
+      "object_type": "value_object",
+      "description": "测试连接请求",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "description": "环境 ID"
+        },
+        {
+          "name": "projectId",
+          "type": "string",
+          "required": true,
+          "description": "项目 ID"
+        },
+        {
+          "name": "host",
+          "type": "string",
+          "required": false,
+          "description": "可选临时覆盖的主机"
+        },
+        {
+          "name": "port",
+          "type": "number",
+          "required": false,
+          "description": "可选临时覆盖的端口"
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "required": false,
+          "description": "可选临时覆盖的用户名"
+        },
+        {
+          "name": "authType",
+          "type": "string",
+          "required": false,
+          "description": "可选临时覆盖的认证类型"
+        },
+        {
+          "name": "password",
+          "type": "string",
+          "required": false,
+          "description": "可选临时覆盖的明文密码"
+        },
+        {
+          "name": "privateKey",
+          "type": "string",
+          "required": false,
+          "description": "可选临时覆盖的明文私钥"
+        }
+      ],
+      "relationships": [],
+      "rules": [],
+      "states": []
+    },
+    {
+      "id": "DO-007",
+      "name": "ConnectionResultDTO",
+      "object_type": "value_object",
+      "description": "测试连接结果",
+      "attributes": [
+        {
+          "name": "success",
+          "type": "boolean",
+          "required": true,
+          "description": "连接是否成功"
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "required": true,
+          "description": "结果消息"
+        },
+        {
+          "name": "homeDirectory",
+          "type": "string",
+          "required": false,
+          "description": "连接成功后返回的远程主目录"
+        }
+      ],
+      "relationships": [],
+      "rules": [],
+      "states": []
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "EnvironmentServiceContract",
+      "description": "环境管理服务契约",
+      "methods": [
+        {
+          "name": "createEnvironment",
+          "description": "创建新环境",
+          "precondition": "项目存在且用户有权限，环境名在项目内唯一",
+          "postcondition": "环境已持久化，凭据已加密",
+          "parameters": {
+            "dto": "CreateEnvironmentDTO"
+          },
+          "returns": "Environment",
+          "errors": [
+            "ProjectNotFoundError",
+            "DuplicateEnvironmentError",
+            "EncryptionError"
+          ],
+          "semantics": "接收明文凭据，调用 SecurityService 加密后保存到数据库"
+        },
+        {
+          "name": "getEnvironment",
+          "description": "根据 ID 获取环境详情",
+          "precondition": "环境存在且请求者有权访问所属项目",
+          "postcondition": "返回环境信息，敏感字段保持加密",
+          "parameters": {
+            "id": "EnvironmentIdDTO"
+          },
+          "returns": "Environment",
+          "errors": [
+            "EnvironmentNotFoundError",
+            "PermissionDeniedError"
+          ],
+          "semantics": "从数据库读取，不解密凭据"
+        },
+        {
+          "name": "listEnvironments",
+          "description": "列出指定项目的所有环境",
+          "precondition": "项目存在且用户有权限",
+          "postcondition": "返回环境列表",
+          "parameters": {
+            "filter": "EnvironmentFilterDTO"
+          },
+          "returns": "Environment[]",
+          "errors": [
+            "ProjectNotFoundError",
+            "PermissionDeniedError"
+          ],
+          "semantics": "查询数据库，按项目 ID 过滤"
+        },
+        {
+          "name": "updateEnvironment",
+          "description": "更新环境信息",
+          "precondition": "环境存在且用户有权限，若更改凭据则新凭据有效",
+          "postcondition": "环境已更新，新凭据已重新加密",
+          "parameters": {
+            "dto": "UpdateEnvironmentDTO"
+          },
+          "returns": "Environment",
+          "errors": [
+            "EnvironmentNotFoundError",
+            "PermissionDeniedError",
+            "EncryptionError"
+          ],
+          "semantics": "部分更新，若提供密码或私钥则重新加密后替换"
+        },
+        {
+          "name": "deleteEnvironment",
+          "description": "删除环境",
+          "precondition": "环境存在且无关联的进行中部署",
+          "postcondition": "环境已删除",
+          "parameters": {
+            "id": "EnvironmentIdDTO"
+          },
+          "returns": "void",
+          "errors": [
+            "EnvironmentNotFoundError",
+            "PermissionDeniedError",
+            "EnvironmentInUseError"
+          ],
+          "semantics": "物理删除记录"
+        },
+        {
+          "name": "testConnection",
+          "description": "测试 SSH 连接并获取远程主目录",
+          "precondition": "环境存在且凭据可解密",
+          "postcondition": "连接测试完成，不改变环境数据",
+          "parameters": {
+            "dto": "TestConnectionDTO"
+          },
+          "returns": "ConnectionResultDTO",
+          "errors": [
+            "EnvironmentNotFoundError",
+            "DecryptionError",
+            "SshConnectionError"
+          ],
+          "semantics": "解密凭据后构造 ConnectionConfig 调用 SSHService.testConnection"
+        }
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "环境的 projectId 在创建后不可变",
+      "同一项目下环境名称唯一",
+      "authType 必须为 'password' 或 'key'",
+      "凭据（密码或私钥）在存储前必须加密",
+      "删除环境前必须检查无关联的进行中部署"
+    ],
+    "rules": [
+      {
+        "id": "BR-001",
+        "description": "创建环境时，必须对明文凭据进行加密",
+        "trigger": "createEnvironment 调用",
+        "action": "调用 SecurityService.encrypt(password) 或 encrypt(privateKey)",
+        "precondition": "提供了有效的明文凭据"
+      },
+      {
+        "id": "BR-002",
+        "description": "更新环境凭据时，新的明文凭据必须重新加密",
+        "trigger": "updateEnvironment 调用且包含密码或私钥字段",
+        "action": "解密旧凭据（如果需要），加密新凭据"
+      },
+      {
+        "id": "BR-003",
+        "description": "测试连接时，解密存储的凭据以明文传递给 SSHService",
+        "trigger": "testConnection 调用",
+        "action": "调用 SecurityService.decrypt 获取明文，构造 ConnectionConfig"
+      },
+      {
+        "id": "BR-004",
+        "description": "所有操作必须校验 projectId 权限",
+        "trigger": "任何环境操作",
+        "action": "验证当前用户对 projectId 的访问权"
+      }
+    ]
+  },
+  "error_handling": {
+    "strategy": "每项服务操作均通过 try-catch 捕获异常，将领域异常映射为统一错误响应。对外暴露明确的错误码和消息，内部记录详细日志。",
+    "errors": [
+      {
+        "code": "ENV-001",
+        "message": "Environment not found",
+        "http_status": 404,
+        "handling": "返回此错误，前端展示未找到环境"
+      },
+      {
+        "code": "ENV-002",
+        "message": "Duplicate environment name in project",
+        "http_status": 409,
+        "handling": "捕获数据库唯一约束冲突，返回冲突错误"
+      },
+      {
+        "code": "ENV-003",
+        "message": "Permission denied for project",
+        "http_status": 403,
+        "handling": "权限校验失败时抛出"
+      },
+      {
+        "code": "ENV-004",
+        "message": "Encryption/Decryption failed",
+        "http_status": 500,
+        "handling": "SecurityService 异常时封装此错误，记录日志"
+      },
+      {
+        "code": "ENV-005",
+        "message": "SSH connection error",
+        "http_status": 502,
+        "handling": "SSHService 连接失败时返回，包含具体原因"
+      },
+      {
+        "code": "ENV-006",
+        "message": "Environment in use by running deployments",
+        "http_status": 409,
+        "handling": "删除前检查关联部署，存在时返回此错误"
+      }
+    ]
+  },
+  "workflow": {
+    "name": "Environment Management Workflow",
+    "description": "环境创建、编辑、删除及连接测试的核心流程",
+    "steps": [
+      {
+        "id": "WF-CREATE",
+        "name": "Create Environment",
+        "description": "创建新环境，包含凭据加密",
+        "trigger": "用户提供创建参数",
+        "actions": [
+          "验证 projectId 权限",
+          "检查环境名唯一性",
+          "调用 SecurityService 加密凭据",
+          "持久化环境记录",
+          "返回创建的环境（不含明文凭据）"
+        ]
+      },
+      {
+        "id": "WF-TEST",
+        "name": "Test Connection",
+        "description": "测试环境 SSH 连接",
+        "trigger": "用户请求测试指定环境",
+        "actions": [
+          "根据环境 ID 和 projectId 获取环境记录",
+          "调用 SecurityService 解密凭据",
+          "构建 ConnectionConfig（可被请求覆盖）",
+          "调用 SSHService.testConnection",
+          "返回连接结果及主目录"
+        ]
+      }
+    ]
+  },
+  "change_history": [
+    {
+      "version": 1,
+      "change_type": "created",
+      "summary": "初始创建 EnvironmentService LLD",
+      "reason": "首次生成"
+    }
+  ]
+}
