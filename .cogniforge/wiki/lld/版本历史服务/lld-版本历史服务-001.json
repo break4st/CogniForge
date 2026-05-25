@@ -1,0 +1,602 @@
+{
+  "meta": {
+    "doc_id": "lld-version-history-service-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "版本历史服务",
+    "title": "版本历史服务详细设计文档",
+    "author": "design_agent",
+    "created": "2025-04-10T12:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-005"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-008"
+      ],
+      "contracts": [
+        "CTR-006"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "提供部署历史记录的多条件筛选查询",
+      "执行指定部署的回滚操作，通过SSH切换软链接或运行回滚脚本",
+      "回滚成功后生成新的回滚类型部署记录"
+    ],
+    "out_of_scope": [
+      "初始部署过程的执行与状态跟踪（由部署引擎负责）",
+      "SSH连接建立与凭据管理（由SSH连接管理器负责）",
+      "环境配置信息的维护（由环境管理服务负责）",
+      "前端二次确认逻辑（在桌面客户端实现）"
+    ],
+    "owned_components": [
+      "CMP-008"
+    ],
+    "owned_contracts": [
+      "CTR-006"
+    ],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": [
+      "DM-001"
+    ]
+  },
+  "overview": {
+    "description": "管理每次部署产生的版本记录，支持按项目、环境、状态筛选查询，并对成功部署执行回滚操作。回滚通过SSH连接管理器远程执行软链接切换或回滚脚本，完成后生成一条新的rollback类型部署记录。",
+    "dependencies": [
+      "数据持久层 (CMP-011)",
+      "SSH 连接管理器 (CMP-009)",
+      "环境管理服务 (CMP-004)"
+    ],
+    "tech_stack": [
+      "Python 3.11+",
+      "FastAPI",
+      "SQLAlchemy (SQLite)",
+      "Paramiko (通过SSH连接管理器间接使用)",
+      "asyncio"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-005",
+      "sad_component_ids": [
+        "CMP-008"
+      ],
+      "sad_contract_ids": [
+        "CTR-006"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005",
+          "DO-006",
+          "DO-007"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": "REQ-005 要求提供部署历史及回滚功能，本LLD完整覆盖了历史查询和回滚执行。"
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "Deployment",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "deployments"
+      },
+      "description": "部署记录表，记录每次部署或回滚操作的信息",
+      "fields": [
+        {
+          "name": "id",
+          "type": "integer",
+          "required": true,
+          "description": "主键，唯一标识"
+        },
+        {
+          "name": "project_id",
+          "type": "integer",
+          "required": true,
+          "description": "关联的项目ID"
+        },
+        {
+          "name": "environment_id",
+          "type": "integer",
+          "required": true,
+          "description": "关联的环境ID"
+        },
+        {
+          "name": "version_label",
+          "type": "string",
+          "required": true,
+          "description": "版本标签，如 v1.2.3"
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "required": true,
+          "description": "记录类型：deploy 或 rollback"
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "required": true,
+          "description": "状态：pending, in_progress, success, failed"
+        },
+        {
+          "name": "remote_version_path",
+          "type": "string",
+          "required": false,
+          "description": "远程服务器上版本目录的绝对路径"
+        },
+        {
+          "name": "started_at",
+          "type": "datetime",
+          "required": true,
+          "description": "开始时间"
+        },
+        {
+          "name": "finished_at",
+          "type": "datetime",
+          "required": false,
+          "description": "完成时间"
+        },
+        {
+          "name": "error_message",
+          "type": "string",
+          "required": false,
+          "description": "失败时的错误信息"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_deployments_project_env",
+          "unique": false,
+          "columns": [
+            "project_id",
+            "environment_id"
+          ]
+        },
+        {
+          "name": "idx_deployments_status",
+          "unique": false,
+          "columns": [
+            "status"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-005"
+      ],
+      "source_components": [
+        "CMP-011"
+      ],
+      "source_contracts": [],
+      "constraints": [
+        "type 字段值必须为 deploy 或 rollback",
+        "status 字段值必须为 pending, in_progress, success, failed 之一"
+      ],
+      "lifecycle": {
+        "create": "第一次部署或回滚时插入记录",
+        "update": "部署过程中更新状态和时间",
+        "delete": "通常不删除，可考虑定期归档",
+        "retention": "默认永久保留"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "RollbackConfig",
+      "type": "config",
+      "status": "active",
+      "version": 1,
+      "ownership": "owned",
+      "description": "版本历史服务内部配置，控制回滚行为",
+      "fields": [
+        {
+          "name": "default_rollback_script",
+          "type": "string",
+          "required": false,
+          "description": "全局默认回滚脚本命令，若环境未配置则使用"
+        },
+        {
+          "name": "softlink_strategy",
+          "type": "boolean",
+          "required": true,
+          "description": "是否采用软链接切换作为回滚方式，true时使用 ln -sfn 命令"
+        }
+      ],
+      "source_requirements": [
+        "REQ-005"
+      ],
+      "source_components": [
+        "CMP-008"
+      ],
+      "source_contracts": [],
+      "constraints": [
+        "softlink_strategy 为 true 时，回滚操作将忽略环境自定义脚本，直接执行 ln -sfn <previous_version_path> <current_link>"
+      ],
+      "lifecycle": {
+        "create": "服务初始化时从配置文件加载",
+        "update": "通过管理接口更新配置",
+        "delete": "不清除，保留配置",
+        "retention": "永久"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "DeploymentRecord",
+      "object_type": "entity",
+      "description": "表示一次部署或回滚操作的记录",
+      "attributes": {
+        "id": "integer",
+        "project_id": "integer",
+        "environment_id": "integer",
+        "version_label": "string",
+        "type": "string",
+        "status": "string",
+        "remote_version_path": "string",
+        "started_at": "datetime",
+        "finished_at": "datetime",
+        "error_message": "string"
+      },
+      "methods": [
+        {
+          "name": "mark_in_progress",
+          "signature": "mark_in_progress() -> None",
+          "description": "将状态置为 in_progress"
+        },
+        {
+          "name": "mark_success",
+          "signature": "mark_success(finished_at: datetime) -> None",
+          "description": "将状态置为 success 并记录完成时间"
+        },
+        {
+          "name": "mark_failed",
+          "signature": "mark_failed(error_message: str, finished_at: datetime) -> None",
+          "description": "将状态置为 failed 并记录错误信息和完成时间"
+        }
+      ],
+      "source_requirements": [
+        "REQ-005"
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "DeploymentFilter",
+      "object_type": "value_object",
+      "description": "封装部署历史查询的筛选条件",
+      "attributes": {
+        "project_id": "integer",
+        "environment_id": "integer",
+        "status": "string",
+        "type": "string",
+        "start_date": "datetime",
+        "end_date": "datetime"
+      },
+      "source_requirements": [
+        "REQ-005"
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "RollbackCommand",
+      "object_type": "value_object",
+      "description": "封装回滚操作所需的命令信息",
+      "attributes": {
+        "previous_version_path": "string",
+        "current_link_path": "string",
+        "command": "string"
+      },
+      "source_requirements": [
+        "REQ-005"
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "RollbackResult",
+      "object_type": "value_object",
+      "description": "回滚操作的结果",
+      "attributes": {
+        "success": "boolean",
+        "new_deployment_id": "integer",
+        "error_message": "string"
+      },
+      "source_requirements": [
+        "REQ-005"
+      ]
+    },
+    {
+      "id": "DO-005",
+      "name": "DeploymentHistoryQuery",
+      "object_type": "value_object",
+      "description": "用于查询部署历史的参数对象",
+      "attributes": {
+        "filters": "DeploymentFilter",
+        "pagination": "Pagination"
+      },
+      "source_requirements": [
+        "REQ-005"
+      ]
+    },
+    {
+      "id": "DO-006",
+      "name": "Pagination",
+      "object_type": "value_object",
+      "description": "分页信息",
+      "attributes": {
+        "page": "integer",
+        "page_size": "integer"
+      },
+      "source_requirements": []
+    },
+    {
+      "id": "DO-007",
+      "name": "DeploymentRecordList",
+      "object_type": "entity",
+      "description": "部署记录集合，包含分页元数据",
+      "attributes": {
+        "records": "list<DeploymentRecord>",
+        "total_count": "integer",
+        "page": "integer",
+        "page_size": "integer"
+      },
+      "source_requirements": [
+        "REQ-005"
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "DeploymentHistoryAPI",
+      "type": "REST",
+      "method": "GET",
+      "endpoint": "/api/v1/deployments/history",
+      "description": "部署历史查询接口，支持多条件筛选和分页",
+      "request": {
+        "query_params": {
+          "project_id": {
+            "type": "integer",
+            "required": false,
+            "description": "项目ID"
+          },
+          "environment_id": {
+            "type": "integer",
+            "required": false,
+            "description": "环境ID"
+          },
+          "status": {
+            "type": "string",
+            "required": false,
+            "description": "状态筛选：success, failed, pending, in_progress"
+          },
+          "type": {
+            "type": "string",
+            "required": false,
+            "description": "类型筛选：deploy, rollback"
+          },
+          "start_date": {
+            "type": "string",
+            "required": false,
+            "description": "开始时间范围起始 (ISO 8601)"
+          },
+          "end_date": {
+            "type": "string",
+            "required": false,
+            "description": "开始时间范围结束 (ISO 8601)"
+          },
+          "page": {
+            "type": "integer",
+            "required": false,
+            "default": 1,
+            "description": "页码"
+          },
+          "page_size": {
+            "type": "integer",
+            "required": false,
+            "default": 20,
+            "description": "每页记录数"
+          }
+        }
+      },
+      "response": {
+        "status_codes": [
+          {
+            "code": 200,
+            "description": "成功",
+            "body": {
+              "records": [
+                {
+                  "id": "integer",
+                  "project_id": "integer",
+                  "environment_id": "integer",
+                  "version_label": "string",
+                  "type": "string",
+                  "status": "string",
+                  "remote_version_path": "string",
+                  "started_at": "string",
+                  "finished_at": "string",
+                  "error_message": "string"
+                }
+              ],
+              "total_count": "integer",
+              "page": "integer",
+              "page_size": "integer"
+            }
+          },
+          {
+            "code": 400,
+            "description": "请求参数无效"
+          },
+          {
+            "code": 500,
+            "description": "服务器内部错误"
+          }
+        ]
+      },
+      "source_components": [
+        "CMP-008"
+      ],
+      "source_contracts": [
+        "CTR-006"
+      ],
+      "business_rules": [],
+      "error_handling": {
+        "400": "Invalid query parameters",
+        "500": "Internal server error"
+      }
+    },
+    {
+      "id": "IF-002",
+      "name": "RollbackService",
+      "type": "REST",
+      "method": "POST",
+      "endpoint": "/api/v1/deployments/{deployment_id}/rollback",
+      "description": "回滚指定部署到上一个版本",
+      "request": {
+        "path_params": {
+          "deployment_id": {
+            "type": "integer",
+            "required": true,
+            "description": "要回滚的部署ID"
+          }
+        },
+        "body": {}
+      },
+      "response": {
+        "status_codes": [
+          {
+            "code": 200,
+            "description": "回滚成功",
+            "body": {
+              "success": "boolean",
+              "new_deployment_id": "integer",
+              "message": "string"
+            }
+          },
+          {
+            "code": 400,
+            "description": "无法回滚（如当前部署状态非成功）"
+          },
+          {
+            "code": 404,
+            "description": "部署记录不存在"
+          },
+          {
+            "code": 500,
+            "description": "服务器内部错误或回滚执行失败"
+          }
+        ]
+      },
+      "source_components": [
+        "CMP-008"
+      ],
+      "source_contracts": [
+        "CTR-006"
+      ],
+      "business_rules": [],
+      "error_handling": {
+        "400": "Cannot rollback non-successful or already rolled back deployment",
+        "404": "Deployment record not found",
+        "500": "Rollback execution failed"
+      }
+    }
+  ],
+  "service_contracts": [
+    {
+      "id": "SC-001",
+      "name": "DeploymentHistoryService",
+      "description": "提供部署历史查询和回滚操作的服务合同",
+      "methods": [
+        {
+          "name": "getDeploymentHistory",
+          "signature": "getDeploymentHistory(filters: DeploymentFilter, pagination: Pagination) -> DeploymentRecordList",
+          "precondition": ["filters 参数非空但字段可选"],
+          "postcondition": ["返回符合条件的部署记录分页列表"],
+          "description": "根据筛选条件查询部署历史记录，支持分页",
+          "parameters": [
+            "filters: DeploymentFilter",
+            "pagination: Pagination"
+          ],
+          "returns": "DeploymentRecordList"
+        },
+        {
+          "name": "rollbackDeployment",
+          "signature": "rollbackDeployment(deployment_id: int) -> RollbackResult",
+          "precondition": ["deployment_id 对应的部署记录存在且状态为 success"],
+          "postcondition": ["回滚操作完成，生成一条新的rollback记录，返回结果"],
+          "description": "对指定部署执行回滚操作",
+          "parameters": [
+            "deployment_id: int"
+          ],
+          "returns": "RollbackResult"
+        }
+      ],
+      "source_components": [
+        "CMP-008"
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "一次部署只能回滚一次（即不允许对已回滚的部署再次回滚）",
+      "只有状态为 success 的部署才允许回滚",
+      "回滚生成的记录 type 必须为 rollback",
+      "回滚后原部署记录的状态不变"
+    ]
+  },
+  "error_handling": {
+    "strategy": "服务层统一捕获异常，将领域异常映射为合适的HTTP状态码和错误消息。数据库操作失败、SSH执行失败等均记录日志并返回500。无效输入返回400。"
+  }
+}
