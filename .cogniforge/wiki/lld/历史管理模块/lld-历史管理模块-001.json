@@ -1,0 +1,467 @@
+{
+  "meta": {
+    "doc_id": "lld-HistoryManagement-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "历史管理模块",
+    "title": "历史管理模块 LLD",
+    "author": "design_agent",
+    "created": "2025-04-10T00:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-001"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-006"
+      ],
+      "contracts": [
+        "CTR-006",
+        "CTR-007",
+        "CTR-008"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "部署记录存储与查询",
+      "回滚操作（切换符号链接）",
+      "部署历史清理（随环境删除）"
+    ],
+    "out_of_scope": [
+      "部署执行逻辑（由部署引擎负责）",
+      "环境配置管理（由环境管理模块负责）",
+      "SSH连接管理（由SSH客户端模块负责）",
+      "GUI渲染（由GUI前端负责）"
+    ],
+    "owned_components": [
+      "CMP-006"
+    ],
+    "owned_contracts": [
+      "CTR-006"
+    ],
+    "consumed_contracts": [
+      "CTR-007",
+      "CTR-008"
+    ],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "记录每次部署详情，提供历史查询和回滚功能。回滚操作本质是调用部署引擎将 current 指向指定版本目录。",
+    "dependencies": [
+      "本地数据库 (CTR-007)",
+      "SSH客户端模块 (CTR-008)"
+    ],
+    "tech_stack": [
+      "Node.js (主进程)",
+      "Electron (主进程框架)",
+      "SQLite (数据库)",
+      "ssh2 (SSH库)"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-005",
+      "sad_component_ids": [
+        "CMP-006"
+      ],
+      "sad_contract_ids": [
+        "CTR-006"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-001"
+        ],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "DeploymentRecordView",
+      "type": "reference",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "DeploymentRecord"
+      },
+      "description": "部署记录视图模型，派生自主数据库的 DeploymentRecord 表，仅包含历史管理服务所需的字段，用于数据传输和展示。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "description": "部署记录唯一标识"
+        },
+        {
+          "name": "environmentId",
+          "type": "string",
+          "required": true,
+          "description": "目标环境ID"
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "required": true,
+          "description": "部署的版本号/目录名"
+        },
+        {
+          "name": "timestamp",
+          "type": "datetime",
+          "required": true,
+          "description": "部署发生的时间戳"
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "required": true,
+          "description": "部署状态（如 success, failed, rolled_back）"
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "required": false,
+          "description": "记录类型（如 deploy, rollback），包括 RollbackType 枚举值"
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "required": false,
+          "description": "部署描述或备注"
+        },
+        {
+          "name": "rollbackFromVersion",
+          "type": "string",
+          "required": false,
+          "description": "回滚操作的源版本（若为回滚记录）"
+        }
+      ],
+      "source_requirements": [
+        "REQ-005"
+      ],
+      "source_components": [],
+      "source_contracts": [],
+      "constraints": [
+        "此视图由主数据库模型裁剪而来，不允许写入操作",
+        "字段不得包含本模块不应关心的数据（如完整文件清单、SSH凭据等）"
+      ],
+      "lifecycle": {
+        "create": "无需创建，由数据适配器从主数据库读取",
+        "update": "不适用，只读视图",
+        "delete": "不适用，只读视图",
+        "retention": "随主表记录依环境删除而清理"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建 DeployRecordView 派生模型",
+          "reason": "基于蓝图和主数据库定义，为历史管理模块提供专用的部署记录数据结构"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "HistoryController",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-006",
+      "provider_component_id": "CMP-006",
+      "method": "INTERNAL",
+      "endpoint": "history",
+      "description": "历史管理模块对外提供的IPC接口，用于查询部署历史记录和发起回滚操作。",
+      "parameters": [],
+      "request_body": {
+        "action": "string (list|detail|rollback)",
+        "data": "object （对应 ListHistoryRequest / DetailRequest / RollbackRequest）"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "data": "object （对应 ListHistoryResponse / DetailResponse / RollbackResponse）",
+          "error": "string （错误信息，可选）"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "INVALID_ACTION",
+          "message": "不支持的操作类型"
+        },
+        {
+          "status": 400,
+          "code": "INVALID_REQUEST",
+          "message": "请求参数无效"
+        },
+        {
+          "status": 404,
+          "code": "RECORD_NOT_FOUND",
+          "message": "部署记录未找到"
+        },
+        {
+          "status": 500,
+          "code": "ROLLBACK_FAILED",
+          "message": "回滚操作执行失败"
+        },
+        {
+          "status": 500,
+          "code": "DATABASE_ERROR",
+          "message": "数据库操作异常"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [
+        "action 必须为 list、detail 或 rollback 之一",
+        "list 动作需要提供 environmentId、page、pageSize 参数",
+        "detail 动作需要提供 recordId 参数",
+        "rollback 动作需要提供 recordId 参数"
+      ],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-005"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "所有错误统一通过标准响应格式返回，包含错误码、简要信息和可选详细描述，便于前端处理和排查。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "4xx",
+        "name": "客户端错误",
+        "description": "请求参数无效（如环境ID或部署ID缺失、格式错误）返回400；请求的资源不存在（如部署记录不存在）返回404。"
+      },
+      {
+        "code": "5xx",
+        "name": "服务器端错误",
+        "description": "本地数据库操作失败返回500；SSH执行回滚命令失败（如权限不足、目标主机不可达）返回502或500；未预期内部错误返回500并记录日志。"
+      }
+    ]
+  },
+  "domain_objects": [
+    {
+      "name": "DeploymentRecord",
+      "object_type": "entity",
+      "description": "部署记录实体，映射到部署记录视图，提供只读业务行为。",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "source": "db",
+          "description": "记录 id"
+        },
+        {
+          "name": "environmentId",
+          "type": "string",
+          "required": true,
+          "source": "db",
+          "description": "目标环境ID"
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "required": true,
+          "source": "db",
+          "description": "版本号"
+        },
+        {
+          "name": "timestamp",
+          "type": "datetime",
+          "required": true,
+          "source": "db",
+          "description": "时间戳"
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "required": true,
+          "source": "db",
+          "description": "状态"
+        }
+      ]
+    },
+    {
+      "name": "RollbackType",
+      "object_type": "enum",
+      "description": "回滚操作的类型枚举",
+      "values": [
+        "full",
+        "partial"
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "name": "HistoryService",
+      "description": "负责部署历史查询和回滚操作的业务逻辑",
+      "methods": [
+        {
+          "name": "listHistory",
+          "signature": "(environmentId: string, page: number, pageSize: number) -> { records: DeploymentRecordView[], total: number }",
+          "precondition": "environmentId 非空",
+          "postcondition": "返回指定环境的分页部署记录列表",
+          "description": "查询某个环境下的部署历史记录，支持分页",
+          "exceptions": [
+            {
+              "name": "InvalidRequestError",
+              "trigger": "参数无效",
+              "http_status": 400
+            }
+          ]
+        },
+        {
+          "name": "getDetail",
+          "signature": "(recordId: string) -> DeploymentRecordView",
+          "precondition": "recordId 对应的记录必须存在",
+          "postcondition": "返回记录的详细信息",
+          "description": "根据ID返回指定的部署记录详情",
+          "exceptions": [
+            {
+              "name": "RecordNotFoundError",
+              "trigger": "记录不存在",
+              "http_status": 404
+            }
+          ]
+        },
+        {
+          "name": "rollback",
+          "signature": "(recordId: string) -> void",
+          "precondition": "对应的部署记录存在且状态允许回滚（如 success）",
+          "postcondition": "目标环境的部署版本切换为指定记录的版本",
+          "description": "执行回滚操作，调用SSH客户端切换符号链接",
+          "exceptions": [
+            {
+              "name": "RecordNotFoundError",
+              "trigger": "记录不存在",
+              "http_status": 404
+            },
+            {
+              "name": "RollbackError",
+              "trigger": "SSH执行失败",
+              "http_status": 500
+            }
+          ]
+        }
+      ],
+      "repository_dependencies": [
+        "findByEnvironmentIdPaginated(environmentId, page, pageSize) -> { records: DeploymentRecord[], total: number }",
+        "findById(recordId) -> DeploymentRecord"
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "每个部署记录必须关联一个有效的环境",
+      "回滚操作只能针对状态为 success 的部署记录，且目标环境必须存在",
+      "部署记录一旦创建不可修改，仅可通过删除环境时清理"
+    ],
+    "state_machines": [
+      {
+        "entity": "DeploymentRecord",
+        "states": [
+          "success",
+          "failed",
+          "rolled_back"
+        ],
+        "transitions": [
+          {
+            "from": "success",
+            "to": "rolled_back",
+            "trigger": "回滚操作",
+            "actor": "用户"
+          }
+        ],
+        "irreversible_rules": [
+          "状态 rolled_back 不可逆回到 success"
+        ],
+        "concurrency": "单环境同一时间只允许一个回滚操作，通过环境锁控制"
+      }
+    ],
+    "cross_service_rules": [
+      "回滚操作需协调 SSH 客户端模块与本地数据库：先执行 SSH 切换符号链接，成功后更新当前部署版本记录，若 SSH 失败则记录错误但不更改数据库状态"
+    ]
+  },
+  "workflow": {
+    "name": "历史管理主流程",
+    "description": "历史管理模块的查询与回滚流程",
+    "steps": [
+      {
+        "order": 1,
+        "name": "接收IPC请求",
+        "action": "接收来自渲染进程的IPC请求，解析action和参数",
+        "timeout_seconds": 60,
+        "on_failure": "返回INVALID_ACTION或INVALID_REQUEST错误"
+      },
+      {
+        "order": 2,
+        "name": "调用业务逻辑",
+        "action": "根据action调用对应的HistoryService方法（listHistory, getDetail, rollback）",
+        "timeout_seconds": 60,
+        "on_failure": "返回对应的业务异常，如RECORD_NOT_FOUND，并记录错误日志"
+      },
+      {
+        "order": 3,
+        "name": "返回响应",
+        "action": "将结果或错误信息封装成标准响应格式返回给渲染进程",
+        "timeout_seconds": 60,
+        "on_failure": "返回500内部错误"
+      }
+    ],
+    "retry_strategy": {
+      "max_retries": 3,
+      "retry_interval_seconds": 30,
+      "retryable_errors": [
+        "NETWORK_ERROR",
+        "TIMEOUT"
+      ],
+      "non_retryable_errors": [
+        "AUTH_ERROR",
+        "CONFIG_ERROR"
+      ]
+    }
+  }
+}
