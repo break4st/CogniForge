@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QA Agent 设计文档</title>
+<style>
+:root {
+  --bg: #1a1a2e; --surface: #16213e; --border: #0f3460;
+  --text: #e0e0e0; --heading: #e94560; --accent: #0f3460;
+  --code-bg: #0d1117; --tag-bg: #533483; --highlight: #e94560;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+body { background: var(--bg); color: var(--text); max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.7; }
+h1 { color: var(--highlight); font-size: 2.2rem; border-bottom: 3px solid var(--highlight); padding-bottom: 0.5rem; }
+h2 { color: #f0a500; font-size: 1.5rem; margin-top: 2.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { color: #00b4d8; font-size: 1.2rem; margin-top: 1.8rem; }
+h4 { color: #aaa; font-size: 1.05rem; margin-top: 1.5rem; }
+code { background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.9em; color: #ffa657; }
+pre { background: var(--code-bg); padding: 1.2rem; border-radius: 8px; overflow-x: auto; border: 1px solid var(--border); }
+pre code { background: none; padding: 0; color: #e6edf3; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid var(--border); padding: 0.6rem 1rem; text-align: left; }
+th { background: var(--surface); color: #f0a500; }
+.tag { display: inline-block; background: var(--tag-bg); color: #fff; padding: 0.15em 0.6em; border-radius: 4px; font-size: 0.85em; margin: 0 0.2em; }
+.filepath { color: #58a6ff; font-family: monospace; }
+.schema { color: #3fb950; }
+.warn { background: #3d2e00; border-left: 4px solid #f0a500; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+.info { background: #0d2b4e; border-left: 4px solid #00b4d8; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>QA Agent — 质量保证代理</h1>
+
+<p><strong>类名:</strong> <code>QAAgent(BaseAgent)</code> &nbsp;|&nbsp;
+<strong>文件:</strong> <span class="filepath">src/cogniforge/agents/qa_agent.py</span> (222 行) &nbsp;|&nbsp;
+<strong>角色标识:</strong> <span class="tag">qa</span></p>
+
+<h2>1. 概述</h2>
+
+<p>QA Agent 是 CogniForge 的质量门禁第二关，采用 <strong>混合模式</strong>——测试用例生成和报告编写委派给 Claude Code CLI（Agentic 模式），而测试执行（pytest）则由 QA Agent 本身以子进程方式执行（操作模式）。</p>
+
+<div class="info">
+<strong>设计理念：</strong>测试生成需要理解设计文档和代码（需要 LLM 推理），而测试执行是确定性操作（pytest + 状态码判断）。QA Agent 将两者分离，操作部分不消耗 LLM Token。
+</div>
+
+<h2>2. 角色定义</h2>
+
+<table>
+<tr><th>属性</th><th>值</th></tr>
+<tr><td>名称</td><td>QA Agent</td></tr>
+<tr><td>描述</td><td>通过测试验证功能正确性</td></tr>
+<tr><td>职责</td><td>编写测试用例、执行测试、生成测试报告</td></tr>
+<tr><td>输入文档类型</td><td><span class="tag">lld</span>, <span class="tag">task</span></td></tr>
+<tr><td>输出文档类型</td><td><span class="tag">test_case</span>, <span class="tag">report</span></td></tr>
+<tr><td>允许修改路径</td><td><span class="filepath">.cogniforge/wiki/qa/</span>, <span class="filepath">.cogniforge/wiki/reports/</span></td></tr>
+<tr><td>LLM 提供者</td><td><code>agent.claude_code</code>（Claude Code CLI 工具使用模式）</td></tr>
+</table>
+
+<h2>3. Action 路由</h2>
+
+<p>QA Agent 通过 action 参数路由到三种不同的处理逻辑：</p>
+
+<pre>
+run(input_data):
+  action = input_data["action"]
+  ├─ "generate_tests"  → _agentic_generate_tests()   [LLM 委派 + Claude Code]
+  ├─ "report"          → _agentic_report()            [LLM 委派 + Claude Code]
+  └─ "execute_tests"   → _execute_tests()             [纯代码: subprocess.run(pytest)]
+</pre>
+
+<h3>3.1 测试生成 (generate_tests)</h3>
+
+<pre>
+_agentic_generate_tests():
+  1. 提取 module + test_cases (可选预定义用例)
+  2. 确定 doc_id → test_case-{module}-{seq}
+  3. 输出路径 → .cogniforge/wiki/qa/{doc_id}.json
+  4. 构建 Prompt:
+     - JSON 结构模板 (meta + test_cases 数组)
+     - 先阅读 .cogniforge/wiki/lld/{module}/ 了解设计
+     - 阅读 src/{module}/ 下的代码了解实现
+     - 覆盖正常路径、边界条件、错误处理
+     - 生成对应的 pytest 测试代码写入 tests/test_{module}.py
+  5. agent.generate_agentic(prompt, role="qa")
+  6. 校验输出的 JSON (test-case-schema.json)
+  7. _commit_result() → 渲染 HTML + git commit
+     (同时提交 tests/test_{module}.py 作为 extra_paths)
+</pre>
+
+<h3>3.2 测试报告 (report)</h3>
+
+<pre>
+_agentic_report():
+  1. 确定 doc_id → test-report-{module}-{seq}
+  2. 输出路径 → .cogniforge/wiki/reports/{doc_id}.json
+  3. 构建 Prompt:
+     - 阅读 tests/test_{module}.py 和 src/{module}/ 代码
+     - 运行 pytest 获取测试结果
+     - content 字段包含: 测试覆盖率、通过/失败统计、风险评估
+  4. agent.generate_agentic(prompt, role="qa")
+  5. 校验输出的 JSON (test-report-schema.json)
+  6. 渲染 HTML → git commit
+</pre>
+
+<h3>3.3 测试执行 (execute_tests)</h3>
+
+<pre>
+_execute_tests():
+  1. 以子进程运行: pytest -v --tb=short tests/test_{module}.py
+  2. capture_output=True, text=True
+  3. 判断 returncode → passed
+  4. 返回 status="success"/"failed" + stdout/stderr
+  5. 如果 pytest 未安装 → 降级跳过 (status="success", 无报错)
+</pre>
+
+<div class="info">
+<strong>降级策略：</strong>如果 pytest 未安装，QA Agent 不会失败——返回 passed=True 并标注 "pytest not found, skipping"。这确保在 CI 环境尚未配置完整时工作流不会阻塞。
+</div>
+
+<h2>4. 测试用例结构 (Test Case Schema)</h2>
+
+<table>
+<tr><th>字段</th><th>类型</th><th>说明</th></tr>
+<tr><td><code>meta.doc_id</code></td><td>str</td><td>文档唯一标识 (test_case-{module}-{seq})</td></tr>
+<tr><td><code>meta.type</code></td><td>"test_case"</td><td>文档类型</td></tr>
+<tr><td><code>meta.module</code></td><td>str</td><td>所属模块</td></tr>
+<tr><td><code>test_cases[]</code></td><td>list[dict]</td><td>测试用例数组</td></tr>
+<tr><td><code>test_cases[].name</code></td><td>str</td><td>测试用例名称</td></tr>
+<tr><td><code>test_cases[].type</code></td><td>str</td><td>unit / integration / e2e</td></tr>
+<tr><td><code>test_cases[].priority</code></td><td>str</td><td>high / medium / low</td></tr>
+<tr><td><code>test_cases[].description</code></td><td>str</td><td>测试用例描述</td></tr>
+<tr><td><code>test_cases[].steps</code></td><td>list[str]</td><td>测试步骤</td></tr>
+<tr><td><code>test_cases[].expected_result</code></td><td>str</td><td>预期结果</td></tr>
+</table>
+
+<h2>5. 测试报告结构 (Test Report Schema)</h2>
+
+<table>
+<tr><th>字段</th><th>类型</th><th>说明</th></tr>
+<tr><td><code>meta.doc_id</code></td><td>str</td><td>报告唯一标识 (test-report-{module}-{seq})</td></tr>
+<tr><td><code>meta.type</code></td><td>"report"</td><td>文档类型</td></tr>
+<tr><td><code>content</code></td><td>str</td><td>报告内容——覆盖率和通过/失败统计及风险评估</td></tr>
+</table>
+
+<h2>6. 与 Claude Code 的通信</h2>
+
+<p>QA Agent 在 generate_tests 和 report 两个 action 中使用 <code>agent.generate_agentic(prompt, role="qa")</code>，Claude Code 获得：</p>
+<ul>
+<li><strong>文件读取能力：</strong> 阅读 LLD 设计文档、源代码、已有测试文件</li>
+<li><strong>Shell 执行能力：</strong> 运行 pytest 获取测试结果</li>
+<li><strong>写入能力：</strong> 将测试用例 JSON 和 pytest 测试代码写入文件</li>
+</ul>
+
+<p>execute_tests action 则直接使用 Python <code>subprocess.run()</code> 调用 pytest，不涉及 LLM。</p>
+
+<h2>7. 在工作流中的位置</h2>
+
+<pre>
+DAG: ... → CR → <strong>TEST</strong> → FIX → UAT → RETRO
+                 ↑
+            QA Agent
+</pre>
+
+<p>测试阶段必须通过才能进入 UAT（质量门禁要求：<code>tests_passed</code>）。</p>
+
+<h2>8. 错误处理</h2>
+
+<table>
+<tr><th>场景</th><th>处理方式</th></tr>
+<tr><td>LLM agent 为 None（非 execute_tests）</td><td>抛出 AgentError</td></tr>
+<tr><td>JSON 解析失败</td><td>返回 status="failed" + 错误原文</td></tr>
+<tr><td>Schema 验证失败</td><td>返回 status="failed" + 前 3 项错误</td></tr>
+<tr><td>pytest 未安装</td><td>降级跳过 (passed=True, "pytest not found")</td></tr>
+<tr><td>未知 action</td><td>返回 status="failed"</td></tr>
+</table>
+
+<h2>9. 配置</h2>
+<pre><code># .cogniforge/config.yaml
+qa: agent.claude_code    # QA 使用 Claude Code CLI（工具使用模式）</code></pre>
+
+<h2>10. 产物路径</h2>
+<table>
+<tr><th>类型</th><th>路径</th></tr>
+<tr><td>测试用例 JSON</td><td><span class="filepath">.cogniforge/wiki/qa/test_case-{module}-{seq}.json</span></td></tr>
+<tr><td>测试用例 HTML</td><td><span class="filepath">.cogniforge/html/qa/test_case-{module}-{seq}.html</span></td></tr>
+<tr><td>测试报告 JSON</td><td><span class="filepath">.cogniforge/wiki/reports/test-report-{module}-{seq}.json</span></td></tr>
+<tr><td>pytest 测试代码</td><td><span class="filepath">tests/test_{module}.py</span></td></tr>
+</table>
+
+<h2>11. 关键方法一览</h2>
+
+<table>
+<tr><th>方法</th><th>可见性</th><th>行号</th><th>说明</th></tr>
+<tr><td><code>run()</code></td><td>public</td><td>19</td><td>主入口，按 action 路由</td></tr>
+<tr><td><code>_agentic_generate_tests()</code></td><td>private</td><td>41</td><td>LLM 委派：生成测试用例 + pytest 代码</td></tr>
+<tr><td><code>_agentic_report()</code></td><td>private</td><td>96</td><td>LLM 委派：生成测试报告</td></tr>
+<tr><td><code>_execute_tests()</code></td><td>private</td><td>161</td><td>纯代码：subprocess.run(pytest)</td></tr>
+<tr><td><code>_commit_result()</code></td><td>private</td><td>190</td><td>Git 提交 + HTML 渲染 + extra_paths</td></tr>
+</table>
+
+</body>
+</html>

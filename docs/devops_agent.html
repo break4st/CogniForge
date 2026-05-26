@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DevOps Agent 设计文档</title>
+<style>
+:root {
+  --bg: #1a1a2e; --surface: #16213e; --border: #0f3460;
+  --text: #e0e0e0; --heading: #e94560; --accent: #0f3460;
+  --code-bg: #0d1117; --tag-bg: #533483; --highlight: #e94560;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+body { background: var(--bg); color: var(--text); max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.7; }
+h1 { color: var(--highlight); font-size: 2.2rem; border-bottom: 3px solid var(--highlight); padding-bottom: 0.5rem; }
+h2 { color: #f0a500; font-size: 1.5rem; margin-top: 2.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { color: #00b4d8; font-size: 1.2rem; margin-top: 1.8rem; }
+h4 { color: #aaa; font-size: 1.05rem; margin-top: 1.5rem; }
+code { background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.9em; color: #ffa657; }
+pre { background: var(--code-bg); padding: 1.2rem; border-radius: 8px; overflow-x: auto; border: 1px solid var(--border); }
+pre code { background: none; padding: 0; color: #e6edf3; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid var(--border); padding: 0.6rem 1rem; text-align: left; }
+th { background: var(--surface); color: #f0a500; }
+.tag { display: inline-block; background: var(--tag-bg); color: #fff; padding: 0.15em 0.6em; border-radius: 4px; font-size: 0.85em; margin: 0 0.2em; }
+.filepath { color: #58a6ff; font-family: monospace; }
+.schema { color: #3fb950; }
+.warn { background: #3d2e00; border-left: 4px solid #f0a500; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+.info { background: #0d2b4e; border-left: 4px solid #00b4d8; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>DevOps Agent — 部署与基础设施代理</h1>
+
+<p><strong>类名:</strong> <code>DevOpsAgent(BaseAgent)</code> &nbsp;|&nbsp;
+<strong>文件:</strong> <span class="filepath">src/cogniforge/agents/devops_agent.py</span> (156 行) &nbsp;|&nbsp;
+<strong>角色标识:</strong> <span class="tag">devops</span></p>
+
+<h2>1. 概述</h2>
+
+<p>DevOps Agent 是 CogniForge 工作流的最后一环，采用 <strong>混合模式</strong>——部署配置生成委派给 Claude Code CLI（Agentic 模式），而 deploy 和 rollback 操作则保留为代码中的操作存根，为将来的 CI/CD 集成预留接口。</p>
+
+<div class="info">
+<strong>设计理念：</strong>部署配置生成需要理解系统架构和模块设计（需要 LLM 推理），而 deploy/rollback 是高度环境相关的操作（需要凭证、基础设施访问），在当前阶段保留为操作存根，等待与具体 CI/CD 系统集成。
+</div>
+
+<h2>2. 角色定义</h2>
+
+<table>
+<tr><th>属性</th><th>值</th></tr>
+<tr><td>名称</td><td>DevOps Agent</td></tr>
+<tr><td>描述</td><td>处理基础设施与部署</td></tr>
+<tr><td>职责</td><td>编写部署配置、准备基础设施、部署发布</td></tr>
+<tr><td>输入文档类型</td><td><span class="tag">sad</span>, <span class="tag">lld</span></td></tr>
+<tr><td>输出文档类型</td><td><span class="tag">deploy</span></td></tr>
+<tr><td>允许修改路径</td><td><span class="filepath">.cogniforge/wiki/ops/</span>, <span class="filepath">infra/</span></td></tr>
+<tr><td>LLM 提供者</td><td><code>agent.claude_code</code>（Claude Code CLI 工具使用模式）</td></tr>
+</table>
+
+<h2>3. Action 路由</h2>
+
+<p>DevOps Agent 通过 action 参数路由到三种不同的处理逻辑：</p>
+
+<pre>
+run(input_data):
+  action = input_data["action"]
+  ├─ "prepare_deploy"  → _agentic_prepare_deploy()   [LLM 委派 + Claude Code]
+  ├─ "deploy"          → _deploy()                    [操作存根]
+  └─ "rollback"        → _rollback()                  [操作存根]
+</pre>
+
+<h3>3.1 部署配置生成 (prepare_deploy)</h3>
+
+<pre>
+_agentic_prepare_deploy():
+  1. 提取 module + environment + version
+  2. 确定 doc_id → deploy-{module}-{environment}-{seq}
+  3. 输出路径 → .cogniforge/wiki/ops/{doc_id}.json
+  4. 构建 Prompt:
+     - JSON 结构模板 (meta + config: docker/env_vars/network/health_check)
+     - 先阅读 .cogniforge/wiki/sad/ 了解系统架构
+     - 先阅读 .cogniforge/wiki/lld/{module}/ 了解模块设计
+     - 输出 Docker 配置、环境变量、网络设置、健康检查
+  5. agent.generate_agentic(prompt, role="devops")
+  6. 校验输出的 JSON (deploy-config-schema.json)
+  7. 渲染 HTML → git commit
+</pre>
+
+<h3>3.2 部署执行 (deploy) — 操作存根</h3>
+
+<pre>
+_deploy():
+  → 返回 status="success"
+  → message: "Deploy {module} to {environment} (operational stub)"
+  → data: {module, environment}
+</pre>
+
+<h3>3.3 回滚执行 (rollback) — 操作存根</h3>
+
+<pre>
+_rollback():
+  → 返回 status="success"
+  → message: "Rollback {module} to {version} (operational stub)"
+  → data: {module, version}
+</pre>
+
+<div class="warn">
+<strong>操作存根：</strong>deploy 和 rollback 当前为占位实现，返回成功状态但无实际操作。这是有意的设计选择——部署操作需要环境特定的凭证和基础设施访问，将在与 CI/CD 系统集成时实现。
+</div>
+
+<h2>4. 部署配置结构 (Deploy Config Schema)</h2>
+
+<table>
+<tr><th>字段</th><th>类型</th><th>说明</th></tr>
+<tr><td><code>meta.doc_id</code></td><td>str</td><td>文档唯一标识 (deploy-{module}-{env}-{seq})</td></tr>
+<tr><td><code>meta.type</code></td><td>"deploy"</td><td>文档类型</td></tr>
+<tr><td><code>config.module</code></td><td>str</td><td>目标模块</td></tr>
+<tr><td><code>config.environment</code></td><td>str</td><td>目标环境 (dev/staging/prod)</td></tr>
+<tr><td><code>config.docker</code></td><td>dict</td><td>Docker 配置（镜像、端口、卷挂载等）</td></tr>
+<tr><td><code>config.env_vars</code></td><td>dict</td><td>环境变量</td></tr>
+<tr><td><code>config.network</code></td><td>dict</td><td>网络配置</td></tr>
+<tr><td><code>config.health_check</code></td><td>dict</td><td>健康检查配置</td></tr>
+</table>
+
+<h2>5. 部署配置版本管理</h2>
+
+<p>DevOps 支持按环境分版本管理部署配置——<code>doc_id</code> 格式为 <code>deploy-{module}-{environment}-{seq}</code>，同一模块的不同环境（dev/staging/prod）有独立的配置历史。</p>
+
+<h2>6. Prompt 结构</h2>
+
+<pre><code>为以下模块准备部署配置，以 JSON 格式输出并写入:
+
+输出路径: {json_path}
+JSON 结构: {
+  "meta": {
+    "doc_id": "deploy-{module}-{env}-{seq}",
+    "type": "deploy",
+    "title": "部署配置 - {module}",
+    "author": "devops_agent",
+    "created": "{now}"
+  },
+  "config": {
+    "module": "...",
+    "environment": "...",
+    "docker": {},
+    "env_vars": {},
+    "network": {},
+    "health_check": {}
+  }
+}
+
+输入数据:
+module: {module}
+environment: {environment}
+version: {version}
+
+要求:
+1. 先阅读 .cogniforge/wiki/sad/ 了解系统架构
+2. 先阅读 .cogniforge/wiki/lld/{module}/ 了解模块设计
+3. 在 config 字段中包含: Docker 配置、环境变量、网络设置、健康检查
+4. 使用中文、只写 JSON 不写 HTML、完成后回复确认</code></pre>
+
+<h2>7. 与 Claude Code 的通信</h2>
+
+<p>DevOps Agent 在 prepare_deploy 中使用 <code>agent.generate_agentic(prompt, role="devops")</code>，Claude Code 获得：</p>
+<ul>
+<li><strong>文件读取能力：</strong> 阅读 SAD 系统架构和 LLD 模块设计</li>
+<li><strong>写入能力：</strong> 将部署配置 JSON 写入指定路径</li>
+</ul>
+
+<p>deploy 和 rollback 不涉及 LLM——纯代码操作存根。</p>
+
+<h2>8. 在工作流中的位置</h2>
+
+<pre>
+DAG: PRD → ... → CODING → CR → TEST → FIX → UAT → <strong>RETRO</strong>
+                                                        ↑
+                                                   DevOps Agent
+                                                   (prepare_deploy 在部署阶段前)
+</pre>
+
+<p>DevOps Agent 当前在 UAT 之后介入，为部署做配置准备。实际部署（deploy）和回滚（rollback）在 CI/CD 管道中触发。</p>
+
+<h2>9. 错误处理</h2>
+
+<table>
+<tr><th>场景</th><th>处理方式</th></tr>
+<tr><td>LLM agent 为 None（非 deploy/rollback）</td><td>抛出 AgentError</td></tr>
+<tr><td>JSON 解析失败</td><td>返回 status="failed" + 错误原文</td></tr>
+<tr><td>Schema 验证失败</td><td>返回 status="failed" + 前 3 项错误</td></tr>
+<tr><td>未知 action</td><td>返回 status="failed"</td></tr>
+<tr><td>deploy / rollback</td><td>始终返回 success（操作存根）</td></tr>
+</table>
+
+<h2>10. 配置</h2>
+<pre><code># .cogniforge/config.yaml
+devops: agent.claude_code    # DevOps 使用 Claude Code CLI（工具使用模式）</code></pre>
+
+<h2>11. 产物路径</h2>
+<table>
+<tr><th>类型</th><th>路径</th></tr>
+<tr><td>部署配置 JSON</td><td><span class="filepath">.cogniforge/wiki/ops/deploy-{module}-{env}-{seq}.json</span></td></tr>
+<tr><td>部署配置 HTML</td><td><span class="filepath">.cogniforge/html/ops/deploy-{module}-{env}-{seq}.html</span></td></tr>
+</table>
+
+<h2>12. 关键方法一览</h2>
+
+<table>
+<tr><th>方法</th><th>可见性</th><th>行号</th><th>说明</th></tr>
+<tr><td><code>run()</code></td><td>public</td><td>18</td><td>主入口，按 action 路由</td></tr>
+<tr><td><code>_agentic_prepare_deploy()</code></td><td>private</td><td>41</td><td>LLM 委派：生成部署配置</td></tr>
+<tr><td><code>_deploy()</code></td><td>private</td><td>111</td><td>部署操作存根</td></tr>
+<tr><td><code>_rollback()</code></td><td>private</td><td>120</td><td>回滚操作存根</td></tr>
+<tr><td><code>_commit_result()</code></td><td>private</td><td>129</td><td>Git 提交 + HTML 渲染</td></tr>
+</table>
+
+</body>
+</html>

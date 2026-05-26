@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reviewer Agent 设计文档</title>
+<style>
+:root {
+  --bg: #1a1a2e; --surface: #16213e; --border: #0f3460;
+  --text: #e0e0e0; --heading: #e94560; --accent: #0f3460;
+  --code-bg: #0d1117; --tag-bg: #533483; --highlight: #e94560;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+body { background: var(--bg); color: var(--text); max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.7; }
+h1 { color: var(--highlight); font-size: 2.2rem; border-bottom: 3px solid var(--highlight); padding-bottom: 0.5rem; }
+h2 { color: #f0a500; font-size: 1.5rem; margin-top: 2.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { color: #00b4d8; font-size: 1.2rem; margin-top: 1.8rem; }
+h4 { color: #aaa; font-size: 1.05rem; margin-top: 1.5rem; }
+code { background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.9em; color: #ffa657; }
+pre { background: var(--code-bg); padding: 1.2rem; border-radius: 8px; overflow-x: auto; border: 1px solid var(--border); }
+pre code { background: none; padding: 0; color: #e6edf3; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid var(--border); padding: 0.6rem 1rem; text-align: left; }
+th { background: var(--surface); color: #f0a500; }
+.tag { display: inline-block; background: var(--tag-bg); color: #fff; padding: 0.15em 0.6em; border-radius: 4px; font-size: 0.85em; margin: 0 0.2em; }
+.filepath { color: #58a6ff; font-family: monospace; }
+.schema { color: #3fb950; }
+.warn { background: #3d2e00; border-left: 4px solid #f0a500; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+.info { background: #0d2b4e; border-left: 4px solid #00b4d8; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>Reviewer Agent — 代码评审代理</h1>
+
+<p><strong>类名:</strong> <code>ReviewAgent(BaseAgent)</code> &nbsp;|&nbsp;
+<strong>文件:</strong> <span class="filepath">src/cogniforge/agents/review_agent.py</span> (120 行) &nbsp;|&nbsp;
+<strong>角色标识:</strong> <span class="tag">reviewer</span></p>
+
+<h2>1. 概述</h2>
+
+<p>Reviewer Agent 是 CogniForge 的质量门禁第一关，采用 <strong>Agentic 委派模式</strong>——将代码评审任务（阅读设计文档、审查代码变更、生成评审报告）委派给 Claude Code CLI Agent。它生成符合 <span class="schema">cr-report-schema.json</span> 的结构化 CR 报告。</p>
+
+<div class="info">
+<strong>设计理念：</strong>Reviewer 不自行审查代码，而是构建一个包含设计意图引用的评审 Prompt，让 Claude Code 在完整工具访问权限下阅读 LLD 和代码，发现设计偏差和实现问题。
+</div>
+
+<h2>2. 角色定义</h2>
+
+<table>
+<tr><th>属性</th><th>值</th></tr>
+<tr><td>名称</td><td>Code Reviewer Agent</td></tr>
+<tr><td>描述</td><td>通过代码评审确保代码质量</td></tr>
+<tr><td>职责</td><td>审查代码变更、生成 CR 报告、确保质量门禁通过</td></tr>
+<tr><td>输入文档类型</td><td><span class="tag">code</span>, <span class="tag">lld</span></td></tr>
+<tr><td>输出文档类型</td><td><span class="tag">report</span></td></tr>
+<tr><td>允许修改路径</td><td><span class="filepath">.cogniforge/wiki/reports/</span></td></tr>
+<tr><td>LLM 提供者</td><td><code>agent.claude_code</code>（Claude Code CLI 工具使用模式）</td></tr>
+</table>
+
+<h2>3. 执行流程</h2>
+
+<pre>
+run(input_data):
+  1. 提取 module + files (可选文件列表)
+  2. 确定 doc_id → cr-{module}-{seq}
+  3. 确定输出路径 → .cogniforge/wiki/reports/{doc_id}.json
+  4. 构建 Prompt:
+     - 带 JSON 输出路径和结构模板
+     - 先阅读 .cogniforge/wiki/lld/{module}/ 了解设计意图
+     - 阅读相关代码文件
+     - 使用 PASS/FAIL 标注每项检查
+     - 使用中文、只写 JSON 不写 HTML
+  5. agent.generate_agentic(prompt, role="reviewer")
+  6. 校验输出的 JSON (cr-report-schema.json)
+  7. 渲染 HTML → git commit
+</pre>
+
+<h2>4. Prompt 结构</h2>
+
+<pre><code>对以下模块进行代码评审，以 JSON 格式输出并写入:
+
+输出路径: {json_path}
+JSON 结构: {
+  "meta": {
+    "doc_id": "cr-{module}-{seq}",
+    "type": "report",
+    "title": "CR 报告 - {module}",
+    "author": "review_agent",
+    "created": "{now}"
+  },
+  "content": "... (使用 PASS/FAIL 标注每项检查，包含改进建议)"
+}
+
+输入数据:
+module: {module}
+files: {files 列表}
+
+要求:
+1. 先阅读 .cogniforge/wiki/lld/{module}/ 了解设计意图
+2. 阅读相关代码文件
+3. 在 content 字段中使用 PASS/FAIL 标注每项检查
+4. 使用中文、只写 JSON 不写 HTML、完成后回复确认</code></pre>
+
+<h2>5. CR 报告结构</h2>
+
+<table>
+<tr><th>字段</th><th>类型</th><th>说明</th></tr>
+<tr><td><code>meta.doc_id</code></td><td>str</td><td>报告唯一标识 (cr-{module}-{seq})</td></tr>
+<tr><td><code>meta.type</code></td><td>"report"</td><td>文档类型</td></tr>
+<tr><td><code>meta.title</code></td><td>str</td><td>"CR 报告 - {module}"</td></tr>
+<tr><td><code>meta.author</code></td><td>"review_agent"</td><td>作者标识</td></tr>
+<tr><td><code>content</code></td><td>str</td><td>评审内容——PASS/FAIL 检查项列表及改进建议</td></tr>
+</table>
+
+<h2>6. CR 报告版本管理</h2>
+
+<p>Reviewer 支持多轮评审——通过 <code>seq</code> 计数器递增（cr-{module}-001, cr-{module}-002...），每次评审生成新报告而不覆盖历史。</p>
+
+<h2>7. 与 Claude Code 的通信</h2>
+
+<p>Reviewer Agent 通过 <code>agent.generate_agentic(prompt, role="reviewer")</code> 委派任务，Claude Code 获得：</p>
+<ul>
+<li><strong>文件读取能力：</strong> 阅读 LLD 设计文档和源代码</li>
+<li><strong>Shell 执行能力：</strong> 运行 git diff 查看变更</li>
+<li><strong>写入能力：</strong> 将 CR 报告写入指定 JSON 路径</li>
+</ul>
+
+<div class="warn">
+<strong>模式 B — 委派代理：</strong>Reviewer 不直接操作文件系统，而是将"阅读设计文档 → 审查代码 → 生成报告"这条完整链委派给 Claude Code。系统层面的操作（Schema 验证、HTML 渲染、Git 提交）由 Reviewer Agent 本身执行。
+</div>
+
+<h2>8. Schema 验证链</h2>
+
+<pre>
+Claude Code 输出 → JSON 文件写入
+  ↓
+Reviewer Agent 读取并解析
+  ↓
+cr-report-schema.json 验证 (jsonschema.Draft7Validator)
+  ↓ 失败 → 返回 status="failed"
+  ↓ 通过
+render_file() → HTML 渲染 → git commit
+</pre>
+
+<h2>9. 错误处理</h2>
+
+<table>
+<tr><th>场景</th><th>处理方式</th></tr>
+<tr><td>LLM agent 为 None</td><td>抛出 AgentError（需要 Claude Code agent）</td></tr>
+<tr><td>JSON 解析失败</td><td>返回 status="failed" + 错误原文</td></tr>
+<tr><td>Schema 验证失败</td><td>返回 status="failed" + 前 3 项错误</td></tr>
+<tr><td>Claude Code 未产生文件</td><td>返回提示文件未生成</td></tr>
+<tr><td>HTML 渲染失败</td><td>继续（仅 JSON，无 HTML 产物）</td></tr>
+</table>
+
+<h2>10. 配置</h2>
+<pre><code># .cogniforge/config.yaml
+reviewer: agent.claude_code    # Reviewer 使用 Claude Code CLI（工具使用模式）</code></pre>
+
+<h2>11. 产物路径</h2>
+<table>
+<tr><th>类型</th><th>路径</th></tr>
+<tr><td>CR 报告 JSON</td><td><span class="filepath">.cogniforge/wiki/reports/cr-{module}-{seq}.json</span></td></tr>
+<tr><td>CR 报告 HTML</td><td><span class="filepath">.cogniforge/html/reports/cr-{module}-{seq}.html</span></td></tr>
+</table>
+
+<h2>12. 在工作流中的位置</h2>
+
+<pre>
+DAG: ... → CODING → <strong>CR</strong> → TEST → FIX → UAT → RETRO
+                      ↑
+                 Reviewer Agent
+</pre>
+
+<p>CR 是质量门禁的第一关，必须通过才能进入测试阶段（质量门禁要求：<code>cr_passed</code>）。</p>
+
+<h2>13. 关键方法一览</h2>
+
+<table>
+<tr><th>方法</th><th>可见性</th><th>行号</th><th>说明</th></tr>
+<tr><td><code>run()</code></td><td>public</td><td>18</td><td>主入口，构建 Prompt 并委派审查</td></tr>
+<tr><td><code>_validate_with_schema()</code></td><td>static</td><td>78</td><td>JSON Schema 验证</td></tr>
+<tr><td><code>_commit_result()</code></td><td>private</td><td>93</td><td>Git 提交 + HTML 渲染</td></tr>
+</table>
+
+</body>
+</html>

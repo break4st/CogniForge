@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Architect Agent 设计文档</title>
+<style>
+:root {
+  --bg: #1a1a2e; --surface: #16213e; --border: #0f3460;
+  --text: #e0e0e0; --heading: #e94560; --accent: #0f3460;
+  --code-bg: #0d1117; --tag-bg: #533483; --highlight: #e94560;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+body { background: var(--bg); color: var(--text); max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.7; }
+h1 { color: var(--highlight); font-size: 2.2rem; border-bottom: 3px solid var(--highlight); padding-bottom: 0.5rem; }
+h2 { color: #f0a500; font-size: 1.5rem; margin-top: 2.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { color: #00b4d8; font-size: 1.2rem; margin-top: 1.8rem; }
+h4 { color: #aaa; font-size: 1.05rem; margin-top: 1.5rem; }
+code { background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.9em; color: #ffa657; }
+pre { background: var(--code-bg); padding: 1.2rem; border-radius: 8px; overflow-x: auto; border: 1px solid var(--border); }
+pre code { background: none; padding: 0; color: #e6edf3; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid var(--border); padding: 0.6rem 1rem; text-align: left; }
+th { background: var(--surface); color: #f0a500; }
+.tag { display: inline-block; background: var(--tag-bg); color: #fff; padding: 0.15em 0.6em; border-radius: 4px; font-size: 0.85em; margin: 0 0.2em; }
+.filepath { color: #58a6ff; font-family: monospace; }
+.schema { color: #3fb950; }
+.warn { background: #3d2e00; border-left: 4px solid #f0a500; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+.info { background: #0d2b4e; border-left: 4px solid #00b4d8; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>Architect Agent — 系统架构师代理</h1>
+
+<p><strong>类名:</strong> <code>ArchitectAgent(BaseAgent)</code> &nbsp;|&nbsp;
+<strong>文件:</strong> <span class="filepath">src/cogniforge/agents/architect_agent.py</span> (680 行) &nbsp;|&nbsp;
+<strong>角色标识:</strong> <span class="tag">architect</span></p>
+
+<h2>1. 概述</h2>
+
+<p>Architect Agent 负责将 PRD 转化为系统架构文档 (SAD)。采用 <strong>双 JSON 架构</strong>：长期状态由 <code>sad-XXX.json</code> 维护，单轮变更通过 <code>se-turn-result-schema.json</code> 管控。通过一致性检查机制确保架构与需求的持续对齐。</p>
+
+<div class="info">
+<strong>设计理念：</strong>Architect 不仅生成初始架构，还持续跟踪 PRD 变更对架构的影响——优先复用现有组件，仅在必要时新增。所有架构元素（组件、契约、数据模型）均有稳定 ID，向下游代理提供可靠引用锚点。
+</div>
+
+<h2>2. 角色定义</h2>
+
+<table>
+<tr><th>属性</th><th>值</th></tr>
+<tr><td>名称</td><td>System Architect Agent</td></tr>
+<tr><td>描述</td><td>设计系统架构，定义系统拓扑，做出架构决策</td></tr>
+<tr><td>输入文档类型</td><td><span class="tag">prd</span></td></tr>
+<tr><td>输出文档类型</td><td><span class="tag">sad</span>, <span class="tag">adr</span></td></tr>
+<tr><td>允许修改路径</td><td><span class="filepath">.cogniforge/wiki/sad/</span>, <span class="filepath">.cogniforge/wiki/decisions/</span></td></tr>
+<tr><td>LLM 提供者</td><td><code>llm.deepseek</code>（直接 API 调用）</td></tr>
+<tr><td>Schema</td><td><span class="schema">sad-schema.json</span>, <span class="schema">se-turn-result-schema.json</span></td></tr>
+</table>
+
+<h2>3. 职责</h2>
+<ol>
+<li>从 PRD 生成系统架构文档 (SAD)</li>
+<li>维护组件 (CMP-XXX)、契约 (CTR-XXX)、数据模型 (DM-XXX) 三套稳定 ID 体系</li>
+<li>在架构的各分层（layers）中组织组件，定义层间通信协议</li>
+<li>处理交互式修改——根据 PM 变更分析架构影响</li>
+<li>运行一致性检查（consistency_checks）确保 SAD 与 PRD 对齐</li>
+<li>生成 downstream_handoff 指导 MDE、Dev、QA 等下游代理</li>
+</ol>
+
+<h2>4. 输入/输出规范</h2>
+
+<h3>4.1 run() 输入 (input_data)</h3>
+<table>
+<tr><th>字段</th><th>类型</th><th>必需</th><th>说明</th></tr>
+<tr><td><code>title</code></td><td>str</td><td>条件</td><td>架构文档标题，初始生成模式中使用</td></tr>
+<tr><td><code>system_overview</code></td><td>str</td><td>否</td><td>系统概述文本</td></tr>
+<tr><td><code>architecture</code></td><td>str</td><td>否</td><td>架构风格描述</td></tr>
+<tr><td><code>components</code></td><td>list[dict]</td><td>否</td><td>组件定义列表</td></tr>
+<tr><td><code>data_flow</code></td><td>str</td><td>否</td><td>数据流描述</td></tr>
+<tr><td><code>pm_turn_result</code></td><td>dict</td><td>条件</td><td>PM 本轮变更结果，触发交互式修改模式</td></tr>
+</table>
+
+<h3>4.2 run() 输出 (dict)</h3>
+<table>
+<tr><th>字段</th><th>说明</th></tr>
+<tr><td><code>status</code></td><td>"success" / "failed"</td></tr>
+<tr><td><code>message</code></td><td>人类可读的结果消息</td></tr>
+<tr><td><code>artifacts</code></td><td>生成的产物路径列表（JSON + HTML）</td></tr>
+<tr><td><code>data</code></td><td>包含 timings、affected_components、affected_contracts、downstream_handoff、new_version 等</td></tr>
+</table>
+
+<h2>5. 核心流程</h2>
+
+<h3>5.1 初始 SAD 生成</h3>
+<pre>
+_run_generate_initial():
+  1. _load_latest_prd() → 读取 PRD 作为源输入
+  2. 确定 doc_id 和 version（检查是否已有 SAD）
+  3. 构建详细 LLM prompt（含完整 JSON 结构模板）
+     - system_overview.roles: 从 PRD 提取用户角色及权限
+     - architecture.layers: 分层拓扑（接入层→网关→服务层→数据层）
+     - components[]: 每个含 id/type/status/source_requirements/change_history
+     - contracts[]: 每个含 provider_component_id/endpoint/request/response/errors
+     - data_models[]: 每个含 fields 数组
+     - requirement_traceability[]: 每条 PRD 需求的覆盖追踪
+  4. agent.generate_think_then_json() → LLM 响应
+  5. repair_truncated_json() → 修复截断的 JSON（最多重试 2 次）
+  6. _assign_ids() → 分配 CMP-XXX / CTR-XXX / DM-XXX
+  7. 组件类型正规化 (_normalize_component_type)
+  8. _commit_and_result() → 写入、渲染 HTML、git commit
+</pre>
+
+<h3>5.2 交互式修改流程</h3>
+<pre>
+pm_turn_result 存在
+  ↓
+modify_interactive():
+  1. _load_current_sad() → 读取当前 SAD
+  2. _load_latest_prd_dict() → 读取当前 PRD (全量)
+  3. 加载 se-turn-result-schema.json
+  4. 构建 system_prompt (15 条架构治理规则):
+     - 优先复用现有组件
+     - 修改已有 component 时 version+1 + change_history
+     - 每个 active requirement 必须有 coverage 记录
+     - SAD 有变化时 meta.version+1
+     - 默认不删除，用 status=deprecated/removed
+     - 在 downstream_handoff 中给出下游 Agent 提示
+  5. agent.generate_interactive_patch() → LLM 输出 se-turn-result
+  6. 校验 turn_result 是否符合 se-turn-result-schema
+  7. 检查 status: no_change/need_clarification/rejected → 提前返回
+  8. _apply_patches() → 应用 RFC 6902 JSON Patch
+  9. 校验更新后的 SAD 是否符合 sad-schema
+  10. run_all() → 一致性检查（consistency_checks）
+  11. 写入、渲染 HTML、git commit
+</pre>
+
+<h2>6. 数据结构</h2>
+
+<h3>6.1 SAD JSON Schema (简化结构)</h3>
+<pre><code>{
+  "meta": { "doc_id": "sad-001", "type": "sad", "version": 1, ... },
+  "title": "系统架构文档",
+  "source_prd": { "doc_id": "prd-current", "version": 1 },
+  "system_overview": {
+    "description": "...",
+    "roles": [{ "name": "管理员", "permissions": ["..."] }]
+  },
+  "architecture": {
+    "style": "微服务架构",
+    "description": "...",
+    "layers": [
+      { "name": "接入层", "components": ["API Gateway"] },
+      { "name": "服务层", "components": ["配置服务", "加密服务"] }
+    ],
+    "connections": [
+      { "protocol": "HTTPS / REST", "description": "..." }
+    ],
+    "features": ["服务发现", "配置中心"]
+  },
+  "tech_stack": {
+    "backend": { "language": "Python", "framework": "FastAPI" },
+    "frontend": { "framework": "Vue", "ui_library": "Element Plus" },
+    "database": "SQLite"
+  },
+  "components": [{
+    "id": "CMP-001", "name": "API Gateway",
+    "type": "gateway", "status": "active",
+    "responsibilities": ["...", "..."],
+    "source_requirements": ["REQ-001"],
+    "contracts": ["CTR-001"],
+    "depends_on_components": []
+  }],
+  "contracts": [{
+    "id": "CTR-001", "interface": "...",
+    "provider_component_id": "CMP-001",
+    "type": "REST", "endpoint": "GET /api/config",
+    "request": { "path_params": [], "query_params": [], "body": {} },
+    "response": { "status": 200, "body": {} },
+    "errors": [{ "status": 404, "code": "NOT_FOUND", "message": "..." }]
+  }],
+  "data_models": [{
+    "id": "DM-001", "name": "...",
+    "fields": [{ "name": "...", "type": "String", "required": true }]
+  }],
+  "data_flow": [{ "name": "...", "steps": ["步骤1", "步骤2"] }],
+  "requirement_traceability": [{
+    "requirement_id": "REQ-001", "coverage": "full",
+    "components": ["CMP-001"], "contracts": ["CTR-001"]
+  }],
+  "architecture_decisions": [],
+  "risks": [],
+  "open_questions": []
+}</code></pre>
+
+<h2>7. 组件类型正规化</h2>
+
+<p>LLM 可能返回非标准类型名，ArchitectAgent 在写入前使用 <code>_normalize_component_type()</code> 进行正规化：</p>
+
+<table>
+<tr><th>LLM 常见输出</th><th>正规化结果</th></tr>
+<tr><td><code>db</code>, <code>DB</code>, <code>Database</code></td><td><code>database</code></td></tr>
+<tr><td><code>cache</code>, <code>redis</code>, <code>mq</code>, <code>storage</code></td><td><code>infrastructure</code></td></tr>
+<tr><td><code>api_gateway</code></td><td><code>gateway</code></td></tr>
+<tr><td><code>web</code>, <code>ui</code></td><td><code>frontend</code></td></tr>
+<tr><td>匹配失败</td><td><code>service</code> (默认)</td></tr>
+</table>
+
+<h2>8. 一致性与重试</h2>
+
+<ul>
+<li><strong>JSON 截断修复：</strong>使用 <code>repair_truncated_json()</code> 修复 LLM 输出被截断时的 JSON 结构（最多重试 2 次）</li>
+<li><strong>一致性检查：</strong>修改模式下调用 <code>cogniforge.consistency_checks.run_all()</code>，验证 PRD 需求与 SAD 组件/契约之间的覆盖关系</li>
+<li><strong>原子写入：</strong>通过 <code>git_storage.atomic_write()</code> 确保 JSON + HTML 的 Git 提交为原子操作</li>
+</ul>
+
+<h2>9. LLM 交互模式</h2>
+
+<table>
+<tr><th>方法</th><th>LLM 调用方式</th></tr>
+<tr><td><code>_generate_initial()</code></td><td><code>agent.generate_think_then_json(role="architect", max_tokens=8192)</code></td></tr>
+<tr><td><code>modify_interactive()</code></td><td><code>agent.generate_interactive_patch()</code>（优先）或 <code>agent.generate_interactive()</code></td></tr>
+</table>
+
+<h2>10. 与下游代理的交互</h2>
+
+<table>
+<tr><th>下游代理</th><th>交互方式</th></tr>
+<tr><td>DesignAgent (MDE)</td><td>SAD 的 components/contracts 被 MDE Router 用于扇形分发；module_boundary 中的 owned_components/owned_contracts 直接引用 SAD ID</td></tr>
+<tr><td>TechLeadAgent</td><td>SAD 的组件拓扑用于 WBS 任务分解的模块分组</td></tr>
+<tr><td>DevOpsAgent</td><td>SAD 的 tech_stack/infrastructure 配置用于部署配置生成</td></tr>
+</table>
+
+<h2>11. 配置</h2>
+<pre><code># .cogniforge/config.yaml
+architect: llm.deepseek    # Architect 使用 DeepSeek 直接 API 调用</code></pre>
+
+<h2>12. 产物路径</h2>
+<table>
+<tr><th>类型</th><th>路径</th></tr>
+<tr><td>JSON</td><td><span class="filepath">.cogniforge/wiki/sad/sad-001.json</span>（版本递增至 sad-002, ...）</td></tr>
+<tr><td>HTML</td><td><span class="filepath">.cogniforge/html/sad/sad-001.html</span></td></tr>
+<tr><td>ADR</td><td><span class="filepath">.cogniforge/wiki/decisions/ADR-XXX.md</span></td></tr>
+</table>
+
+<h2>13. 关键方法一览</h2>
+
+<table>
+<tr><th>方法</th><th>可见性</th><th>说明</th></tr>
+<tr><td><code>run()</code></td><td>public</td><td>主入口，路由到生成或修改模式</td></tr>
+<tr><td><code>_generate_initial()</code></td><td>private</td><td>初始 SAD 生成，含 JSON 截断重试</td></tr>
+<tr><td><code>modify_interactive()</code></td><td>public</td><td>Patch 模式的交互式架构修改</td></tr>
+<tr><td><code>_normalize_component_type()</code></td><td>classmethod</td><td>LLM 类型名正规化</td></tr>
+<tr><td><code>_assign_ids()</code></td><td>static</td><td>ID 稳定分配 (CMP/CTR/DM)</td></tr>
+<tr><td><code>_apply_patches()</code></td><td>static</td><td>应用 RFC 6902 JSON Patch</td></tr>
+<tr><td><code>_load_current_sad()</code></td><td>private</td><td>加载当前 SAD 文档</td></tr>
+<tr><td><code>_load_latest_prd_dict()</code></td><td>private</td><td>加载当前 PRD 文档</td></tr>
+<tr><td><code>_commit_and_result()</code></td><td>private</td><td>写入、渲染 HTML、原子提交</td></tr>
+</table>
+
+</body>
+</html>

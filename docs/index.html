@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CogniForge Agent 设计文档总览</title>
+<style>
+:root {
+  --bg: #1a1a2e; --surface: #16213e; --border: #0f3460;
+  --text: #e0e0e0; --heading: #e94560; --accent: #0f3460;
+  --code-bg: #0d1117; --tag-bg: #533483; --highlight: #e94560;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+body { background: var(--bg); color: var(--text); max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.7; }
+h1 { color: var(--highlight); font-size: 2.2rem; border-bottom: 3px solid var(--highlight); padding-bottom: 0.5rem; }
+h2 { color: #f0a500; font-size: 1.5rem; margin-top: 2.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { color: #00b4d8; font-size: 1.2rem; margin-top: 1.8rem; }
+code { background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.9em; color: #ffa657; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid var(--border); padding: 0.6rem 1rem; text-align: left; }
+th { background: var(--surface); color: #f0a500; }
+.tag { display: inline-block; background: var(--tag-bg); color: #fff; padding: 0.15em 0.6em; border-radius: 4px; font-size: 0.85em; margin: 0 0.2em; }
+.filepath { color: #58a6ff; font-family: monospace; }
+a { color: #58a6ff; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.tier-design { background: #1a3a1a; border-left: 4px solid #3fb950; }
+.tier-ops { background: #3a1a1a; border-left: 4px solid #e94560; }
+.card { padding: 1rem 1.2rem; border-radius: 6px; margin: 0.8rem 0; transition: background 0.2s; }
+.card:hover { filter: brightness(1.2); }
+.card h3 { margin-top: 0; color: inherit; }
+.card p { margin: 0.3rem 0; color: #aaa; font-size: 0.9em; }
+.warn { background: #3d2e00; border-left: 4px solid #f0a500; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+.info { background: #0d2b4e; border-left: 4px solid #00b4d8; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+.diagram { background: #111; border: 1px solid var(--border); border-radius: 8px; padding: 2rem; margin: 1.5rem 0; font-family: monospace; line-height: 1.3; white-space: pre; overflow-x: auto; color: #58a6ff; }
+</style>
+</head>
+<body>
+
+<h1>CogniForge Agent 设计文档</h1>
+
+<p>本文档集基于 <span class="filepath">src/cogniforge/agents/</span> 和 <span class="filepath">src/cogniforge/models/agent.py</span> 的实际代码实现生成，涵盖全部 8 个角色代理及基类基础设施。</p>
+
+<h2>工作流全景</h2>
+
+<pre class="diagram">
+                          ┌──────────────┐
+                          │   PM Agent   │  PRD (产品需求文档)
+                          │   llm: deepseek  │
+                          └──────┬───────┘
+                                 │ prd-current.json
+                                 ▼
+                          ┌──────────────┐
+                          │Architect Agent│  SAD (系统架构文档)
+                          │   llm: deepseek  │
+                          └──────┬───────┘
+                                 │ sad-001.json
+                                 ▼
+                      ┌──────────────────────┐
+                      │  MDERouter (非LLM)    │  扇形分发 → 每个模块
+                      └──────┬───────────────┘
+                             │ mde_request[]
+                             ▼
+                   ┌─────────────────┐
+                   │  Design Agent   │   LLD (详细设计文档)
+                   │  llm: deepseek   │   × N 个模块并行
+                   └────────┬────────┘
+                            │ lld-{module}-001.json
+                            ▼
+                   ┌─────────────────┐
+                   │ TechLead Agent  │   WBS (任务分解)
+                   │  llm: deepseek   │
+                   └────────┬────────┘
+                            │ tasks/{task_id}.json
+                            ▼
+    ┌───────────────────────────────────────────────────────┐
+    │              执行循环 (per task)                       │
+    │  ┌──────────┐   ┌───────────┐   ┌──────────┐        │
+    │  │ Dev Agent│──▶│ReviewAgent│──▶│ QA Agent │        │
+    │  │  claude  │   │  claude   │   │  claude  │        │
+    │  └──────────┘   └───────────┘   └──────────┘        │
+    └───────────────────────────────────────────────────────┘
+                            │
+                            ▼
+                   ┌─────────────────┐
+                   │  DevOps Agent   │  部署配置 / 部署
+                   │     claude      │
+                   └─────────────────┘
+</pre>
+
+<h2>设计文档索引</h2>
+
+<h3>设计阶段代理 (Design-Phase Agents) — 双 JSON 架构</h3>
+
+<a href="pm_agent.html">
+<div class="card tier-design">
+  <h3>PM Agent <span class="tag">pm</span></h3>
+  <p><strong>PMAgent</strong> — 产品需求文档 (PRD) 的创建和迭代管理。采用双 JSON 架构：prd-current.json (长期状态) + pm-turn-result-schema.json (单轮变更)。支持从原始文本或结构化字段生成，以及基于 RFC 6902 JSON Patch 的交互式修改。</p>
+  <p><code>534 行</code> | src/cogniforge/agents/pm_agent.py | DeepSeek API</p>
+</div>
+</a>
+
+<a href="architect_agent.html">
+<div class="card tier-design">
+  <h3>Architect Agent <span class="tag">architect</span></h3>
+  <p><strong>ArchitectAgent</strong> — 系统架构文档 (SAD) 的生成和增量架构治理。维护 CMP/CTR/DM 三套稳定 ID 体系。包含组件类型正规化、一致性检查和下游交接功能。</p>
+  <p><code>680 行</code> | src/cogniforge/agents/architect_agent.py | DeepSeek API</p>
+</div>
+</a>
+
+<a href="design_agent.html">
+<div class="card tier-design">
+  <h3>Design Agent (MDE) <span class="tag">design</span></h3>
+  <p><strong>DesignAgent</strong> — 5 种模块类型的详细设计文档 (LLD) 生成。三阶段架构（蓝图 → 并行分段 → 组装 + 自校正），最大自校正循环10次。拥有 16 个子 Schema 文件，支持 database/service/gateway/frontend/infrastructure 五种模块类型。</p>
+  <p><code>1141 行</code> | src/cogniforge/agents/design_agent.py | DeepSeek API</p>
+</div>
+</a>
+
+<a href="techlead_agent.html">
+<div class="card tier-design">
+  <h3>Tech Lead Agent <span class="tag">techlead</span></h3>
+  <p><strong>TechLeadAgent</strong> — WBS 任务分解、质量门禁评估、流程控制和复盘总结。5 种 action 路由（create_wbs / evaluate_quality / decide_next / control_flow / retro）。上游问题检测在 WBS 生成前拦截不完整设计。</p>
+  <p><code>552 行</code> | src/cogniforge/agents/techlead_agent.py | DeepSeek API</p>
+</div>
+</a>
+
+<h3>执行阶段代理 (Execution-Phase Agents) — Agentic 委派模式</h3>
+
+<a href="dev_agent.html">
+<div class="card tier-ops">
+  <h3>Dev Agent <span class="tag">dev</span></h3>
+  <p><strong>DevAgent</strong> — 结构化 Prompt 构建 + Claude Code 委派。从 TaskContext 提取 11 段设计约束（接口签名/数据模型/领域对象/业务规则/验收标准/外部契约），构建精确实现说明。</p>
+  <p><code>244 行</code> | src/cogniforge/agents/dev_agent.py | Claude Code CLI</p>
+</div>
+</a>
+
+<a href="review_agent.html">
+<div class="card tier-ops">
+  <h3>Reviewer Agent <span class="tag">reviewer</span></h3>
+  <p><strong>ReviewAgent</strong> — 代码评审委派给 Claude Code，阅读 LLD 了解设计意图后审查代码，生成 PASS/FAIL 标注的 CR 报告。支持多轮评审版本管理。</p>
+  <p><code>120 行</code> | src/cogniforge/agents/review_agent.py | Claude Code CLI</p>
+</div>
+</a>
+
+<a href="qa_agent.html">
+<div class="card tier-ops">
+  <h3>QA Agent <span class="tag">qa</span></h3>
+  <p><strong>QAAgent</strong> — 混合模式：测试用例生成和报告委派给 Claude Code；测试执行（pytest）由子进程直接运行。3 种 action：generate_tests / report / execute_tests。</p>
+  <p><code>222 行</code> | src/cogniforge/agents/qa_agent.py | Claude Code CLI</p>
+</div>
+</a>
+
+<a href="devops_agent.html">
+<div class="card tier-ops">
+  <h3>DevOps Agent <span class="tag">devops</span></h3>
+  <p><strong>DevOpsAgent</strong> — 混合模式：部署配置生成委派给 Claude Code；deploy/rollback 保留为操作存根。支持按环境分版本管理部署配置。</p>
+  <p><code>156 行</code> | src/cogniforge/agents/devops_agent.py | Claude Code CLI</p>
+</div>
+</a>
+
+<h3>基础设施</h3>
+
+<a href="base_agent.html">
+<div class="card" style="background: #1a1a3a; border-left: 4px solid #533483;">
+  <h3>BaseAgent <span class="tag">abstract</span></h3>
+  <p><strong>BaseAgent</strong> — 所有代理的抽象基类。提供审计跟踪 (run_with_audit)、文档读写权限检查 (allowed_modify)、上下文加载、结果格式化等通用能力。</p>
+  <p><code>278 行</code> | src/cogniforge/agents/base.py</p>
+</div>
+</a>
+
+<h2>两种代理模式</h2>
+
+<table>
+<tr><th>模式</th><th>使用代理</th><th>LLM 交互</th><th>特征</th></tr>
+<tr>
+  <td><strong>模式 A — 文档代理</strong></td>
+  <td>PM, Architect, Design, TechLead (部分)</td>
+  <td><code>generate_think_then_json()</code><br><code>generate_interactive_patch()</code></td>
+  <td>双 JSON 架构（长期状态 + Patch 变更）；JSON Schema 验证；DeepSeek 直接 API</td>
+</tr>
+<tr>
+  <td><strong>模式 B — 委派代理</strong></td>
+  <td>Dev, Reviewer, QA (部分), DevOps (部分)</td>
+  <td><code>generate_agentic(prompt, role)</code></td>
+  <td>结构化 Prompt 构建；委派给 Claude Code CLI（工具使用模式）；文件系统操作权限</td>
+</tr>
+<tr>
+  <td><strong>模式 C — 操作代理</strong></td>
+  <td>QA (execute_tests), DevOps (deploy/rollback), TechLead (decide_next/control_flow/retro)</td>
+  <td>无 LLM</td>
+  <td>纯代码逻辑或子进程调用；确定性操作</td>
+</tr>
+</table>
+
+<h2>LLM 提供者分配</h2>
+
+<table>
+<tr><th>代理</th><th>提供者</th><th>原因</th></tr>
+<tr><td>PM, Architect, Design, TechLead</td><td><code>llm.deepseek</code></td><td>需要先思考后输出结构化 JSON (think → JSON)，DeepSeek 的 API 模式更适合此范式</td></tr>
+<tr><td>Dev, Reviewer, QA, DevOps</td><td><code>agent.claude_code</code></td><td>需要文件系统操作能力（读写代码、运行测试），Claude Code CLI 提供完整工具使用权限</td></tr>
+</table>
+
+<h2>Schema 体系</h2>
+
+<table>
+<tr><th>代理</th><th>文档 Schema</th><th>轮次结果 Schema</th></tr>
+<tr><td>PM</td><td><span class="filepath">schemas/prd-schema.json</span></td><td><span class="filepath">schemas/pm-turn-result-schema.json</span></td></tr>
+<tr><td>Architect</td><td><span class="filepath">schemas/sad-schema.json</span></td><td><span class="filepath">schemas/se-turn-result-schema.json</span></td></tr>
+<tr><td>Design</td><td><span class="filepath">schemas/lld-schema.json</span></td><td><span class="filepath">schemas/mde-turn-result-schema.json</span></td></tr>
+<tr><td>TechLead</td><td><span class="filepath">schemas/wbs-task-schema.json</span></td><td><span class="filepath">schemas/tl-turn-result-schema.json</span></td></tr>
+<tr><td>Dev</td><td>—</td><td><span class="filepath">schemas/dev-run-result-schema.json</span></td></tr>
+<tr><td>Reviewer</td><td><span class="filepath">schemas/cr-report-schema.json</span></td><td>—</td></tr>
+<tr><td>QA</td><td><span class="filepath">schemas/test-case-schema.json</span><br><span class="filepath">schemas/test-report-schema.json</span></td><td>—</td></tr>
+<tr><td>DevOps</td><td><span class="filepath">schemas/deploy-config-schema.json</span></td><td>—</td></tr>
+</table>
+
+<h2>DAG 工作流</h2>
+
+<pre>
+PRD → REQ_REVIEW → SAD → ARCH_REVIEW → LLD → DES_REVIEW → WBS → CODING → CR → TEST → FIX → UAT → RETRO
+ ↑                    ↑                     ↑                    ↑          ↑     ↑
+ PM               Architect             Design             TechLead   Reviewer  QA
+</pre>
+
+<div class="info">
+<strong>生成时间：</strong>2026-05-26 &nbsp;|&nbsp; <strong>基于：</strong>dev 分支实际代码实现
+</div>
+
+</body>
+</html>

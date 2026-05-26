@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BaseAgent 基类设计文档</title>
+<style>
+:root {
+  --bg: #1a1a2e; --surface: #16213e; --border: #0f3460;
+  --text: #e0e0e0; --heading: #e94560; --accent: #0f3460;
+  --code-bg: #0d1117; --tag-bg: #533483; --highlight: #e94560;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+body { background: var(--bg); color: var(--text); max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.7; }
+h1 { color: var(--highlight); font-size: 2.2rem; border-bottom: 3px solid var(--highlight); padding-bottom: 0.5rem; }
+h2 { color: #f0a500; font-size: 1.5rem; margin-top: 2.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { color: #00b4d8; font-size: 1.2rem; margin-top: 1.8rem; }
+h4 { color: #aaa; font-size: 1.05rem; margin-top: 1.5rem; }
+code { background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.9em; color: #ffa657; }
+pre { background: var(--code-bg); padding: 1.2rem; border-radius: 8px; overflow-x: auto; border: 1px solid var(--border); }
+pre code { background: none; padding: 0; color: #e6edf3; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid var(--border); padding: 0.6rem 1rem; text-align: left; }
+th { background: var(--surface); color: #f0a500; }
+.tag { display: inline-block; background: var(--tag-bg); color: #fff; padding: 0.15em 0.6em; border-radius: 4px; font-size: 0.85em; margin: 0 0.2em; }
+.filepath { color: #58a6ff; font-family: monospace; }
+.info { background: #0d2b4e; border-left: 4px solid #00b4d8; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>BaseAgent — 代理抽象基类</h1>
+
+<p><strong>类名:</strong> <code>BaseAgent(ABC)</code> &nbsp;|&nbsp;
+<strong>文件:</strong> <span class="filepath">src/cogniforge/agents/base.py</span> (278 行) &nbsp;|&nbsp;
+<strong>类型:</strong> <span class="tag">abstract</span></p>
+
+<h2>1. 概述</h2>
+
+<p><code>BaseAgent</code> 是所有 CogniForge 代理的抽象基类，定义了统一的生命周期、审计跟踪、文档访问控制和结果格式化机制。每个具体代理通过实现 <code>run()</code> 方法来提供特定角色行为。</p>
+
+<h2>2. 设计原则</h2>
+
+<ol>
+<li><strong>单一职责：</strong> 每个 Agent 只做一件事</li>
+<li><strong>明确输入输出：</strong> run() 的 input_data dict 和返回值 dict 形成清晰契约</li>
+<li><strong>必须读写文档：</strong> Agent 通过 wiki_system 读取和持久化结构化文档</li>
+<li><strong>限定修改范围：</strong> 只能修改 AgentDefinition 中声明的 allowed_modify 路径</li>
+<li><strong>全部可审核：</strong> 每个操作通过 run_with_audit() 自动记录审计日志</li>
+</ol>
+
+<h2>3. 构造函数参数</h2>
+
+<table>
+<tr><th>参数</th><th>类型</th><th>必需</th><th>说明</th></tr>
+<tr><td><code>role</code></td><td>AgentRole</td><td>是</td><td>代理角色枚举 (pm/architect/design/techlead/dev/reviewer/qa/devops)</td></tr>
+<tr><td><code>wiki_system</code></td><td>WikiSystem</td><td>是</td><td>Wiki 文档系统，提供读写和列出文档的能力</td></tr>
+<tr><td><code>context_loader</code></td><td>ContextLoader</td><td>是</td><td>确定性上下文加载器（非 RAG）</td></tr>
+<tr><td><code>config</code></td><td>Config</td><td>否</td><td>配置对象，默认使用 Config()</td></tr>
+<tr><td><code>audit_log</code></td><td>AuditLog</td><td>否</td><td>审计日志记录器，默认使用 AuditLog(config)</td></tr>
+<tr><td><code>agent</code></td><td>BaseLLMAdapter</td><td>否</td><td>LLM 适配器，为 None 时代理无法调用 LLM</td></tr>
+<tr><td><code>task_engine</code></td><td>Any</td><td>否</td><td>任务引擎（TechLead 使用），其他代理可能不使用</td></tr>
+</table>
+
+<h2>4. 抽象方法</h2>
+
+<h3>4.1 run()</h3>
+<pre><code>@abstractmethod
+def run(self, input_data: dict) -> dict:
+    """执行代理逻辑。子类必须实现。"""
+</code></pre>
+
+<p>每个具体代理的 <code>run()</code> 是入口点，接收 <code>input_data</code> 字典，返回标准化的结果字典。</p>
+
+<h2>5. 审计跟踪 (Audit Trail)</h2>
+
+<h3>5.1 run_with_audit()</h3>
+
+<pre><code>def run_with_audit(self, input_data: dict) -> dict</code></pre>
+
+<p>包装 <code>run()</code>，自动记录以下信息：</p>
+
+<table>
+<tr><th>记录项</th><th>说明</th></tr>
+<tr><td><code>input_context</code></td><td>输入数据的键列表、任务信息、可用文档</td></tr>
+<tr><td><code>output_artifacts</code></td><td>生成的产物路径列表</td></tr>
+<tr><td><code>output_summary</code></td><td>结果消息</td></tr>
+<tr><td><code>reasoning</code></td><td>推理过程（LLM 原始输出）</td></tr>
+<tr><td><code>decisions</code></td><td>关键决策列表</td></tr>
+<tr><td><code>duration_ms</code></td><td>执行耗时（毫秒）</td></tr>
+<tr><td><code>status</code></td><td>success / failed</td></tr>
+<tr><td><code>error</code></td><td>异常信息（仅失败时）</td></tr>
+</table>
+
+<div class="info">
+<strong>异常处理：</strong>如果 <code>run()</code> 抛出异常，<code>run_with_audit()</code> 仍会记录一条状态为 "failed" 的审计条目，然后重新抛出异常。
+</div>
+
+<h2>6. 文档操作</h2>
+
+<h3>6.1 read_document()</h3>
+
+<pre><code>def read_document(
+    self,
+    doc_type: str,        # "prd" | "sad" | "lld" | "adr" | "task" | "test_case" | "report" | "deploy"
+    doc_id: str = None,   # 文档 ID
+    module: str = None,   # 模块名（LLD 等需要）
+) -> Optional[Document]</code></pre>
+
+<h3>6.2 write_document()</h3>
+
+<pre><code>def write_document(
+    self,
+    doc: Document,
+    commit_message: str = None,
+) -> None</code></pre>
+
+<p>写入前通过 <code>_check_allowed_path()</code> 验证路径是否在 AgentDefinition.allowed_modify 范围内。</p>
+
+<h3>6.3 _check_allowed_path()</h3>
+
+<pre><code>def _check_allowed_path(self, path: str) -> None</code></pre>
+
+<p>将路径与 AgentDefinition 中声明的 <code>allowed_modify</code> 前缀列表进行匹配。如果路径不在任何允许范围内，抛出 <code>AgentError</code>。</p>
+
+<h2>7. 上下文加载</h2>
+
+<h3>7.1 load_context()</h3>
+
+<pre><code>def load_context(
+    self,
+    task_id: str = None,
+    module: str = None,
+    include_code: bool = True,
+) -> dict[str, str]</code></pre>
+
+<p>委托给 <code>ContextLoader.load_context()</code>，按确定性规则（非 RAG）加载上下文。</p>
+
+<h2>8. 结果格式化</h2>
+
+<h3>8.1 format_result()</h3>
+
+<pre><code>def format_result(
+    self,
+    status: str,           # "success" | "failed"
+    message: str = "",
+    artifacts: list[str] = None,   # 产物路径列表
+    data: dict = None,             # 结构化数据
+    reasoning: str = "",           # LLM 原始输出
+    decisions: list[str] = None,   # 关键决策
+) -> dict</code></pre>
+
+<p>返回标准化的结果字典：</p>
+<pre><code>{
+    "status": "success",
+    "message": "...",
+    "artifacts": ["path/to/file.json"],
+    "data": {},
+    "agent": "pm",           # 从 self.role.value 自动填充
+    "reasoning": "...",
+    "decisions": []
+}</code></pre>
+
+<h2>9. 审计日志结构</h2>
+
+<p><code>_log_operation()</code> 调用 <code>audit_log.log()</code> 记录：</p>
+
+<table>
+<tr><th>字段</th><th>类型</th><th>说明</th></tr>
+<tr><td><code>agent_role</code></td><td>str</td><td>代理角色值</td></tr>
+<tr><td><code>operation</code></td><td>str</td><td>操作名称 (如 "pm_run")</td></tr>
+<tr><td><code>input_context</code></td><td>dict</td><td>输入上下文（任务 ID、模块名等）</td></tr>
+<tr><td><code>input_prompt</code></td><td>str</td><td>格式化后的 Prompt 文本</td></tr>
+<tr><td><code>output_artifacts</code></td><td>list</td><td>产物路径列表</td></tr>
+<tr><td><code>output_summary</code></td><td>str</td><td>结果摘要</td></tr>
+<tr><td><code>reasoning</code></td><td>str</td><td>推理过程</td></tr>
+<tr><td><code>decisions</code></td><td>list</td><td>关键决策</td></tr>
+<tr><td><code>duration_ms</code></td><td>int</td><td>执行耗时</td></tr>
+<tr><td><code>status</code></td><td>str</td><td>success / failed</td></tr>
+</table>
+
+<h2>10. AgentDefinition 集成</h2>
+
+<p>构造函数中自动通过 <code>get_agent_definition(role)</code> 加载对应 AgentDefinition：</p>
+
+<pre><code>self.definition = get_agent_definition(role)  # AgentDefinition Pydantic 模型
+if not self.definition:
+    raise AgentError(f"No definition found for role {role}")</code></pre>
+
+<p>AgentDefinition 提供：</p>
+<ul>
+<li><code>definition.allowed_modify</code> — 用于路径权限检查</li>
+<li><code>definition.responsibilities</code> — 代理职责列表</li>
+<li><code>definition.input_docs</code> / <code>definition.output_docs</code> — 输入输出文档类型</li>
+</ul>
+
+<h2>11. 生命周期</h2>
+
+<pre>
+构造 → run_with_audit(input_data)
+         ├─ _capture_input_context() → 记录输入
+         ├─ run(input_data)          → 子类实现
+         │    ├─ load_context()      → 加载上下文
+         │    ├─ read_document()     → 读取文档
+         │    ├─ agent.generate_*()  → LLM 交互
+         │    ├─ write_document()    → 持久化产物 (_check_allowed_path)
+         │    └─ format_result()     → 格式化结果
+         ├─ _log_operation()         → 记录审计
+         └─ return result
+</pre>
+
+<h2>12. 继承关系</h2>
+
+<pre>
+BaseAgent (ABC)
+├── PMAgent          (pm_agent.py)
+├── ArchitectAgent   (architect_agent.py)
+├── DesignAgent      (design_agent.py)
+├── TechLeadAgent    (techlead_agent.py)
+├── DevAgent         (dev_agent.py)
+├── ReviewAgent      (review_agent.py)
+├── QAAgent          (qa_agent.py)
+└── DevOpsAgent      (devops_agent.py)
+</pre>
+
+<p><a href="index.html">← 返回总览</a></p>
+
+</body>
+</html>

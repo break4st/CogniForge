@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Design Agent (MDE) 设计文档</title>
+<style>
+:root {
+  --bg: #1a1a2e; --surface: #16213e; --border: #0f3460;
+  --text: #e0e0e0; --heading: #e94560; --accent: #0f3460;
+  --code-bg: #0d1117; --tag-bg: #533483; --highlight: #e94560;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+body { background: var(--bg); color: var(--text); max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.7; }
+h1 { color: var(--highlight); font-size: 2.2rem; border-bottom: 3px solid var(--highlight); padding-bottom: 0.5rem; }
+h2 { color: #f0a500; font-size: 1.5rem; margin-top: 2.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { color: #00b4d8; font-size: 1.2rem; margin-top: 1.8rem; }
+h4 { color: #aaa; font-size: 1.05rem; margin-top: 1.5rem; }
+code { background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.9em; color: #ffa657; }
+pre { background: var(--code-bg); padding: 1.2rem; border-radius: 8px; overflow-x: auto; border: 1px solid var(--border); }
+pre code { background: none; padding: 0; color: #e6edf3; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid var(--border); padding: 0.6rem 1rem; text-align: left; }
+th { background: var(--surface); color: #f0a500; }
+.tag { display: inline-block; background: var(--tag-bg); color: #fff; padding: 0.15em 0.6em; border-radius: 4px; font-size: 0.85em; margin: 0 0.2em; }
+.filepath { color: #58a6ff; font-family: monospace; }
+.schema { color: #3fb950; }
+.warn { background: #3d2e00; border-left: 4px solid #f0a500; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+.info { background: #0d2b4e; border-left: 4px solid #00b4d8; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>Design Agent (MDE) — 模块设计工程师代理</h1>
+
+<p><strong>类名:</strong> <code>DesignAgent(BaseAgent)</code> &nbsp;|&nbsp;
+<strong>文件:</strong> <span class="filepath">src/cogniforge/agents/design_agent.py</span> (1141 行，最大文件) &nbsp;|&nbsp;
+<strong>角色标识:</strong> <span class="tag">design</span></p>
+
+<h2>1. 概述</h2>
+
+<p>Design Agent (MDE — Module Design Engineer) 是 CogniForge 系统中最复杂的代理，负责为每个模块生成详细设计文档 (LLD)。它支持 <strong>5 种模块类型</strong>，每种拥有独特的所有权规则和章节要求。采用 <strong>三阶段生成架构</strong>（蓝图 → 并行分段 → 组装）和自校正循环以确保 LLM 输出质量。</p>
+
+<div class="info">
+<strong>设计理念：</strong>MDE 的复杂度源于"模块类型正交性"——每种 module_type（database/service/gateway/frontend/infrastructure）有完全不同的设计规则。通过 <code>_OWNERSHIP_RULES</code> 字典和分段 LLD schema 系统来管理这一正交性。
+</div>
+
+<h2>2. 角色定义</h2>
+
+<table>
+<tr><th>属性</th><th>值</th></tr>
+<tr><td>名称</td><td>MDE Agent (Module Design Engineer)</td></tr>
+<tr><td>描述</td><td>生成详细设计文档，定义数据模型，指定接口规范</td></tr>
+<tr><td>输入文档类型</td><td><span class="tag">prd</span>, <span class="tag">sad</span></td></tr>
+<tr><td>输出文档类型</td><td><span class="tag">lld</span></td></tr>
+<tr><td>允许修改路径</td><td><span class="filepath">.cogniforge/wiki/lld/</span></td></tr>
+<tr><td>LLM 提供者</td><td><code>llm.deepseek</code>（直接 API 调用）</td></tr>
+<tr><td>Schema</td><td><span class="schema">lld-schema.json</span>, <span class="schema">mde-turn-result-schema.json</span> + 16 个子 schema 文件</td></tr>
+</table>
+
+<h2>3. 模块类型体系</h2>
+
+<p>MDE Agent 支持 5 种模块类型，每种有独特的设计规则和章节：</p>
+
+<table>
+<tr><th>类型</th><th>唯一核心章节</th><th>所有权规则</th></tr>
+<tr><td><code>database</code></td><td>index_strategy, migration_strategy, capacity_estimation, connection_contracts</td><td>所有表用 ownership=canonical，统一定义索引和迁移策略</td></tr>
+<tr><td><code>service</code></td><td>domain_objects, service_contracts, business_rules</td><td>表仅 reference+derived；entity 每个属性标注 source</td></tr>
+<tr><td><code>gateway</code></td><td>route_table, middleware_chain, auth_policy, rate_limiting</td><td>所有模型 ownership=owned；响应体必须完整展开</td></tr>
+<tr><td><code>frontend</code></td><td>component_tree, state_design, route_design, interaction_flows, api_integration</td><td>组件级状态模型；不定义数据库表</td></tr>
+<tr><td><code>infrastructure</code></td><td>topology, message_contracts, reliability_strategy</td><td>中间件数据结构（Redis/MQ/文件存储）；分 MQ/缓存/存储子类型</td></tr>
+</table>
+
+<h2>4. 三阶段生成架构</h2>
+
+<p>对于支持分段生成的模块类型，MDE 使用三阶段流水线：</p>
+
+<h3>阶段 1: 蓝图规划 (Blueprint)</h3>
+<pre>
+_generate_blueprint():
+  → LLM 生成顶层结构:
+    - meta / source / module_boundary
+    - overview / traceability
+    - artifact_index (锁定所有 section 的 ID)
+  → 输出: blueprint dict
+</pre>
+
+<h3>阶段 2: 并行分段生成</h3>
+<pre>
+_generate_sections_parallel():
+  → ThreadPoolExecutor (最多 8 workers)
+  → 每个 section 独立调用 _generate_section():
+    - 传入 blueprint (确保 ID 一致性)
+    - 加载对应 schema 片段 (lld-data-models.json 等)
+    - 生成单个 section 的 JSON 内容
+  → 收集所有 section 结果
+</pre>
+
+<p>分段分配（按模块类型）：</p>
+<table>
+<tr><th>模块类型</th><th>分段列表</th></tr>
+<tr><td>service</td><td>data_models, interfaces, error_handling, domain_objects, service_contracts, business_rules</td></tr>
+<tr><td>gateway</td><td>data_models, interfaces, error_handling, route_table</td></tr>
+<tr><td>frontend</td><td>data_models, interfaces, component_tree, state_design, route_design, interaction_flows, api_integration</td></tr>
+<tr><td>database</td><td>data_models, interfaces, index_strategy, migration_strategy, capacity_estimation, connection_contracts</td></tr>
+<tr><td>infrastructure</td><td>data_models, interfaces, topology, message_contracts, reliability_strategy</td></tr>
+</table>
+
+<h3>阶段 3: 组装 + 自校正</h3>
+<pre>
+_assemble_lld():
+  → 合并 blueprint + sections → 完整 LLD JSON
+  ↓
+_validate_and_commit():
+  → lld_validator.validate_lld_json() → 校验
+  → 未通过 → LLM 修正循环（最多 10 次）
+    每次告诉 LLM 具体违反了哪条规则
+  → 通过后 → 渲染 HTML + git commit
+</pre>
+
+<div class="warn">
+<strong>自校正循环：</strong>MDE 是唯一拥有内建自校正循环的代理。校验失败时，它会将完整校验报告反馈给 LLM 并要求修正，最多尝试 10 次。这极大提高了 LLM 输出的合规率。
+</div>
+
+<h2>5. 契约上下文构建</h2>
+
+<p>在生成 LLD 前，MDE 构造丰富的上下文 (<code>_build_contract_context()</code>)：</p>
+
+<ol>
+<li><strong>模块自描述:</strong> 从 SAD 提取本模块的 components 定义</li>
+<li><strong>Provider 契约:</strong> 本模块作为提供者的接口契约（签名不可修改）</li>
+<li><strong>Consumer 契约:</strong> 本模块依赖的外部接口（引用确切签名）</li>
+<li><strong>邻居 LLD:</strong> 已完成的其他模块接口（交叉引用验证）</li>
+<li><strong>系统拓扑:</strong> 全局 layers + connections + data_flow</li>
+<li><strong>Primary Database:</strong> 标准表的权威定义（只能 reference，不可 redefine）</li>
+<li><strong>全局技术栈:</strong> SAD tech_stack（限制 LLM 不可自创技术选型）</li>
+</ol>
+
+<h2>6. 模块类型推导</h2>
+
+<p>MDE 通过 SAD components 中的 type 字段自动推导模块类型 (<code>_resolve_module_type()</code>)：</p>
+
+<table>
+<tr><th>SAD Component Type</th><th>ModuleType</th></tr>
+<tr><td><code>database</code></td><td>database</td></tr>
+<tr><td><code>infrastructure</code></td><td>infrastructure</td></tr>
+<tr><td><code>service</code></td><td>service</td></tr>
+<tr><td><code>gateway</code></td><td>gateway</td></tr>
+<tr><td><code>frontend</code></td><td>frontend</td></tr>
+<tr><td>未匹配</td><td>service (默认)</td></tr>
+</table>
+
+<h2>7. 交互式修改流程</h2>
+
+<pre>
+mde_request 存在（由 MDERouter 生成）
+  ↓
+modify_interactive():
+  1. 从 mde_request 提取 target_module/prd_slice/sad_slice/upstream_change
+  2. 加载当前 LLD
+  3. 加载 mde-turn-result-schema.json
+  4. 构建 system_prompt (11 条 MDE 设计规则)
+  5. agent.generate_interactive_patch() → LLM 输出 mde-turn-result
+  6. 校验 → 应用 patches → 校验更新后的 LLD
+  7. 写入、渲染、提交
+  8. 返回 implementation_handoff + test_handoff 给下游
+</pre>
+
+<h2>8. Schema 体系</h2>
+
+<p>MDE 的 Schema 采用基类 + 扩展的 <strong>组合模式</strong>：</p>
+
+<pre>
+schemas/agents/lld/
+├── lld-base.json              # 所有模块共有的基础字段
+├── lld-data-models.json       # data_models 分段 schema
+├── lld-interfaces.json        # interfaces 分段 schema
+├── lld-error-handling.json    # 错误处理分段 schema
+├── lld-workflow.json          # 工作流分段 schema
+├── lld-domain-objects.json    # service 专属: domain_objects
+├── lld-service-contracts.json # service 专属: service_contracts
+├── lld-business-rules.json    # service 专属: business_rules
+├── lld-component-tree.json    # frontend 专属
+├── lld-state-design.json      # frontend 专属
+├── lld-route-design.json      # frontend 专属
+├── lld-interaction-flows.json # frontend 专属
+├── lld-api-integration.json   # frontend 专属
+├── lld-gateway.json           # gateway 专属
+├── lld-database.json          # database 专属
+├── lld-infrastructure.json    # infrastructure 专属
+└── lld-[其它].json
+</pre>
+
+<p>Prompt 中按模块类型动态拼装这些片段（<code>_build_conditional_schema()</code>）。</p>
+
+<h2>9. 所有权语义</h2>
+
+<p>MDE 强制执行三种所有权模型：</p>
+
+<table>
+<tr><th>ownership</th><th>含义</th><th>适用模块</th></tr>
+<tr><td><code>canonical</code></td><td>我是唯一权威定义者；他人必须引用我</td><td>仅 database</td></tr>
+<tr><td><code>derived</code></td><td>我引用 canonical 模型；可添加 local_extensions</td><td>service, gateway</td></tr>
+<tr><td><code>owned</code></td><td>此模型完全归本模块所有</td><td>所有类型</td></tr>
+</table>
+
+<h2>10. ID 体系</h2>
+
+<table>
+<tr><th>前缀</th><th>用途</th><th>示例</th></tr>
+<tr><td><code>DM-XXX</code></td><td>数据模型</td><td>DM-001, DM-002</td></tr>
+<tr><td><code>IF-XXX</code></td><td>接口定义</td><td>IF-001, IF-002</td></tr>
+<tr><td><code>DO-XXX</code></td><td>领域对象 (仅 service)</td><td>DO-001</td></tr>
+<tr><td><code>SC-XXX</code></td><td>服务契约 (仅 service)</td><td>SC-001</td></tr>
+</table>
+
+<h2>11. 配置</h2>
+<pre><code># .cogniforge/config.yaml
+design: llm.deepseek    # MDE 使用 DeepSeek 直接 API 调用</code></pre>
+
+<h2>12. 产物路径</h2>
+<table>
+<tr><th>类型</th><th>路径</th></tr>
+<tr><td>JSON</td><td><span class="filepath">.cogniforge/wiki/lld/{module}/lld-{module}-001.json</span></td></tr>
+<tr><td>HTML</td><td><span class="filepath">.cogniforge/html/lld/{module}/lld-{module}-001.html</span></td></tr>
+</table>
+
+<h2>13. 关键方法一览</h2>
+
+<table>
+<tr><th>方法</th><th>可见性</th><th>说明</th></tr>
+<tr><td><code>run()</code></td><td>public</td><td>主入口，路由到生成或修改模式；首选分段生成，失败回退单阶段</td></tr>
+<tr><td><code>_resolve_module_type()</code></td><td>private</td><td>从 SAD 推导模块类型</td></tr>
+<tr><td><code>_build_contract_context()</code></td><td>private</td><td>构建 7 类上下文信息</td></tr>
+<tr><td><code>_generate_blueprint()</code></td><td>private</td><td>阶段 1: 生成蓝图（顶层结构 + artifact_index）</td></tr>
+<tr><td><code>_generate_section()</code></td><td>private</td><td>阶段 2: 生成单个分段</td></tr>
+<tr><td><code>_generate_sections_parallel()</code></td><td>private</td><td>阶段 2: ThreadPoolExecutor 并行生成所有分段</td></tr>
+<tr><td><code>_assemble_lld()</code></td><td>private</td><td>阶段 3: 合并蓝图 + 分段 → 完整 LLD</td></tr>
+<tr><td><code>_validate_and_commit()</code></td><td>private</td><td>校验 + LLM 自校正循环（最多 10 次）</td></tr>
+<tr><td><code>modify_interactive()</code></td><td>public</td><td>Patch 模式的交互式修改</td></tr>
+<tr><td><code>_assign_ids()</code></td><td>static</td><td>分配 DM/IF/DO/SC ID</td></tr>
+</table>
+
+</body>
+</html>

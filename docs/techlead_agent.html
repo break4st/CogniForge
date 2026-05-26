@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tech Lead Agent 设计文档</title>
+<style>
+:root {
+  --bg: #1a1a2e; --surface: #16213e; --border: #0f3460;
+  --text: #e0e0e0; --heading: #e94560; --accent: #0f3460;
+  --code-bg: #0d1117; --tag-bg: #533483; --highlight: #e94560;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+body { background: var(--bg); color: var(--text); max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.7; }
+h1 { color: var(--highlight); font-size: 2.2rem; border-bottom: 3px solid var(--highlight); padding-bottom: 0.5rem; }
+h2 { color: #f0a500; font-size: 1.5rem; margin-top: 2.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { color: #00b4d8; font-size: 1.2rem; margin-top: 1.8rem; }
+h4 { color: #aaa; font-size: 1.05rem; margin-top: 1.5rem; }
+code { background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.9em; color: #ffa657; }
+pre { background: var(--code-bg); padding: 1.2rem; border-radius: 8px; overflow-x: auto; border: 1px solid var(--border); }
+pre code { background: none; padding: 0; color: #e6edf3; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid var(--border); padding: 0.6rem 1rem; text-align: left; }
+th { background: var(--surface); color: #f0a500; }
+.tag { display: inline-block; background: var(--tag-bg); color: #fff; padding: 0.15em 0.6em; border-radius: 4px; font-size: 0.85em; margin: 0 0.2em; }
+.filepath { color: #58a6ff; font-family: monospace; }
+.schema { color: #3fb950; }
+.warn { background: #3d2e00; border-left: 4px solid #f0a500; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+.info { background: #0d2b4e; border-left: 4px solid #00b4d8; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>Tech Lead Agent — 技术主管代理</h1>
+
+<p><strong>类名:</strong> <code>TechLeadAgent(BaseAgent)</code> &nbsp;|&nbsp;
+<strong>文件:</strong> <span class="filepath">src/cogniforge/agents/techlead_agent.py</span> (552 行) &nbsp;|&nbsp;
+<strong>角色标识:</strong> <span class="tag">techlead</span></p>
+
+<h2>1. 概述</h2>
+
+<p>Tech Lead Agent 是 CogniForge 工作流中的调度和治理中枢，负责将 LLD 转化为可执行的 WBS 任务、评估质量门禁、执行流程控制以及生成复盘总结。它将"思考型"任务（WBS 生成、质量评估）委派给 LLM，同时保持"操作型"决策（流程控制）在代码层面。</p>
+
+<div class="info">
+<strong>设计理念：</strong>Tech Lead 不是在 LLM 中做流程决策，而是在代码中做决策（decide_next/control_flow），将 LLM 限制在需要推理能力的任务（WBS 分解、质量评估）上。
+</div>
+
+<h2>2. 角色定义</h2>
+
+<table>
+<tr><th>属性</th><th>值</th></tr>
+<tr><td>名称</td><td>Tech Lead Agent</td></tr>
+<tr><td>描述</td><td>调度任务，治理执行过程</td></tr>
+<tr><td>职责</td><td>创建 WBS、调度任务、评估质量、决策下一步、控制流程</td></tr>
+<tr><td>输入文档类型</td><td><span class="tag">prd</span>, <span class="tag">sad</span>, <span class="tag">lld</span>, <span class="tag">task</span></td></tr>
+<tr><td>输出文档类型</td><td><span class="tag">task</span></td></tr>
+<tr><td>允许修改路径</td><td><span class="filepath">.cogniforge/wiki/tasks/</span></td></tr>
+<tr><td>LLM 提供者</td><td><code>llm.deepseek</code>（直接 API 调用）</td></tr>
+<tr><td>Schema</td><td><span class="schema">wbs-task-schema.json</span>, <span class="schema">tl-turn-result-schema.json</span>, <span class="schema">quality-report-schema.json</span></td></tr>
+</table>
+
+<h2>3. Action 路由</h2>
+
+<p>Tech Lead 是所有代理中 action 最丰富的——通过 action 参数路由到不同处理逻辑：</p>
+
+<pre>
+run(input_data):
+  action = input_data["action"]
+  ├─ "create_wbs"       → _structured_create_wbs()     [需要 LLM]
+  ├─ "evaluate_quality" → _agentic_evaluate_quality()   [需要 LLM]
+  ├─ "decide_next"      → _decide_next()                [纯代码]
+  ├─ "control_flow"     → _control_flow()               [纯代码]
+  └─ "retro"            → _retro()                      [纯代码]
+</pre>
+
+<h2>4. WBS 创建流程（核心）</h2>
+
+<pre>
+create_wbs:
+  1. 查找模块的 LLD 文档
+  2. 构建 RepoConventions (从 config + 可选 SAD 补充)
+  3. WBSAssembler.assemble(module, lld_path)
+     ├─ 机械分解 (decomposition_rules) → task stubs
+     ├─ LLM 丰富 (enrichment) → 完整 task dicts
+     └─ 覆盖率分析 (coverage_validator)
+  4. assembler.validate_all() → 四维质量门禁验证
+  5. 检查上游问题 (_detect_upstream_issues)
+     - service_contracts 缺少 output/signature
+     - interfaces 缺少 response 定义
+     → 有 upstream_issues → 返回 blocked
+  6. _register_wbs_tasks() → 逐 task 注册到 TaskEngine
+     - 提取 context / lld_refs / expected_output_files / layer
+     - 提取 source / implementation_boundary / validation
+     - 提取 dev_agent / file_locks / acceptance_criteria
+     - 创建 task → _save_task() → 写 JSON + git add
+  7. _build_and_write_wbs_output()
+     - 构建 WBSIndex (meta/source/nodes/edges/execution_batches/coverage/quality_gates)
+     - 写入 wbs.json + tl-turn-result.json
+  8. 返回结果含 task_count, coverage, quality_gates
+</pre>
+
+<h3>4.1 上游问题检测</h3>
+
+<p>在生成 WBS 之前，<code>_detect_upstream_issues()</code> 检查 LLD 完整性：</p>
+<ul>
+<li><strong>incomplete_contract:</strong> service_contracts 中的 method 缺少 output schema 或 signature</li>
+<li><strong>missing_response:</strong> interfaces 中的接口缺少 response 定义</li>
+</ul>
+<p>发现问题则返回 <code>status=blocked</code> 并附 suggested_action，要求 MDE 补齐。</p>
+
+<h3>4.2 执行批次计算</h3>
+
+<p><code>compute_execution_batches()</code> 基于任务依赖 DAG 计算并行执行批次，使 Dev Agent 能够安全地并行执行无依赖冲突的任务。</p>
+
+<h2>5. 质量评估流程</h2>
+
+<pre>
+evaluate_quality:
+  1. 确定 report doc_id (quality-{module}-{seq})
+  2. 构建 prompt → 要求 LLM 阅读 LLD/代码/CR 报告/测试报告
+  3. agent.generate_agentic(prompt, role="techlead")
+  4. 校验生成的 quality report 是否符合 quality-report-schema.json
+  5. 写入、渲染、提交
+</pre>
+
+<h2>6. 复盘流程 (RETRO)</h2>
+
+<pre>
+retro:
+  1. 统计模块任务状态: done/failed/blocked/total
+  2. 计算估算 vs 实际工时比率
+  3. 构建 retro_data:
+     - metrics: 完成率 + 估算准确率
+     - upstream_feedback: {pm, se, mde, wbs_rules}
+     - process_improvements
+  4. 写入 .cogniforge/wiki/reports/retro-{module}-001.json
+</pre>
+
+<h2>7. WBS 任务模型</h2>
+
+<p>每个 WBS 任务注册到 TaskEngine 时，包含以下结构化字段：</p>
+
+<table>
+<tr><th>字段</th><th>类型</th><th>说明</th></tr>
+<tr><td><code>name</code></td><td>str</td><td>任务名称</td></tr>
+<tr><td><code>module</code></td><td>str</td><td>所属模块</td></tr>
+<tr><td><code>priority</code></td><td>TaskPriority</td><td>P0-P3 优先级</td></tr>
+<tr><td><code>deps</code></td><td>list[str]</td><td>依赖任务名称列表</td></tr>
+<tr><td><code>context</code></td><td>TaskContext</td><td>包含 scope(interfaces/service_contracts/data_models...) + lld_path + external_contracts</td></tr>
+<tr><td><code>lld_refs</code></td><td>list[LLDReference]</td><td>关联的 LLD 章节引用</td></tr>
+<tr><td><code>expected_output_files</code></td><td>list[str]</td><td>期望输出文件列表</td></tr>
+<tr><td><code>layer</code></td><td>int</td><td>执行层级</td></tr>
+<tr><td><code>source</code></td><td>TaskSource</td><td>任务来源追溯（LLD artifact）</td></tr>
+<tr><td><code>implementation_boundary</code></td><td>ImplementationBoundary</td><td>实现边界定义</td></tr>
+<tr><td><code>validation</code></td><td>TaskValidation</td><td>验证规则</td></tr>
+<tr><td><code>dev_agent</code></td><td>DevAgentConfig</td><td>Dev Agent 配置</td></tr>
+<tr><td><code>file_locks</code></td><td>list[str]</td><td>文件锁（防止并行冲突）</td></tr>
+<tr><td><code>acceptance_criteria</code></td><td>list[AcceptanceCriterion]</td><td>验收标准</td></tr>
+</table>
+
+<h2>8. 四维质量门禁</h2>
+
+<p><code>assembler.validate_all()</code> 执行四维验证 + Schema 验证：</p>
+
+<table>
+<tr><th>维度</th><th>检查内容</th></tr>
+<tr><td><strong>覆盖率</strong></td><td>LLD artifacts 是否都有对应任务覆盖</td></tr>
+<tr><td><strong>Schema</strong></td><td>每个 task dict 是否符合 wbs-task-schema.json</td></tr>
+<tr><td><strong>依赖</strong></td><td>task deps 是否形成有效 DAG（无循环依赖）</td></tr>
+<tr><td><strong>完整性</strong></td><td>必需字段是否填写完整</td></tr>
+</table>
+
+<h2>9. LLM 交互模式</h2>
+
+<table>
+<tr><th>方法</th><th>LLM 调用方式</th></tr>
+<tr><td><code>_structured_create_wbs()</code></td><td>WBSAssembler 内部使用 agent（LLM 用于任务丰富化）</td></tr>
+<tr><td><code>_agentic_evaluate_quality()</code></td><td><code>agent.generate_agentic(role="techlead")</code></td></tr>
+<tr><td><code>_decide_next()</code></td><td>无 LLM——代码决策</td></tr>
+<tr><td><code>_control_flow()</code></td><td>无 LLM——代码决策</td></tr>
+<tr><td><code>_retro()</code></td><td>无 LLM——纯统计计算</td></tr>
+</table>
+
+<h2>10. WBS 子系统</h2>
+
+<p>Tech Lead 依赖 <span class="filepath">src/cogniforge/wbs/</span> 下的 11 个模块：</p>
+
+<table>
+<tr><th>模块</th><th>说明</th></tr>
+<tr><td><code>enriched_wbs_assembler.py</code></td><td>WBS 组装主流程（机械分解 + LLM 丰富）</td></tr>
+<tr><td><code>wbs_index.py</code></td><td>WBSIndex 模型 + TaskGraphNode/Edge + 批次计算</td></tr>
+<tr><td><code>tl_turn_result.py</code></td><td>TL 轮次结果生成</td></tr>
+<tr><td><code>decomposition_rules.py</code></td><td>机械分解规则（按模块类型）</td></tr>
+<tr><td><code>task_stub_generator.py</code></td><td>任务存根生成</td></tr>
+<tr><td><code>task_context_builder.py</code></td><td>任务上下文构建（从 LLD 提取 scope）</td></tr>
+<tr><td><code>acceptance_criteria.py</code></td><td>验收标准生成</td></tr>
+<tr><td><code>coverage_validator.py</code></td><td>覆盖率验证器</td></tr>
+<tr><td><code>lld_artifact_registry.py</code></td><td>LLD 工件注册表</td></tr>
+</table>
+
+<h2>11. 配置</h2>
+<pre><code># .cogniforge/config.yaml
+techlead: llm.deepseek    # Tech Lead 使用 DeepSeek 直接 API 调用</code></pre>
+
+<h2>12. 产物路径</h2>
+<table>
+<tr><th>类型</th><th>路径</th></tr>
+<tr><td>WBS Index</td><td><span class="filepath">.cogniforge/wiki/tasks/wbs-{module}-{timestamp}.json</span></td></tr>
+<tr><td>任务文件</td><td><span class="filepath">.cogniforge/wiki/tasks/{task_id}.json</span></td></tr>
+<tr><td>TL Turn Result</td><td><span class="filepath">.cogniforge/turns/tl/{wbs_id}.json</span></td></tr>
+<tr><td>质量报告</td><td><span class="filepath">.cogniforge/wiki/reports/quality-{module}-{seq}.json</span></td></tr>
+<tr><td>复盘报告</td><td><span class="filepath">.cogniforge/wiki/reports/retro-{module}-001.json</span></td></tr>
+</table>
+
+<h2>13. 关键方法一览</h2>
+
+<table>
+<tr><th>方法</th><th>可见性</th><th>说明</th></tr>
+<tr><td><code>run()</code></td><td>public</td><td>主入口，按 action 路由</td></tr>
+<tr><td><code>_structured_create_wbs()</code></td><td>private</td><td>结构化 WBS 创建（机械分解 + LLM 丰富）</td></tr>
+<tr><td><code>_register_wbs_tasks()</code></td><td>private</td><td>逐 task 注册到 TaskEngine</td></tr>
+<tr><td><code>_save_task()</code></td><td>private</td><td>保存单个任务 JSON 并 git add</td></tr>
+<tr><td><code>_detect_upstream_issues()</code></td><td>private</td><td>检测 LLD 不完整契约</td></tr>
+<tr><td><code>_build_and_write_wbs_output()</code></td><td>private</td><td>构建 WBSIndex + tl-turn-result 并持久化</td></tr>
+<tr><td><code>_agentic_evaluate_quality()</code></td><td>private</td><td>质量评估（委派 LLM）</td></tr>
+<tr><td><code>_retro()</code></td><td>private</td><td>复盘统计与报告生成</td></tr>
+<tr><td><code>_decide_next()</code></td><td>private</td><td>流程决策</td></tr>
+<tr><td><code>_control_flow()</code></td><td>private</td><td>流程控制</td></tr>
+</table>
+
+</body>
+</html>

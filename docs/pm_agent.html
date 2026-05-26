@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PM Agent 设计文档</title>
+<style>
+:root {
+  --bg: #1a1a2e; --surface: #16213e; --border: #0f3460;
+  --text: #e0e0e0; --heading: #e94560; --accent: #0f3460;
+  --code-bg: #0d1117; --tag-bg: #533483; --highlight: #e94560;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+body { background: var(--bg); color: var(--text); max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.7; }
+h1 { color: var(--highlight); font-size: 2.2rem; border-bottom: 3px solid var(--highlight); padding-bottom: 0.5rem; }
+h2 { color: #f0a500; font-size: 1.5rem; margin-top: 2.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { color: #00b4d8; font-size: 1.2rem; margin-top: 1.8rem; }
+h4 { color: #aaa; font-size: 1.05rem; margin-top: 1.5rem; }
+code { background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.9em; color: #ffa657; }
+pre { background: var(--code-bg); padding: 1.2rem; border-radius: 8px; overflow-x: auto; border: 1px solid var(--border); }
+pre code { background: none; padding: 0; color: #e6edf3; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid var(--border); padding: 0.6rem 1rem; text-align: left; }
+th { background: var(--surface); color: #f0a500; }
+.tag { display: inline-block; background: var(--tag-bg); color: #fff; padding: 0.15em 0.6em; border-radius: 4px; font-size: 0.85em; margin: 0 0.2em; }
+.filepath { color: #58a6ff; font-family: monospace; }
+.schema { color: #3fb950; }
+.warn { background: #3d2e00; border-left: 4px solid #f0a500; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+.info { background: #0d2b4e; border-left: 4px solid #00b4d8; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+.mermaid { background: #fff; padding: 1rem; border-radius: 8px; margin: 1rem 0; text-align: center; }
+</style>
+</head>
+<body>
+
+<h1>PM Agent — 产品经理代理</h1>
+
+<p><strong>类名:</strong> <code>PMAgent(BaseAgent)</code> &nbsp;|&nbsp;
+<strong>文件:</strong> <span class="filepath">src/cogniforge/agents/pm_agent.py</span> (534 行) &nbsp;|&nbsp;
+<strong>角色标识:</strong> <span class="tag">pm</span></p>
+
+<h2>1. 概述</h2>
+
+<p>PM Agent 是 CogniForge 工作流的起点，负责将用户需求转化为结构化的产品需求文档 (PRD)。采用 <strong>双 JSON 架构</strong>：长期状态由 <code>prd-current.json</code> 维护，单轮变更通过符合 RFC 6902 的 JSON Patch 表达。</p>
+
+<div class="info">
+<strong>设计理念：</strong>稳定 ID 体系（REQ-XXX / US-XXX）使下游代理（Architect、Design）能可靠引用需求，即使需求内容在后续迭代中变化。
+</div>
+
+<h2>2. 角色定义</h2>
+
+<table>
+<tr><th>属性</th><th>值</th></tr>
+<tr><td>名称</td><td>Product Manager Agent</td></tr>
+<tr><td>描述</td><td>定义产品需求，编写用户故事，标注优先级</td></tr>
+<tr><td>输入文档类型</td><td>无（工作流起点）</td></tr>
+<tr><td>输出文档类型</td><td><span class="tag">prd</span></td></tr>
+<tr><td>允许修改路径</td><td><span class="filepath">.cogniforge/wiki/prd/</span>, <span class="filepath">docs/</span></td></tr>
+<tr><td>LLM 提供者</td><td><code>llm.deepseek</code>（直接 API 调用）</td></tr>
+<tr><td>Schema</td><td><span class="schema">prd-schema.json</span>, <span class="schema">pm-turn-result-schema.json</span></td></tr>
+</table>
+
+<h2>3. 职责</h2>
+<ol>
+<li>从用户原始文本或结构化字段生成初始 PRD</li>
+<li>为需求 (REQ-XXX) 和用户故事 (US-XXX) 分配稳定 ID</li>
+<li>处理交互式修改——应用 JSON Patch 而非重写整个文档</li>
+<li>针对 <span class="schema">prd-schema.json</span> 进行 Schema 验证</li>
+<li>将 PRD 渲染为 HTML 并提交到 Git</li>
+</ol>
+
+<h2>4. 输入/输出规范</h2>
+
+<h3>4.1 run() 输入 (input_data)</h3>
+<table>
+<tr><th>字段</th><th>类型</th><th>必需</th><th>说明</th></tr>
+<tr><td><code>raw_text</code></td><td>str</td><td>条件</td><td>用户原始描述文本，触发初始生成模式（原始文本路径）</td></tr>
+<tr><td><code>title</code></td><td>str</td><td>条件</td><td>项目名称，结构化生成模式中使用</td></tr>
+<tr><td><code>overview</code></td><td>str</td><td>否</td><td>项目概述</td></tr>
+<tr><td><code>requirements</code></td><td>list[dict]</td><td>否</td><td>功能需求列表</td></tr>
+<tr><td><code>user_stories</code></td><td>list[dict]</td><td>否</td><td>用户故事列表</td></tr>
+<tr><td><code>priorities</code></td><td>dict</td><td>否</td><td>优先级映射</td></tr>
+<tr><td><code>modify_request</code></td><td>str</td><td>条件</td><td>用户修改请求文本，触发交互式修改模式</td></tr>
+</table>
+
+<h3>4.2 run() 输出 (dict)</h3>
+<table>
+<tr><th>字段</th><th>说明</th></tr>
+<tr><td><code>status</code></td><td>"success" / "failed"</td></tr>
+<tr><td><code>message</code></td><td>人类可读的结果消息</td></tr>
+<tr><td><code>artifacts</code></td><td>生成的产物路径列表（JSON + HTML）</td></tr>
+<tr><td><code>data</code></td><td>包含 timings、open_questions、affected_requirements、new_version 等</td></tr>
+<tr><td><code>reasoning</code></td><td>LLM 原始输出内容（用于调试）</td></tr>
+</table>
+
+<h2>5. 核心流程</h2>
+
+<h3>5.1 初始创建流程</h3>
+<pre>
+用户输入 → run() 路由判断
+  ├─ raw_text 存在 → _run_raw()
+  └─ title 存在   → _run_structured()
+       ↓
+  构建 LLM Prompt（含 JSON 结构模板）
+       ↓
+  agent.generate_think_then_json() → LLM 响应
+       ↓
+  _extract_json() → 提取 JSON
+       ↓
+  _write_prd():
+    1. _assign_ids() → 分配 REQ-XXX / US-XXX
+    2. 确保 change_history 存在
+    3. _link_stories_to_reqs() → 关联 US → REQ
+    4. _validate_with_schema() → 校验 prd-schema.json
+    5. 写入 .cogniforge/wiki/prd/prd-current.json
+    6. render_file() → 生成 HTML
+    7. git add + commit
+</pre>
+
+<h3>5.2 交互式修改流程（Patch 模式）</h3>
+<pre>
+modify_request 存在
+  ↓
+modify_interactive():
+  1. _load_current_prd() → 读取当前 PRD
+  2. 加载 pm-turn-result-schema.json
+  3. 构建 system_prompt（PM 修改规则）
+  4. agent.generate_interactive_patch() → LLM 输出 turn_result
+  5. _extract_json() + 解析 turn_result
+  6. 校验 turn_result 是否符合 pm-turn-result-schema
+  7. 检查 status: no_change/need_clarification/rejected → 提前返回
+  8. _apply_patches() → 使用 jsonpatch 库应用 RFC 6902 Patch
+  9. 校验更新后的 PRD 是否符合 prd-schema
+  10. 更新 meta.last_modified
+  11. 写入、渲染 HTML、git commit
+</pre>
+
+<h2>6. 数据结构</h2>
+
+<h3>6.1 PRD JSON Schema (简化结构)</h3>
+<pre><code>{
+  "meta": {
+    "doc_id": "prd-current",
+    "type": "prd",
+    "title": "...",
+    "author": "pm_agent",
+    "version": 1,
+    "last_modified": "2026-05-26 12:00"
+  },
+  "overview": "项目概述文本（3-5句）",
+  "requirements": [{
+    "id": "REQ-001",
+    "name": "需求名",
+    "description": "描述",
+    "status": "draft",
+    "acceptance_criteria": ["条件1", "条件2"],
+    "priority": "高/中/低",
+    "depends_on": [],
+    "supersedes": [],
+    "related_user_stories": [],
+    "change_history": [{"version": 1, "change_type": "created", ...}]
+  }],
+  "user_stories": [{
+    "id": "US-001",
+    "role": "角色",
+    "action": "动作",
+    "goal": "目标",
+    "related_requirements": ["REQ-001"]
+  }],
+  "priorities": {"REQ-001": "高"}
+}</code></pre>
+
+<h3>6.2 PM Turn Result Schema</h3>
+<pre><code>{
+  "status": "updated|no_change|need_clarification|rejected",
+  "message": "人类可读的变更描述",
+  "operation": "modify|add|remove|reorder",
+  "patches": [  // RFC 6902 JSON Patch 数组
+    {"op": "add|remove|replace|move|copy", "path": "/requirements/0/name", "value": "..."}
+  ],
+  "open_questions": [],
+  "affected_requirements": ["REQ-001", "REQ-002"],
+  "new_version": 2
+}</code></pre>
+
+<h2>7. ID 管理策略</h2>
+
+<p>PM Agent 维护两套稳定 ID 体系：</p>
+<ul>
+<li><strong>REQ-XXX:</strong> 三位数编号（REQ-001, REQ-002...），为功能需求标识符</li>
+<li><strong>US-XXX:</strong> 三位数编号（US-001, US-002...），为用户故事标识符</li>
+</ul>
+
+<p><code>_assign_ids()</code> 方法扫描现有 ID，找到最大编号后从下一个编号开始分配。已存在的 ID 不会被重新分配。</p>
+
+<h2>8. LLM 交互模式</h2>
+
+<table>
+<tr><th>方法</th><th>用途</th><th>LLM 调用方式</th></tr>
+<tr><td><code>_run_raw()</code></td><td>从原始文本创建 PRD</td><td><code>agent.generate_think_then_json()</code></td></tr>
+<tr><td><code>_run_structured()</code></td><td>从结构化字段创建 PRD</td><td><code>agent.generate_think_then_json()</code></td></tr>
+<tr><td><code>modify_interactive()</code></td><td>修改已有 PRD</td><td><code>agent.generate_interactive_patch()</code> 或回退到 <code>agent.generate_interactive()</code></td></tr>
+</table>
+
+<div class="warn">
+<strong>注意：</strong>修改模式下，change_history 只在需求首次创建时记录，迭代修改轮次不追加变更历史。此行为由 system_prompt 规则 #4 明确控制。
+</div>
+
+<h2>9. Schema 验证链</h2>
+
+<pre>
+LLM 输出
+  ↓
+pm-turn-result-schema.json (turn 级别验证)
+  ↓ (patches 应用后)
+prd-schema.json (文档级别验证)
+  ↓
+写入 + HTML 渲染
+</pre>
+
+<p>验证使用 <code>jsonschema.Draft7Validator</code>，如果库不可用则降级跳过验证。</p>
+
+<h2>10. 错误处理</h2>
+
+<table>
+<tr><th>场景</th><th>处理方式</th></tr>
+<tr><td>LLM JSON 无法解析</td><td>返回 status="failed"，附带原始 reasoning</td></tr>
+<tr><td>PRD Schema 校验失败</td><td>返回前 3 条错误信息</td></tr>
+<tr><td>PRD 不存在时尝试修改</td><td>返回提示需先创建 PRD</td></tr>
+<tr><td>Turn result status=rejected</td><td>返回 status="failed" + 拒绝原因</td></tr>
+<tr><td>status=updated 但无 patches</td><td>返回 status="failed"</td></tr>
+<tr><td>status=need_clarification</td><td>返回 open_questions 列表</td></tr>
+</table>
+
+<h2>11. 与其他代理的交互</h2>
+
+<table>
+<tr><th>下游代理</th><th>交互方式</th></tr>
+<tr><td>ArchitectAgent</td><td>Architect 读取 prd-current.json 作为 SAD 的源输入；PM 变更通过 pm_turn_result 传递给 Architect</td></tr>
+<tr><td>DesignAgent</td><td>通过 Architect 间接影响——PRD→SAD→LLD 链路</td></tr>
+<tr><td>TechLeadAgent</td><td>PRD 需求用于 WBS 任务的可追溯性</td></tr>
+</table>
+
+<h2>12. 配置</h2>
+<pre><code># .cogniforge/config.yaml
+pm: llm.deepseek    # PM 使用 DeepSeek 直接 API 调用</code></pre>
+
+<h2>13. 产物路径</h2>
+<table>
+<tr><th>类型</th><th>路径</th></tr>
+<tr><td>JSON</td><td><span class="filepath">.cogniforge/wiki/prd/prd-current.json</span></td></tr>
+<tr><td>HTML</td><td><span class="filepath">.cogniforge/html/prd/prd-current.html</span></td></tr>
+</table>
+
+<h2>14. 关键方法一览</h2>
+
+<table>
+<tr><th>方法</th><th>可见性</th><th>行号</th><th>说明</th></tr>
+<tr><td><code>run()</code></td><td>public</td><td>28</td><td>主入口，路由到生成或修改模式</td></tr>
+<tr><td><code>_run_raw()</code></td><td>private</td><td>69</td><td>从原始文本生成 PRD</td></tr>
+<tr><td><code>_run_structured()</code></td><td>private</td><td>113</td><td>从结构化字段生成 PRD</td></tr>
+<tr><td><code>_write_prd()</code></td><td>private</td><td>160</td><td>提取、验证、写入、渲染、提交 PRD</td></tr>
+<tr><td><code>modify_interactive()</code></td><td>public</td><td>247</td><td>基于 Patch 的交互式修改</td></tr>
+<tr><td><code>_load_current_prd()</code></td><td>private</td><td>442</td><td>加载当前 PRD JSON</td></tr>
+<tr><td><code>_assign_ids()</code></td><td>static</td><td>453</td><td>分配稳定序列 ID</td></tr>
+<tr><td><code>_apply_patches()</code></td><td>static</td><td>486</td><td>应用 RFC 6902 JSON Patch</td></tr>
+<tr><td><code>_validate_with_schema()</code></td><td>static</td><td>493</td><td>JSON Schema 验证</td></tr>
+<tr><td><code>_link_stories_to_reqs()</code></td><td>static</td><td>509</td><td>自动关联用户故事到需求</td></tr>
+</table>
+
+</body>
+</html>

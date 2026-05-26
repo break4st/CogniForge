@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dev Agent 设计文档</title>
+<style>
+:root {
+  --bg: #1a1a2e; --surface: #16213e; --border: #0f3460;
+  --text: #e0e0e0; --heading: #e94560; --accent: #0f3460;
+  --code-bg: #0d1117; --tag-bg: #533483; --highlight: #e94560;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+body { background: var(--bg); color: var(--text); max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.7; }
+h1 { color: var(--highlight); font-size: 2.2rem; border-bottom: 3px solid var(--highlight); padding-bottom: 0.5rem; }
+h2 { color: #f0a500; font-size: 1.5rem; margin-top: 2.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { color: #00b4d8; font-size: 1.2rem; margin-top: 1.8rem; }
+h4 { color: #aaa; font-size: 1.05rem; margin-top: 1.5rem; }
+code { background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.9em; color: #ffa657; }
+pre { background: var(--code-bg); padding: 1.2rem; border-radius: 8px; overflow-x: auto; border: 1px solid var(--border); }
+pre code { background: none; padding: 0; color: #e6edf3; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid var(--border); padding: 0.6rem 1rem; text-align: left; }
+th { background: var(--surface); color: #f0a500; }
+.tag { display: inline-block; background: var(--tag-bg); color: #fff; padding: 0.15em 0.6em; border-radius: 4px; font-size: 0.85em; margin: 0 0.2em; }
+.filepath { color: #58a6ff; font-family: monospace; }
+.schema { color: #3fb950; }
+.warn { background: #3d2e00; border-left: 4px solid #f0a500; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+.info { background: #0d2b4e; border-left: 4px solid #00b4d8; padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>Dev Agent — 开发代理</h1>
+
+<p><strong>类名:</strong> <code>DevAgent(BaseAgent)</code> &nbsp;|&nbsp;
+<strong>文件:</strong> <span class="filepath">src/cogniforge/agents/dev_agent.py</span> (244 行) &nbsp;|&nbsp;
+<strong>角色标识:</strong> <span class="tag">dev</span></p>
+
+<h2>1. 概述</h2>
+
+<p>Dev Agent 是 CogniForge 中的代码实现代理，采用 <strong>Agentic 委派模式</strong>——将整个开发任务（读取设计文档、编写代码、运行测试）委派给 Claude Code CLI Agent。它构建结构化的开发 Prompt，从 TaskContext 中提取接口签名、数据模型、领域对象、业务规则和验收标准，确保 LLM 严格遵循设计实现。</p>
+
+<div class="info">
+<strong>设计理念：</strong>Dev Agent 不在代码中拆分实现步骤，而是构建一个包含所有设计约束的结构化 Prompt，让 Claude Code 在完整工具访问权限下自主完成任务。这种方式适用于需要文件读写和 shell 操作的开发任务。
+</div>
+
+<h2>2. 角色定义</h2>
+
+<table>
+<tr><th>属性</th><th>值</th></tr>
+<tr><td>名称</td><td>Developer Agent</td></tr>
+<tr><td>描述</td><td>编写代码和单元测试，修复缺陷</td></tr>
+<tr><td>职责</td><td>编写代码、编写单元测试、修复 Bug</td></tr>
+<tr><td>输入文档类型</td><td><span class="tag">lld</span>, <span class="tag">task</span>, <span class="tag">adr</span></td></tr>
+<tr><td>输出文档类型</td><td><span class="tag">code</span>, <span class="tag">test</span></td></tr>
+<tr><td>允许修改路径</td><td><span class="filepath">src/</span>, <span class="filepath">tests/</span></td></tr>
+<tr><td>LLM 提供者</td><td><code>agent.claude_code</code>（Claude Code CLI 工具使用模式）</td></tr>
+</table>
+
+<h2>3. 运行模式</h2>
+
+<p>Dev Agent 有两种运行模式：</p>
+
+<pre>
+run(input_data):
+  code 存在？ → _write_direct()    # 直写模式（已有代码，直接写入文件）
+  code 不存在  → _run_agentic()     # Agentic 模式（通过结构化 Prompt 委派给 Claude Code）
+</pre>
+
+<h3>3.1 Agentic 模式（主模式）</h3>
+
+<pre>
+_run_agentic(task, module):
+  1. 提取 task 属性: name, description, context, acceptance_criteria
+  2. 提取上游产物 (upstream_artifacts)
+  3. _build_structured_prompt() → 构建 11 段结构化 Prompt
+  4. agent.generate_agentic(prompt, role="dev") → 委派给 Claude Code
+  5. 扫描 src/{module}/ 收集产物列表
+  6. 返回结果
+</pre>
+
+<h3>3.2 直写模式</h3>
+
+<pre>
+_write_direct(module, task, code):
+  1. 创建 src/{module}/ 目录
+  2. 写入代码文件
+  3. git add
+  4. 返回产物路径
+</pre>
+
+<h2>4. 结构化 Prompt 构建</h2>
+
+<p><code>_build_structured_prompt()</code> 是 Dev Agent 的核心——它从 TaskContext 提取以下 11 个段落，构建完整实现说明：</p>
+
+<table>
+<tr><th>段落</th><th>来源</th><th>内容</th></tr>
+<tr><td>1. 任务</td><td>task.name + task.description</td><td>任务名称和描述</td></tr>
+<tr><td>2. 上游产物</td><td>context.upstream_artifacts</td><td>已完成任务的文件列表（可直接 import）</td></tr>
+<tr><td>3. API 接口</td><td>context.scope.interfaces</td><td>method, endpoint, parameters, response body, error_codes</td></tr>
+<tr><td>4. 服务契约</td><td>context.scope.service_contracts</td><td>signature, precondition, postcondition, exceptions</td></tr>
+<tr><td>5. 数据模型</td><td>context.scope.data_models</td><td>字段定义 (name/type/required) + indexes</td></tr>
+<tr><td>6. 领域对象</td><td>context.scope.domain_objects</td><td>entity/DTO/值对象/枚举 的 attributes + source</td></tr>
+<tr><td>7. 业务规则</td><td>context.scope.business_rules</td><td>invariants, state_machines (transitions + irreversible_rules), cross_service_rules</td></tr>
+<tr><td>8. 错误处理</td><td>context.scope.error_handling</td><td>错误处理策略</td></tr>
+<tr><td>9. 验收标准</td><td>task.acceptance_criteria</td><td>每项标注 verification_type 和 description</td></tr>
+<tr><td>10. 外部契约</td><td>context.external_contracts</td><td>依赖的外部接口 (module + method + endpoint)</td></tr>
+<tr><td>11. LLD 参考</td><td>context.lld_path</td><td>完整 LLD 文档路径</td></tr>
+</table>
+
+<p>最终 Prompt 以严格指令结束：</p>
+<pre><code>实现以下开发任务。接口签名、数据模型字段和业务规则来自详细设计文档(LLD)，必须严格遵守。
+
+[... 11 段结构化内容 ...]
+
+要求：
+1. 以上所有接口签名、字段定义、前置/后置条件必须精确实现
+2. 每个验收标准必须有对应代码实现来保障
+3. 所有错误码和异常场景必须实现
+4. 编写对应的单元测试
+5. 完成后运行测试验证
+6. 完成后用中文回复确认</code></pre>
+
+<h2>5. TaskContext Scope 模型</h2>
+
+<p>TaskContext 的 scope 字段包含从 LLD 中精确提取的实现约束：</p>
+
+<table>
+<tr><th>scope 字段</th><th>类型</th><th>说明</th></tr>
+<tr><td><code>interfaces</code></td><td>list[dict]</td><td>API 接口的完整定义（method/endpoint/parameters/response/error_codes）</td></tr>
+<tr><td><code>service_contracts</code></td><td>list[dict]</td><td>服务层方法契约（signature/precondition/postcondition/exceptions）</td></tr>
+<tr><td><code>data_models</code></td><td>list[dict]</td><td>数据模型定义（fields/indexes/ownership）</td></tr>
+<tr><td><code>domain_objects</code></td><td>list[dict]</td><td>领域实体/DTO/值对象/枚举</td></tr>
+<tr><td><code>business_rules</code></td><td>dict</td><td>invariants + state_machines + cross_service_rules</td></tr>
+<tr><td><code>error_handling</code></td><td>dict</td><td>错误处理策略</td></tr>
+</table>
+
+<h2>6. 与 Claude Code 的通信</h2>
+
+<p>Dev Agent 通过 <code>agent.generate_agentic(prompt, role="dev")</code> 委派任务，这实际上是调用 Claude Code CLI 以工具使用模式运行。Claude Code 拥有：</p>
+<ul>
+<li><strong>文件读写能力：</strong> 直接读取 LLD 文档和写入源代码</li>
+<li><strong>Shell 执行能力：</strong> 运行 pytest 验证测试</li>
+<li><strong>代码搜索能力：</strong> 查找现有代码模式确保一致性</li>
+</ul>
+
+<div class="warn">
+<strong>与 PM/Architect/Design 的区别：</strong>PM/Architect/Design/TechLead 通过直接 API 调用使用 DeepSeek（generate_think_then_json），而 Dev/Reviewer/QA/DevOps 通过 Claude Code CLI 使用工具模式（generate_agentic）。这是因为后者需要文件系统操作能力。
+</div>
+
+<h2>7. 错误处理</h2>
+
+<table>
+<tr><th>场景</th><th>处理方式</th></tr>
+<tr><td>LLM agent 为 None</td><td>抛出 AgentError（需要 Claude Code agent）</td></tr>
+<tr><td>任务执行异常</td><td>返回 status="failed" + 错误消息</td></tr>
+</table>
+
+<h2>8. 配置</h2>
+<pre><code># .cogniforge/config.yaml
+dev: agent.claude_code    # Dev 使用 Claude Code CLI（工具使用模式）</code></pre>
+
+<h2>9. 产物路径</h2>
+<table>
+<tr><th>类型</th><th>路径</th></tr>
+<tr><td>源代码</td><td><span class="filepath">src/{module}/*.py</span></td></tr>
+<tr><td>单元测试</td><td><span class="filepath">tests/test_{module}.py</span></td></tr>
+</table>
+
+<h2>10. 关键方法一览</h2>
+
+<table>
+<tr><th>方法</th><th>可见性</th><th>行号</th><th>说明</th></tr>
+<tr><td><code>run()</code></td><td>public</td><td>15</td><td>主入口，路由到 agentic 或直写模式</td></tr>
+<tr><td><code>_run_agentic()</code></td><td>private</td><td>33</td><td>构建结构化 Prompt 并委派给 Claude Code</td></tr>
+<tr><td><code>_build_structured_prompt()</code></td><td>private</td><td>62</td><td>从 TaskContext 构建 11 段结构化编码 Prompt</td></tr>
+<tr><td><code>_write_direct()</code></td><td>private</td><td>232</td><td>直接写入代码文件的简捷路径</td></tr>
+</table>
+
+</body>
+</html>
