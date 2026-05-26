@@ -1,0 +1,869 @@
+{
+  "meta": {
+    "doc_id": "lld-History-Rollback-Service-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "history_rollback_service",
+    "title": "History & Rollback Service LLD",
+    "author": "design_agent",
+    "created": "2025-05-20",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-004"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-006"
+      ],
+      "contracts": [
+        "CTR-006",
+        "CTR-004"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "部署历史记录的保存、查询（按项目、环境、分页）",
+      "回滚操作的触发与执行（通过SSH Service远程执行deploy.sh）",
+      "回滚操作记录为特殊部署历史条目",
+      "活跃版本标记"
+    ],
+    "out_of_scope": [
+      "SSH连接管理与密钥解密（由SSH Service和Security Module负责）",
+      "环境连通性测试（由Environment Manager负责）",
+      "文件上传与部署脚本生成（由Deployment Engine负责）",
+      "UI渲染与用户交互逻辑"
+    ],
+    "owned_components": [
+      "CMP-006"
+    ],
+    "owned_contracts": [
+      "CTR-006"
+    ],
+    "consumed_contracts": [
+      "CTR-004"
+    ],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "负责记录每次部署的元数据，包括时间戳、项目标识、环境标识、部署文件清单、远程路径等。提供按项目和环境查询部署历史的能力，支持分页。通过调用SSH Service远程执行指定历史记录的deploy.sh实现回滚，并将回滚操作生成新的历史记录条目，标记为回滚类型。",
+    "dependencies": [
+      "SSH Service (CMP-005)",
+      "Security Module (CMP-007)",
+      "Primary Database (Data Access Layer)"
+    ],
+    "tech_stack": [
+      "TypeScript / Node.js",
+      "Electron ipcMain",
+      "SQLite (via better-sqlite3)"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-004",
+      "sad_component_ids": [
+        "CMP-006"
+      ],
+      "sad_contract_ids": [
+        "CTR-006",
+        "CTR-004"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-001",
+          "IF-002"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005",
+          "DO-006"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "DeploymentHistoryTable",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "canonical",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "DeploymentHistoryTable"
+      },
+      "description": "存储每次部署及回滚操作的元数据，包含项目、环境、部署类型、时间、文件清单和远程路径等信息。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "INTEGER PRIMARY KEY AUTOINCREMENT",
+          "required": true,
+          "description": "主键，自增唯一标识"
+        },
+        {
+          "name": "projectId",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "description": "项目标识符"
+        },
+        {
+          "name": "environmentId",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "description": "环境标识符"
+        },
+        {
+          "name": "deployType",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "description": "部署类型：deploy（常规部署）或 rollback（回滚）"
+        },
+        {
+          "name": "timestamp",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "description": "部署/回滚发生的时间戳（ISO 8601 格式）"
+        },
+        {
+          "name": "fileList",
+          "type": "TEXT",
+          "required": false,
+          "description": "部署的文件清单，JSON 数组格式的文本"
+        },
+        {
+          "name": "remotePath",
+          "type": "TEXT",
+          "required": false,
+          "description": "部署目标远程路径"
+        },
+        {
+          "name": "isActive",
+          "type": "INTEGER NOT NULL DEFAULT 0",
+          "required": true,
+          "description": "是否当前活跃版本标记，1 表示活跃，0 表示非活跃"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_project_env",
+          "unique": false,
+          "columns": [
+            "projectId",
+            "environmentId"
+          ]
+        },
+        {
+          "name": "idx_timestamp",
+          "unique": false,
+          "columns": [
+            "timestamp"
+          ]
+        }
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "每次部署或回滚操作时插入新记录",
+        "update": "仅在需要修改活跃版本标记时更新 isActive 字段（例如将旧记录设为非活跃）",
+        "delete": "通常不删除记录，仅通过逻辑删除或归档处理（保留历史）",
+        "retention": "永久保留，或根据管理策略设定保留期限（例如 90 天后归档）"
+      },
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "source_components": [
+        "CMP-006"
+      ],
+      "source_contracts": [
+        "CTR-006"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "IHistoryRollbackIPC_getList",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-006",
+      "provider_component_id": "CMP-006",
+      "method": "INTERNAL",
+      "endpoint": "handle('history-rollback:getList')",
+      "description": "通过Electron IPC获取部署历史列表，支持按项目、环境筛选和分页",
+      "parameters": [
+        {
+          "name": "params",
+          "type": "HistoryQueryParams",
+          "in": "body",
+          "required": true,
+          "description": "查询参数，包含projectId、environmentId、page、pageSize"
+        }
+      ],
+      "request_body": {
+        "projectId": "string",
+        "environmentId": "string",
+        "page": "number",
+        "pageSize": "number"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "entries": "DeploymentHistoryEntry[]",
+          "total": "number"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "INVALID_PARAMS",
+          "message": "参数校验失败"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "IHistoryRollbackIPC_rollback",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-006",
+      "provider_component_id": "CMP-006",
+      "method": "INTERNAL",
+      "endpoint": "handle('history-rollback:rollback')",
+      "description": "通过Electron IPC触发回滚操作，远程执行指定历史记录的deploy.sh",
+      "parameters": [
+        {
+          "name": "request",
+          "type": "RollbackRequest",
+          "in": "body",
+          "required": true,
+          "description": "回滚请求，包含历史记录ID"
+        }
+      ],
+      "request_body": {
+        "historyId": "string"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "newHistoryId": "string"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 404,
+          "code": "HISTORY_NOT_FOUND",
+          "message": "指定的历史记录不存在"
+        },
+        {
+          "status": 500,
+          "code": "ROLLBACK_FAILED",
+          "message": "回滚远程执行失败"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "统一捕获所有IPC处理函数中的异常，通过ErrorResponse返回标准化错误体，包含错误码和详细描述，确保前端可一致处理成功与失败场景。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "400",
+        "name": "参数错误",
+        "description": "当查询历史时的projectId、environmentId或分页参数缺失/无效，或回滚请求缺少historyRecordId时触发；提示参数缺失或格式错误。"
+      },
+      {
+        "code": "404",
+        "name": "资源未找到",
+        "description": "回滚请求指定的历史记录ID在数据库中不存在时触发；提示未找到对应部署历史。"
+      },
+      {
+        "code": "409",
+        "name": "状态冲突",
+        "description": "尝试对已标记为回滚操作的历史记录再次执行回滚时触发；提示回滚操作不可重复执行。"
+      },
+      {
+        "code": "500",
+        "name": "服务端内部错误",
+        "description": "数据库查询失败、SSH服务调用异常、远程脚本执行失败等非预期错误；记录详细错误日志，返回通用错误消息，隐藏内部实现细节。"
+      }
+    ]
+  },
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "DeploymentHistoryEntry",
+      "object_type": "entity",
+      "status": "active",
+      "version": 1,
+      "description": "部署历史实体，对应数据库单条记录",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "number",
+          "required": true,
+          "source": "db",
+          "description": "主键自增ID"
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "required": true,
+          "source": "db",
+          "description": "项目标识"
+        },
+        {
+          "name": "environment_id",
+          "type": "string",
+          "required": true,
+          "source": "db",
+          "description": "环境标识"
+        },
+        {
+          "name": "deployment_timestamp",
+          "type": "string (ISO 8601)",
+          "required": true,
+          "source": "db",
+          "description": "部署时间戳"
+        },
+        {
+          "name": "is_rollback",
+          "type": "boolean",
+          "required": true,
+          "source": "db",
+          "description": "是否为回滚操作记录"
+        },
+        {
+          "name": "rollback_source_entry_id",
+          "type": "number | null",
+          "required": false,
+          "source": "db",
+          "description": "回滚来源的部署历史条目ID，仅当is_rollback为true时有值"
+        },
+        {
+          "name": "file_manifest",
+          "type": "string (JSON)",
+          "required": true,
+          "source": "db",
+          "description": "部署文件清单，JSON数组格式，包含文件路径、大小等"
+        },
+        {
+          "name": "remote_path",
+          "type": "string",
+          "required": true,
+          "source": "db",
+          "description": "远程部署目标路径"
+        },
+        {
+          "name": "is_active",
+          "type": "boolean",
+          "required": true,
+          "source": "db",
+          "description": "是否为当前活跃版本标记"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "DeploymentHistoryTable",
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "HistoryQueryParams",
+      "object_type": "value_object",
+      "status": "active",
+      "version": 1,
+      "description": "查询历史列表的请求参数DTO",
+      "attributes": [
+        {
+          "name": "project_id",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "项目标识"
+        },
+        {
+          "name": "environment_id",
+          "type": "string",
+          "required": false,
+          "source": "input",
+          "description": "环境标识，可选"
+        },
+        {
+          "name": "page",
+          "type": "number",
+          "required": false,
+          "source": "input",
+          "description": "页码，默认为1"
+        },
+        {
+          "name": "page_size",
+          "type": "number",
+          "required": false,
+          "source": "input",
+          "description": "每页大小，默认为20"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "",
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "HistoryListResponse",
+      "object_type": "value_object",
+      "status": "active",
+      "version": 1,
+      "description": "历史列表响应DTO",
+      "attributes": [
+        {
+          "name": "entries",
+          "type": "DeploymentHistoryEntry[]",
+          "required": true,
+          "source": "computed",
+          "description": "部署历史条目列表"
+        },
+        {
+          "name": "total",
+          "type": "number",
+          "required": true,
+          "source": "computed",
+          "description": "总条目数"
+        },
+        {
+          "name": "page",
+          "type": "number",
+          "required": true,
+          "source": "computed",
+          "description": "当前页码"
+        },
+        {
+          "name": "page_size",
+          "type": "number",
+          "required": true,
+          "source": "computed",
+          "description": "每页大小"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "",
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "RollbackRequest",
+      "object_type": "value_object",
+      "status": "active",
+      "version": 1,
+      "description": "回滚请求DTO",
+      "attributes": [
+        {
+          "name": "history_entry_id",
+          "type": "number",
+          "required": true,
+          "source": "input",
+          "description": "要回滚到的历史条目ID"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "",
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-005",
+      "name": "RollbackResponse",
+      "object_type": "value_object",
+      "status": "active",
+      "version": 1,
+      "description": "回滚响应DTO",
+      "attributes": [
+        {
+          "name": "success",
+          "type": "boolean",
+          "required": true,
+          "source": "computed",
+          "description": "回滚是否成功"
+        },
+        {
+          "name": "new_history_entry_id",
+          "type": "number",
+          "required": false,
+          "source": "computed",
+          "description": "成功时返回新生成的回滚历史条目ID"
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "required": false,
+          "source": "computed",
+          "description": "失败时返回错误信息"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "",
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-006",
+      "name": "ErrorResponse",
+      "object_type": "value_object",
+      "status": "active",
+      "version": 1,
+      "description": "错误响应DTO",
+      "attributes": [
+        {
+          "name": "error_code",
+          "type": "string",
+          "required": true,
+          "source": "computed",
+          "description": "错误码"
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "required": true,
+          "source": "computed",
+          "description": "人类可读的错误信息"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "",
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "name": "HistoryRollbackService",
+      "description": "管理部署历史记录的查询与回滚操作",
+      "methods": [
+        {
+          "name": "getHistory",
+          "signature": "(params: HistoryQueryParams) -> HistoryListResponse",
+          "precondition": "params.projectId 存在",
+          "postcondition": "返回指定项目、可选环境的部署历史列表，支持分页",
+          "description": "按项目和环境（可选）分页查询部署历史记录",
+          "exceptions": [
+            {
+              "name": "ValidationException",
+              "trigger": "projectId 为空",
+              "http_status": 400
+            }
+          ]
+        },
+        {
+          "name": "rollback",
+          "signature": "(request: RollbackRequest) -> RollbackResponse",
+          "precondition": "request.historyEntryId 对应的部署历史记录存在且包含有效的 deploy.sh 路径",
+          "postcondition": "SSH Service 远程执行回滚脚本，生成新的回滚类型历史记录条目，返回新条目 ID",
+          "description": "执行回滚操作：通过 SSH Service 远程执行指定历史记录的 deploy.sh，并将此次操作记录为特殊历史条目",
+          "exceptions": [
+            {
+              "name": "NotFoundException",
+              "trigger": "historyEntryId 对应的记录不存在",
+              "http_status": 404
+            },
+            {
+              "name": "RollbackException",
+              "trigger": "SSH 执行失败或脚本返回非零退出码",
+              "http_status": 500
+            },
+            {
+              "name": "ConflictException",
+              "trigger": "目标环境当前有正在进行的部署操作",
+              "http_status": 409
+            }
+          ]
+        },
+        {
+          "name": "markAsActive",
+          "signature": "(historyEntryId: string) -> void",
+          "precondition": "historyEntryId 对应的历史记录存在且其项目/环境一致",
+          "postcondition": "将指定条目标记为活跃版本，同时取消同环境其他条目的活跃状态",
+          "description": "将指定的历史条目设为对应环境下的活跃版本",
+          "exceptions": [
+            {
+              "name": "NotFoundException",
+              "trigger": "historyEntryId 对应的记录不存在",
+              "http_status": 404
+            }
+          ]
+        }
+      ],
+      "repository_dependencies": [
+        "findByProjectIdAndEnvironmentId(projectId: string, environmentId?: string, page: number, pageSize: number) -> { items: DeploymentHistoryEntry[], total: number }",
+        "findById(id: string) -> DeploymentHistoryEntry | null",
+        "createRollbackEntry(originalEntryId: string, operator: string, status: string, result: object) -> DeploymentHistoryEntry",
+        "setActiveVersion(entryId: string, environmentId: string) -> void"
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "每条部署历史记录必须包含唯一的ID、项目ID、环境ID、部署时间戳、部署文件清单、远程部署路径",
+      "回滚操作生成的记录必须标记为回滚类型，且必须关联原始部署历史记录ID",
+      "对于同一项目和环境，在同一时间点只能有一个活跃部署版本（活跃版本标记在每次新部署或回滚后更新）",
+      "查询部署历史时必须按部署时间倒序排列",
+      "回滚操作只能针对已完成（成功或失败）的部署记录，不能对回滚记录再次回滚"
+    ],
+    "state_machines": [
+      {
+        "entity": "DeploymentHistoryEntry",
+        "states": [
+          "deploying",
+          "success",
+          "failed",
+          "rollback_in_progress",
+          "rolled_back",
+          "active"
+        ],
+        "transitions": [
+          {
+            "from": "(新记录)",
+            "to": "deploying",
+            "trigger": "部署任务开始",
+            "actor": "Deployment Engine"
+          },
+          {
+            "from": "deploying",
+            "to": "success",
+            "trigger": "部署完成且远程校验通过",
+            "actor": "Deployment Engine"
+          },
+          {
+            "from": "deploying",
+            "to": "failed",
+            "trigger": "部署失败或校验不通过",
+            "actor": "Deployment Engine"
+          },
+          {
+            "from": "success",
+            "to": "rollback_in_progress",
+            "trigger": "用户发起回滚到当前版本",
+            "actor": "用户"
+          },
+          {
+            "from": "failed",
+            "to": "rollback_in_progress",
+            "trigger": "用户发起回滚到当前版本",
+            "actor": "用户"
+          },
+          {
+            "from": "rollback_in_progress",
+            "to": "rolled_back",
+            "trigger": "回滚脚本执行成功",
+            "actor": "SSH Service"
+          },
+          {
+            "from": "rollback_in_progress",
+            "to": "failed",
+            "trigger": "回滚脚本执行失败",
+            "actor": "SSH Service"
+          },
+          {
+            "from": "success",
+            "to": "active",
+            "trigger": "被标记为活跃版本",
+            "actor": "系统"
+          },
+          {
+            "from": "active",
+            "to": "rolled_back",
+            "trigger": "更高版本的部署变为活跃或手动切换",
+            "actor": "系统"
+          }
+        ],
+        "irreversible_rules": [
+          "一旦状态进入'rolled_back'，不能再变更为'deploying'或'active'",
+          "'failed'状态不能直接变更为'success'",
+          "'active'状态的记录不能直接删除，需先通过回滚或新部署取消其活跃标记"
+        ],
+        "concurrency": "使用数据库行级锁或乐观锁（版本号）防止同一历史记录被多个回滚操作同时执行；同一项目环境同时只允许一个回滚操作进行"
+      }
+    ],
+    "cross_service_rules": [
+      "回滚操作执行前，必须通过SSH Service验证目标环境连通性（超时时间10秒）",
+      "部署历史写入后，若部署状态为成功，需通知Environment Manager更新环境的当前部署版本引用",
+      "回滚执行前，需从Security Module获取解密后的远程认证凭据，不得在历史服务中存储明文凭据",
+      "跨服务调用失败时，必须将错误信息记录到部署历史记录的状态信息中，并将状态置为失败"
+    ]
+  },
+  "workflow": {
+    "name": "回滚执行主流程",
+    "description": "用户触发回滚，系统验证历史记录，通过SSH远程执行脚本，生成回滚记录",
+    "steps": [
+      {
+        "order": 1,
+        "name": "验证历史记录",
+        "action": "根据historyEntryId查询部署历史，确认记录存在且非回滚记录",
+        "timeout_seconds": 5,
+        "on_failure": "返回404或400错误"
+      },
+      {
+        "order": 2,
+        "name": "获取远程凭据",
+        "action": "调用Security Module获取解密后的SSH凭据",
+        "timeout_seconds": 10,
+        "on_failure": "返回500错误，终止回滚"
+      },
+      {
+        "order": 3,
+        "name": "远程执行deploy.sh",
+        "action": "通过SSH Service在目标服务器执行历史记录中的deploy.sh",
+        "timeout_seconds": 120,
+        "on_failure": "返回500错误，记录失败状态"
+      },
+      {
+        "order": 4,
+        "name": "生成回滚记录",
+        "action": "在数据库中插入一条deployType为rollback的新历史记录，关联原始记录ID",
+        "timeout_seconds": 5,
+        "on_failure": "记录错误，但回滚已生效"
+      }
+    ],
+    "retry_strategy": {
+      "max_retries": 3,
+      "retry_interval_seconds": 30,
+      "retryable_errors": [
+        "NETWORK_ERROR",
+        "TIMEOUT"
+      ],
+      "non_retryable_errors": [
+        "AUTH_ERROR",
+        "CONFIG_ERROR"
+      ]
+    }
+  }
+}
