@@ -72,7 +72,107 @@ ROLE_PROMPTS: dict[str, str] = {
     ),
     "architect": (
         "你是 CogniForge 系统的 Architect Agent。\n"
-        "职责: 根据 PRD 生成系统架构文档 (SAD) JSON。"
+        "职责: 根据 PRD 生成系统架构文档 (SAD) JSON。\n\n"
+        "## 输出格式\n"
+        "必须输出一个 JSON 对象，包含以下顶层字段。\n"
+        "所有文字使用中文。时间戳字段使用 <created_at> 占位符，程序会在落盘时自动替换。\n\n"
+        "## 重要规则\n"
+        "- 每个 component 分配唯一 id（CMP-001, CMP-002...）\n"
+        "- 每个 contract 分配唯一 id（CTR-001, CTR-002...）\n"
+        "- 每个 data_model 分配唯一 id（DM-001, DM-002...）\n"
+        "- components 类型限定: frontend, backend, gateway, service, database, infrastructure\n"
+        "- system_overview.roles: 从 PRD 中提取用户角色及其权限\n"
+        "- architecture.layers: 按系统分层列出每层包含的组件\n"
+        "- architecture.connections: 相邻层之间的通信协议\n"
+        "- architecture.features: 列出架构的关键技术特征\n"
+        "- tech_stack: 根据架构设计明确定义技术选型\n"
+        "- components: 每个组件需要 status/version/source_requirements/change_history\n"
+        "- contracts: 每个契约需要 status/version/source_requirements/provider_component_id/errors/change_history\n"
+        "- data_models: 每个模型的 fields 必须是对象数组，每个 field 有 name/type/required/description\n"
+        "- requirement_traceability: 每个 PRD 需求必须有一条覆盖记录\n\n"
+        "EXAMPLE JSON OUTPUT:\n"
+        "```json\n"
+        "{\n"
+        '  "meta": {\n'
+        '    "doc_id": "sad-001",\n'
+        '    "type": "sad",\n'
+        '    "title": "...",\n'
+        '    "author": "architect_agent",\n'
+        '    "created": "<created_at>",\n'
+        '    "version": 1\n'
+        '  },\n'
+        '  "title": "...",\n'
+        '  "source_prd": {"doc_id": "prd-current", "version": 1},\n'
+        '  "system_overview": {\n'
+        '    "description": "系统整体描述",\n'
+        '    "roles": [{"name": "角色名", "permissions": ["权限1"]}]\n'
+        '  },\n'
+        '  "architecture": {\n'
+        '    "style": "微服务架构",\n'
+        '    "description": "架构设计描述",\n'
+        '    "layers": [{"name": "层名", "components": ["组件名"]}],\n'
+        '    "connections": [{"protocol": "REST", "description": "通信说明"}],\n'
+        '    "features": ["架构特征"]\n'
+        '  },\n'
+        '  "tech_stack": {\n'
+        '    "backend": {"language": "Python", "framework": "FastAPI"},\n'
+        '    "frontend": {"framework": "React", "ui_library": "Ant Design"},\n'
+        '    "database": "PostgreSQL"\n'
+        '  },\n'
+        '  "components": [{\n'
+        '    "id": "CMP-001",\n'
+        '    "name": "组件名",\n'
+        '    "type": "service",\n'
+        '    "status": "active",\n'
+        '    "version": 1,\n'
+        '    "description": "组件描述",\n'
+        '    "responsibilities": ["职责1"],\n'
+        '    "source_requirements": ["REQ-001"],\n'
+        '    "contracts": ["CTR-001"],\n'
+        '    "depends_on_components": [],\n'
+        '    "change_history": [{"version": 1, "change_type": "created", "summary": "初始创建", "reason": "首次生成 SAD"}]\n'
+        '  }],\n'
+        '  "contracts": [{\n'
+        '    "id": "CTR-001",\n'
+        '    "interface": "接口名称",\n'
+        '    "provider_component_id": "CMP-001",\n'
+        '    "provider": "提供者组件名",\n'
+        '    "consumers": ["消费者组件名"],\n'
+        '    "type": "REST",\n'
+        '    "status": "active",\n'
+        '    "version": 1,\n'
+        '    "endpoint": "GET /api/resource",\n'
+        '    "request": {"path_params": [], "query_params": [], "body": {}},\n'
+        '    "response": {"status": 200, "body": {}},\n'
+        '    "errors": [{"status": 404, "code": "NOT_FOUND", "message": "资源不存在"}],\n'
+        '    "description": "接口说明",\n'
+        '    "source_requirements": ["REQ-001"],\n'
+        '    "change_history": [{"version": 1, "change_type": "created", "summary": "初始创建", "reason": "首次生成 SAD"}]\n'
+        '  }],\n'
+        '  "data_flow": [{\n'
+        '    "name": "数据流名称",\n'
+        '    "steps": ["步骤1"]\n'
+        '  }],\n'
+        '  "data_models": [{\n'
+        '    "id": "DM-001",\n'
+        '    "name": "模型名",\n'
+        '    "description": "数据模型描述",\n'
+        '    "source_requirements": ["REQ-001"],\n'
+        '    "fields": [{"name": "字段名", "type": "字段类型", "required": false, "description": "字段说明"}]\n'
+        '  }],\n'
+        '  "requirement_traceability": [{\n'
+        '    "requirement_id": "REQ-001",\n'
+        '    "coverage": "full",\n'
+        '    "components": ["CMP-001"],\n'
+        '    "contracts": ["CTR-001"],\n'
+        '    "data_models": [],\n'
+        '    "notes": ""\n'
+        '  }],\n'
+        '  "architecture_decisions": [],\n'
+        '  "risks": [],\n'
+        '  "open_questions": []\n'
+        '}\n'
+        "```"
     ),
     "design": (
         "你是 CogniForge 系统的 Design (MDE) Agent。\n"
@@ -707,12 +807,13 @@ class DeepSeekAdapter(BaseLLMAdapter):
         user_request: str,
         system_prompt: str = "",
         turn_schema: dict | None = None,
+        role: str | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Two-step interactive modification producing a structured turn result.
 
         Step 1 (thinking enabled): analyzes the current document and user request.
-        Step 2 (thinking disabled, JSON mode): outputs the pm-turn-result structure
+        Step 2 (thinking disabled, JSON mode): outputs the turn-result structure
         with patches array.
         """
         model = kwargs.pop("model", self.model)
@@ -721,11 +822,11 @@ class DeepSeekAdapter(BaseLLMAdapter):
         schema_desc = json.dumps(turn_schema, ensure_ascii=False, indent=2) if turn_schema else ""
 
         think_prompt = (
-            f"当前 PRD JSON:\n{current_document}\n\n"
+            f"当前文档 JSON:\n{current_document}\n\n"
             f"用户修改要求: {user_request}\n\n"
-            f"请先分析当前的 PRD 结构，确认需要修改的需求条目、变更类型。\n"
+            f"请先分析当前文档结构，确认需要修改的条目、变更类型。\n"
             f"思考需要应用哪些 JSON Patch 操作（add/replace/remove）。\n"
-            f"注意路径格式为 JSON Pointer（如 /requirements/0/name）。\n"
+            f"注意路径格式为 JSON Pointer（如 /components/0/name）。\n"
             f"输出你的分析，不要输出 JSON。"
         )
 
@@ -734,8 +835,8 @@ class DeepSeekAdapter(BaseLLMAdapter):
         if system_prompt:
             system_parts.append(system_prompt)
         constraint_loader = self.config.get("constraint_loader")
-        if constraint_loader:
-            constraints = constraint_loader.load("pm")
+        if constraint_loader and role:
+            constraints = constraint_loader.load(role)
             if constraints:
                 system_parts.append(f"# 约束\n{constraints}")
         if system_parts:

@@ -68,7 +68,6 @@ class ArchitectAgent(BaseAgent):
     ) -> dict:
         cb = progress_callback
         t0 = time.time()
-        now = datetime.now().strftime("%Y-%m-%d %H:%M")
         prd_context = self._load_latest_prd()
         prd_data = self._load_latest_prd_dict()
 
@@ -94,111 +93,18 @@ class ArchitectAgent(BaseAgent):
             }
 
         prompt = (
-            f"根据以下数据创建一份系统架构文档 (SAD)，返回合法 JSON 对象:\n\n"
-            f"JSON 结构如下:\n\n"
-            f"{{\n"
-            f"  \"meta\": {{\"doc_id\": \"{doc_id}\", \"type\": \"sad\",\n"
-            f"    \"title\": \"{title}\", \"author\": \"architect_agent\",\n"
-            f"    \"created\": \"{now}\", \"version\": {version}}},\n"
-            f"  \"title\": \"{title}\",\n"
-            f"  \"source_prd\": {json.dumps(source_prd, ensure_ascii=False)},\n"
-            f"  \"system_overview\": {{\n"
-            f"    \"description\": \"系统整体描述（string）\",\n"
-            f"    \"roles\": [\n"
-            f"      {{\"name\": \"角色名\",\n"
-            f"        \"permissions\": [\"权限1\", \"权限2\", ...]}}\n"
-            f"    ]\n"
-            f"  }},\n"
-            f"  \"architecture\": {{\n"
-            f"    \"style\": \"架构风格（如 微服务架构）\",\n"
-            f"    \"description\": \"架构设计描述（string）\",\n"
-            f"    \"layers\": [\n"
-            f"      {{\"name\": \"层名（如 接入层/网关层/服务层/数据层）\",\n"
-            f"        \"components\": [\"该层包含的组件名称\", ...]}}\n"
-            f"    ],\n"
-            f"    \"connections\": [\n"
-            f"      {{\"protocol\": \"层间通信协议（如 HTTPS / REST / SQL / AMQP）\",\n"
-            f"        \"description\": \"通信说明\"}}\n"
-            f"    ],\n"
-            f"    \"features\": [\"架构特征1\", \"架构特征2\", ...]\n"
-            f"  }},\n"
-            f"  \"tech_stack\": {{\n"
-            f"    \"backend\": {{\"language\": \"编程语言\", \"framework\": \"框架\"}},\n"
-            f"    \"frontend\": {{\"framework\": \"前端框架\", \"ui_library\": \"UI组件库\"}},\n"
-            f"    \"database\": \"数据库\",\n"
-            f"    \"...\": \"按需增删字段\"\n"
-            f"  }},\n"
-            f"  \"components\": [\n"
-            f"    {{\"id\": \"CMP-001\", \"name\": \"组件名\",\n"
-            f"      \"type\": \"frontend|backend|gateway|service|database|infrastructure\",\n"
-            f"      \"status\": \"active\", \"version\": 1,\n"
-            f"      \"description\": \"组件描述\",\n"
-            f"      \"responsibilities\": [\"职责1\", ...],\n"
-            f"      \"source_requirements\": [\"REQ-001\"],\n"
-            f"      \"contracts\": [\"CTR-001\"],\n"
-            f"      \"depends_on_components\": [],\n"
-            f"      \"change_history\": [{{\"version\": 1, \"change_type\": \"created\",\n"
-            f"        \"summary\": \"初始创建\", \"reason\": \"首次生成 SAD\"}}]}}\n"
-            f"  ],\n"
-            f"  \"contracts\": [\n"
-            f"    {{\"id\": \"CTR-001\", \"interface\": \"接口名称\",\n"
-            f"      \"provider_component_id\": \"CMP-001\",\n"
-            f"      \"provider\": \"提供者组件名\",\n"
-            f"      \"consumers\": [\"消费者组件名\", ...],\n"
-            f"      \"type\": \"REST|WebSocket|SSE|Event\",\n"
-            f"      \"status\": \"active\", \"version\": 1,\n"
-            f"      \"endpoint\": \"GET /api/...\",\n"
-            f"      \"request\": {{\"path_params\": [], \"query_params\": [], \"body\": {{}}}},\n"
-            f"      \"response\": {{\"status\": 200, \"body\": {{}}}},\n"
-            f"      \"errors\": [{{\"status\": 404, \"code\": \"NOT_FOUND\",\n"
-            f"        \"message\": \"资源不存在\"}}],\n"
-            f"      \"description\": \"接口说明\",\n"
-            f"      \"source_requirements\": [\"REQ-001\"],\n"
-            f"      \"change_history\": [{{\"version\": 1, \"change_type\": \"created\",\n"
-            f"        \"summary\": \"初始创建\", \"reason\": \"首次生成 SAD\"}}]}}\n"
-            f"  ],\n"
-            f"  \"data_flow\": [\n"
-            f"    {{\"name\": \"数据流名称\",\n"
-            f"      \"steps\": [\"步骤1\", \"步骤2\", ...]}},\n"
-            f"    ...\n"
-            f"  ],\n"
-            f"  \"data_models\": [\n"
-          f"    {{\"id\": \"DM-001\", \"name\": \"模型名\",\n"
-          f"      \"description\": \"数据模型描述\",\n"
-          f"      \"source_requirements\": [\"REQ-001\"],\n"
-          f"      \"fields\": [\n"
-          f"        {{\"name\": \"字段名\", \"type\": \"字段类型\",\n"
-          f"          \"required\": false, \"description\": \"字段说明\"}}\n"
-          f"      ]}}\n"
-          f"  ],\n"
-            f"  \"requirement_traceability\": [\n"
-            f"    {{\"requirement_id\": \"REQ-001\", \"coverage\": \"full\",\n"
-            f"      \"components\": [\"CMP-001\"], \"contracts\": [\"CTR-001\"],\n"
-            f"      \"data_models\": [], \"notes\": \"\"}}\n"
-            f"  ],\n"
-            f"  \"architecture_decisions\": [],\n"
-            f"  \"risks\": [],\n"
-            f"  \"open_questions\": []\n"
-            f"}}\n\n"
-            f"重要说明:\n"
-            f"- 每个 component 必须分配唯一 id（CMP-001, CMP-002...）\n"
-            f"- 每个 contract 必须分配唯一 id（CTR-001, CTR-002...）\n"
-            f"- system_overview.roles: 从 PRD 中提取用户角色及其权限\n"
-            f"- architecture.layers: 按系统分层列出每层包含的组件\n"
-            f"- architecture.connections: 相邻层之间的通信协议\n"
-            f"- architecture.features: 列出架构的关键技术特征\n"
-            f"- tech_stack: 根据架构设计明确定义技术选型\n"
-            f"- components: 每个组件需要 status/version/source_requirements/change_history\n"
-            f"- contracts: 每个契约需要 status/version/source_requirements/provider_component_id/errors/change_history\n"
-          f"- data_models: 每个模型的 fields 必须是对象数组，每个 field 有 name/type/required/description\n"
-            f"- requirement_traceability: 每个 PRD 需求必须有一条覆盖记录\n"
-            f"- 所有文字使用中文\n\n"
+            f"根据以下数据创建一份系统架构文档 (SAD)。\n\n"
+            f"文档 ID: {doc_id}\n"
+            f"版本: {version}\n"
+            f"source_prd: {json.dumps(source_prd, ensure_ascii=False)}\n\n"
             f"参考输入数据:\n"
+            f"项目名称: {title}\n"
             f"system_overview: {system_overview}\n"
             f"architecture: {architecture}\n"
             f"components: {json.dumps(components, ensure_ascii=False)}\n"
             f"data_flow: {data_flow}\n"
-            f"已批准的 PRD 文档:\n{prd_context}\n"
+            f"已批准的 PRD 文档:\n{prd_context}\n\n"
+            f"参考系统提示中的 EXAMPLE JSON OUTPUT 结构输出。"
         )
 
         max_retries = 2
@@ -231,6 +137,12 @@ class ArchitectAgent(BaseAgent):
                     )
         if incomplete and cb:
             cb("警告: LLM 输出被截断，已自动修复 JSON 结构")
+
+        # Replace <created_at> placeholder with actual timestamp
+        meta = data.get("meta", {})
+        if meta.get("created") == "<created_at>":
+            meta["created"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            data["meta"] = meta
 
         data["components"] = self._assign_ids(data.get("components", []), "CMP")
         data["contracts"] = self._assign_ids(data.get("contracts", []), "CTR")
@@ -340,6 +252,7 @@ class ArchitectAgent(BaseAgent):
                     user_request=user_prompt,
                     system_prompt=system_prompt,
                     turn_schema=turn_schema,
+                    role="architect",
                 )
             else:
                 response = self.agent.generate_interactive(

@@ -868,6 +868,7 @@ class DesignAgent(BaseAgent):
                     user_request=user_prompt,
                     system_prompt=system_prompt,
                     turn_schema=turn_schema,
+                    role="design",
                 )
             else:
                 response = self.agent.generate_interactive(

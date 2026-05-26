@@ -272,6 +272,7 @@ class PMAgent(BaseAgent):
                     user_request=user_request,
                     system_prompt=system_prompt,
                     turn_schema=turn_schema,
+                    role="pm",
                 )
             else:
                 response = self.agent.generate_interactive(
