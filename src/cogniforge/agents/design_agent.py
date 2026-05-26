@@ -715,6 +715,7 @@ class DesignAgent(BaseAgent):
         """Validate LLD JSON, retry up to 10 times, then commit + render HTML."""
         from cogniforge.lld_validator import validate_lld_json, format_validation_report
         from cogniforge.llm.base import LLMMessage
+        from cogniforge.llm.deepseek_adapter import MAX_TOKENS_CONFIG
 
         correction_attempts = 0
         max_corrections = 10
@@ -753,7 +754,7 @@ class DesignAgent(BaseAgent):
             fix_response = self.agent.generate_messages([
                 LLMMessage(role="system", content=_build_fix_system_prompt(module_type)),
                 LLMMessage(role="user", content=fix_prompt),
-            ], max_tokens=16384)
+            ], max_tokens=MAX_TOKENS_CONFIG["design_json"])
             json_text = _extract_json(fix_response.content)
             json_abs.write_text(json_text, encoding="utf-8")
 
