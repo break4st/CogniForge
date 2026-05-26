@@ -38,6 +38,7 @@ class WikiSystem:
         self.config = config
         self.git_storage = git_storage
         self.repo_path = config.repo_path
+        self._ensure_wiki_repo()
         self._ensure_structure()
 
     # ------------------------------------------------------------------
@@ -97,12 +98,15 @@ class WikiSystem:
                 html_rel = html_path.relative_to(self.repo_path).as_posix()
                 self.git_storage.repo.index.add([html_rel])
 
-        if commit_message:
+        if self.config.wiki.auto_commit or commit_message:
             author = data.get("meta", {}).get("author", "agent")
+            msg = commit_message or f"{self.config.wiki.auto_commit_prefix}: {doc_type.value}: {doc_id or task_id}"
             staged = [rel]
             if html_rel:
                 staged.append(html_rel)
-            self.git_storage.commit_to_wiki_branch(staged, commit_message, author)
+            self.git_storage.commit_wiki(staged, msg, author)
+            if self.config.wiki.auto_push:
+                self.git_storage.push_wiki()
 
         return path
 
@@ -166,8 +170,11 @@ class WikiSystem:
         else:
             doc_path.write_text(doc.to_markdown(), encoding="utf-8")
         self.git_storage.repo.index.add([doc.path])
-        if commit_message:
-            self.git_storage.commit_to_wiki_branch([doc.path], commit_message, doc.author)
+        if self.config.wiki.auto_commit or commit_message:
+            msg = commit_message or f"{self.config.wiki.auto_commit_prefix}: {doc.doc_type.value}: {doc.doc_id}"
+            self.git_storage.commit_wiki([doc.path], msg, doc.author)
+            if self.config.wiki.auto_push:
+                self.git_storage.push_wiki()
 
     # ------------------------------------------------------------------
     # List / delete
@@ -211,6 +218,10 @@ class WikiSystem:
     # ------------------------------------------------------------------
     # Init
     # ------------------------------------------------------------------
+
+    def _ensure_wiki_repo(self) -> None:
+        """确保 wiki 目录是独立 git 仓库，不是则自动初始化。"""
+        self.git_storage._wiki_repo()  # 懒初始化：非 git repo 时自动 git init
 
     def _ensure_structure(self) -> None:
         dirs = {p.split("/{")[0] for p in self._AGENT_PATHS.values()}

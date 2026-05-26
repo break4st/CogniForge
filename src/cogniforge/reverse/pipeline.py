@@ -80,7 +80,7 @@ class ReversePipeline:
         self._prd: dict | None = None
 
         # 为目标路径初始化 wiki system
-        self._target_git = GitStorage(self.target_path, init_if_needed=True)
+        self._target_git = GitStorage(self.target_path)
         self._target_wiki = WikiSystem(
             Config(repo_path=self.target_path),
             self._target_git,

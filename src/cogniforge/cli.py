@@ -949,7 +949,7 @@ def wiki_push(ctx: Context, message: str, author: str):
     click.echo(f"正在将 {len(files)} 个 wiki 文件提交到 wiki 分支...")
 
     try:
-        commit_hash = ctx.git_storage.commit_to_wiki_branch(files, message, author)
+        commit_hash = ctx.git_storage.commit_wiki(files, message, author)
         click.echo(f"\n{C_GREEN}✓{C_RESET} 已提交到 wiki 分支")
         click.echo(f"  commit: {commit_hash[:8]}")
         click.echo(f"  message: {message}")

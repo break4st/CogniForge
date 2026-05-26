@@ -72,6 +72,14 @@ wbs_constraints:
   preserve_lld_refs: true
   require_acceptance_criteria: true
   require_file_boundary: true
+
+# ----- Wiki 存储配置 -----
+wiki:
+  repo_url: ""                 # 远程仓库地址（可选，留空则仅本地 git）
+  branch: "main"
+  auto_commit: true
+  auto_commit_prefix: "docs"
+  auto_push: false
 """
 
 # Roles that strongly prefer AGENT-type providers
@@ -86,6 +94,15 @@ DEFAULT_ROLE_PROVIDERS = {
 }
 
 
+class WikiConfig(BaseModel):
+    """Wiki 独立仓库配置。"""
+    repo_url: str = ""
+    branch: str = "main"
+    auto_commit: bool = True
+    auto_commit_prefix: str = "docs"
+    auto_push: bool = False
+
+
 class Config(BaseModel):
     """CogniForge configuration.
 
@@ -95,8 +112,15 @@ class Config(BaseModel):
 
     # Repository paths
     repo_path: Path = Field(default_factory=Path.cwd)
-    wiki_path: Path = Field(default=Path(".cogniforge/wiki"))
     src_path: Path = Field(default=Path("src"))
+
+    # Wiki submodule
+    wiki: WikiConfig = Field(default_factory=WikiConfig)
+
+    @property
+    def wiki_path(self) -> Path:
+        """Wiki 独立仓库路径（硬编码，不可配置）。"""
+        return self.repo_path / ".cogniforge" / "wiki"
 
     # Context loading
     context_global_patterns: list[str] = Field(
@@ -254,6 +278,15 @@ class Config(BaseModel):
         with open(config_path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
 
+        # Backward compat: old wiki_path field is no longer configurable
+        if "wiki_path" in raw:
+            import click
+            click.echo(
+                f"  [WARN] 配置中的 wiki_path 字段已废弃，wiki 路径固定为 .cogniforge/wiki/。"
+                f"当前值将被忽略。"
+            )
+            del raw["wiki_path"]
+
         # Merge env var fallbacks for LLM provider api_keys
         for name, cfg in raw.get("llm", {}).items():
             if isinstance(cfg, dict) and not cfg.get("api_key"):
@@ -398,7 +431,7 @@ class Config(BaseModel):
 
     def resolve_wiki_path(self, *parts: str) -> Path:
         """Resolve wiki file path"""
-        return self.repo_path / self.wiki_path / "/".join(parts)
+        return self.wiki_path / "/".join(parts)
 
     def resolve_src_path(self, *parts: str) -> Path:
         """Resolve source file path"""

@@ -8,6 +8,7 @@ from datetime import datetime
 
 from git import Repo, GitCommandError, InvalidGitRepositoryError
 
+from cogniforge.core.config import Config
 from cogniforge.core.exceptions import GitStorageError
 
 
@@ -18,8 +19,9 @@ class GitStorage:
     All operations (code + docs + reports) must be committed to Git.
     """
 
-    def __init__(self, repo_path: Path):
+    def __init__(self, repo_path: Path, config: Config | None = None):
         self.repo_path = Path(repo_path)
+        self.config = config or Config(repo_path=self.repo_path)
         self._write_lock = threading.Lock()
         try:
             self.repo = Repo(self.repo_path)
@@ -86,65 +88,63 @@ class GitStorage:
         except GitCommandError as e:
             raise GitStorageError(f"Failed to commit: {e}")
 
-    def commit_to_wiki_branch(self, files: list[str], message: str,
-                              author: str = "system") -> str | None:
-        """将指定文件提交到 wiki 分支（通过临时 worktree）。
-
-        files 会被复制到 wiki 分支的 worktree 中提交，
-        提交后当前索引中的这些文件会被 unstage。
-        """
-        import shutil
-        import tempfile
-
-        repo = self.repo
-        wiki_branch = "wiki"
-
-        # 确保 wiki 分支存在
-        if wiki_branch not in [b.name for b in repo.branches]:
-            repo.create_head(wiki_branch)
-
-        worktree_dir = None
+    def _wiki_repo(self) -> Repo:
+        """获取 wiki 独立仓库，不是 git repo 则自动初始化。"""
+        wiki_path = self.repo_path / ".cogniforge/wiki"
         try:
-            worktree_dir = tempfile.mkdtemp(prefix="cogniforge-wiki-")
-            repo.git.worktree("add", worktree_dir, wiki_branch)
+            return Repo(wiki_path)
+        except (GitCommandError, InvalidGitRepositoryError):
+            return self._init_wiki_repo(wiki_path)
 
-            wt_root = Path(worktree_dir)
-
-            # 复制文件到 worktree
-            for f in files:
-                src = self.repo_path / f
-                dst = wt_root / f
-                if src.exists():
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, dst)
-                else:
-                    # 文件已删除 — 在 worktree 中也删除
-                    if dst.exists():
-                        dst.unlink()
-
-            # 在 worktree 中提交
-            wt_repo = Repo(worktree_dir)
-            if files:
-                wt_repo.index.add(files)
-            commit = wt_repo.index.commit(message)
-            commit_hash = commit.hexsha
-
-            return commit_hash
-        except GitCommandError as e:
-            raise GitStorageError(f"Failed to commit to wiki branch: {e}")
-        finally:
-            if worktree_dir and Path(worktree_dir).exists():
-                try:
-                    repo.git.worktree("remove", worktree_dir, "--force")
-                except GitCommandError:
-                    pass
-                shutil.rmtree(worktree_dir, ignore_errors=True)
-
-            # 从当前索引中 unstage wiki 文件
+    def _init_wiki_repo(self, wiki_path: Path) -> Repo:
+        """在 wiki_path 初始化独立 git 仓库，配置 remote，提交存量文件。"""
+        wiki_repo = Repo.init(wiki_path)
+        remote_url = self.config.wiki.repo_url
+        if remote_url:
             try:
-                repo.index.remove(files, working_tree=False)
+                wiki_repo.create_remote("origin", remote_url)
             except GitCommandError:
-                pass
+                pass  # remote 已存在
+
+        # 将已有文件全部纳入初始 commit
+        wiki_repo.index.add("*")
+        wiki_repo.index.commit("chore: wiki 仓库初始化")
+        return wiki_repo
+
+    def commit_wiki(self, files: list[str], message: str,
+                    author: str = "system") -> str | None:
+        """在 wiki 独立仓库内提交。无变更时返回 None。
+
+        files 参数是主仓库相对路径（如 .cogniforge/wiki/prd/x.json），
+        方法内部自动转换为 wiki 仓库相对路径（如 prd/x.json）。
+        """
+        wiki_repo = self._wiki_repo()
+        prefix = ".cogniforge/wiki" + "/"
+        wiki_files = [f[len(prefix):] if f.startswith(prefix) else f for f in files]
+
+        wiki_repo.index.add(wiki_files)
+
+        try:
+            head_valid = wiki_repo.head.is_valid()
+        except (ValueError, GitCommandError):
+            head_valid = False
+
+        if head_valid and not wiki_repo.index.diff("HEAD"):
+            return None
+
+        commit = wiki_repo.index.commit(message)
+        return commit.hexsha
+
+    def push_wiki(self) -> None:
+        """推送 wiki 仓库到远程。无 remote 或 push 失败时 warning，不阻断。"""
+        wiki_path = self.repo_path / ".cogniforge/wiki"
+        if not (wiki_path / ".git").exists():
+            return
+        try:
+            wiki_repo = Repo(wiki_path)
+            wiki_repo.remote("origin").push()
+        except (GitCommandError, ValueError):
+            pass  # 无 remote 或无网络时静默跳过
 
     def get_status(self) -> dict:
         """Get Git status"""
