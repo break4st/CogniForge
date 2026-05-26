@@ -214,13 +214,86 @@ modify_interactive():
 <li><strong>原子写入：</strong>通过 <code>git_storage.atomic_write()</code> 确保 JSON + HTML 的 Git 提交为原子操作</li>
 </ul>
 
-<h2>9. LLM 交互模式</h2>
+<h2>9. LLM 调用方式</h2>
 
-<table>
-<tr><th>方法</th><th>LLM 调用方式</th></tr>
-<tr><td><code>_generate_initial()</code></td><td><code>agent.generate_think_then_json(role="architect", max_tokens=8192)</code></td></tr>
-<tr><td><code>modify_interactive()</code></td><td><code>agent.generate_interactive_patch()</code>（优先）或 <code>agent.generate_interactive()</code></td></tr>
-</table>
+<p><strong>适配器：</strong><code>DeepSeekAdapter</code>，基于 OpenAI SDK，端点 <code>POST https://api.deepseek.com/v1/chat/completions</code>，默认模型 <code>deepseek-v4-pro</code></p>
+
+<h3>9.1 初始 SAD 生成 — generate_think_then_json(role="architect")</h3>
+
+<p>两步 API 调用，与 PM 相同模式但 <strong>无 system prompt</strong>，SAD JSON 结构模板内嵌于 user prompt：</p>
+
+<h4>第一步：思考分析</h4>
+<pre><code>POST /v1/chat/completions
+{
+  "model": "deepseek-v4-pro",
+  "messages": [{
+    "role": "user",
+    "content": "&lt;SAD JSON 结构模板 + PRD 上下文 + 组件/契约/数据模型规则&gt;\n\n请先深入分析思考，输出详细的设计方案。用自然语言描述，不要输出 JSON。"
+  }],
+  "max_tokens": 8192,
+  "extra_body": {"thinking": {"type": "enabled"}}
+}</code></pre>
+
+<h4>第二步：结构化 JSON</h4>
+<pre><code>POST /v1/chat/completions
+{
+  "model": "deepseek-v4-pro",
+  "messages": [
+    {"role": "user",      "content": "&lt;原始 prompt&gt;"},
+    {"role": "assistant", "content": "&lt;第一步的思考结果&gt;"},
+    {"role": "user",      "content": "请将上述分析结果整理为指定的 JSON 结构输出。\n只返回纯 JSON 对象，不要 markdown 代码块包裹，不要任何解释文字。"}
+  ],
+  "max_tokens": 8192,
+  "response_format": {"type": "json_object"},
+  "extra_body": {"thinking": {"type": "disabled"}}
+}</code></pre>
+
+<p><strong>重试机制：</strong>JSON 解析失败时最多重试 2 次，每次将错误信息反馈给 LLM 重新生成。<code>repair_truncated_json()</code> 用于修复截断的 JSON。</p>
+
+<h3>9.2 交互式修改 — generate_interactive_patch()（优先）</h3>
+
+<p>两步 API 调用，注入 SE 角色 + 分析 SAD 变更影响：</p>
+
+<h4>第一步：分析 + 规划 Patches</h4>
+<pre><code>POST /v1/chat/completions
+{
+  "model": "deepseek-v4-pro",
+  "messages": [
+    {"role": "system", "content": "你是 CogniForge 系统的 Architect Agent。\n职责: 根据 PRD 生成系统架构文档 (SAD) JSON。"},
+    {"role": "user",   "content": "当前 PRD JSON:\n{prd}\n\n当前 SAD JSON:\n{sad}\n\n用户修改要求: {request}\n\n请先分析...输出你的分析，不要输出 JSON。"}
+  ],
+  "max_tokens": 4096,
+  "extra_body": {"thinking": {"type": "enabled"}}
+}</code></pre>
+
+<h4>第二步：输出 se-turn-result</h4>
+<pre><code>POST /v1/chat/completions
+{
+  "messages": [
+    {"role": "system"}, {"role": "user"}, {"role": "assistant"}, {"role": "user"}
+  ],
+  "max_tokens": 4096,
+  "response_format": {"type": "json_object"},
+  "extra_body": {"thinking": {"type": "disabled"}}
+}</code></pre>
+
+<h3>9.3 修改模式 System Prompt（12 条架构治理规则）</h3>
+<pre><code>你是 CogniForge 系统的 SE (Architect) Agent。
+职责: 根据 PRD 变更维护系统架构文档 (SAD)。
+规则:
+1. 不要直接输出完整 SAD 文档，只输出包含 patches 数组的变更结果 JSON。
+2. 保留所有已有的 CMP-ID、CTR-ID、DM-ID 不变。
+3. 新增组件/契约/数据模型时分配新的 ID（下一个可用的编号）。
+4. 修改已有 component/contract 时，version +1 并追加 change_history。
+5. 优先判断现有组件是否能承载新需求，不要默认新增组件。
+6. 每个 active requirement 必须在 requirement_traceability 中有覆盖状态。
+7. SAD 有变化时 meta.version +1。
+8. 如果 PRD 需求无法被当前架构覆盖，返回 coverage=partial/blocked。
+9. 如果接口契约缺少 request/response/provider_component_id，必须补齐。
+10. 默认不删除，用 status=deprecated/removed 标记。
+11. patches 使用 RFC 6902 JSON Pointer 格式路径。
+12. 在 downstream_handoff 中给出 BE/FE/QA/DevOps agent 的任务提示。
+所有文字使用中文。</code></pre>
 
 <h2>10. 与下游代理的交互</h2>
 

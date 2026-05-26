@@ -136,18 +136,96 @@ _write_direct(module, task, code):
 <tr><td><code>error_handling</code></td><td>dict</td><td>错误处理策略</td></tr>
 </table>
 
-<h2>6. 与 Claude Code 的通信</h2>
+<h2>6. LLM 调用方式</h2>
 
-<p>Dev Agent 通过 <code>agent.generate_agentic(prompt, role="dev")</code> 委派任务，这实际上是调用 Claude Code CLI 以工具使用模式运行。Claude Code 拥有：</p>
+<p><strong>适配器：</strong><code>ClaudeCodeAdapter</code>，通过子进程调用 <code>claude</code> CLI</p>
+
+<h3>6.1 CLI 命令</h3>
+<pre><code>claude -p - \
+  --output-format json \
+  --model claude-sonnet-4-20250514 \
+  --tools Read,Write,Edit,Bash,Glob,Grep \
+  --permission-mode acceptEdits \
+  --max-turns 20 \
+  --append-system-prompt "你是 CogniForge 系统的 Dev Agent。
+职责: 根据 LLD 编写代码和测试，运行 pytest 验证。"
+
+&lt;stdin&gt; = 结构化 Prompt（11 段） + 工作目录 + 完成后用中文回复。</code></pre>
+
+<h3>6.2 CLI 参数详解</h3>
+<table>
+<tr><th>参数</th><th>值</th><th>说明</th></tr>
+<tr><td><code>-p -</code></td><td>—</td><td>从 stdin 读取 prompt（避免 Windows cmd.exe 截断问题）</td></tr>
+<tr><td><code>--output-format</code></td><td><code>json</code></td><td>输出 JSON → 解析 <code>data["result"]</code> 字段获取文本</td></tr>
+<tr><td><code>--model</code></td><td>配置值或环境变量 <code>ANTHROPIC_MODEL</code><br>默认 <code>claude-sonnet-4-20250514</code></td><td>可选: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5</td></tr>
+<tr><td><code>--tools</code></td><td><code>Read,Write,Edit,Bash,Glob,Grep</code></td><td>6 个文件系统/Shell 工具，Claude CLI 自主管理调用循环</td></tr>
+<tr><td><code>--permission-mode</code></td><td><code>acceptEdits</code></td><td>自动接受编辑操作，无需人工确认</td></tr>
+<tr><td><code>--max-turns</code></td><td><code>20</code></td><td>最大工具使用轮次</td></tr>
+<tr><td><code>--append-system-prompt</code></td><td>Dev Agent 角色定义</td><td>追加到 Claude 的 system prompt</td></tr>
+</table>
+
+<h3>6.3 完整 stdin 输入格式</h3>
+<pre><code>实现以下开发任务。接口签名、数据模型字段和业务规则来自详细设计文档(LLD)，必须严格遵守。
+
+## 任务
+{task_name}
+{task_desc}
+
+## 上游已完成产物（可直接 import/调用）
+{upstream_artifacts}
+
+## API 接口（必须严格实现）
+{method} {endpoint}
+  parameters: [{name: type}]
+  response: HTTP {status} {body}
+  error_codes: [{code: message}]
+
+## 服务契约（签名/前置/后置条件不可修改）
+{service}.{method}
+  signature: ...
+  precondition: ...
+  postcondition: ...
+  exceptions: [{http_status, name, trigger}]
+
+## 数据模型（字段/类型不可修改）
+{name} (ownership=...)
+  - {field}: {type} required={bool}
+  INDEX {name} ({columns}) unique={bool}
+
+## 领域对象
+{name} ({object_type})
+  - {attribute}: {type} required={bool} | source=...
+
+## 业务规则（必须实现）
+  - [invariant] ...
+  state_machines: {states} {transitions} {irreversible_rules}
+  - [cross_service] ...
+
+## 错误处理
+  strategy: ...
+
+## 验收标准（每项必须满足）
+1. [{verification_type}] {description}
+
+## 依赖的外部接口
+  - {module}: {method} {endpoint}
+
+## 完整 LLD 参考
+{lld_path}
+
+工作目录: {repo_path}
+完成后用中文回复。</code></pre>
+
+<h3>6.4 System Prompt（通过 --append-system-prompt 注入）</h3>
+<pre><code>你是 CogniForge 系统的 Dev Agent。
+职责: 根据 LLD 编写代码和测试，运行 pytest 验证。</code></pre>
+
+<h3>6.5 与 DeepSeek 的区别</h3>
+<p>Claude Code CLI 的 <code>--tools</code> 是原生文件系统操作，Claude 在工具使用循环中直接读写文件。与 DeepSeekAdapter 自实现的 tool-calling 不同：</p>
 <ul>
-<li><strong>文件读写能力：</strong> 直接读取 LLD 文档和写入源代码</li>
-<li><strong>Shell 执行能力：</strong> 运行 pytest 验证测试</li>
-<li><strong>代码搜索能力：</strong> 查找现有代码模式确保一致性</li>
+<li><strong>Claude CLI：</strong>工具调用由 Claude 内核管理，支持完整上下文传递和 abort/retry</li>
+<li><strong>DeepSeek：</strong>工具调用由 Python 代码实现，仅 6 个基础工具，有路径安全检查</li>
 </ul>
-
-<div class="warn">
-<strong>与 PM/Architect/Design 的区别：</strong>PM/Architect/Design/TechLead 通过直接 API 调用使用 DeepSeek（generate_think_then_json），而 Dev/Reviewer/QA/DevOps 通过 Claude Code CLI 使用工具模式（generate_agentic）。这是因为后者需要文件系统操作能力。
-</div>
 
 <h2>7. 错误处理</h2>
 

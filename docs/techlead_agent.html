@@ -170,15 +170,72 @@ retro:
 <tr><td><strong>完整性</strong></td><td>必需字段是否填写完整</td></tr>
 </table>
 
-<h2>9. LLM 交互模式</h2>
+<h2>9. LLM 调用方式</h2>
 
+<p><strong>适配器：</strong><code>DeepSeekAdapter</code>，端点 <code>POST https://api.deepseek.com/v1/chat/completions</code>，默认模型 <code>deepseek-v4-pro</code></p>
+<p>Tech Lead 是唯一使用 DeepSeek <strong>tool-calling 模式</strong>的代理（质量评估）。WBS 创建通过 WBSAssembler 内部调用 LLM。</p>
+
+<h3>9.1 质量评估 — generate_agentic(role="techlead")</h3>
+
+<p>自实现的 <strong>tool-calling 循环</strong>（最多 20 轮），使用 OpenAI function-calling 格式的工具定义：</p>
+
+<h4>初始 API 调用</h4>
+<pre><code>POST /v1/chat/completions
+{
+  "model": "deepseek-v4-pro",
+  "messages": [
+    {"role": "system", "content": "你是 CogniForge 系统的 Tech Lead Agent。\n职责: 工作分解 (WBS)，质量评估。"},
+    {"role": "user",   "content": "&lt;quality evaluation prompt&gt;\n\n工作目录: {repo_path}\n完成后用中文回复。"}
+  ],
+  "tools": [
+    {"type": "function", "function": {"name": "Read",  "description": "读取文件内容",         "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+    {"type": "function", "function": {"name": "Write", "description": "将内容写入文件",       "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}},
+    {"type": "function", "function": {"name": "Edit",  "description": "在文件中查找并替换文本", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}}, "required": ["path", "old_string", "new_string"]}}},
+    {"type": "function", "function": {"name": "Bash",  "description": "执行 shell 命令",      "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
+    {"type": "function", "function": {"name": "Glob",  "description": "按模式搜索文件",       "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}}},
+    {"type": "function", "function": {"name": "Grep",  "description": "在文件中搜索文本模式",  "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}}}
+  ],
+  "max_tokens": 4096
+}</code></pre>
+
+<h4>循环逻辑</h4>
+<pre><code>for turn in range(20):
+    response = POST /v1/chat/completions(model, messages, tools)
+    if response.choices[0].message.tool_calls is empty:
+        return response.content  // 最终回复
+    // 否则执行每个 tool_call:
+    for tc in message.tool_calls:
+        result = execute_tool(tc.name, tc.args)  // Read/Write/Edit/Bash/Glob/Grep
+        append {"role": "tool", "tool_call_id": tc.id, "content": result}
+    // 继续下一轮</code></pre>
+
+<p><strong>工具安全：</strong>所有文件路径必须在 repo_path 内；Bash 拦截 <code>rm -rf /</code>、<code>mkfs</code>、<code>sudo rm</code> 等危险命令，超时 30s，输出截断至 10000 字符。</p>
+
+<h4>Prompt 内容</h4>
+<pre><code>评估以下模块的质量门禁，以 JSON 格式输出并写入:
+
+输出路径: .cogniforge/wiki/reports/quality-{module}-{seq}.json
+JSON 结构: {"meta": {"doc_id": "quality-{module}-{seq}", "type": "report",
+  "title": "质量评估 - {module}", "author": "techlead_agent", "created": "{now}"},
+  "content": "... (包含 PASS/FAIL 结论及各检查项结果)"}
+
+输入数据: module: {module}
+
+要求:
+1. 阅读该模块的 LLD、代码、CR 报告、测试报告
+2. 检查：CR 是否通过、测试是否通过、代码是否符合设计
+3. 在 content 字段中明确给出 PASS/FAIL 结论
+4. 使用中文、只写 JSON 不写 HTML、完成后回复确认</code></pre>
+
+<h3>9.2 WBS 创建</h3>
+<p>WBSAssembler 内部使用 LLM 进行任务丰富化，具体调用方式取决于 assembler 实现。机械分解（decomposition_rules）和覆盖率验证（coverage_validator）是纯代码逻辑。</p>
+
+<h3>9.3 无 LLM 操作</h3>
 <table>
-<tr><th>方法</th><th>LLM 调用方式</th></tr>
-<tr><td><code>_structured_create_wbs()</code></td><td>WBSAssembler 内部使用 agent（LLM 用于任务丰富化）</td></tr>
-<tr><td><code>_agentic_evaluate_quality()</code></td><td><code>agent.generate_agentic(role="techlead")</code></td></tr>
-<tr><td><code>_decide_next()</code></td><td>无 LLM——代码决策</td></tr>
-<tr><td><code>_control_flow()</code></td><td>无 LLM——代码决策</td></tr>
-<tr><td><code>_retro()</code></td><td>无 LLM——纯统计计算</td></tr>
+<tr><th>Action</th><th>实现方式</th></tr>
+<tr><td><code>decide_next</code></td><td>纯代码——返回 next_action="advance"</td></tr>
+<tr><td><code>control_flow</code></td><td>纯代码——返回 status="ok"</td></tr>
+<tr><td><code>retro</code></td><td>纯代码——统计 task 状态、计算完成率/估算准确率</td></tr>
 </table>
 
 <h2>10. WBS 子系统</h2>

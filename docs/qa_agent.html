@@ -144,16 +144,75 @@ _execute_tests():
 <tr><td><code>content</code></td><td>str</td><td>报告内容——覆盖率和通过/失败统计及风险评估</td></tr>
 </table>
 
-<h2>6. 与 Claude Code 的通信</h2>
+<h2>6. LLM 调用方式</h2>
 
-<p>QA Agent 在 generate_tests 和 report 两个 action 中使用 <code>agent.generate_agentic(prompt, role="qa")</code>，Claude Code 获得：</p>
-<ul>
-<li><strong>文件读取能力：</strong> 阅读 LLD 设计文档、源代码、已有测试文件</li>
-<li><strong>Shell 执行能力：</strong> 运行 pytest 获取测试结果</li>
-<li><strong>写入能力：</strong> 将测试用例 JSON 和 pytest 测试代码写入文件</li>
-</ul>
+<p><strong>适配器：</strong><code>ClaudeCodeAdapter</code>（generate_tests + report），执行测试使用 <code>subprocess.run(pytest)</code> 无 LLM</p>
 
-<p>execute_tests action 则直接使用 Python <code>subprocess.run()</code> 调用 pytest，不涉及 LLM。</p>
+<h3>6.1 generate_tests — CLI Agent 模式</h3>
+<pre><code>claude -p - \
+  --output-format json \
+  --model claude-sonnet-4-20250514 \
+  --tools Read,Write,Edit,Bash,Glob,Grep \
+  --permission-mode acceptEdits \
+  --max-turns 20 \
+  --append-system-prompt "你是 CogniForge 系统的 QA Agent。
+职责: 生成测试用例 JSON，执行测试，生成报告。"
+
+&lt;stdin&gt;:
+为以下模块生成测试用例，以 JSON 格式输出并写入:
+
+输出路径: .cogniforge/wiki/qa/test_case-{module}-{seq}.json
+JSON 结构: {"meta": {"doc_id": "...", "type": "test_case", "module": "{module}",
+  "title": "测试用例 - {module}", "author": "qa_agent", "created": "{now}"},
+  "test_cases": [{"name": "...", "type": "unit/integration/...",
+  "priority": "high/medium/low", "description": "...",
+  "steps": ["..."], "expected_result": "..."}]}
+
+输入数据: module: {module} / test_cases: [...]
+
+要求:
+1. 先阅读 .cogniforge/wiki/lld/{module}/ 了解设计
+2. 阅读 src/{module}/ 下的代码了解实现
+3. 覆盖正常路径、边界条件、错误处理
+4. 生成对应的 pytest 测试代码写入 tests/test_{module}.py
+5. 使用中文、只写 JSON 不写 HTML、完成后回复确认
+
+工作目录: {repo_path}
+完成后用中文回复。</code></pre>
+
+<h3>6.2 report — CLI Agent 模式</h3>
+<pre><code>同上 CLI 参数，stdin 内容:
+为以下模块生成测试报告，以 JSON 格式输出并写入:
+
+输出路径: .cogniforge/wiki/reports/test-report-{module}-{seq}.json
+JSON 结构: {"meta": {..., "author": "qa_agent"}, "content": "..."}
+
+要求:
+1. 阅读 tests/test_{module}.py 和 src/{module}/ 下的代码
+2. 运行 pytest 获取测试结果
+3. 在 content 字段中包含：测试覆盖率、通过/失败统计、风险评估
+4. 使用中文、只写 JSON 不写 HTML、完成后回复确认</code></pre>
+
+<h3>6.3 execute_tests — 纯 subprocess（无 LLM）</h3>
+<pre><code>subprocess.run(
+    ["pytest", "-v", "--tb=short", "tests/test_{module}.py"],
+    capture_output=True, text=True, cwd=repo_path
+)
+→ returncode == 0 → passed=True
+→ 如果 pytest 未安装 → 降级跳过 (passed=True, "pytest not found")</code></pre>
+
+<h3>6.4 System Prompt</h3>
+<pre><code>你是 CogniForge 系统的 QA Agent。
+职责: 生成测试用例 JSON，执行测试，生成报告。</code></pre>
+
+<h3>6.5 Claude Code 执行流程（generate_tests）</h3>
+<ol>
+<li>Claude 使用 Read 工具读取 <code>.cogniforge/wiki/lld/{module}/</code> 下的 LLD 设计文档</li>
+<li>Claude 使用 Read 工具读取 <code>src/{module}/</code> 下的源代码</li>
+<li>Claude 使用 Write 工具写入测试用例 JSON 到 <code>.cogniforge/wiki/qa/</code></li>
+<li>Claude 使用 Write 工具写入 pytest 测试代码到 <code>tests/test_{module}.py</code></li>
+<li>QA Agent 读取 JSON → Schema 验证 → HTML 渲染 → Git 提交（含 extra_paths: tests/test_{module}.py）</li>
+</ol>
 
 <h2>7. 在工作流中的位置</h2>
 

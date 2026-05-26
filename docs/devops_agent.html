@@ -161,15 +161,54 @@ version: {version}
 3. 在 config 字段中包含: Docker 配置、环境变量、网络设置、健康检查
 4. 使用中文、只写 JSON 不写 HTML、完成后回复确认</code></pre>
 
-<h2>7. 与 Claude Code 的通信</h2>
+<h2>7. LLM 调用方式</h2>
 
-<p>DevOps Agent 在 prepare_deploy 中使用 <code>agent.generate_agentic(prompt, role="devops")</code>，Claude Code 获得：</p>
-<ul>
-<li><strong>文件读取能力：</strong> 阅读 SAD 系统架构和 LLD 模块设计</li>
-<li><strong>写入能力：</strong> 将部署配置 JSON 写入指定路径</li>
-</ul>
+<p><strong>适配器：</strong><code>ClaudeCodeAdapter</code>（prepare_deploy），deploy/rollback 为纯代码操作存根</p>
 
-<p>deploy 和 rollback 不涉及 LLM——纯代码操作存根。</p>
+<h3>7.1 prepare_deploy — CLI Agent 模式</h3>
+<pre><code>claude -p - \
+  --output-format json \
+  --model claude-sonnet-4-20250514 \
+  --tools Read,Write,Edit,Bash,Glob,Grep \
+  --permission-mode acceptEdits \
+  --max-turns 20 \
+  --append-system-prompt "你是 CogniForge 系统的 DevOps Agent。
+职责: 生成部署配置 JSON。"
+
+&lt;stdin&gt;:
+为以下模块准备部署配置，以 JSON 格式输出并写入:
+
+输出路径: .cogniforge/wiki/ops/deploy-{module}-{environment}-{seq}.json
+JSON 结构: {"meta": {"doc_id": "...", "type": "deploy",
+  "title": "部署配置 - {module}", "author": "devops_agent", "created": "{now}"},
+  "config": {"module": "...", "environment": "...",
+  "docker": {}, "env_vars": {}, "network": {}, "health_check": {}}}
+
+输入数据: module: {module} / environment: {environment} / version: {version}
+
+要求:
+1. 先阅读 .cogniforge/wiki/sad/ 了解系统架构
+2. 先阅读 .cogniforge/wiki/lld/{module}/ 了解模块设计
+3. 在 config 字段中包含: Docker 配置、环境变量、网络设置、健康检查
+4. 使用中文、只写 JSON 不写 HTML、完成后回复确认
+
+工作目录: {repo_path}
+完成后用中文回复。</code></pre>
+
+<h3>7.2 System Prompt</h3>
+<pre><code>你是 CogniForge 系统的 DevOps Agent。
+职责: 生成部署配置 JSON。</code></pre>
+
+<h3>7.3 deploy / rollback — 纯代码操作存根（无 LLM）</h3>
+<pre><code>_deploy(input_data):
+  → 返回 status="success"
+  → message: "Deploy {module} to {environment} (operational stub)"
+
+_rollback(input_data):
+  → 返回 status="success"
+  → message: "Rollback {module} to {version} (operational stub)"</code></pre>
+
+<p>这两个方法无 API 调用、无 LLM、无文件操作——纯粹返回成功状态。实际部署操作将在 CI/CD 系统集成时实现。</p>
 
 <h2>8. 在工作流中的位置</h2>
 

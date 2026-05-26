@@ -214,7 +214,65 @@ schemas/agents/lld/
 <tr><td><code>SC-XXX</code></td><td>服务契约 (仅 service)</td><td>SC-001</td></tr>
 </table>
 
-<h2>11. 配置</h2>
+<h2>11. LLM 调用方式</h2>
+
+<p><strong>适配器：</strong><code>DeepSeekAdapter</code>，端点 <code>POST https://api.deepseek.com/v1/chat/completions</code>，默认模型 <code>deepseek-v4-pro</code></p>
+<p>Design Agent 是唯一使用 <strong>4 种不同调用方法</strong>的代理，覆盖全部 DeepSeek 能力。</p>
+
+<h3>11.1 单阶段生成 — generate_think_then_json(role="design")</h3>
+<p>两步模式（thinking→JSON），<strong>无 system prompt</strong>，max_tokens=8192，最多重试 5 次。回退方案，仅在不支持分段生成的模块类型或分段失败时使用。</p>
+
+<h3>11.2 蓝图生成 — generate()（纯文本 JSON 模式）</h3>
+<pre><code>POST /v1/chat/completions
+{
+  "model": "deepseek-v4-pro",
+  "messages": [{"role": "user", "content": "&lt;蓝图 prompt（模块信息 + ownership_rules + contract_context）&gt;"}],
+  "max_tokens": 4096,
+  "response_format": {"type": "json_object"},
+  "extra_body": {"thinking": {"type": "disabled"}}
+}</code></pre>
+
+<p>输入 Prompt 要求输出 meta/source/module_boundary/overview/traceability/artifact_index，后续分段必须使用蓝图锁定的 ID。</p>
+
+<h3>11.3 分段并行生成 — generate() × N</h3>
+<p>与蓝图相同的 API 调用模式，但通过 <code>ThreadPoolExecutor</code> (最多 8 workers) 并行执行。每个分段独立调用 API，传入蓝图确保 ID 一致性。分段分配按模块类型不同（service 6 段，gateway 4 段，frontend 7 段，database 6 段，infrastructure 5 段）。</p>
+
+<h3>11.4 校验修正 — generate_messages()</h3>
+<p>在自校正循环中使用（最多 10 轮），这是唯一使用 system + user 双消息模式的场景：</p>
+<pre><code>POST /v1/chat/completions
+{
+  "model": "deepseek-v4-pro",
+  "messages": [
+    {"role": "system", "content": "你是 CogniForge 系统的 Design Agent。职责: 生成 LLD JSON。\n输出格式请参照 system prompt 中的 EXAMPLE JSON OUTPUT 示例。"},
+    {"role": "user",   "content": "你刚才生成的 LLD JSON 校验未通过：\n\n{validation_report}\n\n当前 JSON（请检查违反规则的具体字段）:\n{current_json}\n\n请修正以上所有问题，返回完整的修正后 JSON。\n只返回纯 JSON 对象，不要 markdown 代码块包裹。"}
+  ],
+  "max_tokens": 8192,
+  "response_format": {"type": "json_object"},
+  "extra_body": {"thinking": {"type": "disabled"}}
+}</code></pre>
+
+<h3>11.5 交互式修改 — generate_interactive_patch()</h3>
+<p>两步模式，注入 MDE 角色，分析上游变更对 LLD 的影响后输出 patches。修改模式 System Prompt（11 条规则）：</p>
+<pre><code>你是 CogniForge 系统的 MDE (Design) Agent。
+职责: 维护模块 '{module}' ({module_type}) 的详细设计文档 (LLD)。
+规则:
+1. 不要直接输出完整 LLD 文档，只输出包含 patches 数组的变更结果 JSON。
+2. 保留所有已有的 DM-ID、IF-ID、DO-ID、SC-ID 不变。
+3. 新增对象时分配新的 ID（下一个可用编号）。
+4. 修改已有对象时，version +1 并追加 change_history。
+5. 你只能设计本模块范围内的内容，不可越界设计其他模块。
+6. SAD contract 由本模块实现时，在 interfaces[] 中建立对应 interface 并填写 source_contract_id。
+7. 只消费 contract 时，在 api_integration/connection_contracts 中引用。
+8. SAD contract 不完整或不一致时，不可擅自修改——在 upstream_issues 中反馈。
+9. 每次 LLD 有变化，meta.version +1。
+10. patches 使用 RFC 6902 JSON Pointer 格式路径。
+11. 在 implementation_handoff 和 test_handoff 中给出下游任务提示。
+所有文字使用中文。</code></pre>
+
+<h3>11.6 Design Agent 专属 System Prompt</h3>
+<p><code>ROLE_PROMPTS["design"]</code> 包含 ~170 行的完整 LLD JSON 示例，覆盖所有 5 种模块类型的字段结构。在 <code>generate_think_then_json()</code> 和 <code>generate_messages()</code> 中被注入到 system prompt。</p>
+
+<h2>12. 配置</h2>
 <pre><code># .cogniforge/config.yaml
 design: llm.deepseek    # MDE 使用 DeepSeek 直接 API 调用</code></pre>
 

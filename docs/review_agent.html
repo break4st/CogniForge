@@ -117,18 +117,63 @@ files: {files 列表}
 
 <p>Reviewer 支持多轮评审——通过 <code>seq</code> 计数器递增（cr-{module}-001, cr-{module}-002...），每次评审生成新报告而不覆盖历史。</p>
 
-<h2>7. 与 Claude Code 的通信</h2>
+<h2>7. LLM 调用方式</h2>
 
-<p>Reviewer Agent 通过 <code>agent.generate_agentic(prompt, role="reviewer")</code> 委派任务，Claude Code 获得：</p>
-<ul>
-<li><strong>文件读取能力：</strong> 阅读 LLD 设计文档和源代码</li>
-<li><strong>Shell 执行能力：</strong> 运行 git diff 查看变更</li>
-<li><strong>写入能力：</strong> 将 CR 报告写入指定 JSON 路径</li>
-</ul>
+<p><strong>适配器：</strong><code>ClaudeCodeAdapter</code>，通过子进程调用 <code>claude</code> CLI</p>
 
-<div class="warn">
-<strong>模式 B — 委派代理：</strong>Reviewer 不直接操作文件系统，而是将"阅读设计文档 → 审查代码 → 生成报告"这条完整链委派给 Claude Code。系统层面的操作（Schema 验证、HTML 渲染、Git 提交）由 Reviewer Agent 本身执行。
-</div>
+<h3>7.1 CLI 命令</h3>
+<pre><code>claude -p - \
+  --output-format json \
+  --model claude-sonnet-4-20250514 \
+  --tools Read,Write,Edit,Bash,Glob,Grep \
+  --permission-mode acceptEdits \
+  --max-turns 20 \
+  --append-system-prompt "你是 CogniForge 系统的 Reviewer Agent。
+职责: 代码评审，生成 CR 报告 JSON。"
+
+&lt;stdin&gt; = CR prompt + 工作目录 + 完成后用中文回复。</code></pre>
+
+<h3>7.2 完整 stdin 输入</h3>
+<pre><code>对以下模块进行代码评审，以 JSON 格式输出并写入:
+
+输出路径: .cogniforge/wiki/reports/cr-{module}-{seq}.json
+JSON 结构: {
+  "meta": {
+    "doc_id": "cr-{module}-{seq}",
+    "type": "report",
+    "title": "CR 报告 - {module}",
+    "author": "review_agent",
+    "created": "{now}"
+  },
+  "content": "... (使用 PASS/FAIL 标注每项检查，包含改进建议)"
+}
+
+输入数据:
+module: {module}
+files: {files}
+
+要求:
+1. 先阅读 .cogniforge/wiki/lld/{module}/ 了解设计意图
+2. 阅读相关代码文件
+3. 在 content 字段中使用 PASS/FAIL 标注每项检查
+4. 使用中文、只写 JSON 不写 HTML、完成后回复确认
+
+工作目录: {repo_path}
+完成后用中文回复。</code></pre>
+
+<h3>7.3 System Prompt</h3>
+<pre><code>你是 CogniForge 系统的 Reviewer Agent。
+职责: 代码评审，生成 CR 报告 JSON。</code></pre>
+
+<h3>7.4 执行流程</h3>
+<ol>
+<li>Claude Code CLI 启动 → 注入 Reviewer system prompt</li>
+<li>Claude 使用 Read 工具读取 <code>.cogniforge/wiki/lld/{module}/</code> 下的 LLD JSON</li>
+<li>Claude 使用 Read 工具读取 <code>src/{module}/</code> 下的源代码</li>
+<li>Claude 使用 Bash 工具运行 <code>git diff</code> 查看变更</li>
+<li>Claude 使用 Write 工具将 CR 报告 JSON 写入 <code>.cogniforge/wiki/reports/</code></li>
+<li>Reviewer Agent 读取写入的 JSON → Schema 验证 → HTML 渲染 → Git 提交</li>
+</ol>
 
 <h2>8. Schema 验证链</h2>
 

@@ -192,18 +192,137 @@ modify_interactive():
 
 <p><code>_assign_ids()</code> 方法扫描现有 ID，找到最大编号后从下一个编号开始分配。已存在的 ID 不会被重新分配。</p>
 
-<h2>8. LLM 交互模式</h2>
+<h2>8. LLM 调用方式</h2>
 
-<table>
-<tr><th>方法</th><th>用途</th><th>LLM 调用方式</th></tr>
-<tr><td><code>_run_raw()</code></td><td>从原始文本创建 PRD</td><td><code>agent.generate_think_then_json()</code></td></tr>
-<tr><td><code>_run_structured()</code></td><td>从结构化字段创建 PRD</td><td><code>agent.generate_think_then_json()</code></td></tr>
-<tr><td><code>modify_interactive()</code></td><td>修改已有 PRD</td><td><code>agent.generate_interactive_patch()</code> 或回退到 <code>agent.generate_interactive()</code></td></tr>
-</table>
+<p><strong>适配器：</strong><code>DeepSeekAdapter</code>，基于 OpenAI SDK，端点 <code>POST https://api.deepseek.com/v1/chat/completions</code></p>
 
-<div class="warn">
-<strong>注意：</strong>修改模式下，change_history 只在需求首次创建时记录，迭代修改轮次不追加变更历史。此行为由 system_prompt 规则 #4 明确控制。
-</div>
+<h3>8.1 初始生成 — generate_think_then_json()</h3>
+
+<p>两步 API 调用：</p>
+
+<h4>第一步：思考分析 (thinking enabled)</h4>
+<pre><code>POST /v1/chat/completions
+{
+  "model": "deepseek-v4-pro",
+  "messages": [{
+    "role": "user",
+    "content": "&lt;完整 prompt（含 JSON 结构模板 + ID 规则 + 中文要求）&gt;\n\n请先深入分析思考，输出详细的设计方案。用自然语言描述，不要输出 JSON。"
+  }],
+  "max_tokens": 8192,
+  "extra_body": {"thinking": {"type": "enabled"}}
+}</code></pre>
+
+<h4>第二步：结构化 JSON 输出 (thinking disabled + JSON mode)</h4>
+<pre><code>POST /v1/chat/completions
+{
+  "model": "deepseek-v4-pro",
+  "messages": [
+    {"role": "user",      "content": "&lt;原始 prompt + 思考指令&gt;"},
+    {"role": "assistant", "content": "&lt;第一步的思考结果&gt;"},
+    {"role": "user",      "content": "请将上述分析结果整理为指定的 JSON 结构输出。\n只返回纯 JSON 对象，不要 markdown 代码块包裹，不要任何解释文字。"}
+  ],
+  "max_tokens": 8192,
+  "response_format": {"type": "json_object"},
+  "extra_body": {"thinking": {"type": "disabled"}}
+}</code></pre>
+
+<p><strong>输入 Prompt（核心结构）：</strong></p>
+<pre><code>根据以下用户描述，创建一份完整的产品需求文档 (PRD)。
+充分理解用户意图，提取项目名称、撰写详细概述、
+梳理功能需求（含验收条件）、推导用户故事、标注优先级。
+
+用户描述:
+{raw_text}
+
+预期输出 JSON 结构参考:
+{
+  "meta": {"doc_id": "prd-current", "type": "prd",
+    "title": "...", "author": "pm_agent", "created": "{now}",
+    "version": 1, "last_modified": "{now}", "last_author": "pm_agent"},
+  "overview": "项目概述文本（3-5句）",
+  "requirements": [{
+    "id": "REQ-001", "name": "需求名",
+    "description": "描述", "status": "draft", "version": 1,
+    "acceptance_criteria": ["条件1", "条件2"],
+    "priority": "高/中/低",
+    "depends_on": [], "supersedes": [],
+    "related_user_stories": [],
+    "change_history": [{"version": 1, "change_type": "created",
+      "summary": "初始创建", "reason": "首次生成 PRD"}]
+  }],
+  "user_stories": [{
+    "id": "US-001", "role": "角色",
+    "action": "动作", "goal": "目标",
+    "related_requirements": []
+  }],
+  "priorities": {"REQ-001": "高"}
+}
+
+要求: 所有文字使用中文。requirements 和 user_stories 的 id 使用稳定编号
+（REQ-001, REQ-002... 和 US-001, US-002...）。</code></pre>
+
+<p><strong>注意：</strong>初始生成 <strong>无 system prompt</strong>，JSON 结构模板完全内嵌在 user prompt 中。</p>
+
+<h3>8.2 交互式修改 — generate_interactive_patch()（优先）</h3>
+
+<p>两步 API 调用，与方法 8.1 相同模式，但第一步注入 PM 角色并引导分析 Patch 操作：</p>
+
+<h4>第一步：分析 + 规划 Patches</h4>
+<pre><code>POST /v1/chat/completions
+{
+  "model": "deepseek-v4-pro",
+  "messages": [
+    {"role": "system", "content": "你是 CogniForge 系统的 PM (Product Manager) Agent。\n职责: 根据用户数据生成产品需求文档 (PRD)。"},
+    {"role": "user",   "content": "当前 PRD JSON:\n{current_document}\n\n用户修改要求: {user_request}\n\n请先分析当前的 PRD 结构，确认需要修改的需求条目、变更类型。\n思考需要应用哪些 JSON Patch 操作（add/replace/remove）。\n注意路径格式为 JSON Pointer（如 /requirements/0/name）。\n输出你的分析，不要输出 JSON。"}
+  ],
+  "max_tokens": 4096,
+  "extra_body": {"thinking": {"type": "enabled"}}
+}</code></pre>
+
+<h4>第二步：输出 turn result（含 patches）</h4>
+<pre><code>POST /v1/chat/completions
+{
+  "model": "deepseek-v4-pro",
+  "messages": [
+    {"role": "system",    "content": "&lt;同上&gt;"},
+    {"role": "user",      "content": "&lt;分析提示&gt;"},
+    {"role": "assistant", "content": "&lt;第一步分析&gt;"},
+    {"role": "user",      "content": "请将上述分析结果整理为以下结构的 JSON 输出。\n\n输出 JSON Schema:\n{turn_schema}\n\n只返回纯 JSON 对象，不要 markdown 代码块，不要任何解释文字。"}
+  ],
+  "max_tokens": 4096,
+  "response_format": {"type": "json_object"},
+  "extra_body": {"thinking": {"type": "disabled"}}
+}</code></pre>
+
+<h3>8.3 回退方案 — generate_interactive()</h3>
+
+<p>单次 API 调用，当适配器不支持 patch 模式时使用：</p>
+<pre><code>POST /v1/chat/completions
+{
+  "model": "deepseek-v4-pro",
+  "messages": [
+    {"role": "system", "content": "&lt;PM 修改规则 system_prompt&gt;"},
+    {"role": "user",   "content": "当前文档 JSON:\n{current_document}\n\n用户修改要求: {user_request}\n\n请根据用户要求修改文档，返回完整的修改后 JSON。\n只返回纯 JSON，不要 markdown 代码块包裹，不要多余解释文字。"}
+  ],
+  "max_tokens": 4096,
+  "response_format": {"type": "json_object"},
+  "extra_body": {"thinking": {"type": "disabled"}}
+}</code></pre>
+
+<h3>8.4 修改模式 System Prompt（11 条规则）</h3>
+<pre><code>你是 CogniForge 系统的 PM (Product Manager) Agent。
+职责: 根据用户要求修改产品需求文档 (PRD)。
+规则:
+1. 不要直接输出完整文档，只输出包含 patches 数组的变更结果 JSON。
+2. 保留所有已有的 REQ-ID 和 US-ID 不变。
+3. 新增需求时分配新的 ID（下一个可用的 REQ-NNN / US-NNN）。
+4. 直接修改需求内容（描述、验收条件、优先级等），不要更新 per-requirement
+   的 version 和 change_history。change_history 只在需求首次创建时记录，
+   修改轮次不追加变更历史。
+5. 在 priorities 中使用需求 ID（不是需求名称）。
+6. 如果检测到冲突，在 conflicts 数组中记录。
+7. patches 使用 RFC 6902 JSON Pointer 格式路径。
+所有文字使用中文。</code></pre>
 
 <h2>9. Schema 验证链</h2>
 
