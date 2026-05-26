@@ -253,7 +253,7 @@ class DesignAgent(BaseAgent):
                         f"原始任务:\n{prompt}"
                     )
                 response = self.agent.generate_think_then_json(
-                    prompt, role="design", max_tokens=8192,
+                    prompt, role="design",
                     progress_callback=_progress,
                 )
                 json_text = _extract_json(response.content)
@@ -545,7 +545,15 @@ class DesignAgent(BaseAgent):
             f"{{\n"
             f'  "meta": {{ "doc_id": "lld-{module}-001", "type": "lld", ... }},\n'
             f'  "source": {{ "prd": {{...}}, "sad": {{...}} }},\n'
-            f'  "module_boundary": {{ "in_scope": [...], "out_of_scope": [...] }},\n'
+            f'  "module_boundary": {{\n'
+            f'    "in_scope": [...],\n'
+            f'    "out_of_scope": [...],\n'
+            f'    "owned_components": ["CMP-xxx"],\n'
+            f'    "owned_contracts": ["CTR-xxx"],\n'
+            f'    "consumed_contracts": ["CTR-xxx"],\n'
+            f'    "owned_data_models": [],\n'
+            f'    "consumed_data_models": []\n'
+            f'  }},\n'
             f'  "overview": {{ "description": "...", "dependencies": [...], "tech_stack": [...] }},\n'
             f'  "traceability": [ {{ "requirement_id": "REQ-001", ... }} ],\n'
             f'  "artifact_index": {{\n'
@@ -562,6 +570,12 @@ class DesignAgent(BaseAgent):
             f'- interfaces: ID 从 IF-001 起\n'
             f'- domain_objects: ID 从 DO-001 起（仅 service）\n'
             f'- service_contracts: ID 从 SC-001 起（仅 service）\n\n'
+            f'## 组件/契约归属\n'
+            f'请根据上面提供的 SAD 合约信息，在 module_boundary 中填写：\n'
+            f'- owned_components: 本模块在 SAD 中对应的组件 ID 列表（如 ["CMP-008"]）\n'
+            f'- owned_contracts: 本模块作为 provider 提供的契约 ID 列表（如 ["CTR-001"]）\n'
+            f'- consumed_contracts: 本模块作为 consumer 依赖的外部契约 ID 列表\n'
+            f'- owned_data_models / consumed_data_models: 如 SAD 中有明确归属则填写，否则留空数组\n\n'
             f'只返回 JSON 对象，不要代码块包裹。'
         )
 

@@ -215,7 +215,7 @@ class ArchitectAgent(BaseAgent):
                     f"原始任务:\n{prompt}"
                 )
             response = self.agent.generate_think_then_json(
-                prompt, role="architect", max_tokens=8192,
+                prompt, role="architect",
             )
             json_text = _extract_json(response.content)
             try:

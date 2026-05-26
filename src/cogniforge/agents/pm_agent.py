@@ -79,7 +79,7 @@ class PMAgent(BaseAgent):
         )
 
         response = self.agent.generate_think_then_json(
-            prompt, role="pm", max_tokens=8192,
+            prompt, role="pm",
         )
 
         result = self._write_prd(prd_path, response.content,
@@ -107,7 +107,7 @@ class PMAgent(BaseAgent):
         )
 
         response = self.agent.generate_think_then_json(
-            prompt, role="pm", max_tokens=8192,
+            prompt, role="pm",
         )
 
         result = self._write_prd(prd_path, response.content,

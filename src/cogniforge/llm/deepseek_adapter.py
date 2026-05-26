@@ -257,6 +257,21 @@ ROLE_PROMPTS: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
+# Per-role per-phase max_tokens configuration
+# Step 1 (thinking): natural-language analysis, enough space for thorough reasoning
+# Step 2 (JSON): structured output — PRD can hit ~20 reqs, LLD is most complex
+# ---------------------------------------------------------------------------
+
+MAX_TOKENS_CONFIG: dict[str, int] = {
+    "pm_think": 16_000,
+    "pm_json": 32_000,
+    "architect_think": 20_000,
+    "architect_json": 40_000,
+    "design_think": 24_000,
+    "design_json": 64_000,
+}
+
+# ---------------------------------------------------------------------------
 # Tool definitions (OpenAI function-calling format)
 # ---------------------------------------------------------------------------
 
@@ -475,7 +490,16 @@ class DeepSeekAdapter(BaseLLMAdapter):
         **kwargs,
     ) -> LLMResponse:
         model = kwargs.pop("model", self.model)
-        max_toks = kwargs.pop("max_tokens", self.max_tokens)
+
+        # Per-role per-phase token budget: explicit override > config > default
+        caller_max_tokens = kwargs.pop("max_tokens", None)
+        if caller_max_tokens is not None:
+            think_tokens = json_tokens = caller_max_tokens
+        elif role and f"{role}_think" in MAX_TOKENS_CONFIG:
+            think_tokens = MAX_TOKENS_CONFIG[f"{role}_think"]
+            json_tokens = MAX_TOKENS_CONFIG[f"{role}_json"]
+        else:
+            think_tokens = json_tokens = self.max_tokens
 
         # Step 1: build messages with thinking instruction
         if progress_callback:
@@ -487,7 +511,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
         resp1 = self._chat_completion(
             model=model,
             messages=messages,
-            max_tokens=max_toks,
+            max_tokens=think_tokens,
             timeout=self.timeout,
             extra_body={"thinking": {"type": "enabled"}},
         )
@@ -510,7 +534,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
         resp2 = self._chat_completion(
             model=model,
             messages=messages,
-            max_tokens=max_toks,
+            max_tokens=json_tokens,
             timeout=self.timeout,
             **self._JSON_KWARGS,
         )
