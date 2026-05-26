@@ -236,20 +236,23 @@ schemas/agents/lld/
 
 	<p>显式传入 <code>max_tokens</code> 仍可作为覆盖值（think 和 json 两阶段使用相同值）。</p>
 
-	<h3>11.2 蓝图生成 — generate()（纯文本 JSON 模式）</h3>
+	<h3>11.2 蓝图生成 — generate_messages()（system + user 双消息模式）</h3>
 <pre><code>POST /v1/chat/completions
 {
   "model": "deepseek-v4-pro",
-  "messages": [{"role": "user", "content": "&lt;蓝图 prompt（模块信息 + ownership_rules + contract_context）&gt;"}],
+  "messages": [
+    {"role": "system", "content": "&lt;蓝图 JSON 模板 + ID 分配规则（固定，可被 prompt cache 命中）&gt;"},
+    {"role": "user",   "content": "&lt;模块信息 + ownership_rules + contract_context（动态数据）&gt;"}
+  ],
   "max_tokens": 4096,
   "response_format": {"type": "json_object"},
   "extra_body": {"thinking": {"type": "disabled"}}
 }</code></pre>
 
-<p>输入 Prompt 要求输出 meta/source/module_boundary/overview/traceability/artifact_index，后续分段必须使用蓝图锁定的 ID。</p>
+<p>JSON 模板和 ID 规则位于 system prompt 中，跨模块缓存可命中。user prompt 仅含动态模块数据。输出 meta/source/module_boundary/overview/traceability/artifact_index，后续分段必须使用蓝图锁定的 ID。</p>
 
-<h3>11.3 分段并行生成 — generate() × N</h3>
-<p>与蓝图相同的 API 调用模式，但通过 <code>ThreadPoolExecutor</code> (最多 8 workers) 并行执行。每个分段独立调用 API，传入蓝图确保 ID 一致性。分段分配按模块类型不同（service 6 段，gateway 4 段，frontend 7 段，database 6 段，infrastructure 5 段）。</p>
+<h3>11.3 分段并行生成 — generate_messages() × N</h3>
+<p>与蓝图相同的 system + user 双消息模式，但通过 <code>ThreadPoolExecutor</code> (最多 8 workers) 并行执行。每个分段的 schema 模板（从 <code>schemas/agents/lld/*.json</code> 加载）位于 system prompt，蓝图数据位于 user prompt。分段分配按模块类型不同（service 6 段，gateway 4 段，frontend 7 段，database 6 段，infrastructure 5 段）。</p>
 
 <h3>11.4 校验修正 — generate_messages()</h3>
 <p>在自校正循环中使用（最多 10 轮），这是唯一使用 system + user 双消息模式的场景：</p>

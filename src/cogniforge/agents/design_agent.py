@@ -532,56 +532,63 @@ class DesignAgent(BaseAgent):
         """Phase 1: generate top-level fields + artifact_index."""
         from cogniforge.llm.base import LLMMessage
 
-        prompt = (
+        system_prompt = (
+            "你是 CogniForge Design Agent。负责生成 LLD 的 blueprint（顶层结构和 ID 分配）。\n\n"
+            "## 输出格式\n"
+            "只包含以下字段的 JSON（不包含 data_models、interfaces 等具体内容）：\n\n"
+            "```json\n"
+            "{\n"
+            '  "meta": {"doc_id": "lld-ModuleName-001", "type": "lld", ...},\n'
+            '  "source": {"prd": {...}, "sad": {...}},\n'
+            '  "module_boundary": {\n'
+            '    "in_scope": [...],\n'
+            '    "out_of_scope": [...],\n'
+            '    "owned_components": ["CMP-xxx"],\n'
+            '    "owned_contracts": ["CTR-xxx"],\n'
+            '    "consumed_contracts": ["CTR-xxx"],\n'
+            '    "owned_data_models": [],\n'
+            '    "consumed_data_models": []\n'
+            '  },\n'
+            '  "overview": {"description": "...", "dependencies": [...], "tech_stack": [...]},\n'
+            '  "traceability": [{"requirement_id": "REQ-001", ...}],\n'
+            '  "artifact_index": {\n'
+            '    "data_models":       [{"id": "DM-001", "name": "...", "hint": "一句话用途"}],\n'
+            '    "interfaces":        [{"id": "IF-001", "name": "...", "hint": "一句话用途"}],\n'
+            '    "domain_objects":    [{"id": "DO-001", "name": "...", "hint": "一句话用途"}],\n'
+            '    "service_contracts": [{"id": "SC-001", "name": "...", "hint": "一句话用途"}]\n'
+            '  }\n'
+            '}\n'
+            "```\n\n"
+            "## 规则\n"
+            "- artifact_index 是关键——它锁定所有后续 section 的 ID 分配\n"
+            "- 后续 Agent 只能用这些 ID，不能自造\n"
+            "- data_models: ID 从 DM-001 起\n"
+            "- interfaces: ID 从 IF-001 起\n"
+            "- domain_objects: ID 从 DO-001 起（仅 service）\n"
+            "- service_contracts: ID 从 SC-001 起（仅 service）"
+        )
+
+        user_prompt = (
             f"为以下模块规划详细设计文档的顶层结构和 ID 分配。\n\n"
             f"## 模块信息\n"
             f"module: {module}\nmodule_type: {module_type}\n"
             f"overview: {overview}\n\n"
             f"{ownership_rules}\n\n"
             f"{contract_context}\n\n"
-            f"## 你需要输出\n"
-            f"只包含以下字段的 JSON（不包含 data_models、interfaces 等具体内容，这些会在后续步骤由其他 Agent 生成）：\n\n"
-            f"```json\n"
-            f"{{\n"
-            f'  "meta": {{ "doc_id": "lld-{module}-001", "type": "lld", ... }},\n'
-            f'  "source": {{ "prd": {{...}}, "sad": {{...}} }},\n'
-            f'  "module_boundary": {{\n'
-            f'    "in_scope": [...],\n'
-            f'    "out_of_scope": [...],\n'
-            f'    "owned_components": ["CMP-xxx"],\n'
-            f'    "owned_contracts": ["CTR-xxx"],\n'
-            f'    "consumed_contracts": ["CTR-xxx"],\n'
-            f'    "owned_data_models": [],\n'
-            f'    "consumed_data_models": []\n'
-            f'  }},\n'
-            f'  "overview": {{ "description": "...", "dependencies": [...], "tech_stack": [...] }},\n'
-            f'  "traceability": [ {{ "requirement_id": "REQ-001", ... }} ],\n'
-            f'  "artifact_index": {{\n'
-            f'    "data_models":       [ {{"id": "DM-001", "name": "...", "hint": "一句话用途"}} ],\n'
-            f'    "interfaces":        [ {{"id": "IF-001", "name": "...", "hint": "一句话用途"}} ],\n'
-            f'    "domain_objects":    [ {{"id": "DO-001", "name": "...", "hint": "一句话用途"}} ],\n'
-            f'    "service_contracts": [ {{"id": "SC-001", "name": "...", "hint": "一句话用途"}} ]\n'
-            f'  }}\n'
-            f'}}\n'
-            f'```\n\n'
-            f'artifact_index 是关键——它锁定所有后续 section 的 ID 分配。\n'
-            f'后续 Agent 只能用这些 ID，不能自造。\n'
-            f'- data_models: ID 从 DM-001 起\n'
-            f'- interfaces: ID 从 IF-001 起\n'
-            f'- domain_objects: ID 从 DO-001 起（仅 service）\n'
-            f'- service_contracts: ID 从 SC-001 起（仅 service）\n\n'
-            f'## 组件/契约归属\n'
-            f'请根据上面提供的 SAD 合约信息，在 module_boundary 中填写：\n'
-            f'- owned_components: 本模块在 SAD 中对应的组件 ID 列表（如 ["CMP-008"]）\n'
-            f'- owned_contracts: 本模块作为 provider 提供的契约 ID 列表（如 ["CTR-001"]）\n'
-            f'- consumed_contracts: 本模块作为 consumer 依赖的外部契约 ID 列表\n'
-            f'- owned_data_models / consumed_data_models: 如 SAD 中有明确归属则填写，否则留空数组\n\n'
-            f'只返回 JSON 对象，不要代码块包裹。'
+            f"## 组件/契约归属\n"
+            f"- owned_components: 本模块在 SAD 中对应的组件 ID 列表（如 [\"CMP-008\"]）\n"
+            f"- owned_contracts: 本模块作为 provider 提供的契约 ID 列表（如 [\"CTR-001\"]）\n"
+            f"- consumed_contracts: 本模块作为 consumer 依赖的外部契约 ID 列表\n"
+            f"- owned_data_models / consumed_data_models: 如 SAD 中有明确归属则填写，否则留空数组\n\n"
+            f"只返回 JSON 对象，不要代码块包裹。"
         )
 
         if progress_callback:
             progress_callback("蓝图规划中")
-        response = self.agent.generate(prompt)
+        response = self.agent.generate_messages([
+            LLMMessage(role="system", content=system_prompt),
+            LLMMessage(role="user", content=user_prompt),
+        ])
         json_text = _extract_json(response.content)
 
         try:
@@ -608,28 +615,33 @@ class DesignAgent(BaseAgent):
         # Build cross-reference context from blueprint
         bp = json.dumps(blueprint, ensure_ascii=False, indent=2)
 
-        prompt = (
-            f"你是 CogniForge Design Agent。你负责生成 LLD 的**一个 section**：{section}\n\n"
-            f"## 蓝图（全局上下文 + ID 分配）\n"
-            f"以下蓝图定义了模块的顶层结构和所有 ID。你必须严格使用蓝图分配的 ID。\n"
-            f"```json\n{bp}\n```\n\n"
-            f"## 你的任务：生成 {section}\n"
+        system_prompt = (
+            f"你是 CogniForge Design Agent。负责生成 LLD 的一个 section：{section}。"
         )
         if schema_text:
-            prompt += f"结构模板（按此格式填充内容）:\n```json\n{schema_text}\n```\n\n"
-
-        prompt += (
-            f"## 规则\n"
+            system_prompt += f"\n\n## 结构模板（按此格式填充内容）\n```json\n{schema_text}\n```"
+        system_prompt += (
+            f"\n\n## 规则\n"
             f"- 只输出 {section} 的 JSON 内容，格式: {{\"{section}\": [...]}} 或 {{\"{section}\": {{...}}}}\n"
             f"- 严格使用蓝图分配的 ID，不可自造新 ID\n"
             f"- 字段内容根据蓝图中的 overview、SAD contracts 等上下文来设计\n"
             f"- 使用中文。不要代码块包裹。"
         )
 
+        user_prompt = (
+            f"## 蓝图（全局上下文 + ID 分配）\n"
+            f"以下蓝图定义了模块的顶层结构和所有 ID。你必须严格使用蓝图分配的 ID。\n"
+            f"```json\n{bp}\n```\n\n"
+            f"你的任务：生成 {section}"
+        )
+
         if progress_callback:
             progress_callback(f"生成 {section}")
 
-        response = self.agent.generate(prompt)
+        response = self.agent.generate_messages([
+            LLMMessage(role="system", content=system_prompt),
+            LLMMessage(role="user", content=user_prompt),
+        ])
         json_text = _extract_json(response.content)
 
         try:
