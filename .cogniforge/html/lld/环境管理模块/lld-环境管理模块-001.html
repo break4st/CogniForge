@@ -1,0 +1,992 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>环境管理模块 LLD — lld-环境管理模块-001</title>
+<style>
+  :root {
+    --c-bg: #0b0f19; --c-surface: #131926; --c-card: #191e2e;
+    --c-border: #252b3d; --c-text: #c8d2e0; --c-heading: #e2e8f4;
+    --c-muted: #6b7394; --c-accent: #5b8def; --c-accent2: #7c6ff7;
+    --c-green: #34d399; --c-amber: #fbbf24; --c-red: #f87171;
+    --c-cyan: #22d3ee; --radius: 10px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+    background: var(--c-bg); color: var(--c-text);
+    line-height: 1.75; font-size: 15px;
+    max-width: 860px; margin: 0 auto; padding: 48px 40px 80px;
+  }
+  body:has(.page-layout) { max-width: none; margin: 0; padding: 0; }
+  .top-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 40px; padding-bottom: 24px;
+    border-bottom: 1px solid var(--c-border);
+  }
+  .doc-id { font-size: 0.8em; color: var(--c-muted); font-family: monospace; }
+  .badge {
+    display: inline-flex; padding: 5px 14px; border-radius: 20px;
+    font-size: 0.78em; font-weight: 500;
+    background: rgba(255,255,255,0.04); border: 1px solid var(--c-border);
+    color: var(--c-muted);
+  }
+  .badge.accent { border-color: rgba(91,141,239,0.3); color: var(--c-accent); }
+  .badge.green  { border-color: rgba(52,211,153,0.3); color: var(--c-green); }
+  h1 {
+    font-size: 2.4em; font-weight: 800; color: #fff;
+    letter-spacing: -1px; line-height: 1.2; margin-bottom: 6px;
+  }
+  h1 span {
+    background: linear-gradient(135deg, var(--c-accent), var(--c-cyan));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .meta { font-size: 0.85em; color: var(--c-muted); margin-bottom: 4px; }
+  .section { margin-bottom: 36px; }
+  .section-header {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 18px;
+  }
+  .section-header .icon {
+    width: 40px; height: 40px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.2em; flex-shrink: 0;
+  }
+  .section-header h2 {
+    font-size: 1.25em; font-weight: 700; color: var(--c-heading);
+  }
+  .section-body {
+    background: var(--c-card); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 28px 32px;
+  }
+  .section-body p { margin-bottom: 12px; }
+  .section-body p:last-child { margin-bottom: 0; }
+  .req-item {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .req-item:last-child { margin-bottom: 0; }
+  .req-item h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); margin-bottom: 6px; }
+  .req-desc { font-size: 0.9em; color: var(--c-muted); margin-bottom: 10px; }
+  .ac-list { list-style: none; padding: 0; margin: 0; }
+  .ac-list li {
+    padding: 4px 0 4px 18px; position: relative;
+    font-size: 0.88em; color: var(--c-text);
+  }
+  .ac-list li::before {
+    content: ""; position: absolute; left: 0; top: 12px;
+    width: 6px; height: 6px; border-radius: 50%; background: var(--c-green);
+  }
+  .ac-label {
+    font-size: 0.75em; font-weight: 600; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .story-item {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 14px 18px; border-radius: 8px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    margin-bottom: 8px;
+  }
+  .story-item:last-child { margin-bottom: 0; }
+  .story-role {
+    font-size: 0.8em; font-weight: 600; color: var(--c-accent);
+    background: rgba(91,141,239,0.1); padding: 2px 10px;
+    border-radius: 12px; white-space: nowrap; flex-shrink: 0;
+  }
+  .story-text { font-size: 0.92em; }
+  .story-text .goal { color: var(--c-muted); font-size: 0.88em; }
+  .priority-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .priority-tag {
+    display: inline-flex; padding: 6px 14px; border-radius: 6px;
+    font-size: 0.85em; font-weight: 500;
+  }
+  .priority-tag.high   { background: rgba(248,113,113,0.1);  color: #fca5a5; }
+  .priority-tag.medium { background: rgba(251,191,36,0.1);  color: #fcd34d; }
+  .priority-tag.low    { background: rgba(107,115,148,0.15); color: #9ca3af; }
+  .comp-item {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .comp-item h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); }
+  .comp-type {
+    font-size: 0.78em; color: var(--c-accent); margin-bottom: 8px;
+  }
+  .comp-resp { margin-top: 8px; font-size: 0.88em; }
+  .comp-resp li { margin: 2px 0; }
+
+  /* ── Contract Groups ── */
+  .contract-group {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); margin-bottom: 12px; overflow: hidden;
+  }
+  .contract-group[open] { border-color: rgba(91,141,239,0.25); }
+  .contract-group summary {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 20px; cursor: pointer; user-select: none;
+    font-weight: 600; font-size: 0.95em; color: var(--c-heading);
+    background: rgba(255,255,255,0.015);
+  }
+  .contract-group summary:hover { background: rgba(255,255,255,0.03); }
+  .contract-group summary::-webkit-details-marker { display: none; }
+  .contract-group summary::before {
+    content: "›"; display: inline-block; font-size: 1.3em; font-weight: 400;
+    width: 16px; color: var(--c-muted); transition: transform 0.2s;
+  }
+  .contract-group[open] summary::before { transform: rotate(90deg); }
+  .cg-count {
+    font-size: 0.78em; font-weight: 500; color: var(--c-muted);
+    background: rgba(255,255,255,0.04); padding: 2px 10px; border-radius: 10px;
+  }
+  .contract-card {
+    padding: 16px 20px; border-top: 1px solid var(--c-border);
+  }
+  .contract-card:first-of-type { border-top: 1px solid var(--c-border); }
+  .cc-head {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .cc-head .cc-name { font-weight: 600; font-size: 0.93em; color: var(--c-heading); }
+  .method-badge {
+    font-family: monospace; font-size: 0.75em; font-weight: 700;
+    padding: 3px 8px; border-radius: 5px; white-space: nowrap;
+  }
+  .method-badge.get      { background: rgba(52,211,153,0.15);  color: var(--c-green); }
+  .method-badge.post     { background: rgba(91,141,239,0.15);  color: var(--c-accent); }
+  .method-badge.put      { background: rgba(251,191,36,0.12);  color: var(--c-amber); }
+  .method-badge.delete   { background: rgba(248,113,113,0.12); color: var(--c-red); }
+  .method-badge.patch    { background: rgba(34,211,238,0.12);  color: var(--c-cyan); }
+  .method-badge.mq       { background: rgba(124,111,247,0.13); color: var(--c-accent2); }
+  .method-badge.ws       { background: rgba(124,111,247,0.13); color: var(--c-accent2); }
+  .method-badge.frontend { background: rgba(34,211,238,0.12);  color: var(--c-cyan); }
+  .method-badge.internal { background: rgba(107,115,148,0.15); color: var(--c-muted); }
+  .cc-endpoint {
+    font-family: monospace; font-size: 0.82em; color: var(--c-text);
+    background: rgba(255,255,255,0.03); padding: 2px 8px; border-radius: 4px;
+  }
+  .cc-type-tag {
+    font-size: 0.72em; font-weight: 600; padding: 3px 8px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    background: rgba(91,141,239,0.1); color: var(--c-accent);
+  }
+  .cc-meta {
+    font-size: 0.82em; color: var(--c-muted); margin-bottom: 6px;
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .cc-meta .cc-consumer {
+    font-size: 0.85em; color: var(--c-accent2);
+    background: rgba(124,111,247,0.08); padding: 1px 8px; border-radius: 4px;
+  }
+  .cc-desc { font-size: 0.85em; color: var(--c-muted); margin-bottom: 10px; }
+  .body-table {
+    width: 100%; border-collapse: collapse; font-size: 0.8em; margin: 6px 0 4px;
+  }
+  .body-table th {
+    text-align: left; padding: 5px 10px; font-weight: 600;
+    color: var(--c-muted); font-size: 0.85em; text-transform: uppercase;
+    letter-spacing: 0.4px; border-bottom: 2px solid var(--c-border);
+    background: rgba(255,255,255,0.015);
+  }
+  .body-table td {
+    padding: 4px 10px; border-bottom: 1px solid rgba(255,255,255,0.04);
+    color: var(--c-text);
+  }
+  .body-table .field-type { color: var(--c-accent); font-family: monospace; font-size: 0.9em; }
+  .body-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 2px;
+  }
+  .model-item {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .model-item h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); }
+  table {
+    width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9em;
+  }
+  th {
+    text-align: left; padding: 10px 14px; font-weight: 600;
+    color: var(--c-muted); font-size: 0.8em; text-transform: uppercase;
+    letter-spacing: 0.5px; border-bottom: 2px solid var(--c-border);
+  }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--c-border); }
+  tr:hover td { background: rgba(255,255,255,0.015); }
+  .footer {
+    margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--c-border);
+    text-align: center; color: var(--c-muted); font-size: 0.8em;
+  }
+  /* ── System Overview ── */
+  .overview-hero {
+    background: linear-gradient(135deg, rgba(124,111,247,0.08), rgba(91,141,239,0.05));
+    border: 1px solid rgba(124,111,247,0.18); border-radius: var(--radius);
+    padding: 24px 28px; margin-bottom: 24px;
+  }
+  .overview-hero .hero-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-accent2);
+    text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 10px;
+  }
+  .overview-hero p { font-size: 1.02em; line-height: 1.85; color: var(--c-text); }
+  .role-cards {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
+  }
+  .role-card {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 22px 20px; text-align: center;
+  }
+  .role-card .role-icon {
+    width: 48px; height: 48px; border-radius: 50%; margin: 0 auto 12px;
+    display: flex; align-items: center; justify-content: center; font-size: 1.3em;
+  }
+  .role-card .role-name {
+    font-size: 1em; font-weight: 700; color: var(--c-heading); margin-bottom: 10px;
+  }
+  .role-card .role-perms {
+    font-size: 0.84em; color: var(--c-muted); line-height: 1.7;
+    list-style: none; padding: 0;
+  }
+  .role-card .role-perms li { padding: 1px 0; }
+
+  /* ── Architecture Diagram ── */
+  .arch-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 24px 20px 20px; margin-bottom: 22px;
+  }
+  .arch-tier {
+    display: flex; align-items: center; margin-bottom: 4px;
+  }
+  .arch-tier-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0;
+    width: 52px; text-align: right; padding-right: 16px;
+  }
+  .arch-tier-boxes { display: flex; gap: 8px; flex: 1; flex-wrap: wrap; }
+  .arch-box {
+    border-radius: 8px; padding: 12px 16px; text-align: center;
+    font-weight: 600; font-size: 0.85em; flex: 1; min-width: 80px;
+  }
+  .arch-box.frontend {
+    background: rgba(34,211,238,0.12); border: 1px solid rgba(34,211,238,0.28);
+    color: var(--c-cyan);
+  }
+  .arch-box.gateway {
+    background: rgba(124,111,247,0.13); border: 1px solid rgba(124,111,247,0.3);
+    color: var(--c-accent2);
+  }
+  .arch-box.service {
+    background: rgba(91,141,239,0.1); border: 1px solid rgba(91,141,239,0.22);
+    color: var(--c-accent);
+  }
+  .arch-box.db {
+    background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.22);
+    color: var(--c-green);
+  }
+  .arch-box.cache {
+    background: rgba(251,191,36,0.09); border: 1px solid rgba(251,191,36,0.22);
+    color: var(--c-amber);
+  }
+  .arch-box.mq {
+    background: rgba(248,113,113,0.07); border: 1px solid rgba(248,113,113,0.18);
+    color: var(--c-red);
+  }
+  .arch-overview {
+    display: flex; align-items: center; gap: 0; margin-bottom: 20px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 8px; overflow: hidden;
+  }
+  .arch-ov-item {
+    flex: 1; text-align: center; padding: 16px 12px; position: relative;
+  }
+  .arch-ov-item .ov-count {
+    font-size: 1.8em; font-weight: 800; line-height: 1.1;
+  }
+  .arch-ov-item .ov-label {
+    font-size: 0.75em; color: var(--c-muted); margin-top: 4px;
+  }
+  .arch-ov-arrow {
+    font-size: 1.1em; color: var(--c-muted); flex-shrink: 0;
+    padding: 0 2px;
+  }
+  .arch-style-badge {
+    display: inline-flex; padding: 6px 16px; border-radius: 20px;
+    font-size: 0.85em; font-weight: 700; margin-bottom: 16px;
+    background: linear-gradient(135deg, rgba(124,111,247,0.15), rgba(91,141,239,0.1));
+    border: 1px solid rgba(124,111,247,0.25); color: var(--c-accent2);
+  }
+  .arch-features {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px;
+    padding-top: 16px; border-top: 1px solid var(--c-border);
+  }
+  .arch-feature-tag {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 14px; border-radius: 18px; font-size: 0.82em; font-weight: 500;
+    background: rgba(255,255,255,0.03); border: 1px solid var(--c-border);
+    color: var(--c-text);
+  }
+  .arch-feature-tag .dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  }
+  .arch-desc { margin-bottom: 18px; color: var(--c-text); line-height: 1.8; }
+
+  /* ── Topology ── */
+  .topo-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 24px 20px 20px; margin-bottom: 22px;
+  }
+  .topo-tier {
+    display: flex; align-items: stretch; margin-bottom: 2px;
+  }
+  .topo-tier-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0;
+    width: 52px; text-align: right; padding-right: 16px; padding-top: 12px;
+  }
+  .topo-tier-content { flex: 1; display: flex; flex-wrap: wrap; gap: 8px; }
+  .topo-node {
+    border-radius: 8px; padding: 10px 15px; text-align: center;
+    font-weight: 600; font-size: 0.83em; flex: 1; min-width: 80px;
+  }
+  .topo-node.frontend {
+    background: rgba(34,211,238,0.12); border: 1px solid rgba(34,211,238,0.28);
+    color: var(--c-cyan);
+  }
+  .topo-node.gateway {
+    background: rgba(124,111,247,0.13); border: 1px solid rgba(124,111,247,0.3);
+    color: var(--c-accent2);
+  }
+  .topo-node.service {
+    background: rgba(91,141,239,0.1); border: 1px solid rgba(91,141,239,0.22);
+    color: var(--c-accent);
+  }
+  .topo-node.db {
+    background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.22);
+    color: var(--c-green);
+  }
+  .topo-node.cache {
+    background: rgba(251,191,36,0.09); border: 1px solid rgba(251,191,36,0.22);
+    color: var(--c-amber);
+  }
+  .topo-node.mq {
+    background: rgba(248,113,113,0.07); border: 1px solid rgba(248,113,113,0.18);
+    color: var(--c-red);
+  }
+  .topo-connector {
+    display: flex; align-items: center; padding: 2px 0 2px 52px;
+    gap: 10px; flex-wrap: wrap;
+  }
+  .topo-connector-line {
+    flex: 1; min-width: 60px; display: flex; align-items: center; gap: 6px;
+    color: var(--c-muted); font-size: 0.75em; font-weight: 500;
+  }
+  .topo-connector-line::before {
+    content: ""; display: inline-block; width: 12px; height: 1px;
+    background: var(--c-border); flex-shrink: 0;
+  }
+  .topo-connector-line .proto {
+    color: var(--c-accent2); font-family: monospace; font-size: 0.9em;
+    background: rgba(124,111,247,0.08); padding: 1px 6px; border-radius: 4px;
+  }
+
+  /* ── Data Flow ── */
+  .flow-cards { display: flex; flex-direction: column; gap: 16px; }
+  .flow-card {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 20px 22px;
+  }
+  .flow-card-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+  }
+  .flow-card-header .flow-num {
+    width: 28px; height: 28px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.8em; font-weight: 700; flex-shrink: 0;
+  }
+  .flow-card-header .flow-name {
+    font-weight: 700; font-size: 0.95em; color: var(--c-heading);
+  }
+  .flow-steps {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+  }
+  .flow-step {
+    font-size: 0.82em; padding: 5px 10px; border-radius: 6px;
+    background: rgba(255,255,255,0.03); border: 1px solid var(--c-border);
+    color: var(--c-text); white-space: nowrap;
+  }
+  .flow-step.start  { border-color: rgba(52,211,153,0.3);  color: var(--c-green); }
+  .flow-step.mid    { border-color: rgba(91,141,239,0.25);  color: var(--c-accent); }
+  .flow-step.end    { border-color: rgba(124,111,247,0.3);  color: var(--c-accent2); }
+  .flow-arrow { color: var(--c-muted); font-size: 0.85em; flex-shrink: 0; }
+
+  /* ── Error Handling ── */
+  .err-strategy {
+    background: linear-gradient(135deg, rgba(251,191,36,0.06), rgba(248,113,113,0.04));
+    border: 1px solid rgba(251,191,36,0.2);
+    border-radius: var(--radius); padding: 20px 24px; margin-bottom: 20px;
+  }
+  .err-strategy .err-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-amber);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;
+  }
+  .err-strategy p { font-size: 0.92em; line-height: 1.8; color: var(--c-text); }
+
+  .err-format-box {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 20px;
+  }
+  .err-format-box .err-label {
+    font-size: 0.72em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;
+  }
+  .err-format-box pre {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.84em; color: var(--c-text);
+    background: rgba(0,0,0,0.2); padding: 14px 18px; border-radius: 6px;
+    overflow-x: auto; line-height: 1.7;
+  }
+
+  .err-categories { display: flex; flex-direction: column; gap: 10px; }
+  .err-category {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px;
+    display: flex; gap: 16px; align-items: flex-start;
+  }
+  .err-category:hover { border-color: rgba(255,255,255,0.1); }
+  .err-code-badge {
+    font-family: monospace; font-size: 0.85em; font-weight: 700;
+    padding: 6px 12px; border-radius: 6px; white-space: nowrap;
+    flex-shrink: 0; min-width: 48px; text-align: center;
+  }
+  .err-code-badge._4xx { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+  .err-code-badge._5xx { background: rgba(248,113,113,0.12); color: var(--c-red); }
+  .err-code-badge._other { background: rgba(124,111,247,0.1); color: var(--c-accent2); }
+  .err-category-body { flex: 1; min-width: 0; }
+  .err-category-body .err-cat-name {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 6px;
+  }
+  .err-category-body .err-cat-desc {
+    font-size: 0.85em; color: var(--c-muted); line-height: 1.7;
+  }
+
+  /* ── Domain Objects ── */
+  .domain-obj {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 10px;
+  }
+  .domain-obj h3 { font-size: 1em; font-weight: 600; color: var(--c-heading); margin-bottom: 6px; }
+  .obj-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 0.72em; font-weight: 600; margin-left: 6px;
+  }
+  .obj-tag.entity   { background: rgba(91,141,239,0.12);  color: var(--c-accent); }
+  .obj-tag.dto      { background: rgba(52,211,153,0.12);  color: var(--c-green); }
+  .obj-tag.value_object { background: rgba(124,111,247,0.1); color: var(--c-accent2); }
+  .obj-tag.enum     { background: rgba(251,191,36,0.1);   color: var(--c-amber); }
+  .attr-source-tag {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 0.7em; font-weight: 600; font-family: monospace;
+    color: var(--c-muted); background: rgba(107,115,148,0.1);
+  }
+
+  /* ── Service Contracts ── */
+  .svc-contract {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); margin-bottom: 12px; overflow: hidden;
+  }
+  .svc-contract summary {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 20px; cursor: pointer; user-select: none;
+    font-weight: 600; font-size: 0.95em; color: var(--c-heading);
+    background: rgba(255,255,255,0.015);
+  }
+  .svc-contract summary:hover { background: rgba(255,255,255,0.03); }
+  .svc-contract summary::-webkit-details-marker { display: none; }
+  .svc-contract summary::before {
+    content: "›"; display: inline-block; font-size: 1.3em; font-weight: 400;
+    width: 16px; color: var(--c-muted); transition: transform 0.2s;
+  }
+  .svc-contract[open] summary::before { transform: rotate(90deg); }
+  .svc-method {
+    padding: 16px 20px; border-top: 1px solid var(--c-border);
+  }
+  .svc-method-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .svc-method-header .method-name {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading);
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+  }
+  .svc-method-header .return-type {
+    font-size: 0.82em; color: var(--c-accent); font-family: monospace;
+    background: rgba(91,141,239,0.08); padding: 2px 8px; border-radius: 4px;
+  }
+  .sig-block {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.84em; color: var(--c-text);
+    background: rgba(255,255,255,0.02); padding: 10px 14px;
+    border-radius: 6px; margin: 8px 0; overflow-x: auto;
+    border: 1px solid var(--c-border);
+  }
+  .pre-post {
+    display: flex; gap: 12px; margin: 8px 0; flex-wrap: wrap;
+  }
+  .pre-post-item {
+    flex: 1; min-width: 180px;
+    background: rgba(255,255,255,0.015); border: 1px solid var(--c-border);
+    border-radius: 6px; padding: 10px 14px;
+  }
+  .pre-post-item .pp-label {
+    font-size: 0.68em; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .pre-post-item.pre .pp-label { color: var(--c-green); }
+  .pre-post-item.post .pp-label { color: var(--c-accent); }
+  .pre-post-item .pp-text { font-size: 0.84em; color: var(--c-text); }
+  .exc-item {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 14px; margin: 2px 4px 2px 0;
+    font-size: 0.8em; background: rgba(248,113,113,0.06);
+    border: 1px solid rgba(248,113,113,0.15);
+  }
+  .exc-item .exc-name { font-weight: 600; color: var(--c-red); font-family: monospace; font-size: 0.85em; }
+  .exc-item .exc-http { font-size: 0.82em; color: var(--c-muted); }
+  .repo-dep {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.82em; color: var(--c-muted);
+    padding: 2px 0 2px 12px; border-left: 2px solid var(--c-border);
+    margin: 2px 0 2px 8px;
+  }
+
+  /* ── Business Rules ── */
+  .invariant-list {
+    list-style: none; padding: 0; margin: 0;
+  }
+  .invariant-list li {
+    padding: 8px 14px; margin-bottom: 6px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 6px; font-size: 0.9em;
+    display: flex; align-items: flex-start; gap: 10px;
+  }
+  .invariant-list li .inv-icon {
+    color: var(--c-amber); font-weight: 700; flex-shrink: 0;
+  }
+  .state-diagram {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 20px; margin-bottom: 12px;
+  }
+  .state-diagram .sd-title {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 12px;
+  }
+  .state-row {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px;
+  }
+  .state-node {
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 8px 18px; border-radius: 20px; font-size: 0.85em; font-weight: 600;
+    border: 1px solid var(--c-border); background: var(--c-card);
+    color: var(--c-text);
+  }
+  .state-node.active { border-color: rgba(91,141,239,0.4); color: var(--c-accent); background: rgba(91,141,239,0.06); }
+  .state-node.terminal { border-color: rgba(52,211,153,0.3); color: var(--c-green); background: rgba(52,211,153,0.06); }
+  .state-node.error   { border-color: rgba(248,113,113,0.3); color: var(--c-red); background: rgba(248,113,113,0.06); }
+  .state-arrow {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 0.78em; color: var(--c-muted); padding: 0 4px;
+  }
+  .state-arrow .trigger-text {
+    font-size: 0.85em; background: rgba(107,115,148,0.1);
+    padding: 2px 8px; border-radius: 4px;
+  }
+  .irrev-rule {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 12px; border-radius: 14px; margin: 4px;
+    font-size: 0.8em; background: rgba(248,113,113,0.06);
+    border: 1px solid rgba(248,113,113,0.15); color: var(--c-red);
+  }
+  .cross-svc-rule {
+    padding: 6px 12px; margin: 4px 0;
+    font-size: 0.85em; color: var(--c-accent2);
+    background: rgba(124,111,247,0.05); border-left: 3px solid rgba(124,111,247,0.3);
+    border-radius: 4px;
+  }
+
+  /* ── Component Tree ── */
+  .comp-node {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; padding: 16px 20px; margin-bottom: 8px;
+    margin-left: 0;
+  }
+  .comp-node.child { margin-left: 20px; border-left: 2px solid rgba(91,141,239,0.2); }
+  .comp-node .cn-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;
+  }
+  .comp-node .cn-name { font-weight: 600; font-size: 0.95em; color: var(--c-heading); }
+  .comp-node .cn-path {
+    font-family: monospace; font-size: 0.78em; color: var(--c-accent);
+    background: rgba(91,141,239,0.08); padding: 2px 8px; border-radius: 4px;
+  }
+  .cn-section { margin: 8px 0; }
+  .cn-section .cn-label {
+    font-size: 0.68em; font-weight: 700; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .cn-tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 4px; margin: 2px;
+    font-size: 0.78em; background: rgba(255,255,255,0.03);
+    border: 1px solid var(--c-border); color: var(--c-text);
+  }
+  .cn-tag.prop { border-color: rgba(91,141,239,0.2); color: var(--c-accent); }
+  .cn-tag.event { border-color: rgba(52,211,153,0.2); color: var(--c-green); }
+  .cn-tag.state { border-color: rgba(251,191,36,0.2); color: var(--c-amber); }
+  .cn-behavior { font-size: 0.84em; color: var(--c-text); }
+  .cn-edge { font-size: 0.82em; color: var(--c-muted); }
+  .cn-edge .edge-icon { color: var(--c-amber); }
+
+  /* ── State Design ── */
+  .state-global-item {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 10px 14px; margin-bottom: 6px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 6px;
+  }
+  .state-global-item .sg-name {
+    font-weight: 600; font-size: 0.9em; color: var(--c-heading); font-family: monospace;
+  }
+  .state-global-item .sg-type {
+    font-size: 0.82em; color: var(--c-accent); font-family: monospace;
+    background: rgba(91,141,239,0.06); padding: 1px 6px; border-radius: 3px;
+  }
+
+  /* ── Route Design ── */
+  .route-row {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 14px; border-bottom: 1px solid var(--c-border);
+  }
+  .route-row:last-child { border-bottom: none; }
+
+  /* ── Interaction Flows ── */
+  .flow-timeline {
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: var(--radius); padding: 16px 20px; margin-bottom: 12px;
+  }
+  .flow-timeline .ft-title {
+    font-weight: 600; font-size: 0.93em; color: var(--c-heading); margin-bottom: 10px;
+  }
+  .ft-step {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 6px 0; font-size: 0.86em;
+  }
+  .ft-step .ft-num {
+    width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+    background: rgba(91,141,239,0.1); color: var(--c-accent);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 0.8em;
+  }
+  .ft-step .ft-text { color: var(--c-text); padding-top: 2px; }
+
+  /* ── Gateway ── */
+  .mw-flow {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+    padding: 14px 18px;
+    background: var(--c-surface); border: 1px solid var(--c-border);
+    border-radius: 8px; margin-bottom: 12px;
+  }
+  .mw-node {
+    padding: 6px 14px; border-radius: 6px; font-size: 0.84em; font-weight: 500;
+    background: var(--c-card); border: 1px solid var(--c-border);
+    color: var(--c-text); white-space: nowrap;
+  }
+  .mw-node.special {
+    border-color: rgba(91,141,239,0.25); color: var(--c-accent);
+    background: rgba(91,141,239,0.06);
+  }
+  .mw-arrow { color: var(--c-muted); font-size: 0.85em; }
+
+  .auth-matrix {
+    width: 100%; border-collapse: collapse; font-size: 0.85em;
+  }
+  .auth-matrix th {
+    text-align: left; padding: 8px 12px; font-weight: 600;
+    color: var(--c-muted); border-bottom: 2px solid var(--c-border);
+  }
+  .auth-matrix td { padding: 8px 12px; border-bottom: 1px solid var(--c-border); }
+  .role-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px; margin: 1px 3px 1px 0;
+    font-size: 0.82em; background: rgba(91,141,239,0.08); color: var(--c-accent);
+  }
+
+  @media (max-width: 700px) {
+    body { padding: 24px 16px 48px; }
+    h1 { font-size: 1.6em; }
+    .section-body { padding: 20px 16px; }
+    .role-cards { grid-template-columns: 1fr; }
+    .arch-overview { flex-wrap: wrap; }
+    .arch-ov-arrow { display: none; }
+    .arch-tier { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .arch-tier-label { width: auto; text-align: left; padding-right: 0; }
+    .arch-arrows { padding-left: 0; justify-content: flex-start; }
+    .arch-tier-boxes { width: 100%; }
+    .topo-tier { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .topo-tier-label { width: auto; text-align: left; padding-right: 0; padding-top: 0; }
+    .topo-connector { padding-left: 0; }
+    .flow-steps { flex-direction: column; align-items: flex-start; }
+    .flow-arrow { display: none; }
+    .cc-head { flex-direction: column; align-items: flex-start; gap: 6px; }
+    .cc-meta { flex-direction: column; align-items: flex-start; }
+    .page-layout { flex-direction: column; }
+    .sidebar { display: none; }
+    .sidebar.mobile-open { display: flex; }
+    .sidebar-toggle { display: flex; }
+  }
+
+  /* ── Sidebar Layout ── */
+  .page-layout {
+    display: flex; min-height: 100vh;
+  }
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0;
+    width: 230px; overflow-y: auto;
+    background: var(--c-surface); border-right: 1px solid var(--c-border);
+    display: flex; flex-direction: column; padding: 24px 0;
+    z-index: 100;
+  }
+  .sidebar-header {
+    padding: 0 20px 20px; border-bottom: 1px solid var(--c-border); margin-bottom: 12px;
+  }
+  .sidebar-header .sid {
+    font-size: 0.72em; font-weight: 600; color: var(--c-muted);
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .sidebar-header .stitle {
+    font-size: 0.95em; font-weight: 700; color: var(--c-heading);
+    margin-top: 4px; line-height: 1.3;
+  }
+  .sidebar-nav { flex: 1; padding: 0 12px; }
+  .sidebar-link {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; border-radius: 7px;
+    font-size: 0.86em; color: var(--c-muted); text-decoration: none;
+    margin-bottom: 2px; transition: all 0.15s;
+  }
+  .sidebar-link:hover { color: var(--c-text); background: rgba(255,255,255,0.03); }
+  .sidebar-link.active {
+    color: var(--c-accent); background: rgba(91,141,239,0.1);
+    font-weight: 600;
+  }
+  .sidebar-link .sl-icon { font-size: 1.05em; width: 20px; text-align: center; flex-shrink: 0; }
+  .sidebar-toggle {
+    display: none; position: fixed; top: 12px; left: 12px; z-index: 200;
+    width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--c-border);
+    background: var(--c-surface); color: var(--c-text); font-size: 1.2em;
+    cursor: pointer; align-items: center; justify-content: center;
+  }
+  .main-content {
+    margin-left: 230px; flex: 1; min-width: 0;
+    max-width: 860px; padding: 48px 40px 80px;
+  }
+  html { scroll-behavior: smooth; }
+  /* ── WBS / Task new fields ── */
+  .layer-badge {
+    display: inline-block; padding: 2px 10px; border-radius: 12px;
+    font-size: 0.8em; font-weight: 600; margin-right: 8px;
+  }
+  .layer-0 { background: rgba(124,111,247,0.15); color: var(--c-accent2); }
+  .layer-1 { background: rgba(91,141,239,0.15); color: var(--c-accent); }
+  .layer-2 { background: rgba(52,211,153,0.15); color: var(--c-green); }
+  .layer-3 { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+  .layer-other { background: rgba(107,115,148,0.12); color: var(--c-muted); }
+  .file-list { list-style: none; padding: 0; margin: 0; }
+  .file-list li {
+    font-family: "JetBrains Mono", "Cascadia Code", monospace;
+    font-size: 0.88em; color: var(--c-accent);
+    padding: 3px 0; border-bottom: 1px solid var(--c-border);
+  }
+  .file-list li:last-child { border-bottom: none; }
+  .ref-table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+  .ref-table th, .ref-table td {
+    text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--c-border);
+  }
+  .ref-table th { color: var(--c-muted); font-weight: 500; font-size: 0.85em; }
+  .ac-item {
+    padding: 6px 10px; border-radius: 6px; margin-bottom: 4px;
+    border: 1px solid var(--c-border); font-size: 0.92em;
+  }
+  .ac-item .ac-vtype {
+    display: inline-block; padding: 1px 8px; border-radius: 4px;
+    font-size: 0.78em; font-weight: 600; margin-right: 6px;
+  }
+  .ac-vtype-precondition  { background: rgba(251,191,36,0.12); color: var(--c-amber); }
+  .ac-vtype-postcondition { background: rgba(52,211,153,0.15); color: var(--c-green); }
+  .ac-vtype-http_status   { background: rgba(91,141,239,0.15); color: var(--c-accent); }
+  .ac-vtype-invariant     { background: rgba(239,68,68,0.12); color: var(--c-red); }
+  .ac-vtype-state_transition { background: rgba(124,111,247,0.13); color: var(--c-accent2); }
+  .ac-vtype-field_definition { background: rgba(34,211,238,0.12); color: var(--c-cyan); }
+  .upstream-item {
+    padding: 8px 12px; border-radius: 6px; margin-bottom: 6px;
+    background: rgba(52,211,153,0.06); border: 1px solid rgba(52,211,153,0.15);
+  }
+  .upstream-item .up-name { font-weight: 600; color: var(--c-heading); }
+  .scope-summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
+  .scope-card {
+    padding: 8px 12px; border-radius: 6px; border: 1px solid var(--c-border);
+    font-size: 0.9em;
+  }
+  .scope-card .sc-count { font-size: 1.4em; font-weight: 700; color: var(--c-accent); }
+  .scope-card .sc-label { color: var(--c-muted); font-size: 0.82em; }
+  @media print {
+    body { background: #fff; color: #222; }
+    .section-body, .req-item, .story-item { background: #fff; border: 1px solid #ddd; }
+    h1 { color: #111; }
+  }
+</style>
+</head>
+<body>
+<div class="page-layout">
+<nav class="sidebar" id="sidebar"><div class="sidebar-header"><div class="sid">lld-环境管理模块-001</div><div class="stitle">环境管理模块 LLD</div></div><div class="sidebar-nav"><a href="#overview" class="sidebar-link"><span class="sl-icon">📄</span>概述</a><a href="#models" class="sidebar-link"><span class="sl-icon">🗄️</span>数据模型 (1)</a><a href="#domain-objects" class="sidebar-link"><span class="sl-icon">📦</span>领域对象 (7)</a><a href="#service-contracts" class="sidebar-link"><span class="sl-icon">🔧</span>服务接口 (1)</a><a href="#business-rules" class="sidebar-link"><span class="sl-icon">📐</span>业务规则</a><a href="#workflow" class="sidebar-link"><span class="sl-icon">🔄</span>编排流程</a><a href="#interfaces" class="sidebar-link"><span class="sl-icon">🔌</span>接口定义 (1)</a><a href="#errors" class="sidebar-link"><span class="sl-icon">⚠️</span>错误处理</a></div></nav><button id="sidebar-toggle" class="sidebar-toggle" aria-label="菜单">☰</button>
+<div class="main-content">
+<div class="top-bar">
+  <div class="doc-id">lld-环境管理模块-001</div>
+  <div><span class="badge accent">详细设计文档</span></div>
+</div>
+<h1><span>详细设计文档</span> 环境管理模块 LLD</h1>
+<div class="meta">2025-03-23 &middot; 作者: design_agent</div>
+
+<div class="section" id="overview">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(124,111,247,0.12)">📄</div>
+    <h2>概述</h2>
+  </div>
+  <div class="section-body">
+
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap"><div class="arch-style-badge">环境管理模块</div><span class="badge accent">⚙️ 业务服务</span></div>
+<div class="arch-desc">管理环境配置（名称、IP、端口、远程路径、关联密钥），提供测试连接功能。运行在 Electron 主进程中，通过 IPC 与 GUI 前端通信，依赖本地数据库进行持久化，调用 SSH 客户端模块执行连接测试。</div>
+<div style="margin-bottom:12px"><span style="font-size:0.82em;color:var(--c-muted)">依赖: </span><span class="cc-consumer" style="margin:2px">本地数据库（CTR-007）</span><span class="cc-consumer" style="margin:2px">SSH 客户端模块（CTR-008）</span></div>
+<div style="margin-bottom:8px"><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Node.js (主进程)</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>Electron</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>SQLite</span><span class="arch-feature-tag" style="margin:2px"><span class="dot" style="background:var(--c-accent)"></span>ssh2</span></div>
+<div style="font-size:0.82em;color:var(--c-muted);margin-bottom:8px">基于: PRD prd-current v1 · SAD sad-001 v1</div>
+<details class="contract-group" style="margin-bottom:12px"><summary>📐 模块边界</summary><div style="padding:8px 16px"><div style="margin:4px 0"><strong style="font-size:0.8em;color:var(--c-green)">范围内: </strong><span class="cn-tag prop">环境配置的增删改查（名称、IP、端口、远程路径、关联密钥）</span> <span class="cn-tag prop">测试 SSH 连接功能</span> <span class="cn-tag prop">环境与密钥的关联管理</span> <span class="cn-tag prop">服务内部领域对象定义</span> <span class="cn-tag prop">服务层方法契约（创建、更新、删除、列表、测试连接）</span></div><div style="margin:4px 0"><strong style="font-size:0.8em;color:var(--c-red)">范围外: </strong><span class="cn-tag">密钥的加密存储与解密（由密钥管理模块负责）</span> <span class="cn-tag">SSH 连接的底层实现（由 SSH 客户端模块负责）</span> <span class="cn-tag">数据库表结构定义（由 Primary Database LLD 负责）</span> <span class="cn-tag">GUI 界面渲染</span></div><div style="margin:4px 0"><strong style="font-size:0.8em;color:var(--c-muted)">拥有组件: </strong><span style="font-family:monospace;font-size:0.82em;color:var(--c-accent)">CMP-003</span></div><div style="margin:4px 0"><strong style="font-size:0.8em;color:var(--c-muted)">实现契约: </strong><span style="font-family:monospace;font-size:0.82em;color:var(--c-accent)">CTR-003</span></div><div style="margin:4px 0"><strong style="font-size:0.8em;color:var(--c-muted)">消费契约: </strong><span style="font-family:monospace;font-size:0.82em;color:var(--c-accent2)">CTR-007</span> <span style="font-family:monospace;font-size:0.82em;color:var(--c-accent2)">CTR-008</span></div></div></details>
+  </div>
+</div>
+
+<div class="section" id="models">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(91,141,239,0.12)">🗄️</div>
+    <h2>数据模型 (1)</h2>
+  </div>
+  <div class="section-body">
+
+<details class="contract-group" open><summary>数据库表 <span class="cg-count">1</span></summary><div class="contract-card" style="border-top:none"><h3 style="font-size:0.95em;font-weight:600;color:var(--c-heading);margin-bottom:4px">🗄️ EnvironmentTable<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.72em;font-weight:600;background:rgba(91,141,239,0.12);color:var(--c-accent);margin-left:6px">引用</span></h3><div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↳ 引用自: lld-Primary Database-001 / environments</div><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">本地数据库中的环境配置表，存储部署环境的连接信息，包括名称、IP、端口、远程路径和关联的密钥ID。该表引用自Primary Database LLD。</p><div class="body-label">字段</div><table class="body-table"><thead><tr><th>字段名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">INTEGER</td><td>主键，自增ID</td></tr><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TEXT</td><td>环境名称，唯一标识一个环境</td></tr><tr><td>ip <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TEXT</td><td>目标服务器的IP地址或主机名</td></tr><tr><td>port <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">INTEGER</td><td>SSH端口号，默认22</td></tr><tr><td>remotePath <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TEXT</td><td>远程服务器上的默认工作路径</td></tr><tr><td>keyId</td><td class="field-type">INTEGER</td><td>关联的SSH密钥ID，外键引用密钥管理表的id字段</td></tr><tr><td>createdAt <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TEXT</td><td>创建时间戳，ISO 8601格式</td></tr><tr><td>updatedAt <span style="color:var(--c-red);font-size:0.75em">*</span></td><td class="field-type">TEXT</td><td>最后更新时间戳，ISO 8601格式</td></tr></tbody></table><div class="body-label" style="margin-top:8px">索引</div><table class="body-table"><thead><tr><th>索引名</th><th>唯一</th><th>列</th></tr></thead><tbody><tr><td>idx_environment_name</td><td>✓</td><td style="font-family:monospace;font-size:0.85em">name</td></tr><tr><td>idx_environment_keyId</td><td></td><td style="font-family:monospace;font-size:0.85em">keyId</td></tr></tbody></table></div></details>
+  </div>
+</div>
+
+<div class="section" id="domain-objects">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(91,141,239,0.12)">📦</div>
+    <h2>领域对象 (7)</h2>
+  </div>
+  <div class="section-body">
+
+<div class="domain-obj"><h3>🏷️ EnvironmentEntity<span class="obj-tag entity">实体</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">环境实体，映射数据库表字段，包含所有业务属性。对应数据库中的环境配置记录，是业务操作的核心对象。</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">string</td><td>环境配置的唯一标识符，UUID 格式</td></tr><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">string</td><td>环境配置的名称，用于显示和识别</td></tr><tr><td>ip <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">string</td><td>目标主机的 IP 地址</td></tr><tr><td>port <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">number</td><td>SSH 服务的端口号，默认为 22</td></tr><tr><td>remotePath <span class="attr-source-tag">输入</span></td><td class="field-type">string</td><td>远程主机上的默认路径</td></tr><tr><td>keyId <span class="attr-source-tag">输入</span></td><td class="field-type">string</td><td>关联的密钥 ID（来自密钥管理模块），用于 SSH 认证</td></tr><tr><td>createdAt <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">string</td><td>创建时间戳，ISO 8601 格式</td></tr><tr><td>updatedAt <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">string</td><td>最后更新时间戳，ISO 8601 格式</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 CreateEnvironmentDto<span class="obj-tag dto">DTO</span></h3><div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↦ EnvironmentEntity</div><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">创建环境请求的数据传输对象，包含新增环境所需的所有字段，并附带校验约束。</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">string</td><td>环境名称，长度 1-100 字符</td></tr><tr><td>ip <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">输入</span></td><td class="field-type">string</td><td>IP 地址，需符合 IPv4 或 IPv6 格式</td></tr><tr><td>port <span class="attr-source-tag">输入</span></td><td class="field-type">number</td><td>端口号，范围 1-65535，默认为 22</td></tr><tr><td>remotePath <span class="attr-source-tag">输入</span></td><td class="field-type">string</td><td>远程路径，可选</td></tr><tr><td>keyId <span class="attr-source-tag">输入</span></td><td class="field-type">string</td><td>关联的密钥 ID，可选</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 UpdateEnvironmentDto<span class="obj-tag dto">DTO</span></h3><div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↦ EnvironmentEntity</div><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">更新环境请求的数据传输对象，所有字段可选，仅更新提供的字段。</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>name <span class="attr-source-tag">输入</span></td><td class="field-type">string</td><td>环境名称</td></tr><tr><td>ip <span class="attr-source-tag">输入</span></td><td class="field-type">string</td><td>IP 地址</td></tr><tr><td>port <span class="attr-source-tag">输入</span></td><td class="field-type">number</td><td>端口号</td></tr><tr><td>remotePath <span class="attr-source-tag">输入</span></td><td class="field-type">string</td><td>远程路径</td></tr><tr><td>keyId <span class="attr-source-tag">输入</span></td><td class="field-type">string</td><td>关联的密钥 ID</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 EnvironmentDto<span class="obj-tag dto">DTO</span></h3><div style="font-size:0.78em;color:var(--c-muted);margin-bottom:6px">↦ EnvironmentEntity</div><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">环境信息响应 DTO，用于列表和详情展示，包含只读时间戳。</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>id <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">string</td><td>环境 ID</td></tr><tr><td>name <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">string</td><td>环境名称</td></tr><tr><td>ip <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">string</td><td>IP 地址</td></tr><tr><td>port <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">number</td><td>端口号</td></tr><tr><td>remotePath <span class="attr-source-tag">DB 透传</span></td><td class="field-type">string</td><td>远程路径</td></tr><tr><td>keyId <span class="attr-source-tag">DB 透传</span></td><td class="field-type">string</td><td>关联的密钥 ID</td></tr><tr><td>createdAt <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">string</td><td>创建时间</td></tr><tr><td>updatedAt <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">DB 透传</span></td><td class="field-type">string</td><td>更新时间</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📋 TestConnectionResultDto<span class="obj-tag dto">DTO</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">测试连接结果的响应 DTO，表示一次连接测试的成功或失败，以及附加消息。</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>success <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">计算</span></td><td class="field-type">boolean</td><td>连接是否成功</td></tr><tr><td>message <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">计算</span></td><td class="field-type">string</td><td>测试结果的描述信息，成功时为空或成功提示，失败时包含错误原因</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>📌 ConnectionConfig<span class="obj-tag value_object">值对象</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">SSH 连接配置值对象，由环境实体派生，用于传递给 SSH 客户端模块进行连接。不可变，仅传输连接参数。</p><div class="body-label">属性</div><table class="body-table"><thead><tr><th>属性名</th><th>类型</th><th>描述</th></tr></thead><tbody><tr><td>host <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">派生</span></td><td class="field-type">string</td><td>主机 IP，来自 EnvironmentEntity.ip</td></tr><tr><td>port <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">派生</span></td><td class="field-type">number</td><td>端口，来自 EnvironmentEntity.port</td></tr><tr><td>username <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">派生</span></td><td class="field-type">string</td><td>SSH 用户名（需根据关联的密钥或默认配置获取，此处暂定为派生）</td></tr><tr><td>key <span style="color:var(--c-red);font-size:0.75em">*</span> <span class="attr-source-tag">派生</span></td><td class="field-type">string</td><td>私钥内容（由密钥管理模块根据 keyId 提供，此处暂定为派生）</td></tr></tbody></table></div>
+<div class="domain-obj"><h3>🔢 EnvironmentStatus<span class="obj-tag enum">枚举</span></h3><p style="font-size:0.85em;color:var(--c-muted);margin-bottom:8px">环境连接状态枚举，用于表示测试连接的结果状态。</p><div class="body-label">值</div><div><span class="cn-tag prop">success</span> <span class="cn-tag prop">failed</span></div></div>
+  </div>
+</div>
+
+<div class="section" id="service-contracts">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(124,111,247,0.12)">🔧</div>
+    <h2>服务接口 (1)</h2>
+  </div>
+  <div class="section-body">
+
+<details class="svc-contract" open><summary>🔧 EnvironmentService <span class="cg-count">6 方法</span></summary><div class="svc-method"><div class="svc-method-header"><span class="method-name">createEnvironment</span></div><div class="sig-block">(dto: CreateEnvironmentDto) -&gt; Promise&lt;EnvironmentDto&gt;</div><div class="cc-desc">创建一个新的环境配置</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">dto 字段有效，名称在同用户下唯一</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">数据库中新增环境记录，返回环境信息</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">DuplicateNameException</span><span class="exc-http">→ 409</span><span style="font-size:0.82em;color:var(--c-muted)">同用户下已存在同名环境</span></span><span class="exc-item"><span class="exc-name">ValidationException</span><span class="exc-http">→ 400</span><span style="font-size:0.82em;color:var(--c-muted)">dto 校验失败（如端口范围、IP格式）</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">updateEnvironment</span></div><div class="sig-block">(id: number, dto: UpdateEnvironmentDto) -&gt; Promise&lt;EnvironmentDto&gt;</div><div class="cc-desc">更新指定环境的信息</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">id 对应的环境存在</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">数据库中的环境信息更新，返回更新后的环境信息</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">NotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">环境不存在</span></span><span class="exc-item"><span class="exc-name">DuplicateNameException</span><span class="exc-http">→ 409</span><span style="font-size:0.82em;color:var(--c-muted)">同用户下已存在同名环境</span></span><span class="exc-item"><span class="exc-name">ValidationException</span><span class="exc-http">→ 400</span><span style="font-size:0.82em;color:var(--c-muted)">dto 校验失败</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">deleteEnvironment</span></div><div class="sig-block">(id: number) -&gt; Promise&lt;void&gt;</div><div class="cc-desc">删除指定的环境</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">id 对应的环境存在</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">数据库中删除该环境记录</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">NotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">环境不存在</span></span><span class="exc-item"><span class="exc-name">ActiveDeploymentExistsException</span><span class="exc-http">→ 409</span><span style="font-size:0.82em;color:var(--c-muted)">存在正在运行的部署时不允许删除</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">listEnvironments</span></div><div class="sig-block">() -&gt; Promise&lt;EnvironmentDto[]&gt;</div><div class="cc-desc">列出当前用户的所有环境</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">无</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">返回当前用户的所有环境列表</div></div></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">getEnvironment</span></div><div class="sig-block">(id: number) -&gt; Promise&lt;EnvironmentDto&gt;</div><div class="cc-desc">获取单个环境的详细信息</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">id 对应的环境存在</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">返回指定环境的详细信息</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">NotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">环境不存在</span></span></div></div><div class="svc-method"><div class="svc-method-header"><span class="method-name">testConnection</span></div><div class="sig-block">(id: number) -&gt; Promise&lt;TestConnectionResultDto&gt;</div><div class="cc-desc">测试指定环境的 SSH 连接</div><div class="pre-post"><div class="pre-post-item pre"><div class="pp-label">前置条件</div><div class="pp-text">id 对应的环境存在</div></div><div class="pre-post-item post"><div class="pp-label">后置条件</div><div class="pp-text">返回连接测试结果（成功或失败，含错误信息）</div></div></div><div style="margin-top:6px"><span class="exc-item"><span class="exc-name">NotFoundException</span><span class="exc-http">→ 404</span><span style="font-size:0.82em;color:var(--c-muted)">环境不存在</span></span><span class="exc-item"><span class="exc-name">ConnectionTimeoutException</span><span class="exc-http">→ 408</span><span style="font-size:0.82em;color:var(--c-muted)">SSH 连接超时</span></span><span class="exc-item"><span class="exc-name">AuthenticationFailedException</span><span class="exc-http">→ 401</span><span style="font-size:0.82em;color:var(--c-muted)">SSH 认证失败</span></span><span class="exc-item"><span class="exc-name">UnknownHostException</span><span class="exc-http">→ 502</span><span style="font-size:0.82em;color:var(--c-muted)">主机不可达</span></span></div></div><div style="padding:16px 20px;border-top:1px solid var(--c-border)"><div class="body-label">数据访问依赖</div><div class="repo-dep">findById(id: number) -&gt; EnvironmentEntity?</div><div class="repo-dep">findAllByUserId(userId: number) -&gt; EnvironmentEntity[]</div><div class="repo-dep">create(entity: EnvironmentEntity) -&gt; EnvironmentEntity</div><div class="repo-dep">update(entity: EnvironmentEntity) -&gt; EnvironmentEntity</div><div class="repo-dep">delete(id: number) -&gt; void</div><div class="repo-dep">existsByNameAndUserId(name: string, userId: number) -&gt; boolean</div></div></details>
+  </div>
+</div>
+
+<div class="body-label">不变量</div><ul class="invariant-list"><li><span class="inv-icon">!</span><span>环境名称不可为空，且在系统中唯一（不区分大小写）。</span></li><li><span class="inv-icon">!</span><span>IP 地址格式必须符合 IPv4 或 IPv6 规范，端口范围为 1-65535。</span></li><li><span class="inv-icon">!</span><span>远程路径必须为有效的绝对路径格式，且不能为空。</span></li><li><span class="inv-icon">!</span><span>每个环境必须关联一个已存在的密钥，不可悬空。</span></li><li><span class="inv-icon">!</span><span>删除环境前，必须确保没有正在进行的部署或自动化任务使用该环境。</span></li></ul>
+<div class="body-label" style="margin-top:16px">状态机</div>
+<div class="state-diagram"><div class="sd-title">🎯 EnvironmentEntity</div><div class="state-row"><span class="state-node ">Active</span><span class="state-node ">Deleted</span></div><div style="margin:8px 0"><div class="state-arrow"><span>→</span><span class="trigger-text">用户发起删除操作</span><span style="font-size:0.78em;color:var(--c-muted)">by 用户</span></div></div><div style="margin-top:8px"><span class="irrev-rule">🚫 从 Active 到 Deleted 不可逆，删除后记录不再恢复。</span></div><div style="margin-top:8px;font-size:0.84em;color:var(--c-muted)">⚡ 删除操作需检查关联任务状态，若无则立即执行逻辑删除；采用乐观锁防止并发删除冲突。</div></div>
+<div class="body-label" style="margin-top:16px">跨服务规则</div><div class="cross-svc-rule">创建或更新环境时，必须通过密钥管理模块验证密钥 ID 的有效性，若密钥不存在则操作失败。</div><div class="cross-svc-rule">测试连接时，必须将解密后的密钥传递给 SSH 客户端模块，不得直接传递密钥密文。</div><div class="cross-svc-rule">删除环境时，若密钥删除模块通知密钥已被删除，则本模块应允许环境记录存在但标记密钥为无效，以便后续清理。</div><div class="cross-svc-rule">环境列表查询时，可联合密钥管理模块获取密钥的显示名称或指纹，但不允许直接暴露密钥内容。</div>
+  </div>
+</div>
+
+<div class="section" id="workflow">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(251,191,36,0.12)">🔄</div>
+    <h2>编排流程</h2>
+  </div>
+  <div class="section-body">
+
+<h3 style="font-size:1.05em;font-weight:700;color:var(--c-heading);margin-bottom:4px">环境管理流程</h3>
+<p style="font-size:0.9em;color:var(--c-muted);margin-bottom:16px">环境管理模块的核心操作流程，包括创建、更新、删除和测试连接。</p>
+<div style="background:var(--c-surface);border:1px solid var(--c-border);border-radius:var(--radius);padding:8px 16px"><div style="display:flex;align-items:flex-start;gap:12px;padding:12px 0;border-bottom:1px solid var(--c-border)"><div style="width:32px;height:32px;border-radius:50%;background:rgba(251,191,36,0.15);color:var(--c-amber);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.85em;flex-shrink:0">1</div><div style="flex:1"><div style="font-weight:600;color:var(--c-heading);margin-bottom:4px">验证输入 <span style="font-size:0.78em;color:var(--c-amber)">(30s 超时)</span></div><div style="font-size:0.88em;color:var(--c-text);margin-bottom:4px">校验客户端传入的参数格式和业务规则</div><div style="font-size:0.82em;color:var(--c-red)">失败处理: 返回 400 错误</div></div></div><div style="display:flex;align-items:flex-start;gap:12px;padding:12px 0;border-bottom:1px solid var(--c-border)"><div style="width:32px;height:32px;border-radius:50%;background:rgba(251,191,36,0.15);color:var(--c-amber);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.85em;flex-shrink:0">2</div><div style="flex:1"><div style="font-weight:600;color:var(--c-heading);margin-bottom:4px">执行操作 <span style="font-size:0.78em;color:var(--c-amber)">(60s 超时)</span></div><div style="font-size:0.88em;color:var(--c-text);margin-bottom:4px">调用相应的服务方法处理业务逻辑</div><div style="font-size:0.82em;color:var(--c-red)">失败处理: 根据异常类型返回相应错误码</div></div></div></div>
+<div style="margin-top:16px;font-size:0.88em;color:var(--c-muted)"><strong>重试策略:</strong> 最多 3 次，间隔 30s<br>可重试错误: NETWORK_ERROR, TIMEOUT<br>不可重试错误: AUTH_ERROR, CONFIG_ERROR</div>
+  </div>
+</div>
+
+<div class="section" id="interfaces">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(34,211,238,0.12)">🔌</div>
+    <h2>接口定义 (1)</h2>
+  </div>
+  <div class="section-body">
+
+<div class="contract-card"><div class="cc-head"><span class="method-badge internal">INTERNAL</span><span class="cc-endpoint">N/A（服务层内部接口，由 EnvironmentService 实现）</span><span class="cc-name">IEnvironmentService</span></div><div class="cc-desc">环境管理服务层接口，定义环境配置的增删改查及测试连接的方法契约</div><div class="body-label">Response 200</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td>data</td><td class="field-type">object</td></tr></tbody></table></div>
+  </div>
+</div>
+
+<div class="section" id="errors">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(251,191,36,0.12)">⚠️</div>
+    <h2>错误处理</h2>
+  </div>
+  <div class="section-body">
+
+<div class="err-strategy"><div class="err-label">处理策略</div><p>统一通过标准API响应格式返回错误，区分客户端错误(4xx)与服务端错误(5xx)，并在日志中记录详细异常信息以便排查。</p></div>
+<div class="err-format-box"><div class="err-label">统一错误响应体</div><table class="body-table"><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody><tr><td class="field-type">code</td><td class="field-type">integer</td></tr><tr><td class="field-type">error</td><td class="field-type">string</td></tr><tr><td class="field-type">detail</td><td class="field-type">string</td></tr></tbody></table></div>
+<div class="err-categories"><div class="err-category"><span class="err-code-badge _4xx">400</span><div class="err-category-body"><div class="err-cat-name">请求参数错误</div><div class="err-cat-desc">当传入的 DTO 校验失败时返回，如必填字段缺失、格式不符合要求、IP地址非法等。detail 中包含具体的校验失败信息。</div></div></div><div class="err-category"><span class="err-code-badge _4xx">404</span><div class="err-category-body"><div class="err-cat-name">环境不存在</div><div class="err-cat-desc">根据 ID 查询、更新或删除环境时，若数据库中不存在对应记录则返回。detail 中包含不存在的环境ID。</div></div></div><div class="err-category"><span class="err-code-badge _4xx">409</span><div class="err-category-body"><div class="err-cat-name">环境名称冲突</div><div class="err-cat-desc">创建或更新环境时，若名称在系统中已存在则返回。detail 中包含冲突的名称。</div></div></div><div class="err-category"><span class="err-code-badge _4xx">422</span><div class="err-category-body"><div class="err-cat-name">SSH连接测试失败</div><div class="err-cat-desc">测试连接时，SSH 客户端返回连接错误（如认证失败、超时、拒绝连接等），错误信息从底层 ssh2 库获取并包装在 detail 中。</div></div></div><div class="err-category"><span class="err-code-badge _5xx">500</span><div class="err-category-body"><div class="err-cat-name">内部服务错误</div><div class="err-cat-desc">数据库操作异常、SSH 客户端不可用或其他未预期的运行时错误。detail 中提供通用错误提示，具体异常记录到日志。</div></div></div></div>
+  </div>
+</div>
+
+<div class="section" id="traceability">
+  <div class="section-header">
+    <div class="icon" style="background:rgba(124,111,247,0.12)">🔍</div>
+    <h2>需求追溯 (1)</h2>
+  </div>
+  <div class="section-body">
+
+<table style="width:100%;border-collapse:collapse;font-size:0.88em"><thead><tr><th>需求</th><th>覆盖</th><th>SAD组件</th><th>SAD契约</th><th>数据模型</th><th>接口</th><th>备注</th></tr></thead><tbody><tr><td style="font-family:monospace;font-weight:600">REQ-001</td><td><span style="font-size:0.8em;padding:2px 10px;border-radius:10px;background:rgba(52,211,153,0.15);color:#6ee7b7;">full</span></td><td><span class="cn-tag prop">CMP-003</span></td><td><span style="font-family:monospace;font-size:0.8em;color:var(--c-accent)">CTR-003</span></td><td><span style="font-family:monospace;font-size:0.8em;color:var(--c-accent2)">DM-001</span></td><td><span style="font-family:monospace;font-size:0.8em;color:var(--c-cyan)">IF-001</span></td><td style="font-size:0.85em;color:var(--c-muted)"></td></tr></tbody></table>
+  </div>
+</div>
+
+<div class="footer">CogniForge 文档驱动系统</div>
+</div>
+</div>
+
+<script>
+(function() {
+  var links = document.querySelectorAll('.sidebar-link');
+  var sections = [];
+  links.forEach(function(l) { var s = document.getElementById(l.getAttribute('href').slice(1)); if (s) sections.push([s, l]); });
+  function update() {
+    var top = window.scrollY + 80;
+    var active = null;
+    sections.forEach(function(p) { if (p[0].offsetTop <= top) active = p[1]; });
+    links.forEach(function(l) { l.classList.remove('active'); });
+    if (active) active.classList.add('active');
+  }
+  window.addEventListener('scroll', update, {passive: true});
+  update();
+
+  var toggle = document.getElementById('sidebar-toggle');
+  var sidebar = document.getElementById('sidebar');
+  if (toggle && sidebar) {
+    toggle.addEventListener('click', function() { sidebar.classList.toggle('mobile-open'); });
+  }
+})();
+</script>
+</body>
+</html>
