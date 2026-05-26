@@ -707,6 +707,122 @@ class DesignAgent(BaseAgent):
 
         return lld
 
+    # ------------------------------------------------------------------
+    # Reverse engineering — generate LLD from source code
+    # ------------------------------------------------------------------
+
+    def _run_reverse(
+        self, module: str, module_type: str,
+        source_texts: dict[str, str],
+        prd_slice: dict, sad_slice: dict,
+        progress_callback: callable = None,
+    ) -> dict:
+        """从源码提取 LLD：数据模型、接口、领域对象、业务规则。"""
+        try:
+            if self.agent is None:
+                raise AgentError("DesignAgent requires an LLM agent")
+
+            cb = progress_callback
+            t0 = time.time()
+
+            # Determine doc_id
+            existing = self.wiki_system.list_documents(DocumentType.LLD, module=module)
+            seq = len(existing) + 1
+            doc_id = f"lld-{module}-{seq:03d}"
+            json_path = self.wiki_system.agent_path(DocumentType.LLD, doc_id=doc_id, module=module)
+
+            ownership_rules = _OWNERSHIP_RULES.get(module_type, _OWNERSHIP_RULES["service"])
+
+            # Assemble source code context
+            source_context = []
+            for fpath, content in source_texts.items():
+                source_context.append(f"\n### {fpath}\n```python\n{content[:3000]}\n```")
+            source_text = "\n".join(source_context[:15])  # cap files
+
+            prd_json = json.dumps(prd_slice, ensure_ascii=False, indent=2)
+            sad_json = json.dumps(sad_slice, ensure_ascii=False, indent=2)
+
+            prompt = (
+                f"你是一名代码分析师。请从以下源码中**提取**模块的详细设计，生成 LLD JSON。\n\n"
+                f"## 文档信息\n"
+                f"doc_id: {doc_id}\n"
+                f"module: {module}\n"
+                f"module_type: {module_type}\n"
+                f"author: reverse_mde\n"
+                f"created: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                f"## 所有权规则\n{ownership_rules}\n\n"
+                f"## PRD 切片（相关需求）\n```json\n{prd_json}\n```\n\n"
+                f"## SAD 切片（相关组件/契约）\n```json\n{sad_json}\n```\n\n"
+                f"## 模块源码\n{source_text}\n\n"
+                f"## 要求\n"
+                f"1. 从源码提取 data_models（pydantic/dataclass/ORM 类 → DM-xxx）\n"
+                f"2. 从路由/CLI 命令提取 interfaces（IF-xxx）\n"
+                f"3. 从业务类提取 domain_objects（DO-xxx，仅 service）\n"
+                f"4. 从服务类提取 service_contracts（SC-xxx，仅 service）\n"
+                f"5. 从状态机/验证逻辑提取 business_rules（仅 service）\n"
+                f"6. 所有 status 设为 \"active\"\n"
+                f"7. **不要虚构**——只提取代码中实际存在的东西\n"
+                f"8. traceability 关联 prd_slice 中的 REQ-xxx 和 sad_slice 中的 CMP/CTR\n"
+                + _type_specific_hints(module_type)
+                + f"使用中文。返回纯 JSON。"
+            )
+
+            if cb:
+                cb("LLM 生成中")
+
+            max_retries = 5
+            last_error = None
+            for attempt in range(max_retries + 1):
+                if attempt > 0:
+                    if cb:
+                        cb(f"JSON 解析失败，正在重试 ({attempt}/{max_retries})...")
+                    prompt_retry = (
+                        f"你上一次输出的 JSON 有语法错误：\n"
+                        f"错误: {last_error}\n\n"
+                        f"请重新生成纯 JSON。\n\n"
+                        f"原始任务:\n{prompt}"
+                    )
+                    response = self.agent.generate_think_then_json(prompt_retry, role="design")
+                else:
+                    response = self.agent.generate_think_then_json(prompt, role="design")
+
+                json_text = _extract_json(response.content)
+                try:
+                    data, incomplete = repair_truncated_json(json_text)
+                    break
+                except ValueError as e:
+                    last_error = str(e)
+                    if attempt == max_retries:
+                        return self.format_result(
+                            status="failed",
+                            message=f"JSON 解析失败（已重试 {max_retries} 次）: {last_error}",
+                            reasoning=response.content,
+                        )
+
+            if incomplete and cb:
+                cb("警告: LLM 输出被截断，已自动修复 JSON 结构")
+
+            data["data_models"] = self._assign_ids(data.get("data_models", []), "DM")
+            data["interfaces"] = self._assign_ids(data.get("interfaces", []), "IF")
+
+            json_abs = Path(self.config.repo_path) / json_path
+            json_abs.parent.mkdir(parents=True, exist_ok=True)
+            json_abs.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            return self._validate_and_commit(
+                json_path, json_abs, f"LLD - {module}",
+                reasoning=response.content,
+                progress_callback=cb,
+            )
+
+        except Exception as e:
+            return self.format_result(status="failed", message=str(e))
+
+    # ------------------------------------------------------------------
+    # Validation + commit
+    # ------------------------------------------------------------------
+
     def _validate_and_commit(
         self, json_path: str, json_abs: Path, title: str,
         reasoning: str = "",

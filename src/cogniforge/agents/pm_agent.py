@@ -406,6 +406,132 @@ class PMAgent(BaseAgent):
             return self.format_result(status="failed", message=str(e))
 
     # ------------------------------------------------------------------
+    # Reverse engineering — generate PRD from SAD + manifest
+    # ------------------------------------------------------------------
+
+    def _run_reverse(
+        self, manifest: dict, sad: dict,
+        progress_callback: callable = None,
+    ) -> dict:
+        """从 SAD 和代码扫描结果反推 PRD（分析性描述）。"""
+        try:
+            if self.agent is None:
+                raise AgentError("PMAgent requires an LLM agent")
+
+            cb = progress_callback
+            t0 = time.time()
+            prd_path = self.wiki_system.agent_path(DocumentType.PRD, doc_id="prd-current")
+
+            sad_json = json.dumps(sad, ensure_ascii=False, indent=2)
+            entries_json = json.dumps(manifest.get("entry_points", []), ensure_ascii=False)
+            symbols_summary = _summarize_for_prd(manifest.get("symbols", {}))
+
+            prompt = (
+                f"你是一名产品分析师。请根据以下架构文档和代码信息，**反推系统的功能需求**。\n\n"
+                f"## 要生成的文档\n"
+                f"doc_id: prd-current\n"
+                f"version: 1\n"
+                f"author: reverse_pm\n\n"
+                f"## 系统架构文档 (SAD)\n```json\n{sad_json}\n```\n\n"
+                f"## 项目入口点\n{entries_json}\n\n"
+                f"## 代码符号摘要\n{symbols_summary}\n\n"
+                f"## 规则\n"
+                f"1. 从 SAD components 反推功能需求——每个有意义的组件组合 → 一个 REQ-xxx\n"
+                f"2. 将组件的 responsibilities 转化为对应的需求描述 + 验收条件\n"
+                f"3. 从入口点和路由 → 推导用户故事（US-xxx）\n"
+                f"4. 从代码中的角色/权限检测 → 推导用户角色\n"
+                f"5. 所有 status 设为 \"active\"\n"
+                f"6. 优先级全部标为 \"中\"（人工后续调整）\n"
+                f"7. 建立 related_user_stories 关联（每个 REQ 关联相关 US）\n"
+                f"8. **不要虚构需求**——只描述系统中实际存在的功能\n"
+                f"9. 使用中文\n\n"
+                f"返回完整 PRD JSON（参考系统提示中的 EXAMPLE JSON OUTPUT）。"
+            )
+
+            if cb:
+                cb("PM 正在反推功能需求...")
+
+            response = self.agent.generate_think_then_json(prompt, role="pm")
+            json_text = _extract_json(response.content)
+
+            try:
+                data = json.loads(json_text)
+            except json.JSONDecodeError as e:
+                return self.format_result(
+                    status="failed",
+                    message=f"LLM 输出的 JSON 无法解析: {e}",
+                    reasoning=response.content,
+                )
+
+            # Replace placeholders + assign IDs
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            meta = data.get("meta", {})
+            for field in ("created", "last_modified"):
+                if meta.get(field) == "<created_at>":
+                    meta[field] = now
+            data["meta"] = meta
+
+            data["requirements"] = self._assign_ids(data.get("requirements", []), "REQ")
+            data["user_stories"] = self._assign_ids(data.get("user_stories", []), "US")
+
+            for req in data.get("requirements", []):
+                if not req.get("change_history"):
+                    req["change_history"] = [{
+                        "version": req.get("version", 1),
+                        "change_type": "created",
+                        "summary": "逆向工程生成",
+                        "reason": "从已有代码反推需求",
+                    }]
+
+            self._link_stories_to_reqs(data)
+
+            # Validate
+            schema_path = self.config.repo_path / "schemas" / "prd-schema.json"
+            errors = self._validate_with_schema(data, schema_path)
+            if errors:
+                return self.format_result(
+                    status="failed",
+                    message=f"PRD schema validation failed: {'; '.join(errors[:3])}",
+                    reasoning=response.content,
+                )
+
+            # Write
+            prd_path.parent.mkdir(parents=True, exist_ok=True)
+            prd_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            rel_prd = prd_path.relative_to(self.config.repo_path).as_posix()
+            self.wiki_system.git_storage.repo.index.add([rel_prd])
+
+            from cogniforge.wiki.wiki_renderer import render_file
+            html_path = render_file(prd_path)
+            if html_path:
+                rel_html = html_path.relative_to(self.config.repo_path).as_posix()
+                self.wiki_system.git_storage.repo.index.add([rel_html])
+
+            title = data.get("meta", {}).get("title", "逆向工程 PRD")
+            self.wiki_system.git_storage.commit(f"feat: add PRD - {title}", "reverse_pm")
+
+            artifacts = [rel_prd]
+            if html_path:
+                artifacts.append(html_path.relative_to(self.config.repo_path).as_posix())
+
+            timings = []
+            if response.timings:
+                timings.extend(response.timings)
+            timings.append({"phase": "总计", "duration_s": round(time.time() - t0, 1)})
+
+            return self.format_result(
+                status="success",
+                message=f"PRD created: {prd_path.stem}",
+                artifacts=artifacts,
+                reasoning=response.content,
+                data={"timings": timings},
+            )
+
+        except Exception as e:
+            return self.format_result(status="failed", message=str(e))
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
@@ -501,3 +627,19 @@ def _extract_json(text: str) -> str:
     if start != -1 and end != -1 and end > start:
         return text[start:end + 1]
     return text
+
+
+# ------------------------------------------------------------------
+# Reverse engineering helper
+# ------------------------------------------------------------------
+
+def _summarize_for_prd(symbols: dict) -> str:
+    """将符号表压缩为用户故事线索。"""
+    lines: list[str] = []
+    for route in symbols.get("routes", []):
+        lines.append(
+            f"  {route['method']} {route['path']} → "
+            f"{route.get('handler', '?')}"
+        )
+    return "\n".join(lines[:80]) if lines else "(无路由信息)"
+

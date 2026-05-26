@@ -845,6 +845,55 @@ def _run_repl(ctx: Context):
     repl_runner.run()
 
 
+@cli.command("reverse-engineer")
+@click.argument("target_path", type=click.Path(exists=True), default=".")
+@click.option("--resume", is_flag=True, help="从中断处继续")
+@click.option("--yes", is_flag=True, help="跳过所有人工审批门禁")
+@pass_context
+def reverse_engineer(ctx: Context, target_path: str, resume: bool, yes: bool):
+    """从现有代码逆向生成 CogniForge 设计文档基线
+
+    TARGET_PATH: 目标项目根目录（默认为当前目录）
+
+    示例:
+        cogniforge reverse-engineer ../my-old-project
+        cogniforge reverse-engineer ../my-old-project --yes
+        cogniforge reverse-engineer ../my-old-project --resume
+    """
+    from cogniforge.reverse.pipeline import ReversePipeline
+
+    target = Path(target_path).resolve()
+    if target == ctx.config.repo_path:
+        click.echo("错误: 目标路径不能是 CogniForge 自身项目目录")
+        return
+
+    if not (target / ".cogniforge" / "config.yaml").exists():
+        click.echo(f"  目标项目 {target.name} 尚未初始化 CogniForge")
+        if yes or click.confirm("  是否自动初始化? (y/n)", default=True):
+            _init_target_project(target)
+
+    pipeline = ReversePipeline(
+        target_path=target,
+        config=ctx.config,
+        agents=ctx.agents,
+        auto_approve=yes,
+    )
+    pipeline.run(resume=resume)
+
+
+def _init_target_project(target: Path) -> None:
+    """在目标项目中创建 .cogniforge 目录结构和默认配置。"""
+    wiki_dirs = ["prd", "sad", "lld", "decisions", "tasks", "qa", "reports", "ops"]
+    for d in wiki_dirs:
+        (target / ".cogniforge" / "wiki" / d).mkdir(parents=True, exist_ok=True)
+    config_path = target / ".cogniforge" / "config.yaml"
+    if not config_path.exists():
+        from cogniforge.core.config import DEFAULT_CONFIG_YAML
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(DEFAULT_CONFIG_YAML, encoding="utf-8")
+    click.echo(f"    {C_GREEN}✓{C_RESET} 已初始化 {target.name}")
+
+
 @cli.command()
 @pass_context
 def repl(ctx: Context):

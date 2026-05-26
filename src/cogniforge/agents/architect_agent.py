@@ -402,6 +402,119 @@ class ArchitectAgent(BaseAgent):
             return self.format_result(status="failed", message=str(e))
 
     # ------------------------------------------------------------------
+    # Reverse engineering — generate SAD from code analysis
+    # ------------------------------------------------------------------
+
+    def _run_reverse(
+        self, manifest: dict, module_map: list[dict],
+        progress_callback: callable = None,
+    ) -> dict:
+        """从代码扫描结果生成 SAD（分析性描述，非创造性设计）。"""
+        try:
+            if self.agent is None:
+                raise AgentError("ArchitectAgent requires an LLM agent")
+
+            cb = progress_callback
+            t0 = time.time()
+
+            # Determine doc_id and version
+            existing_sad = self._load_current_sad()
+            if existing_sad:
+                doc_id = existing_sad.get("meta", {}).get("doc_id", "sad-001")
+                version = existing_sad.get("meta", {}).get("version", 1) + 1
+            else:
+                existing = self.wiki_system.list_documents(DocumentType.SAD)
+                seq = len(existing) + 1
+                doc_id = f"sad-{seq:03d}"
+                version = 1
+
+            sad_path = self.wiki_system.agent_path(DocumentType.SAD, doc_id=doc_id)
+
+            # Build reverse-engineering prompt
+            symbols_summary = _summarize_for_sad(manifest.get("symbols", {}))
+            tech_stack = json.dumps(manifest.get("tech_stack", {}), ensure_ascii=False)
+            entries = json.dumps(manifest.get("entry_points", []), ensure_ascii=False)
+            modules_json = json.dumps(module_map, ensure_ascii=False, indent=2)
+            dep_graph_summary = _summarize_deps(manifest.get("dependency_graph", {}))
+
+            prompt = (
+                f"你是一名系统架构分析师。请根据以下代码扫描结果，**描述系统的实际架构**（不是设计新架构）。\n\n"
+                f"## 文档信息\n"
+                f"doc_id: {doc_id}\n"
+                f"version: {version}\n"
+                f"author: reverse_architect\n\n"
+                f"## 技术栈\n{tech_stack}\n\n"
+                f"## 入口点\n{entries}\n\n"
+                f"## 模块划分（已由社区检测算法生成）\n{modules_json}\n\n"
+                f"## 符号摘要\n{symbols_summary}\n\n"
+                f"## 依赖关系\n{dep_graph_summary}\n\n"
+                f"## 规则\n"
+                f"1. 每个 module_map 条目 → 一个 component（CMP-xxx），module_type 映射为 component type\n"
+                f"2. 从依赖图中提取跨模块 import → 推断 contracts（CTR-xxx）\n"
+                f"3. 从 classes 中的 pydantic/dataclass/ORM 类 → 提取 data_models（DM-xxx）\n"
+                f"4. 从 routes 符号 → 推断 REST/CLI 接口契约，填写 endpoint/request/response\n"
+                f"5. 从入口点和路由 → 描述 data_flow\n"
+                f"6. 所有 status 设为 \"active\"（代码中实际存在）\n"
+                f"7. **不要虚构不存在的东西**——只描述代码中可观测的架构事实\n"
+                f"8. system_overview 用一段话描述系统整体用途\n"
+                f"9. 使用中文\n\n"
+                f"返回完整 SAD JSON（参考系统提示中的 EXAMPLE JSON OUTPUT）。"
+            )
+
+            if cb:
+                cb("Architect 正在分析代码结构...")
+
+            response = self.agent.generate_think_then_json(prompt, role="architect")
+            json_text = _extract_json(response.content)
+
+            max_retries = 2
+            last_error = None
+            for attempt in range(max_retries + 1):
+                if attempt > 0:
+                    if cb:
+                        cb(f"JSON 解析失败，正在重试 ({attempt}/{max_retries})...")
+                    prompt_retry = (
+                        f"你上一次输出的 JSON 有语法错误：\n"
+                        f"错误: {last_error}\n\n"
+                        f"请重新生成。确保 JSON 格式正确。\n\n"
+                        f"原始任务:\n{prompt}"
+                    )
+                    response = self.agent.generate_think_then_json(prompt_retry, role="architect")
+                    json_text = _extract_json(response.content)
+                try:
+                    data, incomplete = repair_truncated_json(json_text)
+                    break
+                except ValueError as e:
+                    last_error = str(e)
+                    if attempt == max_retries:
+                        return self.format_result(
+                            status="failed",
+                            message=f"JSON 解析失败（已重试 {max_retries} 次）: {last_error}",
+                            reasoning=response.content,
+                        )
+
+            # Assign stable IDs
+            data["components"] = self._assign_ids(data.get("components", []), "CMP")
+            data["contracts"] = self._assign_ids(data.get("contracts", []), "CTR")
+            data["data_models"] = self._assign_ids(data.get("data_models", []), "DM")
+
+            # Write
+            sad_path.parent.mkdir(parents=True, exist_ok=True)
+            sad_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            json.loads(sad_path.read_text(encoding="utf-8"))
+
+            return self._commit_and_result(
+                sad_path, manifest.get("title", "逆向工程 SAD"),
+                reasoning=response.content,
+                llm_timings=response.timings, t_total=time.time() - t0,
+            )
+
+        except Exception as e:
+            return self.format_result(status="failed", message=str(e))
+
+    # ------------------------------------------------------------------
     # Canonical component type values
     # ------------------------------------------------------------------
 
@@ -590,3 +703,44 @@ def _extract_json(text: str) -> str:
     if start != -1 and end != -1 and end > start:
         return text[start:end + 1]
     return text
+
+
+# ------------------------------------------------------------------
+# Reverse engineering helpers
+# ------------------------------------------------------------------
+
+def _summarize_for_sad(symbols: dict) -> str:
+    """将符号表压缩为 prompt 友好的文本摘要。"""
+    lines: list[str] = []
+    for cls in symbols.get("classes", []):
+        f = cls.get("file", "")
+        methods = [m["name"] for m in cls.get("children", [])]
+        sig = cls.get("signature", "")
+        lines.append(f"  class {cls['name']}{sig}  # {f}")
+        for m_name in methods[:8]:
+            lines.append(f"    .{m_name}()")
+        if len(methods) > 8:
+            lines.append(f"    ... +{len(methods) - 8} more")
+    for func in symbols.get("functions", []):
+        lines.append(f"  def {func['name']}{func.get('signature', '')}  # {func.get('file', '')}")
+    for route in symbols.get("routes", []):
+        lines.append(
+            f"  {route['method']} {route['path']} → "
+            f"{route.get('handler', '?')} ({route.get('parent', '')})"
+        )
+    return "\n".join(lines[:200])
+
+
+def _summarize_deps(dep_graph: dict) -> str:
+    """将依赖图压缩为摘要文本。"""
+    total_deps = sum(len(v) for v in dep_graph.values())
+    # 找出被依赖最多的文件（top 10）
+    in_degree: dict[str, int] = {}
+    for src, targets in dep_graph.items():
+        for t in targets:
+            in_degree[t] = in_degree.get(t, 0) + 1
+    top = sorted(in_degree.items(), key=lambda x: -x[1])[:10]
+    lines = [f"共 {len(dep_graph)} 文件, {total_deps} 条依赖", "高入度文件:"]
+    for path, deg in top:
+        lines.append(f"  {deg} → {path}")
+    return "\n".join(lines)
