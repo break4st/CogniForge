@@ -1,0 +1,1105 @@
+{
+  "meta": {
+    "doc_id": "lld-EnvironmentManager-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "Environment Manager",
+    "title": "Environment Manager LLD",
+    "author": "design_agent",
+    "created": "2025-01-01T00:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-002",
+        "REQ-005"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-003"
+      ],
+      "contracts": [
+        "CTR-003",
+        "CTR-004",
+        "CTR-007"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "环境的 CRUD 操作（增删改查）",
+      "环境连通性测试调度",
+      "调用 Security Module 对私钥加解密",
+      "调用 SSH Service 进行连接测试",
+      "环境列表查询及连通状态展示",
+      "环境配置的输入校验与业务规则"
+    ],
+    "out_of_scope": [
+      "UI 渲染逻辑",
+      "SSH 协议实现",
+      "加密算法实现",
+      "审计日志存储",
+      "部署执行流程",
+      "历史记录与回滚",
+      "文件上传逻辑"
+    ],
+    "owned_components": [
+      "CMP-003"
+    ],
+    "owned_contracts": [],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "管理某个项目下的部署环境配置，负责环境的增删改查、密钥加密存储与连通性测试调度。调用 Security Module 处理密钥，通过 SSH Service 进行连接测试。",
+    "dependencies": [
+      "Security Module",
+      "SSH Service",
+      "Primary Database"
+    ],
+    "tech_stack": [
+      "TypeScript",
+      "Electron 主进程",
+      "Electron ipcMain / contextBridge",
+      "SQLite (via better-sqlite3)",
+      "Node.js crypto (AES-256-GCM) (间接依赖)",
+      "主密码派生密钥 (间接依赖)"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-002",
+      "sad_component_ids": [
+        "CMP-003"
+      ],
+      "sad_contract_ids": [
+        "CTR-003"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-001"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-004",
+          "DO-005",
+          "DO-006",
+          "DO-007"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": ""
+    },
+    {
+      "requirement_id": "REQ-005",
+      "sad_component_ids": [
+        "CMP-003"
+      ],
+      "sad_contract_ids": [
+        "CTR-007"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001"
+        ],
+        "interfaces": [
+          "IF-001"
+        ],
+        "domain_objects": [
+          "DO-001",
+          "DO-002",
+          "DO-003",
+          "DO-008"
+        ],
+        "service_contracts": [
+          "SC-001"
+        ]
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "EnvironmentRecord",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "canonical",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "environments"
+      },
+      "description": "数据库 environments 表视图，包含环境的完整配置信息。每个环境隶属于一个项目，存储主机、端口、认证方式及加密后的私钥等。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "INTEGER PRIMARY KEY AUTOINCREMENT",
+          "required": true,
+          "description": "环境记录的唯一标识"
+        },
+        {
+          "name": "project_id",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "description": "所属项目的唯一标识，关联 Project 领域"
+        },
+        {
+          "name": "name",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "description": "环境名称，在所属项目内唯一"
+        },
+        {
+          "name": "host",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "description": "目标主机的 IP 地址或域名"
+        },
+        {
+          "name": "port",
+          "type": "INTEGER NOT NULL DEFAULT 22",
+          "required": true,
+          "description": "SSH 端口号，默认 22"
+        },
+        {
+          "name": "auth_type",
+          "type": "TEXT NOT NULL DEFAULT 'key'",
+          "required": true,
+          "description": "认证方式，取值为 'key' 或 'password'"
+        },
+        {
+          "name": "username",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "description": "SSH 用户名"
+        },
+        {
+          "name": "encrypted_private_key",
+          "type": "TEXT",
+          "required": false,
+          "description": "加密后的私钥内容（auth_type 为 'key' 时使用），空字符串表示未设置"
+        },
+        {
+          "name": "key_fingerprint",
+          "type": "TEXT",
+          "required": false,
+          "description": "私钥的 SHA256 指纹，用于完整性校验和避免重复加密存储"
+        },
+        {
+          "name": "encrypted_passphrase",
+          "type": "TEXT",
+          "required": false,
+          "description": "加密后的私钥口令，空或 NULL 表示未设置"
+        },
+        {
+          "name": "password",
+          "type": "TEXT",
+          "required": false,
+          "description": "密码（auth_type 为 'password' 时使用），加密存储，建议通过 Keychain 等服务管理，此处为占位"
+        },
+        {
+          "name": "label",
+          "type": "TEXT NOT NULL DEFAULT 'test'",
+          "required": true,
+          "description": "环境标签，取值限于 'test'、'gray'、'production'"
+        },
+        {
+          "name": "last_test_status",
+          "type": "TEXT NOT NULL DEFAULT 'unknown'",
+          "required": true,
+          "description": "最近一次连通测试的状态，取值 'unknown'、'success'、'failed'"
+        },
+        {
+          "name": "last_test_at",
+          "type": "TEXT",
+          "required": false,
+          "description": "最近一次连通测试的时间，ISO 8601 格式"
+        },
+        {
+          "name": "created_at",
+          "type": "TEXT NOT NULL DEFAULT (datetime('now'))",
+          "required": true,
+          "description": "记录创建时间，ISO 8601 格式"
+        },
+        {
+          "name": "updated_at",
+          "type": "TEXT NOT NULL DEFAULT (datetime('now'))",
+          "required": true,
+          "description": "记录最近更新时间，ISO 8601 格式"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_environments_project_id",
+          "unique": false,
+          "columns": [
+            "project_id"
+          ]
+        },
+        {
+          "name": "uq_environments_project_name",
+          "unique": true,
+          "columns": [
+            "project_id",
+            "name"
+          ]
+        }
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "INSERT INTO environments (...) VALUES (...); 由 addEnvironment 服务契约使用",
+        "update": "UPDATE environments SET ... WHERE id = ? AND project_id = ?; 由 editEnvironment 使用",
+        "delete": "DELETE FROM environments WHERE id = ? AND project_id = ?; 由 deleteEnvironment 使用",
+        "retention": "无自动清除策略，由用户主动删除"
+      },
+      "source_requirements": [
+        "REQ-002",
+        "REQ-005"
+      ],
+      "source_components": [
+        "CMP-003"
+      ],
+      "source_contracts": [
+        "CTR-003"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "EnvironmentManagerIPC",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-003",
+      "provider_component_id": "CMP-003",
+      "method": "IPC",
+      "endpoint": "environment-manager",
+      "description": "Electron IPC 接口，渲染进程通过 ipcRenderer.invoke 调用主进程中 EnvironmentManager 的方法，包括环境的增删改查和连通性测试。",
+      "parameters": [],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "data": "any",
+          "error": "string (optional)"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "VALIDATION_ERROR",
+          "message": "输入参数校验失败"
+        },
+        {
+          "status": 404,
+          "code": "ENVIRONMENT_NOT_FOUND",
+          "message": "指定的环境不存在"
+        },
+        {
+          "status": 409,
+          "code": "DUPLICATE_NAME",
+          "message": "同一项目下环境名称重复"
+        },
+        {
+          "status": 500,
+          "code": "INTERNAL_ERROR",
+          "message": "服务器内部错误"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-002",
+        "REQ-005"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "所有 API 调用均返回统一错误响应体，包含数字错误码、简短错误消息和详细错误说明。客户端应根据错误码进行分类处理，敏感信息不应在 detail 中暴露。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "4xx",
+        "name": "客户端错误",
+        "description": "由无效输入、缺失字段、违反业务规则或资源不存在等客户端侧问题触发。返回详细校验错误信息，帮助用户纠正请求。"
+      },
+      {
+        "code": "5xx",
+        "name": "服务端错误",
+        "description": "由数据库操作失败、加密解密异常、SSH 连接测试失败或外部服务调用失败等服务器内部问题触发。返回通用错误消息，避免暴露内部实现细节。"
+      }
+    ]
+  },
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "EnvironmentEntity",
+      "object_type": "entity",
+      "status": "active",
+      "version": 1,
+      "description": "环境业务实体，对应数据库 environments 表中的一条记录，包含环境的所有配置信息和计算字段。",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "source": "db",
+          "description": "环境唯一标识，UUID 格式。"
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "required": true,
+          "source": "db",
+          "description": "所属项目 ID。"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "source": "db",
+          "description": "环境名称，例如 '生产环境'。"
+        },
+        {
+          "name": "host",
+          "type": "string",
+          "required": true,
+          "source": "db",
+          "description": "目标主机 IP 地址或域名。"
+        },
+        {
+          "name": "port",
+          "type": "number",
+          "required": true,
+          "source": "db",
+          "description": "SSH 端口号，默认 22。"
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "required": true,
+          "source": "db",
+          "description": "SSH 登录用户名。"
+        },
+        {
+          "name": "encrypted_private_key",
+          "type": "string",
+          "required": false,
+          "source": "db",
+          "description": "加密后的私钥，使用 AES-256-GCM 加密并以 Base64 编码存储。为空表示使用密码或其他认证。"
+        },
+        {
+          "name": "passphrase",
+          "type": "string",
+          "required": false,
+          "source": "db",
+          "description": "私钥的密码短语，为空表示无密码。实际存储时也应加密。"
+        },
+        {
+          "name": "label",
+          "type": "EnvironmentLabel",
+          "required": true,
+          "source": "db",
+          "description": "环境标签，枚举值：test, gray, production。"
+        },
+        {
+          "name": "connection_status",
+          "type": "ConnectionStatus",
+          "required": true,
+          "source": "computed",
+          "description": "连通状态，枚举值：unknown, success, failed。初始为 unknown，仅在测试连线后更新。"
+        },
+        {
+          "name": "last_test_time",
+          "type": "number",
+          "required": false,
+          "source": "computed",
+          "description": "最近一次连通性测试的时间戳，单位毫秒。"
+        },
+        {
+          "name": "last_test_error",
+          "type": "string",
+          "required": false,
+          "source": "computed",
+          "description": "最近一次连通性测试失败时的错误描述。若测试成功则为空。"
+        },
+        {
+          "name": "created_at",
+          "type": "number",
+          "required": true,
+          "source": "db",
+          "description": "创建时间戳，单位毫秒。"
+        },
+        {
+          "name": "updated_at",
+          "type": "number",
+          "required": true,
+          "source": "db",
+          "description": "最后更新时间戳，单位毫秒。"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "DM-001",
+      "source_requirements": [
+        "REQ-002",
+        "REQ-005"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建 EnvironmentEntity，包含数据库字段和连通状态等计算字段。",
+          "reason": "首次生成 LLD，根据 PRD 和 SAD 定义环境实体。"
+        }
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "AddEnvironmentDTO",
+      "object_type": "dto",
+      "status": "active",
+      "version": 1,
+      "description": "添加环境时从渲染进程传入的请求数据结构。",
+      "attributes": [
+        {
+          "name": "project_id",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "所属项目 ID。"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "环境名称，不能为空。"
+        },
+        {
+          "name": "host",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "目标主机地址。"
+        },
+        {
+          "name": "port",
+          "type": "number",
+          "required": true,
+          "source": "input",
+          "description": "端口号，必须在 1-65535 之间。"
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "SSH 用户名。"
+        },
+        {
+          "name": "private_key",
+          "type": "string",
+          "required": false,
+          "source": "input",
+          "description": "私钥内容（未加密），若提供则会在服务层加密后存储。"
+        },
+        {
+          "name": "passphrase",
+          "type": "string",
+          "required": false,
+          "source": "input",
+          "description": "私钥的密码短语。"
+        },
+        {
+          "name": "label",
+          "type": "EnvironmentLabel",
+          "required": true,
+          "source": "input",
+          "description": "环境标签，限定为 test, gray 或 production。"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "",
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建 AddEnvironmentDTO，定义添加环境所需的字段。",
+          "reason": "首次生成 LLD，定义添加环境的接口数据结构。"
+        }
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "EditEnvironmentDTO",
+      "object_type": "dto",
+      "status": "active",
+      "version": 1,
+      "description": "编辑环境时从渲染进程传入的请求数据结构，所有字段均可选，仅提供需要修改的字段。",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "要编辑的环境 ID。"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "source": "input",
+          "description": "新环境名称。"
+        },
+        {
+          "name": "host",
+          "type": "string",
+          "required": false,
+          "source": "input",
+          "description": "新主机地址。"
+        },
+        {
+          "name": "port",
+          "type": "number",
+          "required": false,
+          "source": "input",
+          "description": "新端口号，1-65535。"
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "required": false,
+          "source": "input",
+          "description": "新用户名。"
+        },
+        {
+          "name": "private_key",
+          "type": "string",
+          "required": false,
+          "source": "input",
+          "description": "新私钥内容（未加密）。若提供则覆盖原有私钥。"
+        },
+        {
+          "name": "passphrase",
+          "type": "string",
+          "required": false,
+          "source": "input",
+          "description": "新密码短语。"
+        },
+        {
+          "name": "label",
+          "type": "EnvironmentLabel",
+          "required": false,
+          "source": "input",
+          "description": "新环境标签。"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "",
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建 EditEnvironmentDTO，定义编辑环境的可选字段。",
+          "reason": "首次生成 LLD，定义编辑环境的接口数据结构。"
+        }
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "DeleteEnvironmentDTO",
+      "object_type": "dto",
+      "status": "active",
+      "version": 1,
+      "description": "删除环境时从渲染进程传入的请求数据结构。",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "要删除的环境 ID。"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "",
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建 DeleteEnvironmentDTO，定义删除环境所需的 ID。",
+          "reason": "首次生成 LLD，定义删除环境的接口数据结构。"
+        }
+      ]
+    },
+    {
+      "id": "DO-005",
+      "name": "TestConnectionDTO",
+      "object_type": "dto",
+      "status": "active",
+      "version": 1,
+      "description": "触发连通性测试时从渲染进程传入的请求数据结构。",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "要测试的环境 ID。"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "",
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建 TestConnectionDTO，定义测试连通性所需的环境 ID。",
+          "reason": "首次生成 LLD，定义测试连通性的接口数据结构。"
+        }
+      ]
+    },
+    {
+      "id": "DO-006",
+      "name": "EnvironmentResponseDTO",
+      "object_type": "dto",
+      "status": "active",
+      "version": 1,
+      "description": "返回给渲染进程的环境信息通用响应数据结构。",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "环境 ID。"
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "所属项目 ID。"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "环境名称。"
+        },
+        {
+          "name": "host",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "主机地址。"
+        },
+        {
+          "name": "port",
+          "type": "number",
+          "required": true,
+          "source": "input",
+          "description": "端口号。"
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "用户名。"
+        },
+        {
+          "name": "label",
+          "type": "EnvironmentLabel",
+          "required": true,
+          "source": "input",
+          "description": "环境标签。"
+        },
+        {
+          "name": "connection_status",
+          "type": "ConnectionStatus",
+          "required": true,
+          "source": "input",
+          "description": "连通状态。"
+        },
+        {
+          "name": "last_test_time",
+          "type": "number",
+          "required": false,
+          "source": "input",
+          "description": "最近一次测试时间戳。"
+        },
+        {
+          "name": "last_test_error",
+          "type": "string",
+          "required": false,
+          "source": "input",
+          "description": "最近一次测试错误信息。"
+        },
+        {
+          "name": "created_at",
+          "type": "number",
+          "required": true,
+          "source": "input",
+          "description": "创建时间戳。"
+        },
+        {
+          "name": "updated_at",
+          "type": "number",
+          "required": true,
+          "source": "input",
+          "description": "更新时间戳。"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "",
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建 EnvironmentResponseDTO，定义环境信息的响应结构，敏感字段（私钥等）不包含在内。",
+          "reason": "首次生成 LLD，定义环境列表和详情响应的数据结构。"
+        }
+      ]
+    },
+    {
+      "id": "DO-007",
+      "name": "TestConnectionResultDTO",
+      "object_type": "dto",
+      "status": "active",
+      "version": 1,
+      "description": "连通性测试完成后返回给渲染进程的响应数据结构。",
+      "attributes": [
+        {
+          "name": "environment_id",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "被测环境 ID。"
+        },
+        {
+          "name": "status",
+          "type": "ConnectionStatus",
+          "required": true,
+          "source": "input",
+          "description": "测试结果状态：success 或 failed。"
+        },
+        {
+          "name": "error_message",
+          "type": "string",
+          "required": false,
+          "source": "input",
+          "description": "失败时的详细错误信息。"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "",
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建 TestConnectionResultDTO，定义连通性测试结果的响应结构。",
+          "reason": "首次生成 LLD，定义测试连通性的响应数据结构。"
+        }
+      ]
+    },
+    {
+      "id": "DO-008",
+      "name": "EnvironmentLabel",
+      "object_type": "enum",
+      "status": "active",
+      "version": 1,
+      "description": "环境标签枚举，用于标识环境的用途类型。",
+      "attributes": [],
+      "values": [
+        "test",
+        "gray",
+        "production"
+      ],
+      "maps_to_entity": "",
+      "source_requirements": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建 EnvironmentLabel 枚举。",
+          "reason": "首次生成 LLD，定义环境标签的枚举值。"
+        }
+      ]
+    },
+    {
+      "id": "DO-009",
+      "name": "ConnectionStatus",
+      "object_type": "enum",
+      "status": "active",
+      "version": 1,
+      "description": "连通性状态枚举，表示环境当前的 SSH 连接测试结果。",
+      "attributes": [],
+      "values": [
+        "unknown",
+        "success",
+        "failed"
+      ],
+      "maps_to_entity": "",
+      "source_requirements": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建 ConnectionStatus 枚举。",
+          "reason": "首次生成 LLD，定义连通状态的枚举值。"
+        }
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "name": "EnvironmentService",
+      "description": "负责环境配置的增删改查、密钥安全处理及连通性测试调度",
+      "methods": [
+        {
+          "name": "addEnvironment",
+          "signature": "(dto: AddEnvironmentDTO, userId: string) -> EnvironmentResponseDTO",
+          "precondition": "userId 非空，dto 通过输入校验（名称必填、主机必填、端口范围 1-65535、标签必为 test/gray/production 之一），同一用户下环境名称唯一",
+          "postcondition": "环境配置被持久化，若提供私钥则加密存储，返回新创建环境的完整信息（不含解密私钥）",
+          "description": "校验并添加新环境，加密私钥后存储，返回环境信息",
+          "exceptions": [
+            {
+              "name": "ValidationException",
+              "trigger": "输入校验失败",
+              "http_status": 400
+            },
+            {
+              "name": "BusinessRuleViolationException",
+              "trigger": "同一用户下环境名称已存在",
+              "http_status": 409
+            }
+          ]
+        },
+        {
+          "name": "editEnvironment",
+          "signature": "(dto: EditEnvironmentDTO, userId: string) -> EnvironmentResponseDTO",
+          "precondition": "userId 非空，dto 包含环境 ID 且存在，至少修改一个字段，若有端口则范围 1-65535，若有标签则必为合法值，新名称不得与同一用户下其他环境冲突",
+          "postcondition": "数据库中的环境记录被更新，若提供新私钥则重新加密存储并擦除旧私钥，返回更新后的环境信息（不含解密私钥）",
+          "description": "校验并更新已有环境配置，处理密钥轮转，返回更新后的环境信息",
+          "exceptions": [
+            {
+              "name": "ValidationException",
+              "trigger": "输入校验失败或缺少环境 ID",
+              "http_status": 400
+            },
+            {
+              "name": "NotFoundException",
+              "trigger": "环境 ID 不存在",
+              "http_status": 404
+            },
+            {
+              "name": "BusinessRuleViolationException",
+              "trigger": "修改后的名称与同一用户下其他环境冲突",
+              "http_status": 409
+            }
+          ]
+        },
+        {
+          "name": "deleteEnvironment",
+          "signature": "(dto: DeleteEnvironmentDTO, userId: string) -> void",
+          "precondition": "userId 非空，dto 包含环境 ID 且存在，该环境下没有活跃的部署",
+          "postcondition": "对应的环境记录连同加密私钥一同从数据库删除",
+          "description": "校验并删除环境配置，确保无活跃部署后移除记录",
+          "exceptions": [
+            {
+              "name": "ValidationException",
+              "trigger": "缺少环境 ID",
+              "http_status": 400
+            },
+            {
+              "name": "NotFoundException",
+              "trigger": "环境 ID 不存在",
+              "http_status": 404
+            },
+            {
+              "name": "BusinessRuleViolationException",
+              "trigger": "该环境存在活跃的部署",
+              "http_status": 409
+            }
+          ]
+        },
+        {
+          "name": "listEnvironments",
+          "signature": "(projectId: string, userId: string) -> EnvironmentResponseDTO[]",
+          "precondition": "projectId 和 userId 非空",
+          "postcondition": "返回指定项目下所有环境的列表，每个环境包含基本信息及最新的连通状态，私钥字段置空或脱敏",
+          "description": "查询项目下所有环境并组装响应，最新连通状态来自缓存或默认 unknown",
+          "exceptions": []
+        },
+        {
+          "name": "testConnection",
+          "signature": "(dto: TestConnectionDTO, userId: string) -> TestConnectionResultDTO",
+          "precondition": "userId 非空，dto 包含环境 ID 且环境存在",
+          "postcondition": "调用 Security Module 解密私钥（若有），通过 SSH Service 执行连接测试，得到成功或失败的结果，更新缓存中的连通状态，返回测试结果，使用后立即从内存擦除私钥",
+          "description": "解密私钥并调度 SSH 连接测试，更新状态，返回测试结果",
+          "exceptions": [
+            {
+              "name": "NotFoundException",
+              "trigger": "环境 ID 不存在",
+              "http_status": 404
+            },
+            {
+              "name": "CryptoOperationException",
+              "trigger": "私钥解密失败",
+              "http_status": 500
+            },
+            {
+              "name": "SSHConnectionException",
+              "trigger": "SSH 连接测试过程异常",
+              "http_status": 502
+            }
+          ]
+        }
+      ],
+      "repository_dependencies": [
+        "findByNameAndCreatedBy(userId: string, name: string) -> EnvironmentRecord?",
+        "existsActiveDeployment(environmentId: string) -> boolean",
+        "save(record: EnvironmentRecord) -> EnvironmentRecord",
+        "findByProjectId(projectId: string) -> EnvironmentRecord[]",
+        "findById(id: string) -> EnvironmentRecord?",
+        "deleteById(id: string) -> void"
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "同一项目下，环境名称必须唯一（不区分大小写）",
+      "主机地址必须是有效的IPv4地址或域名",
+      "端口号必须在1~65535之间",
+      "私钥内容不能为空，且由Security Module加密后才能存入数据库",
+      "环境标签只能是test、gray或production之一",
+      "每个项目至少保留一个生产环境，不可删除最后一个标记为production的环境"
+    ],
+    "state_machines": [
+      {
+        "entity": "EnvironmentEntity",
+        "states": [
+          "正常使用",
+          "连通性测试中",
+          "已删除"
+        ],
+        "transitions": [
+          {
+            "from": "正常使用",
+            "to": "连通性测试中",
+            "trigger": "用户发起连通性测试",
+            "actor": "用户"
+          },
+          {
+            "from": "连通性测试中",
+            "to": "正常使用",
+            "trigger": "测试完成",
+            "actor": "系统"
+          }
+        ],
+        "irreversible_rules": [
+          "状态一旦变为'已删除'，不可逆转到其他状态"
+        ],
+        "concurrency": "同一个环境只能有一个活跃的连通性测试，测试期间不能删除或编辑"
+      }
+    ],
+    "cross_service_rules": [
+      "调用Security Module加密私钥时，必须传递明文私钥和环境ID；解密时需传递加密后的私钥和环境ID，解密后私钥仅用于SSH连接测试，使用后立即从内存中安全擦除",
+      "SSH连接测试完成后，必须断开连接并清除所有会话密钥",
+      "删除环境时，需先调用Security Module清除相关加密密钥和审计日志引用"
+    ]
+  },
+  "workflow": {
+    "name": "环境连通性测试流程",
+    "description": "用户发起连通性测试，系统解密私钥并通过SSH Service测试连通性，更新状态并返回结果",
+    "steps": [
+      {
+        "order": 1,
+        "name": "接收测试请求",
+        "action": "接收TestConnectionDTO，校验环境ID",
+        "timeout_seconds": 30,
+        "on_failure": "返回400错误"
+      },
+      {
+        "order": 2,
+        "name": "获取环境配置",
+        "action": "从数据库加载EnvironmentRecord",
+        "timeout_seconds": 10,
+        "on_failure": "返回404错误"
+      },
+      {
+        "order": 3,
+        "name": "解密私钥",
+        "action": "调用Security Module解密encrypted_private_key",
+        "timeout_seconds": 30,
+        "on_failure": "返回500错误"
+      }
