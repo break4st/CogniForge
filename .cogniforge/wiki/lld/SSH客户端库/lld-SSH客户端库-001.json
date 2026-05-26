@@ -1,222 +1,325 @@
 {
   "meta": {
-    "doc_id": "lld-SSHClientLib-001",
+    "doc_id": "lld-SSHClientLibrary-001",
     "type": "lld",
-    "module_type": "infrastructure",
     "module": "SSH客户端库",
-    "title": "SSH客户端库 详细设计",
-    "author": "design_agent",
-    "created": "2025-03-21T00:00:00Z",
+    "module_type": "infrastructure",
     "version": 1,
-    "status": "active"
+    "title": "SSH客户端库 LLD",
+    "author": "CogniForge",
+    "created": "2025-04-07"
   },
   "source": {
     "prd": {
-      "doc_id": "prd-current",
-      "version": 1,
-      "requirements": [
-        "REQ-001",
-        "REQ-002",
-        "REQ-003"
-      ]
+      "doc_id": "prd-deployment-001",
+      "version": 1
     },
     "sad": {
-      "doc_id": "sad-001",
-      "version": 1,
-      "components": [
-        "CMP-001"
-      ],
-      "contracts": [],
-      "data_models": []
-    },
-    "pm_turn_id": "",
-    "se_turn_id": ""
+      "doc_id": "sad-deployment-system-001",
+      "version": 1
+    }
   },
   "module_boundary": {
     "in_scope": [
-      "建立SSH连接（支持密码和密钥认证）",
-      "通过SFTP上传/下载文件（支持进度回调）",
-      "执行远程命令并获取输出",
-      "测试目标主机连通性"
+      "异步SSH连接管理（建立、维持、关闭）",
+      "远程命令执行",
+      "SFTP文件上传/下载",
+      "连接错误处理和超时重试",
+      "与SSH密钥管理服务集成以获取解密私钥"
     ],
     "out_of_scope": [
-      "业务逻辑",
-      "持久化存储",
-      "部署流程编排",
-      "环境配置解析"
+      "私钥加密/解密逻辑（由SSH密钥管理服务负责）",
+      "部署流程编排（由部署执行服务负责）",
+      "用户权限校验（由上层服务负责）",
+      "SSH密钥的存储和管理"
     ],
     "owned_components": [
-      "CMP-001"
+      "CMP-008"
     ],
     "owned_contracts": [],
-    "consumed_contracts": [],
+    "consumed_contracts": [
+      "CTR-003"
+    ],
     "owned_data_models": [],
-    "consumed_data_models": []
+    "consumed_data_models": [],
+    "description": "SSH客户端库提供异步SSH连接管理、远程命令执行和SFTP文件传输功能，依赖asyncssh库，与SSH密钥管理服务集成获取解密私钥，支持连接池、重试和错误处理。"
   },
   "overview": {
-    "description": "封装SSH连接、SFTP传输、远程命令执行的库（基于paramiko或asyncssh），供部署服务和环境服务使用。",
+    "description": "SSH客户端库提供异步SSH连接管理、远程命令执行和SFTP文件传输功能，依赖asyncssh库，与SSH密钥管理服务集成获取解密私钥，支持连接池、重试和错误处理。",
     "dependencies": [
-      "无"
+      "asyncssh (ssh_library)",
+      "cryptography (用于解密后的私钥加载)"
     ],
     "tech_stack": [
-      "Python 3.11+",
-      "paramiko",
-      "asyncssh"
+      "asyncssh",
+      "cryptography"
     ]
   },
   "traceability": [
     {
       "requirement_id": "REQ-001",
       "sad_component_ids": [
-        "CMP-001"
+        "CMP-008"
       ],
       "sad_contract_ids": [],
-      "lld_objects": {
-        "data_models": [],
-        "interfaces": [],
-        "domain_objects": [
-          "DO-001",
-          "DO-002",
-          "DO-003",
-          "DO-004",
-          "DO-005",
-          "DO-006"
-        ],
-        "service_contracts": [
-          "SC-001"
-        ]
-      },
-      "coverage": "full",
-      "notes": "远程文件传输由upload_file和download_file实现"
+      "coverage": "full"
     },
     {
       "requirement_id": "REQ-002",
       "sad_component_ids": [
-        "CMP-001"
+        "CMP-008"
       ],
       "sad_contract_ids": [],
-      "lld_objects": {
-        "data_models": [],
-        "interfaces": [],
-        "domain_objects": [
-          "DO-002",
-          "DO-003"
-        ],
-        "service_contracts": [
-          "SC-001"
-        ]
-      },
-      "coverage": "full",
-      "notes": "远程命令执行由execute_command实现"
+      "coverage": "full"
     },
     {
       "requirement_id": "REQ-003",
       "sad_component_ids": [
-        "CMP-001"
+        "CMP-008"
       ],
       "sad_contract_ids": [],
-      "lld_objects": {
-        "data_models": [],
-        "interfaces": [],
-        "domain_objects": [
-          "DO-001",
-          "DO-006"
-        ],
-        "service_contracts": [
-          "SC-001"
-        ]
-      },
-      "coverage": "full",
-      "notes": "连通性验证由create_connection和test_connectivity实现"
+      "coverage": "full"
     }
   ],
-  "data_models": [],
-  "interfaces": [],
-  "error_handling": {
-    "strategy": "自定义异常层次结构，统一错误格式",
-    "response_format": {
-      "body": {
-        "type": "string",
-        "message": "string",
-        "detail": "string"
+  "lld_objects": [
+    {
+      "name": "SSHClientLibrary",
+      "description": "核心SSH客户端库，封装连接管理、命令执行、文件传输功能",
+      "responsibilities": [
+        "建立和关闭SSH连接",
+        "执行远程命令",
+        "上传/下载文件",
+        "处理连接错误与重试"
+      ]
+    }
+  ],
+  "message_contracts": [],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "SSHClientManager",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-003",
+      "provider_component_id": "CMP-008",
+      "method": "INTERNAL",
+      "endpoint": "internal:ssh-client-manager",
+      "parameters": [],
+      "request_body": {},
+      "response": {
+        "body": {
+          "type": "object",
+          "description": "根据具体方法返回不同结果，如连接返回连接句柄，命令返回CommandResult等"
+        }
+      },
+      "error_codes": [],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001",
+        "REQ-002",
+        "REQ-003"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "reliability_strategy": {
+    "description": "SSH客户端库的可靠性策略，包括连接、命令执行、SFTP传输和错误处理的配置与规则。",
+    "invariants": [
+      "连接池大小不超过max_size",
+      "命令执行超时不超过command_timeout_seconds",
+      "重试次数不超过最大重试限制"
+    ],
+    "connection": {
+      "timeout_seconds": 30,
+      "keepalive_interval": 30,
+      "max_connection_retries": 3,
+      "retry_backoff": "exponential",
+      "connection_pool": {
+        "max_size": 10,
+        "idle_timeout": 300,
+        "eviction_policy": "LRU"
       }
     },
-    "categories": [
-      {
-        "code": "ConnectionError",
-        "name": "连接错误",
-        "description": "连接超时、断开等"
+    "command_execution": {
+      "max_retries": 2,
+      "retryable_exit_codes": [
+        255
+      ],
+      "retry_strategy": "exponential_backoff",
+      "command_timeout_seconds": 300
+    },
+    "sftp_transfer": {
+      "retry_on_failure": true,
+      "max_retries": 3,
+      "retry_backoff": "exponential"
+    },
+    "error_handling": {
+      "retriable_exceptions": [
+        "ConnectionError",
+        "TimeoutError",
+        "ChannelError"
+      ],
+      "circuit_breaker": {
+        "enabled": false
       },
-      {
-        "code": "AuthenticationError",
-        "name": "认证错误",
-        "description": "密码或密钥认证失败"
-      },
-      {
-        "code": "TransferError",
-        "name": "传输错误",
-        "description": "文件上传/下载失败"
-      },
-      {
-        "code": "CommandError",
-        "name": "命令执行错误",
-        "description": "命令执行超时"
-      },
-      {
-        "code": "HostKeyUnknownError",
-        "name": "主机密钥未知",
-        "description": "host key验证失败"
-      }
-    ]
-  },
-  "message_contracts": [],
-  "reliability_strategy": {
-    "retry_policy": []
-  },
-  "workflow": {
-    "name": "典型部署流程",
-    "description": "部署服务使用SSH客户端库的流程",
-    "steps": [
-      {
-        "order": 1,
-        "name": "连通性检测",
-        "action": "调用test_connectivity检查目标主机端口可达性",
-        "timeout_seconds": 5,
-        "on_failure": "终止部署"
-      },
-      {
-        "order": 2,
-        "name": "建立连接",
-        "action": "调用create_connection建立SSH会话",
-        "timeout_seconds": 15,
-        "on_failure": "重试或终止"
-      },
-      {
-        "order": 3,
-        "name": "上传部署包",
-        "action": "调用upload_file传输文件至远程主机",
-        "timeout_seconds": 300,
-        "on_failure": "重试或终止"
-      },
-      {
-        "order": 4,
-        "name": "执行部署脚本",
-        "action": "调用execute_command运行远程部署命令",
-        "timeout_seconds": 120,
-        "on_failure": "终止部署"
-      },
-      {
-        "order": 5,
-        "name": "关闭连接",
-        "action": "显式关闭或通过with上下文释放连接",
-        "timeout_seconds": 5,
-        "on_failure": "记录警告"
-      }
-    ]
+      "strategy": "exponential_backoff_retry"
+    }
   },
   "topology": {
-    "namespaces": ["ssh_lib"],
-    "exchanges": [],
-    "buckets": []
-  }
+    "namespaces": [
+      {
+        "name": "ssh_connection_pool",
+        "description": "用于缓存SSH连接池状态，键为连接标识，值为连接状态信息",
+        "expiry_strategy": "基于空闲时间过期，默认空闲超时300秒"
+      }
+    ],
+    "key_patterns": [
+      {
+        "pattern": "ssh:conn:{host}:{port}:{username}",
+        "description": "SSH连接缓存键模板，唯一标识一个SSH连接",
+        "ttl_seconds": 300
+      }
+    ],
+    "expiry_strategy": "空闲过期 + TTL，连接空闲超过设定时间或总生存时间超过最大值时自动清理"
+  },
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "SSHConnectionConfig",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "canonical",
+      "description": "封装SSH连接参数",
+      "fields": [
+        {
+          "name": "host",
+          "type": "string",
+          "required": true,
+          "description": "远程主机地址"
+        },
+        {
+          "name": "port",
+          "type": "int",
+          "required": false,
+          "description": "SSH端口，默认22"
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "required": true,
+          "description": "登录用户名"
+        },
+        {
+          "name": "private_key",
+          "type": "string",
+          "required": true,
+          "description": "解密后的私钥内容"
+        },
+        {
+          "name": "timeout",
+          "type": "int",
+          "required": false,
+          "description": "连接超时秒数，默认10"
+        },
+        {
+          "name": "retry_attempts",
+          "type": "int",
+          "required": false,
+          "description": "连接重试次数，默认3"
+        }
+      ],
+      "source_requirements": [
+        "REQ-001",
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-008"
+      ],
+      "source_contracts": [
+        "CTR-003"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "由调用方构造并传入SSHClientManager",
+        "update": "不可变",
+        "delete": "由GC回收",
+        "retention": "无持久化"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "CommandResult",
+      "type": "struct",
+      "status": "active",
+      "version": 1,
+      "ownership": "canonical",
+      "description": "封装远程命令执行结果",
+      "fields": [
+        {
+          "name": "exit_code",
+          "type": "int",
+          "required": true,
+          "description": "命令退出码"
+        },
+        {
+          "name": "stdout",
+          "type": "string",
+          "required": false,
+          "description": "标准输出"
+        },
+        {
+          "name": "stderr",
+          "type": "string",
+          "required": false,
+          "description": "标准错误输出"
+        }
+      ],
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-008"
+      ],
+      "source_contracts": [
+        "CTR-003"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "由SSH客户端库执行命令后生成",
+        "update": "不可变",
+        "delete": "由GC回收",
+        "retention": "无持久化"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    }
+  ]
 }
