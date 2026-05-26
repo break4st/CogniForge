@@ -68,7 +68,6 @@ class PMAgent(BaseAgent):
 
     def _run_raw(self, raw_text: str) -> dict:
         t0 = time.time()
-        now = datetime.now().strftime("%Y-%m-%d %H:%M")
         prd_path = self.wiki_system.agent_path(DocumentType.PRD, doc_id="prd-current")
 
         prompt = (
@@ -76,26 +75,7 @@ class PMAgent(BaseAgent):
             f"充分理解用户意图，提取项目名称、撰写详细概述、"
             f"梳理功能需求（含验收条件）、推导用户故事、标注优先级。\n\n"
             f"用户描述:\n{raw_text}\n\n"
-            f"预期输出 JSON 结构参考:\n"
-            f'{{"meta": {{"doc_id": "prd-current", "type": "prd", '
-            f'"title": "...", "author": "pm_agent", "created": "{now}", '
-            f'"version": 1, "last_modified": "{now}", "last_author": "pm_agent"}},\n'
-            f' "overview": "项目概述文本（3-5句）",\n'
-            f' "requirements": [{{"id": "REQ-001", "name": "需求名", '
-            f'"description": "描述", "status": "draft", "version": 1, '
-            f'"acceptance_criteria": ["条件1", "条件2"], '
-            f'"priority": "高/中/低", '
-            f'"depends_on": [], "supersedes": [], '
-            f'"related_user_stories": [], "change_history": '
-            f'[{{"version": 1, "change_type": "created", '
-            f'"summary": "初始创建", "reason": "首次生成 PRD"}}]}}],\n'
-            f' "user_stories": [{{"id": "US-001", "role": "角色", '
-            f'"action": "动作", "goal": "目标", '
-            f'"related_requirements": []}}],\n'
-            f' "priorities": {{"REQ-001": "高"}}\n'
-            f"}}\n\n"
-            f"要求: 所有文字使用中文。requirements 和 user_stories 的 id 使用稳定编号"
-            f"（REQ-001, REQ-002... 和 US-001, US-002...）。"
+            f"参考系统提示中的 EXAMPLE JSON OUTPUT 结构输出。"
         )
 
         response = self.agent.generate_think_then_json(
@@ -114,7 +94,6 @@ class PMAgent(BaseAgent):
         self, title, overview, requirements, user_stories, priorities,
     ) -> dict:
         t0 = time.time()
-        now = datetime.now().strftime("%Y-%m-%d %H:%M")
         prd_path = self.wiki_system.agent_path(DocumentType.PRD, doc_id="prd-current")
 
         prompt = (
@@ -124,25 +103,7 @@ class PMAgent(BaseAgent):
             f"功能需求: {json.dumps(requirements, ensure_ascii=False)}\n"
             f"用户故事: {json.dumps(user_stories, ensure_ascii=False)}\n"
             f"优先级: {json.dumps(priorities, ensure_ascii=False)}\n\n"
-            f"预期输出 JSON 结构参考:\n"
-            f'{{"meta": {{"doc_id": "prd-current", "type": "prd", '
-            f'"title": "{title}", "author": "pm_agent", "created": "{now}", '
-            f'"version": 1, "last_modified": "{now}", "last_author": "pm_agent"}},\n'
-            f' "overview": "项目概述文本",\n'
-            f' "requirements": [{{"id": "REQ-001", "name": "需求名", '
-            f'"description": "描述", "status": "draft", "version": 1, '
-            f'"acceptance_criteria": ["条件1"], '
-            f'"priority": "高/中/低", '
-            f'"depends_on": [], "supersedes": [], '
-            f'"related_user_stories": [], "change_history": '
-            f'[{{"version": 1, "change_type": "created", '
-            f'"summary": "初始创建", "reason": "首次生成 PRD"}}]}}],\n'
-            f' "user_stories": [{{"id": "US-001", "role": "角色", '
-            f'"action": "动作", "goal": "目标", '
-            f'"related_requirements": []}}],\n'
-            f' "priorities": {{"REQ-001": "高"}}\n'
-            f"}}\n\n"
-            f"要求: 所有文字使用中文。requirements 和 user_stories 的 id 使用稳定编号。"
+            f"参考系统提示中的 EXAMPLE JSON OUTPUT 结构输出。"
         )
 
         response = self.agent.generate_think_then_json(
@@ -172,6 +133,14 @@ class PMAgent(BaseAgent):
                 message=f"LLM 输出的 JSON 无法解析: {e}",
                 reasoning=raw_content,
             )
+
+        # Replace <created_at> placeholder with actual timestamp
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        meta = data.get("meta", {})
+        for field in ("created", "last_modified"):
+            if meta.get(field) == "<created_at>":
+                meta[field] = now
+        data["meta"] = meta
 
         # Assign stable IDs if missing
         requirements = data.get("requirements", [])

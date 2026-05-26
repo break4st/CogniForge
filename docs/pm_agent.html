@@ -65,7 +65,9 @@ th { background: var(--surface); color: #f0a500; }
 <li>为需求 (REQ-XXX) 和用户故事 (US-XXX) 分配稳定 ID</li>
 <li>处理交互式修改——应用 JSON Patch 而非重写整个文档</li>
 <li>针对 <span class="schema">prd-schema.json</span> 进行 Schema 验证</li>
+<li>将 <code>&lt;created_at&gt;</code> 占位符替换为实际时间戳后落盘</li>
 <li>将 PRD 渲染为 HTML 并提交到 Git</li>
+<li>优化 DeepSeek prompt cache 命中率——JSON 结构模板位于 system prompt（固定前缀），user prompt 仅含用户输入</li>
 </ol>
 
 <h2>4. 输入/输出规范</h2>
@@ -100,7 +102,7 @@ th { background: var(--surface); color: #f0a500; }
   ├─ raw_text 存在 → _run_raw()
   └─ title 存在   → _run_structured()
        ↓
-  构建 LLM Prompt（含 JSON 结构模板）
+  构建 LLM Prompt（简洁——仅含用户输入 + 结构参考提示，JSON 模板在 ROLE_PROMPTS 中）
        ↓
   agent.generate_think_then_json() → LLM 响应
        ↓
@@ -201,67 +203,49 @@ modify_interactive():
 <p>两步 API 调用：</p>
 
 <h4>第一步：思考分析 (thinking enabled)</h4>
-<pre><code>POST /v1/chat/completions
-{
-  "model": "deepseek-v4-pro",
-  "messages": [{
-    "role": "user",
-    "content": "&lt;完整 prompt（含 JSON 结构模板 + ID 规则 + 中文要求）&gt;\n\n请先深入分析思考，输出详细的设计方案。用自然语言描述，不要输出 JSON。"
-  }],
-  "max_tokens": 8192,
-  "extra_body": {"thinking": {"type": "enabled"}}
-}</code></pre>
+	<pre><code>POST /v1/chat/completions
+	{
+	  "model": "deepseek-v4-pro",
+	  "messages": [
+	    {"role": "system", "content": "&lt;ROLE_PROMPTS["pm"] — 含完整 EXAMPLE JSON OUTPUT + ID 规则 + 中文要求，时间戳使用 &lt;created_at&gt; 占位符&gt;"},
+	    {"role": "user",   "content": "&lt;简洁 prompt（仅用户输入 + 结构参考提示）&gt;
 
-<h4>第二步：结构化 JSON 输出 (thinking disabled + JSON mode)</h4>
-<pre><code>POST /v1/chat/completions
-{
-  "model": "deepseek-v4-pro",
-  "messages": [
-    {"role": "user",      "content": "&lt;原始 prompt + 思考指令&gt;"},
-    {"role": "assistant", "content": "&lt;第一步的思考结果&gt;"},
-    {"role": "user",      "content": "请将上述分析结果整理为指定的 JSON 结构输出。\n只返回纯 JSON 对象，不要 markdown 代码块包裹，不要任何解释文字。"}
-  ],
-  "max_tokens": 8192,
-  "response_format": {"type": "json_object"},
-  "extra_body": {"thinking": {"type": "disabled"}}
-}</code></pre>
+请先深入分析思考，输出详细的设计方案。用自然语言描述，不要输出 JSON。"}
+	  ],
+	  "max_tokens": 8192,
+	  "extra_body": {"thinking": {"type": "enabled"}}
+	}</code></pre>
 
-<p><strong>输入 Prompt（核心结构）：</strong></p>
-<pre><code>根据以下用户描述，创建一份完整的产品需求文档 (PRD)。
-充分理解用户意图，提取项目名称、撰写详细概述、
-梳理功能需求（含验收条件）、推导用户故事、标注优先级。
+	<h4>第二步：结构化 JSON 输出 (thinking disabled + JSON mode)</h4>
+	<pre><code>POST /v1/chat/completions
+	{
+	  "model": "deepseek-v4-pro",
+	  "messages": [
+	    {"role": "system",    "content": "&lt;ROLE_PROMPTS["pm"]&gt;"},
+	    {"role": "user",      "content": "&lt;简洁 prompt + 思考指令&gt;"},
+	    {"role": "assistant", "content": "&lt;第一步的思考结果&gt;"},
+	    {"role": "user",      "content": "请将上述分析结果整理为指定的 JSON 结构输出。
+只返回纯 JSON 对象，不要 markdown 代码块包裹，不要任何解释文字。"}
+	  ],
+	  "max_tokens": 8192,
+	  "response_format": {"type": "json_object"},
+	  "extra_body": {"thinking": {"type": "disabled"}}
+	}</code></pre>
 
-用户描述:
-{raw_text}
+	<h4>Prompt Cache 优化策略</h4>
 
-预期输出 JSON 结构参考:
-{
-  "meta": {"doc_id": "prd-current", "type": "prd",
-    "title": "...", "author": "pm_agent", "created": "{now}",
-    "version": 1, "last_modified": "{now}", "last_author": "pm_agent"},
-  "overview": "项目概述文本（3-5句）",
-  "requirements": [{
-    "id": "REQ-001", "name": "需求名",
-    "description": "描述", "status": "draft", "version": 1,
-    "acceptance_criteria": ["条件1", "条件2"],
-    "priority": "高/中/低",
-    "depends_on": [], "supersedes": [],
-    "related_user_stories": [],
-    "change_history": [{"version": 1, "change_type": "created",
-      "summary": "初始创建", "reason": "首次生成 PRD"}]
-  }],
-  "user_stories": [{
-    "id": "US-001", "role": "角色",
-    "action": "动作", "goal": "目标",
-    "related_requirements": []
-  }],
-  "priorities": {"REQ-001": "高"}
-}
+	<p>JSON 结构模板（EXAMPLE JSON OUTPUT）位于 <code>ROLE_PROMPTS["pm"]</code>，作为 system message 发送。system prompt 在所有请求中完全相同，DeepSeek 的 prompt cache 可以稳定命中此前缀。user prompt 仅包含用户输入 + 一行结构参考提示：</p>
 
-要求: 所有文字使用中文。requirements 和 user_stories 的 id 使用稳定编号
-（REQ-001, REQ-002... 和 US-001, US-002...）。</code></pre>
+	<pre><code>根据以下用户描述，创建一份完整的产品需求文档 (PRD)。
+	充分理解用户意图，提取项目名称、撰写详细概述、
+	梳理功能需求（含验收条件）、推导用户故事、标注优先级。
 
-<p><strong>注意：</strong>初始生成 <strong>无 system prompt</strong>，JSON 结构模板完全内嵌在 user prompt 中。</p>
+	用户描述:
+	{raw_text}
+
+	参考系统提示中的 EXAMPLE JSON OUTPUT 结构输出。</code></pre>
+
+	<p>时间戳字段使用 <code>&lt;created_at&gt;</code> 占位符，避免每次请求因时间戳变化导致 system prompt 内容不同。落盘时由 <code>_write_prd()</code> 程序化替换为实际时间。同时，<code>_run_raw()</code> 和 <code>_run_structured()</code> 不再在 prompt 中注入 <code>{now}</code>，避免 user prompt 前缀变化导致 cache miss。</p>
 
 <h3>8.2 交互式修改 — generate_interactive_patch()（优先）</h3>
 
@@ -272,7 +256,7 @@ modify_interactive():
 {
   "model": "deepseek-v4-pro",
   "messages": [
-    {"role": "system", "content": "你是 CogniForge 系统的 PM (Product Manager) Agent。\n职责: 根据用户数据生成产品需求文档 (PRD)。"},
+    {"role": "system", "content": "&lt;PM 修改规则（11条规则，由调用方传入 generate_interactive_patch 的 system_prompt 参数）&gt;"},
     {"role": "user",   "content": "当前 PRD JSON:\n{current_document}\n\n用户修改要求: {user_request}\n\n请先分析当前的 PRD 结构，确认需要修改的需求条目、变更类型。\n思考需要应用哪些 JSON Patch 操作（add/replace/remove）。\n注意路径格式为 JSON Pointer（如 /requirements/0/name）。\n输出你的分析，不要输出 JSON。"}
   ],
   "max_tokens": 4096,
@@ -323,6 +307,10 @@ modify_interactive():
 6. 如果检测到冲突，在 conflicts 数组中记录。
 7. patches 使用 RFC 6902 JSON Pointer 格式路径。
 所有文字使用中文。</code></pre>
+
+<div class="info">
+<strong>传递方式：</strong>上述 11 条规则由 <code>modify_interactive()</code> 构造，传入 <code>generate_interactive_patch()</code> 的 <code>system_prompt</code> 参数。此前该方法错误地忽略了该参数并使用 <code>ROLE_PROMPTS["pm"]</code>（仅 2 行初始生成提示），现已修复为使用调用方传入的 system_prompt。<code>generate_interactive()</code> 回溯方案同理。
+</div>
 
 <h2>9. Schema 验证链</h2>
 

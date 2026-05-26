@@ -21,7 +21,54 @@ from cogniforge.llm.base import BaseLLMAdapter, LLMResponse, LLMMessage
 ROLE_PROMPTS: dict[str, str] = {
     "pm": (
         "你是 CogniForge 系统的 PM (Product Manager) Agent。\n"
-        "职责: 根据用户数据生成产品需求文档 (PRD)。"
+        "职责: 根据用户数据生成产品需求文档 (PRD)。\n\n"
+        "## 输出格式\n"
+        "必须输出一个 JSON 对象，包含以下顶层字段。\n"
+        "所有文字使用中文。requirements 和 user_stories 的 id 使用稳定编号"
+        "（REQ-001, REQ-002... 和 US-001, US-002...）。\n"
+        "时间戳字段使用 <created_at> 占位符，程序会在落盘时自动替换为实际时间。\n\n"
+        "EXAMPLE JSON OUTPUT:\n"
+        "```json\n"
+        "{\n"
+        '  "meta": {\n'
+        '    "doc_id": "prd-current",\n'
+        '    "type": "prd",\n'
+        '    "title": "...",\n'
+        '    "author": "pm_agent",\n'
+        '    "created": "<created_at>",\n'
+        '    "version": 1,\n'
+        '    "last_modified": "<created_at>",\n'
+        '    "last_author": "pm_agent"\n'
+        '  },\n'
+        '  "overview": "项目概述文本（3-5句）",\n'
+        '  "requirements": [{\n'
+        '    "id": "REQ-001",\n'
+        '    "name": "需求名",\n'
+        '    "description": "描述",\n'
+        '    "status": "draft",\n'
+        '    "version": 1,\n'
+        '    "acceptance_criteria": ["条件1", "条件2"],\n'
+        '    "priority": "高/中/低",\n'
+        '    "depends_on": [],\n'
+        '    "supersedes": [],\n'
+        '    "related_user_stories": [],\n'
+        '    "change_history": [{\n'
+        '      "version": 1,\n'
+        '      "change_type": "created",\n'
+        '      "summary": "初始创建",\n'
+        '      "reason": "首次生成 PRD"\n'
+        '    }]\n'
+        '  }],\n'
+        '  "user_stories": [{\n'
+        '    "id": "US-001",\n'
+        '    "role": "角色",\n'
+        '    "action": "动作",\n'
+        '    "goal": "目标",\n'
+        '    "related_requirements": []\n'
+        '  }],\n'
+        '  "priorities": {"REQ-001": "高"}\n'
+        '}\n'
+        "```"
     ),
     "architect": (
         "你是 CogniForge 系统的 Architect Agent。\n"
@@ -658,7 +705,18 @@ class DeepSeekAdapter(BaseLLMAdapter):
             f"输出你的分析，不要输出 JSON。"
         )
 
-        messages = self._build_agentic_messages(think_prompt, role="pm")
+        messages: list[dict] = []
+        system_parts: list[str] = []
+        if system_prompt:
+            system_parts.append(system_prompt)
+        constraint_loader = self.config.get("constraint_loader")
+        if constraint_loader:
+            constraints = constraint_loader.load("pm")
+            if constraints:
+                system_parts.append(f"# 约束\n{constraints}")
+        if system_parts:
+            messages.append({"role": "system", "content": "\n\n".join(system_parts)})
+        messages.append({"role": "user", "content": think_prompt})
 
         # Step 1: thinking
         t1_start = time.time()
