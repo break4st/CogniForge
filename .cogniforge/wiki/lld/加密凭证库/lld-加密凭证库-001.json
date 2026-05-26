@@ -1,0 +1,261 @@
+{
+  "meta": {
+    "doc_id": "LLD-SEC-001",
+    "type": "lld",
+    "module": "加密凭证库",
+    "module_type": "infrastructure",
+    "version": 1,
+    "author": "AI Architect",
+    "title": "加密凭证库详细设计",
+    "created": "2024-01-15T10:00:00Z"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "PRD-SEC-001",
+      "version": 1
+    },
+    "sad": {
+      "doc_id": "SAD-001",
+      "version": 1
+    }
+  },
+  "module_boundary": {
+    "in_scope": [
+      "凭证的安全存储与检索",
+      "与KMS集成进行加密密钥管理",
+      "凭证数据生命周期管理"
+    ],
+    "out_of_scope": [
+      "用户认证与授权",
+      "业务数据存储",
+      "密钥管理服务本身"
+    ],
+    "owned_components": [
+      "CMP-008"
+    ],
+    "owned_contracts": [
+      "CTR-006"
+    ],
+    "consumed_contracts": [
+      "CTR-005"
+    ],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "加密凭证库负责应用内所有敏感凭证的安全存储与检索，通过与外部KMS集成实现对加密密钥的生命周期管理，确保凭证持久化时始终处于加密状态。",
+    "dependencies": [
+      "密钥管理服务（KMS）",
+      "缓存数据库（Redis，可选用于会话/缓存）"
+    ],
+    "tech_stack": [
+      "Python",
+      "cryptography",
+      "Redis (cache)"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "coverage": "full",
+      "sad_component_ids": [
+        "CMP-008"
+      ],
+      "sad_contract_ids": [
+        "CTR-006"
+      ],
+      "lld_objects": {}
+    },
+    {
+      "requirement_id": "REQ-002",
+      "coverage": "full",
+      "sad_component_ids": [
+        "CMP-008"
+      ],
+      "sad_contract_ids": [
+        "CTR-006"
+      ],
+      "lld_objects": {}
+    }
+  ],
+  "data_models": [
+    {
+      "name": "EncryptedCredential",
+      "description": "存储加密后的凭证数据及其关联的KMS密钥标识",
+      "fields": [
+        {
+          "name": "credential_id",
+          "type": "UUID",
+          "description": "凭证唯一标识"
+        },
+        {
+          "name": "encrypted_data",
+          "type": "string",
+          "description": "使用KMS数据密钥加密后的凭证密文"
+        },
+        {
+          "name": "key_id",
+          "type": "UUID",
+          "description": "KMS中用于加密的数据密钥标识"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "description": "最后更新时间"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "CredentialStorageInterface",
+      "type": "internal",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-006",
+      "provider_component_id": "CMP-008",
+      "method": "INTERNAL",
+      "endpoint": "/credential",
+      "description": "内部接口，用于安全存储和检索加密后的凭证数据",
+      "parameters": [
+        {
+          "name": "credential_id",
+          "type": "string",
+          "in": "path",
+          "required": false,
+          "description": "凭证唯一标识，仅在GET/DELETE时需要"
+        }
+      ],
+      "request_body": {
+        "store": {
+          "payload": {
+            "credential_type": "string",
+            "plaintext": "string"
+          }
+        },
+        "retrieve": {
+          "credential_id": "string"
+        },
+        "delete": {
+          "credential_id": "string"
+        }
+      },
+      "response": {
+        "store": {
+          "body": {
+            "credential_id": "string (UUID)",
+            "status": "string"
+          }
+        },
+        "retrieve": {
+          "body": {
+            "credential_type": "string",
+            "plaintext": "string"
+          }
+        },
+        "delete": {
+          "body": {
+            "status": "string"
+          }
+        }
+      }
+    }
+  ],
+  "topology": {
+    "exchanges": [
+      {
+        "name": "credential.events",
+        "durable": true,
+        "bindings": [
+          {
+            "queue": "credential.events.queue",
+            "routing_key": "credential.#"
+          }
+        ]
+      }
+    ],
+    "queues": [
+      {
+        "name": "credential.events.queue",
+        "durable": true,
+        "ttl_seconds": 604800,
+        "max_length": 10000,
+        "dead_letter_exchange": "",
+        "dead_letter_routing_key": ""
+      }
+    ],
+    "producer_consumer_map": [
+      {
+        "producer": "加密凭证库",
+        "consumer": "日志服务",
+        "exchange": "credential.events"
+      }
+    ]
+  },
+  "message_contracts": [
+    {
+      "name": "CredentialCreated",
+      "exchange": "credential.events",
+      "routing_key": "credential.created",
+      "schema": {
+        "event_id": "string (UUID)",
+        "timestamp": "string (ISO 8601)",
+        "credential_id": "string (UUID)",
+        "key_id": "string (UUID, 用于KMS标识)"
+      },
+      "required_fields": [
+        "event_id",
+        "timestamp",
+        "credential_id",
+        "key_id"
+      ],
+      "max_size_bytes": 1048576
+    },
+    {
+      "name": "CredentialUpdated",
+      "exchange": "credential.events",
+      "routing_key": "credential.updated",
+      "schema": {
+        "event_id": "string (UUID)",
+        "timestamp": "string (ISO 8601)",
+        "credential_id": "string (UUID)",
+        "key_id": "string (UUID, 用于KMS标识)"
+      },
+      "required_fields": [
+        "event_id",
+        "timestamp",
+        "credential_id",
+        "key_id"
+      ],
+      "max_size_bytes": 1048576
+    },
+    {
+      "name": "CredentialDeleted",
+      "exchange": "credential.events",
+      "routing_key": "credential.deleted",
+      "schema": {
+        "event_id": "string (UUID)",
+        "timestamp": "string (ISO 8601)",
+        "credential_id": "string (UUID)"
+      },
+      "required_fields": [
+        "event_id",
+        "timestamp",
+        "credential_id"
+      ],
+      "max_size_bytes": 1048576
+    }
+  ],
+  "error_handling": {
+    "strategy": "KMS调用失败时，队列化重试，最多3次，然后告警并记录错误日志"
+  },
+  "reliability_strategy": {
+    "retry_policy": []
+  }
+}
