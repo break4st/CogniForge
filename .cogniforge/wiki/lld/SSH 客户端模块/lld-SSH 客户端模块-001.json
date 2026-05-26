@@ -1,0 +1,204 @@
+{
+  "meta": {
+    "doc_id": "lld-SSH-001",
+    "type": "lld",
+    "module": "SSH 客户端模块",
+    "module_type": "infrastructure",
+    "version": 1,
+    "status": "draft",
+    "author": "DesignAgent",
+    "created": "2025-01-01T00:00:00Z"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "PRD-001",
+      "title": "一键部署系统",
+      "version": 1
+    },
+    "sad": {
+      "doc_id": "SAD-001",
+      "title": "一键部署系统架构设计",
+      "version": 1
+    }
+  },
+  "module_boundary": {
+    "in_scope": [
+      "SSH 连接建立、管理与断开",
+      "远程命令执行（支持超时控制）",
+      "SFTP 文件上传与基本文件操作",
+      "连接状态检测与错误处理",
+      "为密钥加密服务提供解密的私钥字符串接收接口"
+    ],
+    "out_of_scope": [
+      "密钥加密/解密的具体实现",
+      "部署流程编排与业务逻辑",
+      "WebSocket 实时日志推送",
+      "前端 UI 交互"
+    ],
+    "owned_components": [
+      "CMP-004"
+    ],
+    "owned_contracts": [
+      "CTR-003"
+    ],
+    "consumed_contracts": [
+      "CTR-004"
+    ],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "dependencies": [
+      "密钥加密服务（提供解密后的私钥）"
+    ],
+    "tech_stack": [
+      "Python",
+      "Paramiko"
+    ]
+  },
+  "data_models": [],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "SSH 客户端接口",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-003",
+      "provider_component_id": "CMP-004",
+      "method": "INTERNAL",
+      "endpoint": "ssh_client.execute_command, ssh_client.connect, etc.",
+      "description": "提供 SSH 连接建立、断开、命令执行以及连接状态检测的统一接口。接收 SSH 连接配置（包含解密后的私钥字符串），返回连接结果或命令执行结果。",
+      "parameters": [],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "布尔值，表示操作是否成功",
+          "data": "操作返回的数据，如命令输出",
+          "error": "错误信息，若存在"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 500,
+          "code": "CONNECTION_ERROR",
+          "message": "连接失败，如认证失败、主机不可达、超时等"
+        },
+        {
+          "status": 500,
+          "code": "COMMAND_EXECUTION_ERROR",
+          "message": "远程命令执行失败"
+        },
+        {
+          "status": 400,
+          "code": "INVALID_CONFIGURATION",
+          "message": "提供的连接配置不完整或无效"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001",
+        "REQ-002"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "SFTP 客户端接口",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-003",
+      "provider_component_id": "CMP-004",
+      "method": "INTERNAL",
+      "endpoint": "sftp_client.upload_file, sftp_client.delete_file, etc.",
+      "description": "基于已建立的 SSH 连接，提供 SFTP 文件上传和基本文件操作（删除、重命名等）接口。",
+      "parameters": [],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "布尔值，表示操作是否成功",
+          "data": "操作返回的数据，如文件路径",
+          "error": "错误信息，若存在"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 500,
+          "code": "SFTP_CONNECTION_ERROR",
+          "message": "SFTP 会话建立失败"
+        },
+        {
+          "status": 500,
+          "code": "FILE_TRANSFER_ERROR",
+          "message": "文件传输失败，如权限不足、路径不存在等"
+        },
+        {
+          "status": 400,
+          "code": "NOT_CONNECTED",
+          "message": "没有可用的 SSH 连接"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "message_contracts": [
+    {
+      "id": "MSG-001",
+      "name": "SSH 操作结果消息",
+      "description": "用于通知其他模块 SSH 连接或命令执行的结果",
+      "direction": "outbound",
+      "schema": {
+        "success": "boolean",
+        "data": "string",
+        "error": "string"
+      },
+      "publisher": "SSH 客户端模块",
+      "subscribers": [
+        "部署执行器模块"
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "所有底层异常（如连接失败、超时）均捕获并转换为标准错误码返回，调用方根据错误码进行重试或用户提示。"
+  },
+  "reliability_strategy": {
+    "retry_policy": []
+  },
+  "topology": {
+    "exchanges": [
+      "SSH 连接请求与响应",
+      "SFTP 文件传输请求与响应"
+    ]
+  }
+}
