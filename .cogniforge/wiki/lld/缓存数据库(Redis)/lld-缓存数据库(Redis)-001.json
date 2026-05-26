@@ -1,0 +1,353 @@
+{
+  "meta": {
+    "doc_id": "lld-Redis-001",
+    "title": "缓存数据库(Redis) 详细设计",
+    "author": "Design Agent",
+    "type": "lld",
+    "module_type": "infrastructure",
+    "version": 1,
+    "status": "draft",
+    "created": "2025-01-01T00:00:00Z",
+    "module": "Redis"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-001",
+      "version": 1
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1
+    }
+  },
+  "module_boundary": {
+    "in_scope": [
+      "定义 Redis key 命名空间和模式",
+      "定义 key 过期策略",
+      "定义发布/订阅频道",
+      "定义连接池和连接超时配置",
+      "定义 Redis Streams 作为消息队列的拓扑和契约",
+      "定义消息可靠性策略（ack、重试、死信、幂等）"
+    ],
+    "out_of_scope": [
+      "Redis 安装和运维",
+      "操作系统级配置",
+      "网络安全策略",
+      "业务服务内部如何使用缓存的具体逻辑"
+    ],
+    "owned_components": [],
+    "owned_contracts": [],
+    "consumed_contracts": [],
+    "owned_data_models": [
+      "DM-001",
+      "DM-002",
+      "DM-003",
+      "DM-004",
+      "DM-005",
+      "DM-006",
+      "DM-007"
+    ],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "Redis 基础设施详细设计，包括键空间、过期策略、发布/订阅、连接池、Streams 拓扑和消息契约。",
+    "dependencies": [],
+    "tech_stack": [
+      "Redis"
+    ]
+  },
+  "topology": {
+    "namespaces": [
+      {
+        "name": "cache:session",
+        "description": "存储用户会话 Token",
+        "ttl": {"value": 1800, "unit": "second"},
+        "key_pattern": "cache:session:{user_id}",
+        "eviction_policy": "volatile-lru"
+      },
+      {
+        "name": "cache:lookup",
+        "description": "高频查询结果缓存",
+        "ttl": {"value": 300, "unit": "second"},
+        "key_pattern": "cache:lookup:{entity_type}:{entity_id}",
+        "eviction_policy": "volatile-lru"
+      }
+    ],
+    "exchanges": [
+      {
+        "name": "notifications:exchange",
+        "type": "fanout",
+        "durable": false,
+        "description": "通知广播"
+      }
+    ],
+    "queues": [
+      {
+        "name": "tasks:stream",
+        "binding_key": "",
+        "dead_letter_queue": "tasks:dead",
+        "message": {
+          "schema_ref": "DM-004"
+        }
+      },
+      {
+        "name": "notifications:queue",
+        "binding_key": "",
+        "message": {
+          "schema_ref": "DM-005"
+        }
+      }
+    ]
+  },
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "RedisConnectionPoolConfig",
+      "description": "Redis 连接池配置参数",
+      "type": "config",
+      "ownership": "canonical",
+      "fields": [
+        {
+          "name": "max_connections",
+          "type": "integer",
+          "required": true,
+          "description": "最大连接数"
+        },
+        {
+          "name": "min_idle",
+          "type": "integer",
+          "required": true,
+          "description": "最小空闲连接数"
+        },
+        {
+          "name": "timeout_ms",
+          "type": "integer",
+          "required": true,
+          "description": "连接超时毫秒数"
+        },
+        {
+          "name": "retry_max_attempts",
+          "type": "integer",
+          "required": true,
+          "description": "最大重试次数"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "PubSubMessageEnvelope",
+      "description": "发布/订阅消息信封结构",
+      "type": "struct",
+      "ownership": "canonical",
+      "fields": [
+        {
+          "name": "type",
+          "type": "string",
+          "required": true,
+          "description": "消息类型"
+        },
+        {
+          "name": "data",
+          "type": "object",
+          "required": true,
+          "description": "消息数据"
+        },
+        {
+          "name": "timestamp",
+          "type": "string",
+          "required": true,
+          "description": "ISO8601 时间戳"
+        }
+      ]
+    },
+    {
+      "id": "DM-003",
+      "name": "RedisStreamCommand",
+      "description": "Redis Stream 命令结构",
+      "type": "struct",
+      "ownership": "canonical",
+      "fields": [
+        {
+          "name": "stream_key",
+          "type": "string",
+          "required": true,
+          "description": "流键"
+        },
+        {
+          "name": "command_type",
+          "type": "string",
+          "required": true,
+          "description": "命令类型，如 XADD, XREADGROUP"
+        },
+        {
+          "name": "parameters",
+          "type": "object",
+          "required": true,
+          "description": "命令参数"
+        }
+      ]
+    },
+    {
+      "id": "DM-004",
+      "name": "TaskMessage",
+      "description": "任务消息体结构",
+      "type": "struct",
+      "ownership": "canonical",
+      "fields": [
+        {
+          "name": "task_id",
+          "type": "string",
+          "required": true,
+          "description": "任务 ID"
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "required": true,
+          "description": "任务类型"
+        },
+        {
+          "name": "parameters",
+          "type": "object",
+          "required": true,
+          "description": "任务参数"
+        },
+        {
+          "name": "timestamp",
+          "type": "string",
+          "required": true,
+          "description": "时间戳"
+        }
+      ]
+    },
+    {
+      "id": "DM-005",
+      "name": "NotificationMessage",
+      "description": "通知消息体结构",
+      "type": "struct",
+      "ownership": "canonical",
+      "fields": [
+        {
+          "name": "notification_id",
+          "type": "string",
+          "required": true,
+          "description": "通知 ID"
+        },
+        {
+          "name": "recipient",
+          "type": "string",
+          "required": true,
+          "description": "接收者"
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "required": true,
+          "description": "通知内容"
+        },
+        {
+          "name": "channel",
+          "type": "string",
+          "required": true,
+          "description": "通知渠道"
+        }
+      ]
+    },
+    {
+      "id": "DM-006",
+      "name": "CacheEntry",
+      "description": "缓存条目结构",
+      "type": "struct",
+      "ownership": "derived",
+      "source": "从通用缓存模式派生",
+      "fields": [
+        {
+          "name": "key",
+          "type": "string",
+          "required": true,
+          "description": "缓存键"
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "required": true,
+          "description": "缓存值"
+        },
+        {
+          "name": "expires_at",
+          "type": "string",
+          "required": true,
+          "description": "过期时间戳"
+        }
+      ]
+    },
+    {
+      "id": "DM-007",
+      "name": "StreamConsumerGroup",
+      "description": "Stream 消费者组配置",
+      "type": "config",
+      "ownership": "derived",
+      "source": "从 Redis Streams 官方文档派生",
+      "fields": [
+        {
+          "name": "group_name",
+          "type": "string",
+          "required": true,
+          "description": "消费者组名称"
+        },
+        {
+          "name": "consumers",
+          "type": "array",
+          "required": true,
+          "description": "消费者列表"
+        },
+        {
+          "name": "read_strategy",
+          "type": "string",
+          "required": true,
+          "description": "读取策略"
+        }
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "缓存键必须遵循命名规范",
+      "消息必须至少被投递一次",
+      "死信队列必须存在且有效"
+    ]
+  },
+  "interfaces": [
+    {
+      "name": "tasks:stream",
+      "description": "任务流消息接口",
+      "request": {
+        "body": {
+          "schema_ref": "DM-004"
+        }
+      },
+      "response": {
+        "body": {
+          "status": "消息已确认"
+        }
+      }
+    },
+    {
+      "name": "notifications:queue",
+      "description": "通知队列消息接口",
+      "request": {
+        "body": {
+          "schema_ref": "DM-005"
+        }
+      },
+      "response": {
+        "body": {
+          "status": "消息已确认"
+        }
+      }
+    }
+  ],
+  "error_handling": {
+    "strategy": "对关键操作（如连接失败、消息处理失败）实施重试和死信机制，确保系统韧性。"
+  }
+}
