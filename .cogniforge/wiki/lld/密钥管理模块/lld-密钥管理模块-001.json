@@ -1,0 +1,594 @@
+{
+  "meta": {
+    "doc_id": "lld-密钥管理模块-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "密钥管理模块",
+    "title": "密钥管理模块LLD",
+    "author": "design_agent",
+    "created": "2025-03-20",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": ["REQ-001"]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": ["CMP-001"],
+      "contracts": ["CTR-001"],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "私钥导入与加密存储",
+      "密钥别名管理",
+      "密钥列表查询",
+      "密钥删除及关联检查",
+      "与加密模块交互进行加解密",
+      "与本地数据库交互进行密钥元数据持久化"
+    ],
+    "out_of_scope": [
+      "主密码管理",
+      "SSH连接建立",
+      "环境与密钥关联的维护（由环境管理模块负责）",
+      "GUI界面展示",
+      "部署流程"
+    ],
+    "owned_components": [
+      "CMP-004"
+    ],
+    "owned_contracts": [
+      "CTR-004"
+    ],
+    "consumed_contracts": [
+      "CTR-007",
+      "CTR-009"
+    ],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "密钥管理模块负责私钥的导入、加密存储、别名设置、列表查询以及删除。导入时读取私钥文件内容，调用加密模块进行AES-256-GCM加密后，将密文和元数据存入本地数据库；删除时需检查密钥是否被环境使用。模块运行在主进程中，通过IPC向GUI前端暴露接口。",
+    "dependencies": [
+      "加密模块 (CTR-009): 用于私钥的加密和解密",
+      "本地数据库 (CTR-007): 持久化密钥元数据和密文"
+    ],
+    "tech_stack": [
+      "Node.js (主进程)",
+      "Electron",
+      "Node.js crypto (AES-256-GCM, PBKDF2)"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-002",
+      "sad_component_ids": ["CMP-001"],
+      "sad_contract_ids": ["CTR-001"],
+      "lld_objects": {
+        "data_models": ["DM-001"],
+        "interfaces": ["IF-001"],
+        "domain_objects": ["DO-001", "DO-002", "DO-003", "DO-004", "DO-005", "DO-006"],
+        "service_contracts": ["SC-001"]
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "KeyRecord",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "derived",
+      "source": {
+        "doc_id": "lld-Primary Database-001",
+        "model_name": "keys"
+      },
+      "description": "密钥存储表，记录导入的私钥密文及元数据。遵循Primary Database LLD定义。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "INTEGER PRIMARY KEY AUTOINCREMENT",
+          "required": true,
+          "description": "自增主键"
+        },
+        {
+          "name": "alias",
+          "type": "TEXT NOT NULL UNIQUE",
+          "required": true,
+          "description": "密钥别名，唯一标识"
+        },
+        {
+          "name": "encrypted_private_key",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "description": "AES-256-GCM加密后的私钥密文，Base64编码"
+        },
+        {
+          "name": "status",
+          "type": "TEXT NOT NULL DEFAULT 'active'",
+          "required": true,
+          "description": "密钥状态，取值：'active', 'deleted'，默认'active'"
+        },
+        {
+          "name": "created_at",
+          "type": "TEXT NOT NULL DEFAULT (datetime('now'))",
+          "required": true,
+          "description": "创建时间戳"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_keyrecord_alias",
+          "unique": true,
+          "columns": [
+            "alias"
+          ]
+        }
+      ],
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "source_components": [
+        "CMP-004"
+      ],
+      "source_contracts": [
+        "CTR-004"
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "导入密钥时插入记录",
+        "update": "不支持直接更新，删除后重新导入",
+        "delete": "软删除，status改为'deleted'",
+        "retention": "永久保留"
+      },
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "基于密钥管理模块需求生成LLD数据模型"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "IKeyManagementIPC",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-004",
+      "provider_component_id": "CMP-004",
+      "method": "IPC",
+      "endpoint": "key-management",
+      "description": "密钥管理IPC接口，通过Electron IPC通道提供密钥导入、列表查询、删除等功能，供GUI前端调用。",
+      "parameters": [],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "data": "any"
+        }
+      },
+      "error_codes": [
+        {
+          "status": "400",
+          "code": "KEY_NOT_FOUND",
+          "message": "指定的密钥ID不存在"
+        },
+        {
+          "status": "400",
+          "code": "KEY_IN_USE",
+          "message": "密钥正被环境使用，无法删除"
+        },
+        {
+          "status": "400",
+          "code": "ALIAS_CONFLICT",
+          "message": "别名已存在"
+        },
+        {
+          "status": "400",
+          "code": "INVALID_KEY_DATA",
+          "message": "私钥数据无效或格式错误"
+        },
+        {
+          "status": "500",
+          "code": "ENCRYPTION_ERROR",
+          "message": "加密处理失败"
+        },
+        {
+          "status": "500",
+          "code": "DATABASE_ERROR",
+          "message": "数据库操作失败"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-002"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "所有服务方法通过 try-catch 捕获异常，根据错误类型转换为统一响应格式，未知错误一律返回 500。数据库操作和加密操作需区分可重试与不可重试错误。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "400",
+        "name": "参数验证错误",
+        "description": "导入、删除、列表请求中的参数缺失或格式错误，由 IPC 入口层校验并立即返回错误信息。"
+      },
+      {
+        "code": "404",
+        "name": "资源未找到",
+        "description": "按别名或指纹查询密钥时数据库中无匹配记录，返回明确错误标识。"
+      },
+      {
+        "code": "409",
+        "name": "业务冲突",
+        "description": "导入时别名或指纹已存在（唯一约束冲突），或删除时密钥被环境引用（由环境管理服务检查后返回），触发 409。"
+      },
+      {
+        "code": "500",
+        "name": "内部服务错误",
+        "description": "数据库查询失败（CTR-007 返回异常）、加密操作失败（CTR-009 返回异常，如密钥派生错误、加解密引擎故障）或未预期的运行时异常，统一返回 500，并记录详细日志。"
+      }
+    ]
+  },
+  "domain_objects": [
+    {
+      "name": "DO-001",
+      "object_type": "dto",
+      "description": "导入密钥的请求数据",
+      "attributes": [
+        {
+          "name": "privateKeyPath",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "私钥文件路径"
+        },
+        {
+          "name": "alias",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "密钥别名"
+        },
+        {
+          "name": "password",
+          "type": "string",
+          "required": false,
+          "source": "input",
+          "description": "私钥文件密码（若私钥已加密）"
+        }
+      ],
+      "maps_to_entity": "KeyEntity"
+    },
+    {
+      "name": "DO-002",
+      "object_type": "dto",
+      "description": "删除密钥的请求数据",
+      "attributes": [
+        {
+          "name": "keyId",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "要删除的密钥ID"
+        }
+      ],
+      "maps_to_entity": "KeyEntity"
+    },
+    {
+      "name": "DO-003",
+      "object_type": "dto",
+      "description": "密钥列表响应数据",
+      "attributes": [
+        {
+          "name": "keys",
+          "type": "DO-004[]",
+          "required": true,
+          "source": "computed",
+          "description": "密钥摘要列表"
+        }
+      ]
+    },
+    {
+      "name": "DO-004",
+      "object_type": "dto",
+      "description": "密钥列表中的单个条目",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "source": "db",
+          "description": "密钥唯一标识"
+        },
+        {
+          "name": "alias",
+          "type": "string",
+          "required": true,
+          "source": "db",
+          "description": "密钥别名"
+        },
+        {
+          "name": "fingerprint",
+          "type": "string",
+          "required": false,
+          "source": "db",
+          "description": "公钥指纹"
+        },
+        {
+          "name": "status",
+          "type": "DO-006",
+          "required": true,
+          "source": "db",
+          "description": "密钥状态"
+        },
+        {
+          "name": "createdAt",
+          "type": "datetime",
+          "required": true,
+          "source": "db",
+          "description": "创建时间"
+        }
+      ]
+    },
+    {
+      "name": "DO-005",
+      "object_type": "entity",
+      "description": "密钥业务实体，用于内部逻辑处理",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": true,
+          "source": "db",
+          "description": "唯一标识"
+        },
+        {
+          "name": "alias",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "别名"
+        },
+        {
+          "name": "encryptedPrivateKey",
+          "type": "Buffer",
+          "required": true,
+          "source": "db",
+          "description": "加密后的私钥内容"
+        },
+        {
+          "name": "encryptionVersion",
+          "type": "string",
+          "required": true,
+          "source": "db",
+          "description": "加密算法版本标识"
+        },
+        {
+          "name": "fingerprint",
+          "type": "string",
+          "required": false,
+          "source": "db",
+          "description": "公钥指纹（可派生）"
+        },
+        {
+          "name": "status",
+          "type": "DO-006",
+          "required": true,
+          "source": "db",
+          "description": "密钥状态"
+        },
+        {
+          "name": "createdAt",
+          "type": "Date",
+          "required": true,
+          "source": "db",
+          "description": "创建时间"
+        },
+        {
+          "name": "updatedAt",
+          "type": "Date",
+          "required": true,
+          "source": "db",
+          "description": "更新时间"
+        }
+      ]
+    },
+    {
+      "name": "DO-006",
+      "object_type": "enum",
+      "description": "密钥状态枚举",
+      "values": [
+        "active",
+        "inactive",
+        "deleted"
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "name": "SC-001",
+      "description": "提供私钥导入、删除和列表查询的核心业务逻辑",
+      "methods": [
+        {
+          "name": "importKey",
+          "signature": "(request: ImportKeyRequest) -> KeyEntity",
+          "precondition": "私钥文件存在且可读，别名在该用户下唯一",
+          "postcondition": "私钥内容经加密后与别名等元数据一起持久化到数据库",
+          "description": "读取私钥文件内容，调用加密模块加密，存储密文和元数据",
+          "exceptions": [
+            {
+              "name": "DuplicateAliasError",
+              "trigger": "同一用户下已存在相同别名",
+              "http_status": "409"
+            },
+            {
+              "name": "FileReadError",
+              "trigger": "私钥文件不存在或无法读取",
+              "http_status": "400"
+            },
+            {
+              "name": "EncryptionFailedError",
+              "trigger": "加密过程失败",
+              "http_status": "500"
+            }
+          ]
+        },
+        {
+          "name": "deleteKey",
+          "signature": "(request: DeleteKeyRequest) -> void",
+          "precondition": "密钥存在且未被任何环境使用",
+          "postcondition": "该密钥的所有数据库记录被删除",
+          "description": "检查密钥是否被环境关联，若未使用则从数据库删除",
+          "exceptions": [
+            {
+              "name": "KeyNotFoundError",
+              "trigger": "指定ID的密钥不存在",
+              "http_status": "404"
+            },
+            {
+              "name": "KeyInUseError",
+              "trigger": "密钥正被一个或多个环境使用",
+              "http_status": "409"
+            }
+          ]
+        },
+        {
+          "name": "listKeys",
+          "signature": "() -> ListKeysResponse",
+          "precondition": "无",
+          "postcondition": "返回当前用户的所有密钥列表（不含私钥明文）",
+          "description": "查询当前用户的所有密钥记录，返回别名、指纹等摘要信息",
+          "exceptions": []
+        }
+      ],
+      "repository_dependencies": [
+        "findByCreatedBy(userId: string): KeyRecord[]",
+        "findByIdAndCreatedBy(keyId: string, userId: string): KeyRecord | null",
+        "existsActiveDeployment(keyId: string): boolean",
+        "deleteByIdAndCreatedBy(keyId: string, userId: string): void",
+        "save(keyRecord: KeyRecord): KeyRecord"
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "私钥内容在导入后必须以加密形式存储，任何时候不得以明文形式持久化。",
+      "每个密钥别名在系统中必须唯一，不允许重名。",
+      "删除密钥前必须检查是否被环境使用，若被使用则拒绝删除。",
+      "导入私钥时必须提供私钥文件和别名，若别名已存在则拒绝导入。",
+      "私钥的加密版本号必须与加密算法保持一致，升级加密时需迁移旧数据。",
+      "已标记为删除的密钥在物理删除前仍占用的别名不可被新密钥重用。"
+    ],
+    "state_machines": [
+      {
+        "entity": "KeyEntity",
+        "states": [
+          "ACTIVE",
+          "TO_BE_DELETED",
+          "DELETED"
+        ],
+        "transitions": [
+          {
+            "from": "ACTIVE",
+            "to": "TO_BE_DELETED",
+            "trigger": "用户发起删除请求",
+            "actor": "用户"
+          },
+          {
+            "from": "TO_BE_DELETED",
+            "to": "DELETED",
+            "trigger": "物理删除完成并移除别名占用",
+            "actor": "系统"
+          },
+          {
+            "from": "TO_BE_DELETED",
+            "to": "ACTIVE",
+            "trigger": "删除前环境检查发现有绑定",
+            "actor": "系统"
+          }
+        ],
+        "irreversible_rules": [
+          "从ACTIVE到TO_BE_DELETED的转换是不可逆的，除非环境检查发现绑定",
+          "从TO_BE_DELETED到DELETED的转换是不可逆的"
+        ],
+        "concurrency": "在删除流程中，需要对KeyEntity加写锁，防止并发删除或更新冲突。"
+      }
+    ],
+    "cross_service_rules": [
+      "导入密钥时，必须调用加密模块（CTR-009）进行AES-256-GCM加密，并传入用户主密码派生的密钥。",
+      "删除密钥前，必须查询环境管理模块（CTR-007）确认该密钥未被任何环境引用。",
+      "密钥列表查询可返回部分字段（如别名、创建时间），但不得暴露加密后的密文内容。",
+      "加密模块升级时，密钥管理模块需配合处理已有密钥的重新加密，并更新版本号。"
+    ]
+  },
+  "workflow": {
+    "name": "密钥管理模块流程",
+    "description": "密钥导入、删除和列表查询的整体工作流",
+    "steps": [
+      {
+        "order": 1,
+        "name": "导入密钥",
+        "action": "接收导入请求，读取私钥文件，调用加密模块加密，持久化到数据库",
+        "timeout_seconds": 60,
+        "on_failure": "返回相应错误码，记录日志"
+      },
+      {
+        "order": 2,
+        "name": "删除密钥",
+        "action": "接收删除请求，检查是否被环境使用，若未使用则从数据库删除",
+        "timeout_seconds": 30,
+        "on_failure": "返回冲突或错误信息"
+      },
+      {
+        "order": 3,
+        "name": "查询密钥列表",
+        "action": "从数据库查询当前用户的所有密钥记录，返回摘要信息",
+        "timeout_seconds": 10,
+        "on_failure": "返回数据库错误"
+      }
+    ],
+    "retry_strategy": {
+      "max_retries": 3,
+      "retry_interval_seconds": 30,
+      "retryable_errors": ["NETWORK_ERROR", "TIMEOUT"],
+      "non_retryable_errors": ["AUTH_ERROR", "CONFIG_ERROR"]
+    }
+  }
+}
