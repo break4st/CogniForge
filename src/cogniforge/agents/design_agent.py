@@ -753,7 +753,7 @@ class DesignAgent(BaseAgent):
             fix_response = self.agent.generate_messages([
                 LLMMessage(role="system", content=_build_fix_system_prompt(module_type)),
                 LLMMessage(role="user", content=fix_prompt),
-            ], max_tokens=8192)
+            ], max_tokens=16384)
             json_text = _extract_json(fix_response.content)
             json_abs.write_text(json_text, encoding="utf-8")
 
