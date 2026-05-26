@@ -880,6 +880,38 @@ def _frontend_rules(reg, conventions: dict) -> list[TaskStub]:
             }],
         ))
 
+    for e in reg.iter_section("interfaces"):
+        ofiles = [f"{src}/{safe_mod}/types/{_safe_file(e.item_name)}.ts"]
+        stubs.append(TaskStub(
+            suggested_name=f"定义 {e.item_name} 接口类型",
+            category="model",
+            lld_refs=[_mk_ref(e, reg)],
+            description_guide=(
+                f"定义 {e.item_data.get('method','')} {e.item_data.get('endpoint','')} "
+                f"接口的 TypeScript 类型"
+            ),
+            section_data={"interface": e.item_data},
+            expected_output_files=ofiles,
+            layer=0,
+            source={"lld_doc_id": doc_id, "lld_path": ""},
+            allowed_paths=ofiles,
+            forbidden_paths=fbd,
+            file_locks=list(ofiles),
+            acceptance_criteria=[{
+                "id": f"AC-{e.item_name}",
+                "source_section": "interfaces",
+                "source_item": e.item_name,
+                "description": f"{e.item_name} 接口类型定义完整，字段与 LLD 一致",
+                "verification_type": "type_check",
+                "expected": "TypeScript 编译通过，请求/响应类型匹配 LLD 定义",
+            }],
+            validation_commands=[{
+                "name": f"类型检查",
+                "command": "npx tsc --noEmit",
+                "timeout_seconds": 60,
+            }],
+        ))
+
     # tests
     impl_stubs = [s for s in stubs if s.category != "test"]
     for s in impl_stubs:
