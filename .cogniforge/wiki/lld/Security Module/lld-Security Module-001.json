@@ -1,0 +1,542 @@
+{
+  "meta": {
+    "doc_id": "lld-Security-Module-001",
+    "type": "lld",
+    "module_type": "infrastructure",
+    "module": "Security Module",
+    "title": "Security Module LLD",
+    "author": "design_agent",
+    "created": "2025-04-07",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": [
+        "REQ-005"
+      ]
+    },
+    "sad": {
+      "doc_id": "sad-001",
+      "version": 1,
+      "components": [
+        "CMP-007"
+      ],
+      "contracts": [
+        "CTR-007"
+      ],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "私钥加密（AES-256-GCM）",
+      "私钥解密（内存明文，用后即毁）",
+      "安全擦除内存中的私钥",
+      "密钥派生（主密码或OS密钥环）",
+      "审计日志记录（action, target, result）",
+      "与SQLite交互存储密文和审计日志",
+      "实现CTR-007定义的接口"
+    ],
+    "out_of_scope": [
+      "SSH连接管理",
+      "部署流程编排",
+      "环境连通性测试逻辑（非加密部分）",
+      "UI交互",
+      "密钥生成（仅加解密存储）"
+    ],
+    "owned_components": [
+      "CMP-007"
+    ],
+    "owned_contracts": [
+      "CTR-007"
+    ],
+    "consumed_contracts": [],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "Security Module 负责私钥的加密存储与安全使用。采用主密码或OS密钥环派生AES-256-GCM密钥，对私钥进行加密后以密文形式存入SQLite。解密时仅在内存中返回明文引用，调用方使用后必须调用安全销毁接口。同时记录审计日志到SQLite，包括操作类型、目标及结果，不包含私钥明文。",
+    "dependencies": [
+      "better-sqlite3（数据库访问）",
+      "Node.js crypto模块（加密）",
+      "Electron safeStorage或OS密钥环（可选，密钥派生）"
+    ],
+    "tech_stack": [
+      "TypeScript / Node.js",
+      "Electron 主进程",
+      "SQLite (via better-sqlite3)",
+      "Node.js crypto (AES-256-GCM)",
+      "OS 密钥环（可选）或主密码派生密钥"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-005",
+      "sad_component_ids": [
+        "CMP-007"
+      ],
+      "sad_contract_ids": [
+        "CTR-007"
+      ],
+      "lld_objects": {
+        "data_models": [
+          "DM-001",
+          "DM-002"
+        ],
+        "interfaces": [
+          "IF-001"
+        ],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "EncryptedKeyRecord",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "canonical",
+      "source": {
+        "doc_id": "lld-Security-Module-001",
+        "model_name": "encrypted_keys"
+      },
+      "description": "存储加密后的私钥及关联元数据，支持密钥标识、加密算法参数与密文存储。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "INTEGER PRIMARY KEY AUTOINCREMENT",
+          "required": true,
+          "description": "自增主键，唯一标识一条加密密钥记录"
+        },
+        {
+          "name": "key_alias",
+          "type": "TEXT NOT NULL UNIQUE",
+          "required": true,
+          "description": "密钥别名，用于业务层引用，必须唯一"
+        },
+        {
+          "name": "created_at",
+          "type": "TEXT NOT NULL DEFAULT (datetime('now'))",
+          "required": true,
+          "description": "记录创建时间，ISO 8601格式"
+        },
+        {
+          "name": "encrypted_private_key",
+          "type": "BLOB NOT NULL",
+          "required": true,
+          "description": "经 AES-256-GCM 加密后的私钥密文"
+        },
+        {
+          "name": "iv",
+          "type": "BLOB NOT NULL",
+          "required": true,
+          "description": "AES-256-GCM 使用的初始化向量"
+        },
+        {
+          "name": "auth_tag",
+          "type": "BLOB NOT NULL",
+          "required": true,
+          "description": "GCM 模式认证标签，用于完整性校验"
+        },
+        {
+          "name": "algorithm",
+          "type": "TEXT NOT NULL CHECK(algorithm = 'aes-256-gcm')",
+          "required": true,
+          "description": "加密算法标识，固定为 'aes-256-gcm'"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_key_alias",
+          "unique": true,
+          "columns": [
+            "key_alias"
+          ]
+        }
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "通过 SecurityService.encrypt 方法新增一条加密密钥记录",
+        "update": "不允许直接更新；如需更换密钥，应删除旧记录后重新创建",
+        "delete": "通过 SecurityService 内部逻辑根据 key_alias 删除记录，并安全擦除内存中的明文",
+        "retention": "长期保留，直至显式删除"
+      },
+      "source_requirements": [
+        "REQ-005"
+      ],
+      "source_components": [
+        "CMP-007"
+      ],
+      "source_contracts": [
+        "CTR-007"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建 EncryptedKeyRecord 数据模型",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "AuditLogRecord",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "canonical",
+      "source": {
+        "doc_id": "lld-Security-Module-001",
+        "model_name": "audit_logs"
+      },
+      "description": "存储安全操作审计日志，记录操作类型、目标对象及结果，不包含私钥明文。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "INTEGER PRIMARY KEY AUTOINCREMENT",
+          "required": true,
+          "description": "自增主键，唯一标识一条审计日志条目"
+        },
+        {
+          "name": "timestamp",
+          "type": "TEXT NOT NULL DEFAULT (datetime('now'))",
+          "required": true,
+          "description": "日志记录时间，ISO 8601格式"
+        },
+        {
+          "name": "action",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "description": "操作类型，如 'encrypt', 'decrypt', 'delete' 等"
+        },
+        {
+          "name": "target",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "description": "操作目标对象标识，如密钥别名"
+        },
+        {
+          "name": "result",
+          "type": "TEXT NOT NULL",
+          "required": true,
+          "description": "操作结果，如 'success', 'failure' 等"
+        },
+        {
+          "name": "details",
+          "type": "TEXT",
+          "required": false,
+          "description": "可选附加信息，如错误描述，不得包含私钥明文"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_timestamp",
+          "unique": false,
+          "columns": [
+            "timestamp"
+          ]
+        },
+        {
+          "name": "idx_action",
+          "unique": false,
+          "columns": [
+            "action"
+          ]
+        }
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "每条安全操作完成后自动写入审计日志",
+        "update": "不允许修改，审计日志为不可变记录",
+        "delete": "只读保留，除非达到保留期限后由管理员清理",
+        "retention": "默认永久保留，可配置定期归档或清理策略"
+      },
+      "source_requirements": [
+        "REQ-005"
+      ],
+      "source_components": [
+        "CMP-007"
+      ],
+      "source_contracts": [
+        "CTR-007"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建 AuditLogRecord 数据模型",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "SecurityService",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-007",
+      "provider_component_id": "CMP-007",
+      "method": "INTERNAL",
+      "endpoint": "SecurityModule/SecurityService",
+      "description": "安全服务接口，提供私钥加密、解密和安全销毁，以及审计日志记录功能。",
+      "parameters": [],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "encrypt": {
+            "description": "加密私钥",
+            "input": {
+              "privateKey": "string (明文私钥)",
+              "keyId": "string (可选，密钥标识符)"
+            },
+            "output": {
+              "success": "boolean",
+              "encryptedKeyId": "string (用于后续解密的引用ID)"
+            }
+          },
+          "decrypt": {
+            "description": "解密私钥，返回明文引用",
+            "input": {
+              "encryptedKeyId": "string (加密时返回的引用ID)"
+            },
+            "output": {
+              "success": "boolean",
+              "privateKeyHandle": "string (内存中明文私钥的引用句柄)"
+            }
+          },
+          "destroyPrivateKey": {
+            "description": "安全销毁内存中的私钥明文",
+            "input": {
+              "privateKeyHandle": "string (解密返回的引用句柄)"
+            },
+            "output": {
+              "success": "boolean"
+            }
+          },
+          "auditLog": {
+            "description": "记录审计日志",
+            "input": {
+              "action": "string",
+              "target": "string",
+              "result": "string"
+            },
+            "output": {
+              "success": "boolean",
+              "logId": "string"
+            }
+          }
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "INVALID_INPUT",
+          "message": "输入参数无效或缺失"
+        },
+        {
+          "status": 500,
+          "code": "ENCRYPTION_FAILED",
+          "message": "加密操作失败"
+        },
+        {
+          "status": 500,
+          "code": "DECRYPTION_FAILED",
+          "message": "解密操作失败"
+        },
+        {
+          "status": 404,
+          "code": "KEY_NOT_FOUND",
+          "message": "未找到指定的加密密钥"
+        },
+        {
+          "status": 500,
+          "code": "AUDIT_LOG_FAILED",
+          "message": "审计日志记录失败"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-005"
+      ],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成LLD"
+        }
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "采用结构化错误码返回，所有接口异常均通过统一错误响应格式反馈调用方，记录详细审计日志。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "4xx",
+        "name": "客户端错误",
+        "description": "输入参数无效或缺失，返回400并提示具体错误信息；资源未找到返回404。"
+      },
+      {
+        "code": "5xx",
+        "name": "服务器错误",
+        "description": "加密/解密/数据库操作等内部失败，返回500并记录错误详情到审计日志。"
+      }
+    ]
+  },
+  "topology": {
+    "buckets": [
+      {
+        "name": "SQLite数据库目录",
+        "path": "/data/security_module",
+        "permissions": "700",
+        "description": "存储加密私钥密文和审计日志的SQLite数据库文件存放位置"
+      }
+    ],
+    "path_conventions": "数据库文件统一存放在/data/security_module/security.db，使用绝对路径访问，确保运行环境有读写权限"
+  },
+  "connection_contracts": {
+    "pool_size": "1",
+    "timeout": "5000",
+    "service_accounts": [
+      {
+        "service": "SecurityModule",
+        "db_user": "security_user",
+        "privileges": [
+          "SELECT",
+          "INSERT",
+          "DELETE"
+        ]
+      }
+    ]
+  },
+  "message_contracts": [],
+  "reliability_strategy": {
+    "ack_mode": "manual",
+    "retry": {
+      "max_retries": 3,
+      "backoff": "exponential"
+    },
+    "retry_policy": [
+      {
+        "error_type": "数据库写入失败",
+        "action": "重试3次",
+        "backoff": "exponential",
+        "comment": "适用于审计日志写入或密文存储失败时，确保数据一致性"
+      },
+      {
+        "error_type": "密钥派生失败",
+        "action": "重试1次后降级",
+        "comment": "如果主密码派生或OS密钥环不可用，尝试一次后返回错误"
+      }
+    ],
+    "timeout_policy": [
+      {
+        "operation": "数据库操作",
+        "timeout_ms": 5000,
+        "action": "超时后中断并记录错误",
+        "comment": "SQLite同步操作需设置超时，防止线程阻塞"
+      },
+      {
+        "operation": "密钥派生",
+        "timeout_ms": 3000,
+        "action": "超时后中断并返回错误",
+        "comment": "等待OS密钥环响应应设上限"
+      }
+    ],
+    "cleanup_policy": [
+      {
+        "resource": "内存中的私钥明文",
+        "action": "立即用0填充并释放",
+        "trigger": "调用destroy或引用计数归零时",
+        "comment": "解密后的私钥必须显式清理，防止内存泄露"
+      },
+      {
+        "resource": "数据库连接",
+        "action": "在模块卸载时关闭连接",
+        "trigger": "应用退出或模块销毁"
+      }
+    ],
+    "dead_letter": "无死信队列，采用同步重试",
+    "idempotency": "审计日志写入：基于请求ID去重，防止重复记录；加密存储：通过密钥指纹检查是否已存在相同记录，存在则覆盖或跳过。",
+    "failure_recovery": [
+      {
+        "failure_scenario": "加密过程中系统崩溃",
+        "recovery": "密文写入采用事务，要么完全写入要么回滚，状态文件使用原子写入模式"
+      },
+      {
+        "failure_scenario": "解密后进程异常退出",
+        "recovery": "私钥仅存在于内存，进程退出后自动释放；审计日志记录异常事件"
+      },
+      {
+        "failure_scenario": "密钥派生失败（如主密码遗忘）",
+        "recovery": "提示用户重置或使用备份密钥，记录审计日志失败事件"
+      }
+    ]
+  },
+  "security_design": {
+    "secret_storage": "密钥派生密钥材料存储于OS密钥环或主密码哈希，不直接存储派生密钥",
+    "encryption": "AES-256-GCM，每次加密生成随机IV和认证标签",
+    "runtime_key_usage": "解密后私钥仅保留在内存Buffer中，使用后立即覆盖清零",
+    "audit": [
+      "记录所有加密、解密、销毁操作的审计日志",
+      "审计日志通过请求ID去重"
+    ]
+  },
+  "workflow": {
+    "name": "SecurityModuleInitialization",
+    "description": "模块初始化流程：验证数据库连接，检查密钥环可用性，加载必要配置",
+    "steps": [
+      {
+        "order": 1,
+        "name": "OpenDatabase",
+        "action": "打开或创建SQLite数据库文件，执行建表语句",
+        "timeout_seconds": 10,
+        "on_failure": "重试一次，仍失败则抛出致命错误，阻止模块启动"
+      },
+      {
+        "order": 2,
+        "name": "CheckKeyDerivation",
+        "action": "检测可用的密钥派生源（OS密钥环或主密码配置）",
+        "timeout_seconds": 5,
+        "on_failure": "若两者均不可用，记录审计日志并提示用户配置"
+      }
+    ],
+    "retry_strategy": {
+      "max_retries": 1,
+      "retry_interval_seconds": 5,
+      "retryable_errors": [
+        "DATABASE_CONNECTION_ERROR"
+      ],
+      "non_retryable_errors": [
+        "KEY_DERIVATION_UNAVAILABLE"
+      ]
+    }
+  }
+}
