@@ -1,0 +1,354 @@
+{
+  "meta": {
+    "doc_id": "lld-Nginx 反向代理服务器-001",
+    "created": "2025-03-20",
+    "type": "lld",
+    "module": "gateway",
+    "module_type": "gateway",
+    "status": "draft",
+    "author": "system",
+    "title": "Nginx 反向代理服务器"
+  },
+  "overview": {
+    "description": "Nginx 反向代理服务器用于接收外部 HTTPS 请求，托管前端静态文件，反向代理 API 请求，代理 WebSocket 连接，并实施 SSL 终止、访问控制、限流和日志记录。"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "PRD-001"
+    },
+    "sad": {
+      "doc_id": "SAD-001"
+    }
+  },
+  "module_boundary": {
+    "in_scope": [
+      "接收外部 HTTPS 请求",
+      "托管前端 Vue 3 静态文件（生产环境）",
+      "反向代理 /api/* 到后端 API 服务",
+      "代理 WebSocket 连接 /ws/* 到后端 API 服务",
+      "SSL 终止及证书管理",
+      "请求限流",
+      "基于 IP 的访问控制（可选）",
+      "日志记录和访问日志格式化"
+    ],
+    "out_of_scope": [
+      "业务逻辑处理",
+      "数据库直接操作",
+      "认证与授权逻辑的具体实现（由后端 API 服务负责）",
+      "密钥管理或加解密操作",
+      "部署任务执行",
+      "前端页面的构建与编译（仅托管构建产物）"
+    ],
+    "owned_components": [
+      "CMP-001"
+    ],
+    "owned_contracts": [
+      "CTR-001"
+    ],
+    "consumed_contracts": [
+      "CTR-002",
+      "CTR-003"
+    ],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "route_table": [
+    {
+      "path_pattern": "/",
+      "upstream": "static_files"
+    },
+    {
+      "path_pattern": "/api/",
+      "upstream": "backend_api"
+    },
+    {
+      "path_pattern": "/ws/",
+      "upstream": "backend_ws"
+    }
+  ],
+  "auth_policy": {
+    "role_path_map": [
+      {
+        "role": "anonymous",
+        "path": "/",
+        "method": "GET",
+        "action": "allow"
+      },
+      {
+        "role": "anonymous",
+        "path": "/api/",
+        "method": "ALL",
+        "action": "allow"
+      },
+      {
+        "role": "anonymous",
+        "path": "/ws/",
+        "method": "GET",
+        "action": "allow"
+      }
+    ]
+  },
+  "middleware_chain": [
+    "ssl_termination",
+    "access_control",
+    "rate_limit",
+    "request_routing"
+  ],
+  "rate_limiting": {
+    "paths": [
+      {
+        "path": "/api/",
+        "rate": "10r/s",
+        "burst": 20
+      }
+    ]
+  },
+  "error_handling": {
+    "strategy": "custom_error_pages"
+  },
+  "data_models": [],
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "description": "统一入口：所有前端请求通过 Nginx 进入系统，支持 HTTPS。",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [
+        "CTR-001"
+      ],
+      "lld_objects": {
+        "interfaces": [
+          "IF-001"
+        ]
+      },
+      "coverage": "full"
+    },
+    {
+      "requirement_id": "REQ-002",
+      "description": "静态资源托管：提供前端 Vue 3 应用的生产环境访问。",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [],
+      "lld_objects": {
+        "interfaces": [
+          "IF-001"
+        ]
+      },
+      "coverage": "full"
+    },
+    {
+      "requirement_id": "REQ-003",
+      "description": "API 反向代理：将 /api/* 请求转发到后端服务。",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [
+        "CTR-002"
+      ],
+      "lld_objects": {
+        "interfaces": [
+          "IF-002"
+        ]
+      },
+      "coverage": "full"
+    },
+    {
+      "requirement_id": "REQ-004",
+      "description": "WebSocket 代理：支持 /ws/deployments/{id}/logs 等实时连接。",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [
+        "CTR-003"
+      ],
+      "lld_objects": {
+        "interfaces": [
+          "IF-003"
+        ]
+      },
+      "coverage": "full"
+    },
+    {
+      "requirement_id": "REQ-005",
+      "description": "SSL 终止：处理加密通信，卸载后端加密负担。",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [
+        "CTR-001"
+      ],
+      "lld_objects": {
+        "interfaces": [
+          "IF-001"
+        ]
+      },
+      "coverage": "full"
+    },
+    {
+      "requirement_id": "REQ-006",
+      "description": "限流保护：防止滥用，保护后端服务。",
+      "sad_component_ids": [
+        "CMP-001"
+      ],
+      "sad_contract_ids": [],
+      "lld_objects": {
+        "interfaces": []
+      },
+      "coverage": "full"
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "HTTPS 前端接口",
+      "status": "active",
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "frontend",
+      "endpoint": "/",
+      "description": "对外提供的 HTTPS 接口，监听 443 端口，处理所有进入的客户端请求，包括静态资源请求、API 代理前置和 WebSocket 代理前置。",
+      "parameters": [],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "content": "静态资源或代理响应"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 403,
+          "code": "ACCESS_DENIED",
+          "message": "IP 访问被拒绝"
+        },
+        {
+          "status": 429,
+          "code": "RATE_LIMITED",
+          "message": "请求过多，触发了限流策略"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-001",
+        "REQ-005"
+      ],
+      "change_history": [
+        {
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "后端 API 代理接口",
+      "status": "active",
+      "source_contract_id": "CTR-002",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "/api/",
+      "description": "将 /api/ 开头的请求代理至后端 FastAPI 服务，转发原始请求头，包括方法、查询参数、请求体等。",
+      "parameters": [
+        {
+          "name": "任一 API 路径参数",
+          "type": "string",
+          "in": "path",
+          "required": false,
+          "description": "根据后端 API 定义的具体路径参数，如资源 ID"
+        }
+      ],
+      "request_body": {
+        "任意": "根据具体 API 定义"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "content": "后端 API 响应"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 502,
+          "code": "PROXY_ERROR",
+          "message": "代理请求失败，后端服务不可用"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-003"
+      ],
+      "change_history": [
+        {
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-003",
+      "name": "WebSocket 代理接口",
+      "status": "active",
+      "source_contract_id": "CTR-003",
+      "provider_component_id": "CMP-001",
+      "method": "INTERNAL",
+      "endpoint": "/ws/",
+      "description": "将 /ws/ 开头的 WebSocket 升级请求代理至后端服务，支持实时日志流等场景。",
+      "parameters": [
+        {
+          "name": "deployment_id",
+          "type": "string",
+          "in": "path",
+          "required": true,
+          "description": "部署任务 ID，用于识别日志流"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 101,
+        "body": {
+          "content": "WebSocket 连接升级"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 502,
+          "code": "PROXY_ERROR",
+          "message": "WebSocket 代理失败"
+        }
+      ],
+      "auth": {
+        "required": false,
+        "policy": ""
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": [
+        "REQ-004"
+      ],
+      "change_history": [
+        {
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ]
+}
