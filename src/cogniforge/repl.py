@@ -1678,7 +1678,7 @@ class Repl:
                     fix_prompt = (
                         f"以下 JSON 有语法错误，请直接修复并返回正确的 JSON:\n\n"
                         f"错误: {e}\n\n"
-                        f"原始输出:\n{json_output[:8000]}\n\n"
+                        f"原始输出:\n{json_output}\n\n"
                         f"只返回修复后的纯 JSON，不要任何解释。"
                     )
                     if hasattr(agent_adapter, "generate"):

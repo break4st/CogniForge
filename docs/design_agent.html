@@ -34,7 +34,7 @@ th { background: var(--surface); color: #f0a500; }
 <h1>Design Agent (MDE) — 模块设计工程师代理</h1>
 
 <p><strong>类名:</strong> <code>DesignAgent(BaseAgent)</code> &nbsp;|&nbsp;
-<strong>文件:</strong> <span class="filepath">src/cogniforge/agents/design_agent.py</span> (1141 行，最大文件) &nbsp;|&nbsp;
+<strong>文件:</strong> <span class="filepath">src/cogniforge/agents/design_agent.py</span> (1215行，最大文件) &nbsp;|&nbsp;
 <strong>角色标识:</strong> <span class="tag">design</span></p>
 
 <h2>1. 概述</h2>
@@ -114,12 +114,15 @@ _assemble_lld():
 _validate_and_commit():
   → lld_validator.validate_lld_json() → 校验
   → 未通过 → LLM 修正循环（最多 10 次）
-    每次告诉 LLM 具体违反了哪条规则
+    1. 从 validation.meta 提取 module_type
+    2. _build_fix_system_prompt(module_type) → 组装完整 schema 模板
+    3. system prompt 包含：全量 JSON 结构模板 + 顶层字段白名单 + 9 条关键规则
+    4. user prompt 传递完整 JSON（不截断）+ 校验报告
   → 通过后 → 渲染 HTML + git commit
 </pre>
 
 <div class="warn">
-<strong>自校正循环：</strong>MDE 是唯一拥有内建自校正循环的代理。校验失败时，它会将完整校验报告反馈给 LLM 并要求修正，最多尝试 10 次。这极大提高了 LLM 输出的合规率。
+<strong>自校正循环改进：</strong>修正调用的 system prompt 从原来 2 行空泛描述升级为 <code>_build_fix_system_prompt()</code> 动态组装的全量 schema 模板（基础模板 + 模块专属模板），含顶层字段白名单和常见错误规则，使 LLM 不再"盲修"。同时去掉了 JSON 截断（原 <code>[:6000]</code>），LLM 能看到完整文档。
 </div>
 
 <h2>5. 契约上下文构建</h2>
@@ -255,18 +258,20 @@ schemas/agents/lld/
 <p>与蓝图相同的 system + user 双消息模式，但通过 <code>ThreadPoolExecutor</code> (最多 8 workers) 并行执行。每个分段的 schema 模板（从 <code>schemas/agents/lld/*.json</code> 加载）位于 system prompt，蓝图数据位于 user prompt。分段分配按模块类型不同（service 6 段，gateway 4 段，frontend 7 段，database 6 段，infrastructure 5 段）。</p>
 
 <h3>11.4 校验修正 — generate_messages()</h3>
-<p>在自校正循环中使用（最多 10 轮），这是唯一使用 system + user 双消息模式的场景：</p>
+<p>在自校正循环中使用（最多 10 轮），system prompt 由 <code>_build_fix_system_prompt(module_type)</code> 动态构建：</p>
 <pre><code>POST /v1/chat/completions
 {
   "model": "deepseek-v4-pro",
   "messages": [
-    {"role": "system", "content": "你是 CogniForge 系统的 Design Agent。职责: 生成 LLD JSON。\n输出格式请参照 system prompt 中的 EXAMPLE JSON OUTPUT 示例。"},
-    {"role": "user",   "content": "你刚才生成的 LLD JSON 校验未通过：\n\n{validation_report}\n\n当前 JSON（请检查违反规则的具体字段）:\n{current_json}\n\n请修正以上所有问题，返回完整的修正后 JSON。\n只返回纯 JSON 对象，不要 markdown 代码块包裹。"}
+    {"role": "system", "content": "&lt;\\n  = 完整 JSON 结构模板: base + data_models + interfaces + error + 模块专属 + workflow\\n  = 顶层字段白名单（按 module_type）\\n  = 9 条关键规则（data_models 必填字段、request_body 命名、ID 格式、source 类型等）\\n&gt;"},
+    {"role": "user",   "content": "你刚才生成的 LLD JSON 校验未通过：\n\n{validation_report}\n\n当前 JSON（完整，不截断）:\n{current_json}\n\n请修正以上所有问题，返回完整的修正后 JSON。\n只返回纯 JSON 对象，不要 markdown 代码块包裹。"}
   ],
   "max_tokens": 8192,
   "response_format": {"type": "json_object"},
   "extra_body": {"thinking": {"type": "disabled"}}
 }</code></pre>
+
+<p><strong>改进历史：</strong>v1 版本 system prompt 仅 2 行空泛描述（"输出格式请参照 system prompt 中的 EXAMPLE JSON OUTPUT 示例"），user prompt 中 JSON 截断到 6000 字符。LLM 在无 schema 上下文的情况下"盲修"，导致修正循环频繁耗尽 10 次上限。v2 版本改为传递完整 schema 模板 + 白名单 + 规则清单，JSON 不再截断。</p>
 
 <h3>11.5 交互式修改 — generate_interactive_patch()</h3>
 <p>两步模式，注入 MDE 角色，分析上游变更对 LLD 的影响后输出 patches。修改模式 System Prompt（11 条规则）：</p>
@@ -311,7 +316,8 @@ design: llm.deepseek    # MDE 使用 DeepSeek 直接 API 调用</code></pre>
 <tr><td><code>_generate_section()</code></td><td>private</td><td>阶段 2: 生成单个分段</td></tr>
 <tr><td><code>_generate_sections_parallel()</code></td><td>private</td><td>阶段 2: ThreadPoolExecutor 并行生成所有分段</td></tr>
 <tr><td><code>_assemble_lld()</code></td><td>private</td><td>阶段 3: 合并蓝图 + 分段 → 完整 LLD</td></tr>
-<tr><td><code>_validate_and_commit()</code></td><td>private</td><td>校验 + LLM 自校正循环（最多 10 次）</td></tr>
+<tr><td><code>_validate_and_commit()</code></td><td>private</td><td>校验 + schema 感知的自校正循环（最多 10 次），含完整模板注入</td></tr>
+<tr><td><code>_build_fix_system_prompt()</code></td><td>module</td><td>动态组装修正调用的 system prompt（全量 schema 模板 + 白名单 + 规则）</td></tr>
 <tr><td><code>modify_interactive()</code></td><td>public</td><td>Patch 模式的交互式修改</td></tr>
 <tr><td><code>_assign_ids()</code></td><td>static</td><td>分配 DM/IF/DO/SC ID</td></tr>
 </table>

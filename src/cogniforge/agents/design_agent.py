@@ -741,19 +741,17 @@ class DesignAgent(BaseAgent):
 
             if progress_callback:
                 progress_callback(f"JSON Schema 校验未通过，LLM 第 {correction_attempts}/{max_corrections} 次修正中")
+            module_type = validation.get("meta", {}).get("module_type", "service")
             current_json = json_abs.read_text(encoding="utf-8")
             fix_prompt = (
                 f"你刚才生成的 LLD JSON 校验未通过：\n\n"
                 f"{validation_report}\n\n"
-                f"当前 JSON（请检查违反规则的具体字段）:\n{current_json[:6000]}\n\n"
+                f"当前 JSON（请检查违反规则的具体字段）:\n{current_json}\n\n"
                 f"请修正以上所有问题，返回完整的修正后 JSON。\n"
                 f"只返回纯 JSON 对象，不要 markdown 代码块包裹。"
             )
             fix_response = self.agent.generate_messages([
-                LLMMessage(role="system", content=(
-                    "你是 CogniForge 系统的 Design Agent。职责: 生成 LLD JSON。\n"
-                    "输出格式请参照 system prompt 中的 EXAMPLE JSON OUTPUT 示例。"
-                )),
+                LLMMessage(role="system", content=_build_fix_system_prompt(module_type)),
                 LLMMessage(role="user", content=fix_prompt),
             ], max_tokens=8192)
             json_text = _extract_json(fix_response.content)
@@ -1109,6 +1107,70 @@ def _build_conditional_schema(module_type: str) -> str:
     elif module_type == "infrastructure":
         return _SCHEMA_INFRA
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Fix system prompt builder — provides full schema context for correction loop
+# ---------------------------------------------------------------------------
+
+_TOP_LEVEL_FIELDS: dict[str, list[str]] = {
+    "service":         ["domain_objects", "service_contracts", "business_rules"],
+    "frontend":        ["component_tree", "state_design", "route_design",
+                        "interaction_flows", "api_integration"],
+    "gateway":         ["route_table", "middleware_chain", "auth_policy", "rate_limiting"],
+    "database":        ["index_strategy", "migration_strategy", "capacity_estimation",
+                        "connection_contracts"],
+    "infrastructure":  ["topology", "message_contracts", "reliability_strategy",
+                        "security_design"],
+}
+
+_COMMON_TOP_LEVEL = [
+    "meta", "source", "module_boundary", "overview", "traceability",
+    "data_models", "interfaces", "error_handling",
+]
+
+
+def _build_fix_system_prompt(module_type: str) -> str:
+    """Build a schema-aware system prompt for the LLD JSON correction call."""
+    conditional = _build_conditional_schema(module_type)
+    all_fragments = [
+        _SCHEMA_BASE,
+        _SCHEMA_DATA_MODELS,
+        _SCHEMA_INTERFACES,
+        _SCHEMA_ERROR,
+    ]
+    if conditional:
+        all_fragments.append(conditional)
+    if _SCHEMA_WORKFLOW:
+        all_fragments.append(_SCHEMA_WORKFLOW)
+
+    schema_example = "{\n" + ",\n".join(all_fragments) + "\n}"
+
+    extra_fields = _TOP_LEVEL_FIELDS.get(module_type, [])
+    allowed_top = _COMMON_TOP_LEVEL + extra_fields + ["workflow"]
+    allowed_top_str = ", ".join(allowed_top)
+
+    return (
+        "你是 CogniForge Design Agent，负责修复 LLD JSON 的 Schema 校验错误。\n\n"
+        "## 完整 JSON 结构模板\n"
+        "以下是你必须严格遵循的 JSON 结构。每个字段名、类型、嵌套层级都必须与模板一致。\n"
+        f"```json\n{schema_example}\n```\n\n"
+        "## 顶层字段白名单\n"
+        f"module_type={module_type} 只允许以下顶层字段: {allowed_top_str}\n"
+        "- 禁止自造顶层字段（如 coverage、lld_objects、artifact_index 等）\n"
+        "- 禁止在任何对象中添加模板未列出的额外字段\n\n"
+        "## 关键规则\n"
+        "1. data_models 每个元素必须包含: id, name, type, ownership, description, fields\n"
+        "2. fields 每个元素必须包含: name, type, required (required 必须是 boolean true/false)\n"
+        "3. interfaces 每个元素必须包含: id, name, method, endpoint, description\n"
+        "4. interfaces 请求体字段名是 request_body，不是 request\n"
+        "5. overview 只能包含: description, dependencies, tech_stack\n"
+        "6. traceability 每个元素必须包含: requirement_id, sad_component_ids, sad_contract_ids, lld_objects, coverage\n"
+        "7. ID 格式: DM-XXX, IF-XXX, DO-XXX, SC-XXX, FC-XXX, CMP-XXX, CTR-XXX, REQ-XXX（至少3位数字）\n"
+        "8. source.sad 必须包含 version 字段\n"
+        "9. data_models[].source 必须是 object（含 doc_id 和 model_name），不能是字符串\n"
+        "\n只返回修复后的纯 JSON 对象，不要 markdown 代码块包裹。"
+    )
 
 
 # ---------------------------------------------------------------------------
