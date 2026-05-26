@@ -1,0 +1,850 @@
+{
+  "meta": {
+    "doc_id": "lld-DeployFlow-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "部署编排服务",
+    "title": "部署编排服务 LLD",
+    "author": "design_agent",
+    "created": "2025-01-01T00:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-current",
+      "version": 1,
+      "requirements": ["REQ-003", "REQ-004"]
+    },
+    "sad": {
+      "doc_id": "sad-DeployFlow-001",
+      "version": 1,
+      "components": ["CMP-006"],
+      "contracts": ["CTR-004", "CTR-003"],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "接收并校验部署请求（目标环境ID、待部署文件）",
+      "协调环境管理服务和密钥管理服务获取部署所需配置和认证",
+      "执行部署流水线：文件暂存对象存储、SSH远程连接、创建版本目录、传输文件、生成并授权启动脚本",
+      "部署过程实时日志推送到RabbitMQ",
+      "处理部署失败时的清理回滚操作（删除远程已创建目录）",
+      "通过WebSocket向前端推送实时进展"
+    ],
+    "out_of_scope": [
+      "环境配置管理（由环境管理服务负责）",
+      "密钥生成、加密存储与解密（由密钥管理服务负责）",
+      "日志持久化存储（由日志与审计服务负责）",
+      "用户认证与授权（由API网关和认证服务负责）",
+      "文件分片上传与对象存储管理（由前端和MinIO服务负责）"
+    ],
+    "owned_components": ["CMP-006"],
+    "owned_contracts": ["CTR-004"],
+    "consumed_contracts": ["CTR-003"],
+    "owned_data_models": [],
+    "consumed_data_models": ["DM-002", "DM-004"]
+  },
+  "overview": {
+    "description": "系统核心执行引擎。接收用户部署请求，协调其他服务获取环境和密钥，执行完整部署流水线，并推送实时日志。",
+    "dependencies": [
+      "环境管理服务（gRPC）",
+      "密钥管理服务（gRPC）",
+      "RabbitMQ（消息队列）",
+      "MinIO（对象存储）",
+      "日志与审计服务（消费日志）"
+    ],
+    "tech_stack": [
+      "Python",
+      "FastAPI",
+      "Paramiko (SSH)",
+      "asyncssh (可选异步支持)",
+      "RabbitMQ",
+      "MinIO",
+      "gRPC",
+      "JWT"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-003",
+      "sad_component_ids": ["CMP-006"],
+      "sad_contract_ids": ["CTR-004"],
+      "lld_objects": {
+        "data_models": [],
+        "interfaces": ["IF-001"],
+        "domain_objects": ["DO-001", "DO-002", "DO-003", "DO-006", "DO-007"],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": "REQ-003 部署请求与执行流程"
+    },
+    {
+      "requirement_id": "REQ-004",
+      "sad_component_ids": ["CMP-006"],
+      "sad_contract_ids": ["CTR-003"],
+      "lld_objects": {
+        "data_models": [],
+        "interfaces": [],
+        "domain_objects": ["DO-003", "DO-004", "DO-005"],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": "REQ-004 获取解密密钥"
+    }
+  ],
+  "data_models": [],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "ExecuteDeployment",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-004",
+      "provider_component_id": "CMP-006",
+      "method": "POST",
+      "endpoint": "/api/v1/deployments",
+      "description": "接收用户部署请求，执行异步部署流水线，返回部署ID和WebSocket端点用于实时状态推送",
+      "parameters": [],
+      "request_body": {
+        "environment_id": "string (UUID)",
+        "file_id": "string (UUID)",
+        "file_name": "string"
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "deployment_id": "string (UUID)",
+          "ws_endpoint": "string",
+          "status": "DeploymentStatus"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "INVALID_REQUEST",
+          "message": "请求参数校验失败，例如缺少必要字段或格式错误"
+        },
+        {
+          "status": 404,
+          "code": "ENVIRONMENT_NOT_FOUND",
+          "message": "指定的目标环境不存在"
+        },
+        {
+          "status": 500,
+          "code": "DEPLOYMENT_FAILED",
+          "message": "部署流水线执行失败，可能由于SSH连接错误、文件传输失败等通用部署错误导致"
+        }
+      ],
+      "auth": {
+        "required": true,
+        "policy": "JWT Token，需包含有效用户标识"
+      },
+      "validation_rules": [
+        "environment_id 必须为有效UUID格式",
+        "file_id 必须为有效UUID格式",
+        "file_name 不能为空"
+      ],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": ["REQ-003"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "采用全局异常拦截器统一捕获并格式化返回错误响应，业务错误通过定义错误码分类处理。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "400",
+        "name": "请求参数校验失败",
+        "description": "当用户提交的部署请求参数不合法或缺失必填字段时触发，返回具体校验错误详情。"
+      },
+      {
+        "code": "401",
+        "name": "认证失败",
+        "description": "请求中JWT令牌无效、过期或缺失时触发，拒绝访问。"
+      },
+      {
+        "code": "403",
+        "name": "权限不足",
+        "description": "认证通过但用户无权执行指定部署操作时触发，如非该环境所属团队。"
+      },
+      {
+        "code": "404",
+        "name": "目标环境未找到",
+        "description": "提供的环境ID在环境管理服务中不存在时触发。"
+      },
+      {
+        "code": "409",
+        "name": "资源冲突",
+        "description": "当同一个环境已有部署任务正在运行或版本冲突时触发，避免并发部署冲突。"
+      },
+      {
+        "code": "500",
+        "name": "内部服务错误",
+        "description": "部署过程中发生未预期异常，如SSH连接失败、对象存储访问异常、gRPC调用失败等，执行清理回滚并在日志中记录完整堆栈。"
+      },
+      {
+        "code": "502",
+        "name": "上游服务错误",
+        "description": "调用环境管理服务、密钥管理服务或MinIO返回异常或超时时触发，会重试有限次数后向上游透传错误。"
+      },
+      {
+        "code": "503",
+        "name": "服务暂不可用",
+        "description": "部署编排服务当前过载或正在维护，无法处理新请求时触发。"
+      }
+    ]
+  },
+  "domain_objects": [
+    {
+      "id": "DO-001",
+      "name": "DeploymentRequest",
+      "object_type": "value_object",
+      "status": "active",
+      "version": 1,
+      "description": "部署请求输入DTO，包含环境ID和文件信息。作为服务入口参数传递。",
+      "attributes": [
+        {
+          "name": "environmentId",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "目标部署环境唯一标识，对应环境管理服务中的环境ID"
+        },
+        {
+          "name": "fileBundleId",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "待部署的文件包ID或对象存储路径，指向MinIO中的文件"
+        },
+        {
+          "name": "callBackUrl",
+          "type": "string?",
+          "required": false,
+          "source": "input",
+          "description": "可选的回调URL，部署完成后通知"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "",
+      "source_requirements": ["REQ-003"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-002",
+      "name": "DeploymentResponse",
+      "object_type": "value_object",
+      "status": "active",
+      "version": 1,
+      "description": "部署响应DTO，包含部署ID和WebSocket端点，返回给客户端以跟踪部署进度。",
+      "attributes": [
+        {
+          "name": "deploymentId",
+          "type": "string",
+          "required": true,
+          "source": "computed",
+          "description": "系统生成的部署任务唯一标识"
+        },
+        {
+          "name": "status",
+          "type": "DeploymentStatus",
+          "required": true,
+          "source": "computed",
+          "description": "初始部署状态，通常为PENDING"
+        },
+        {
+          "name": "wsEndpoint",
+          "type": "string",
+          "required": true,
+          "source": "computed",
+          "description": "WebSocket端点URL，用于前端建立连接接收实时日志"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "",
+      "source_requirements": ["REQ-003"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-003",
+      "name": "DeploymentJob",
+      "object_type": "entity",
+      "status": "active",
+      "version": 1,
+      "description": "部署作业领域实体，追踪部署流水线状态与所需数据。贯穿整个部署生命周期。",
+      "attributes": [
+        {
+          "name": "deploymentId",
+          "type": "string",
+          "required": true,
+          "source": "computed",
+          "description": "部署任务唯一标识"
+        },
+        {
+          "name": "status",
+          "type": "DeploymentStatus",
+          "required": true,
+          "source": "derived",
+          "description": "当前部署状态"
+        },
+        {
+          "name": "environmentId",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "目标环境ID"
+        },
+        {
+          "name": "environmentConfig",
+          "type": "EnvironmentConfig?",
+          "required": false,
+          "source": "computed",
+          "description": "从环境管理服务获取的配置，部署时填充"
+        },
+        {
+          "name": "keyMaterial",
+          "type": "DecryptedKeyMaterial?",
+          "required": false,
+          "source": "computed",
+          "description": "从密钥管理服务获取的解密密钥材料，部署时填充"
+        },
+        {
+          "name": "fileBundleId",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "待部署文件包ID"
+        },
+        {
+          "name": "createdAt",
+          "type": "datetime",
+          "required": true,
+          "source": "computed",
+          "description": "作业创建时间"
+        },
+        {
+          "name": "updatedAt",
+          "type": "datetime",
+          "required": true,
+          "source": "computed",
+          "description": "最后更新时间"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "",
+      "source_requirements": ["REQ-003", "REQ-004"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-004",
+      "name": "EnvironmentConfig",
+      "object_type": "value_object",
+      "status": "active",
+      "version": 1,
+      "description": "从环境管理服务获取的目标环境配置值对象，包含连接信息。",
+      "attributes": [
+        {
+          "name": "host",
+          "type": "string",
+          "required": true,
+          "source": "computed",
+          "description": "SSH主机地址"
+        },
+        {
+          "name": "port",
+          "type": "int",
+          "required": true,
+          "source": "computed",
+          "description": "SSH端口，默认22"
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "required": true,
+          "source": "computed",
+          "description": "SSH登录用户名"
+        },
+        {
+          "name": "deploymentPath",
+          "type": "string",
+          "required": true,
+          "source": "computed",
+          "description": "远程服务器上的部署根路径"
+        },
+        {
+          "name": "environmentId",
+          "type": "string",
+          "required": true,
+          "source": "input",
+          "description": "关联的环境ID"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "",
+      "source_requirements": ["REQ-004"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-005",
+      "name": "DecryptedKeyMaterial",
+      "object_type": "value_object",
+      "status": "active",
+      "version": 1,
+      "description": "从密钥管理服务获取的解密后密钥值对象，用于SSH认证或脚本签名。",
+      "attributes": [
+        {
+          "name": "privateKey",
+          "type": "string?",
+          "required": false,
+          "source": "computed",
+          "description": "SSH私钥内容（PEM格式）"
+        },
+        {
+          "name": "passphrase",
+          "type": "string?",
+          "required": false,
+          "source": "computed",
+          "description": "SSH私钥口令"
+        },
+        {
+          "name": "signingKey",
+          "type": "string?",
+          "required": false,
+          "source": "computed",
+          "description": "用于部署脚本签名的密钥"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "",
+      "source_requirements": ["REQ-004"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-006",
+      "name": "DeploymentLogEntry",
+      "object_type": "value_object",
+      "status": "active",
+      "version": 1,
+      "description": "部署日志条目值对象，用于实时推送单个日志行。",
+      "attributes": [
+        {
+          "name": "deploymentId",
+          "type": "string",
+          "required": true,
+          "source": "computed",
+          "description": "关联的部署任务ID"
+        },
+        {
+          "name": "timestamp",
+          "type": "datetime",
+          "required": true,
+          "source": "computed",
+          "description": "日志产生时间戳"
+        },
+        {
+          "name": "level",
+          "type": "string",
+          "required": true,
+          "source": "computed",
+          "description": "日志级别，如 INFO, WARN, ERROR"
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "required": true,
+          "source": "computed",
+          "description": "日志消息内容"
+        }
+      ],
+      "values": [],
+      "maps_to_entity": "",
+      "source_requirements": ["REQ-003"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DO-007",
+      "name": "DeploymentStatus",
+      "object_type": "enum",
+      "status": "active",
+      "version": 1,
+      "description": "部署状态枚举，定义部署作业的生命周期状态。",
+      "attributes": [],
+      "values": [
+        "PENDING",
+        "FETCHING_CONFIG",
+        "CONFIG_READY",
+        "FETCHING_KEY",
+        "KEY_READY",
+        "TRANSFERRING_FILES",
+        "RUNNING_SCRIPT",
+        "SUCCESS",
+        "FAILED",
+        "CANCELLED"
+      ],
+      "maps_to_entity": "",
+      "source_requirements": ["REQ-003"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "service_contracts": [
+    {
+      "name": "DeploymentService",
+      "description": "部署编排服务，负责协调环境与密钥，执行部署流水线并推送日志",
+      "methods": [
+        {
+          "name": "executeDeployment",
+          "signature": "(request: DeploymentRequest, user: User) -> DeploymentResponse",
+          "precondition": "DeploymentRequest 包含有效的目标环境ID和文件信息，且用户已认证",
+          "postcondition": "部署任务已异步启动，返回部署ID和WebSocket端点；或返回错误信息",
+          "description": "接收部署请求，异步执行部署流水线，返回任务状态与监控入口",
+          "exceptions": [
+            {
+              "name": "EnvironmentNotFoundException",
+              "trigger": "环境管理服务中无匹配的环境ID",
+              "http_status": 404
+            },
+            {
+              "name": "KeyRetrievalException",
+              "trigger": "从密钥管理服务获取密钥失败",
+              "http_status": 502
+            },
+            {
+              "name": "SSHConnectionException",
+              "trigger": "SSH连接目标服务器失败（认证、网络等原因）",
+              "http_status": 502
+            },
+            {
+              "name": "FileUploadException",
+              "trigger": "上传文件到MinIO失败",
+              "http_status": 502
+            },
+            {
+              "name": "DeploymentStartException",
+              "trigger": "启动部署任务时内部错误",
+              "http_status": 500
+            }
+          ]
+        },
+        {
+          "name": "getDeploymentStatus",
+          "signature": "(deploymentId: str) -> DeploymentJob",
+          "precondition": "deploymentId 存在且用户有权访问",
+          "postcondition": "返回部署作业的当前状态和详细信息",
+          "description": "查询指定部署作业的状态",
+          "exceptions": [
+            {
+              "name": "DeploymentNotFoundException",
+              "trigger": "未找到指定部署ID",
+              "http_status": 404
+            }
+          ]
+        },
+        {
+          "name": "cancelDeployment",
+          "signature": "(deploymentId: str) -> bool",
+          "precondition": "deploymentId 存在且用户有权操作，部署尚未完成",
+          "postcondition": "部署作业被标记为取消，如果可能则执行清理回滚",
+          "description": "取消正在进行的部署，触发回滚并更新状态",
+          "exceptions": [
+            {
+              "name": "DeploymentNotFoundException",
+              "trigger": "未找到指定部署ID",
+              "http_status": 404
+            },
+            {
+              "name": "DeploymentNotCancellableException",
+              "trigger": "部署状态不允许取消（如已完成）",
+              "http_status": 409
+            }
+          ]
+        }
+      ],
+      "repository_dependencies": [
+        "getEnvironmentConfig(envId: str) -> EnvironmentConfig",
+        "getDecryptedKeyMaterial(keyId: str) -> DecryptedKeyMaterial",
+        "saveDeploymentJob(job: DeploymentJob) -> None",
+        "getDeploymentJob(jobId: str) -> DeploymentJob"
+      ]
+    }
+  ],
+  "business_rules": {
+    "invariants": [
+      "部署任务一旦创建，其deployment_id全局唯一且不可变",
+      "部署任务的状态转换必须遵循预定义状态机",
+      "任何部署操作不得在未成功获取解密密钥的情况下进行远程连接",
+      "远程服务器上的部署目录必须唯一对应于部署任务ID，不得冲突",
+      "部署失败时，必须执行清理操作删除远程已创建的版本目录",
+      "实时日志推送必须按时间顺序且不可丢失"
+    ],
+    "state_machines": [
+      {
+        "entity": "DeploymentJob",
+        "states": [
+          "PENDING",
+          "VALIDATING",
+          "FETCHING_CONFIG",
+          "FETCHING_KEYS",
+          "TRANSFERRING",
+          "STARTING",
+          "SUCCESS",
+          "FAILED",
+          "CANCELLED"
+        ],
+        "transitions": [
+          {
+            "from": "PENDING",
+            "to": "VALIDATING",
+            "trigger": "开始验证部署请求",
+            "actor": "部署编排服务"
+          },
+          {
+            "from": "VALIDATING",
+            "to": "FETCHING_CONFIG",
+            "trigger": "请求验证通过",
+            "actor": "部署编排服务"
+          },
+          {
+            "from": "VALIDATING",
+            "to": "FAILED",
+            "trigger": "请求验证失败",
+            "actor": "部署编排服务"
+          },
+          {
+            "from": "FETCHING_CONFIG",
+            "to": "FETCHING_KEYS",
+            "trigger": "成功获取环境配置",
+            "actor": "部署编排服务"
+          },
+          {
+            "from": "FETCHING_CONFIG",
+            "to": "FAILED",
+            "trigger": "获取环境配置失败",
+            "actor": "部署编排服务"
+          },
+          {
+            "from": "FETCHING_KEYS",
+            "to": "TRANSFERRING",
+            "trigger": "成功获取解密密钥",
+            "actor": "部署编排服务"
+          },
+          {
+            "from": "FETCHING_KEYS",
+            "to": "FAILED",
+            "trigger": "获取密钥失败",
+            "actor": "部署编排服务"
+          },
+          {
+            "from": "TRANSFERRING",
+            "to": "STARTING",
+            "trigger": "文件传输完成",
+            "actor": "部署编排服务"
+          },
+          {
+            "from": "TRANSFERRING",
+            "to": "FAILED",
+            "trigger": "文件传输失败",
+            "actor": "部署编排服务"
+          },
+          {
+            "from": "STARTING",
+            "to": "SUCCESS",
+            "trigger": "启动脚本执行成功",
+            "actor": "远程服务器"
+          },
+          {
+            "from": "STARTING",
+            "to": "FAILED",
+            "trigger": "启动脚本执行失败",
+            "actor": "远程服务器"
+          },
+          {
+            "from": "PENDING",
+            "to": "CANCELLED",
+            "trigger": "用户取消部署",
+            "actor": "用户"
+          },
+          {
+            "from": "VALIDATING",
+            "to": "CANCELLED",
+            "trigger": "用户取消部署",
+            "actor": "用户"
+          },
+          {
+            "from": "FETCHING_CONFIG",
+            "to": "CANCELLED",
+            "trigger": "用户取消部署",
+            "actor": "用户"
+          },
+          {
+            "from": "FETCHING_KEYS",
+            "to": "CANCELLED",
+            "trigger": "用户取消部署",
+            "actor": "用户"
+          },
+          {
+            "from": "TRANSFERRING",
+            "to": "CANCELLED",
+            "trigger": "用户取消部署",
+            "actor": "用户"
+          }
+        ],
+        "irreversible_rules": [
+          "SUCCESS和FAILED为终态，不可再转换",
+          "一旦进入SUCCESS状态，不可回滚或重试",
+          "CANCELLED状态不可逆转，必须清理远程资源"
+        ],
+        "concurrency": "同一部署任务ID在任意时刻只有一个实例处于活跃状态（PENDING到STARTING），使用数据库乐观锁或分布式锁防止并发操作"
+      }
+    ],
+    "cross_service_rules": [
+      "环境管理服务返回的环境配置必须包含有效的SSH连接信息，否则部署失败",
+      "密钥管理服务必须在验证调用方身份后提供解密密钥，密钥只能用于本次部署",
+      "部署日志必须发送到RabbitMQ指定交换机，日志与审计服务需正确消费并持久化",
+      "文件传输前必须确保MinIO中的文件可访问，且部署完成后可根据策略清理临时文件",
+      "WebSocket推送仅在部署任务活跃期间有效，前端需在收到完成或失败信号后关闭连接"
+    ]
+  },
+  "workflow": {
+    "name": "部署执行主流程",
+    "description": "接收部署请求后顺序执行验证、配置获取、密钥获取、文件传输和服务启动，任何步骤失败即回滚。",
+    "steps": [
+      {
+        "order": 1,
+        "name": "验证请求",
+        "action": "校验 request 参数格式与必填项",
+        "timeout_seconds": 30,
+        "on_failure": "返回 400 错误并终止流程"
+      },
+      {
+        "order": 2,
+        "name": "获取环境配置",
+        "action": "调用环境管理服务获取目标环境的SSH连接信息",
+        "timeout_seconds": 60,
+        "on_failure": "返回 502 错误，回滚已创建的资源"
+      },
+      {
+        "order": 3,
+        "name": "获取解密密钥",
+        "action": "调用密钥管理服务获取解密后的SSH私钥或签名密钥",
+        "timeout_seconds": 60,
+        "on_failure": "返回 502 错误，回滚已创建的远程目录"
+      },
+      {
+        "order": 4,
+        "name": "暂存文件到对象存储",
+        "action": "将待部署文件上传到 MinIO 临时桶",
+        "timeout_seconds": 120,
+        "on_failure": "返回 502 错误，删除已上传的部分文件"
+      },
+      {
+        "order": 5,
+        "name": "SSH 远程连接",
+        "action": "使用获取的密钥和配置通过 Paramiko 建立 SSH 连接",
+        "timeout_seconds": 30,
+        "on_failure": "返回 502 错误，清理 MinIO 暂存文件"
+      },
+      {
+        "order": 6,
+        "name": "创建版本目录",
+        "action": "在远程服务器上创建以 deploymentId 命名的版本目录",
+        "timeout_seconds": 30,
+        "on_failure": "关闭 SSH 连接，清理 MinIO 文件"
+      },
+      {
+        "order": 7,
+        "name": "传输文件",
+        "action": "从 MinIO 下载文件并通过 SFTP 传输到远程版本目录",
+        "timeout_seconds": 300,
+        "on_failure": "删除远程已创建的目录，清理 MinIO 文件"
+      },
+      {
+        "order": 8,
+        "name": "生成启动脚本",
+        "action": "在远程服务器上创建启动脚本并设置执行权限",
+        "timeout_seconds": 30,
+        "on_failure": "清理远程目录和文件"
+      },
+      {
+        "order": 9,
+        "name": "执行启动脚本",
+        "action": "通过 SSH exec 启动远程服务脚本",
+        "timeout_seconds": 180,
+        "on_failure": "停止可能已启动的进程，清理远程目录"
+      }
+    ],
+    "retry_strategy": {
+      "max_retries": 3,
+      "retry_interval_seconds": 30,
+      "retryable_errors": ["NETWORK_ERROR", "TIMEOUT"],
+      "non_retryable_errors": ["AUTH_ERROR", "CONFIG_ERROR"]
+    }
+  }
+}
