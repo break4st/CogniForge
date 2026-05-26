@@ -15,15 +15,196 @@
   "updated_at": "2026-05-26T17:12:47.122527",
   "result": null,
   "error": null,
-  "lld_refs": [],
-  "acceptance_criteria": [],
-  "context": null,
-  "expected_output_files": [],
-  "layer": 0,
-  "source": null,
-  "implementation_boundary": null,
-  "validation": null,
-  "dev_agent": null,
-  "file_locks": [],
+  "lld_refs": [
+    {
+      "module": "密钥管理服务",
+      "doc_id": "lld-KeyManagementService-001",
+      "section": "service_contracts",
+      "item_name": "SC-001",
+      "artifact_type": "service_contract",
+      "sub_item": null
+    }
+  ],
+  "acceptance_criteria": [
+    {
+      "source_section": "service_contracts",
+      "source_item": "SC-001.uploadKey",
+      "description": "uploadKey 方法实现满足前置条件: API网关已完成用户认证，请求中包含未加密的私钥材料。",
+      "verification_type": "unit_test",
+      "expected": "返回值符合 (request: KeyUploadRequestDTO) -> KeyUploadResponseDTO"
+    },
+    {
+      "source_section": "service_contracts",
+      "source_item": "SC-001.getDecryptedKeyMaterial",
+      "description": "getDecryptedKeyMaterial 方法实现满足前置条件: 调用方为内部授权服务，且密钥状态为active。",
+      "verification_type": "unit_test",
+      "expected": "返回值符合 (request: GetDecryptedKeyMaterialRequestDTO) -> GetDecryptedKeyMaterialResponseDTO"
+    },
+    {
+      "source_section": "service_contracts",
+      "source_item": "SC-001.revokeKey",
+      "description": "revokeKey 方法实现满足前置条件: 密钥存在且状态为active。",
+      "verification_type": "unit_test",
+      "expected": "返回值符合 (keyId: str, reason: str) -> None"
+    }
+  ],
+  "context": {
+    "module_type": "service",
+    "lld_path": ".cogniforge/wiki/lld/密钥管理服务/lld-KeyManagementService-001.json",
+    "module_overview": "密钥管理服务负责SSH私钥的全生命周期安全管控，包括上传加密、安全存储、内存解密、脱敏展示和吊销管理，并通过gRPC为内部服务提供解密接口。",
+    "scope": {
+      "data_models": [],
+      "domain_objects": [],
+      "interfaces": [],
+      "service_contracts": [
+        {
+          "name": "SC-001",
+          "description": "密钥管理服务接口，提供私钥安全上传、加密存储、解密分发、吊销及生命周期管理。",
+          "methods": [
+            {
+              "name": "uploadKey",
+              "signature": "(request: KeyUploadRequestDTO) -> KeyUploadResponseDTO",
+              "precondition": "API网关已完成用户认证，请求中包含未加密的私钥材料。",
+              "postcondition": "私钥被加密存储到数据库，返回脱敏的密钥指纹和ID。审计事件已发送。",
+              "description": "接收用户上传的私钥，加密后持久化存储，并返回脱敏信息。",
+              "exceptions": [
+                {
+                  "name": "InvalidKeyException",
+                  "trigger": "上传的私钥格式无效或内容损坏",
+                  "http_status": 400
+                },
+                {
+                  "name": "KeyAlreadyExistsException",
+                  "trigger": "同名密钥已存在且为活跃状态",
+                  "http_status": 409
+                }
+              ]
+            },
+            {
+              "name": "getDecryptedKeyMaterial",
+              "signature": "(request: GetDecryptedKeyMaterialRequestDTO) -> GetDecryptedKeyMaterialResponseDTO",
+              "precondition": "调用方为内部授权服务，且密钥状态为active。",
+              "postcondition": "返回内存中解密的临时密钥材料，响应后立即销毁。审计事件已发送。",
+              "description": "为内部服务获取解密的私钥材料，仅在内存中短暂存在。",
+              "exceptions": [
+                {
+                  "name": "KeyNotFoundException",
+                  "trigger": "指定密钥ID不存在",
+                  "http_status": 404
+                },
+                {
+                  "name": "KeyNotActiveException",
+                  "trigger": "密钥状态非active",
+                  "http_status": 403
+                }
+              ]
+            },
+            {
+              "name": "revokeKey",
+              "signature": "(keyId: str, reason: str) -> None",
+              "precondition": "密钥存在且状态为active。",
+              "postcondition": "密钥状态更新为revoked。审计事件已发送。",
+              "description": "吊销指定密钥，使其不可再使用。",
+              "exceptions": [
+                {
+                  "name": "KeyNotFoundException",
+                  "trigger": "密钥ID不存在",
+                  "http_status": 404
+                },
+                {
+                  "name": "KeyAlreadyRevokedException",
+                  "trigger": "密钥已处于revoked状态",
+                  "http_status": 409
+                }
+              ]
+            },
+            {
+              "name": "listKeys",
+              "signature": "(page: int, size: int) -> List[KeySummaryDTO]",
+              "precondition": "API网关已完成用户认证。",
+              "postcondition": "返回当前用户可见的密钥摘要列表（含指纹和状态）。",
+              "description": "分页查询当前用户上传的密钥列表。",
+              "exceptions": []
+            }
+          ],
+          "repository_dependencies": [
+            "save(KeyRecordEntity) -> KeyRecordEntity",
+            "findById(keyId: str) -> KeyRecordEntity?",
+            "findByNameAndUploadedBy(name: str, uploadedBy: str) -> KeyRecordEntity?",
+            "findByUploadedByPaginated(uploadedBy: str, page: int, size: int) -> List[KeyRecordEntity]",
+            "updateStatus(keyId: str, status: KeyStatus) -> None"
+          ]
+        }
+      ],
+      "business_rules": {},
+      "error_handling": {},
+      "extra_sections": {}
+    },
+    "external_contracts": [],
+    "cross_module_deps": [],
+    "tech_stack": [
+      "Python",
+      "FastAPI",
+      "gRPC",
+      "PostgreSQL",
+      "RabbitMQ"
+    ],
+    "repo_conventions": [],
+    "existing_files_hint": [],
+    "do_not_touch": [],
+    "upstream_artifacts": []
+  },
+  "expected_output_files": [
+    "src/密钥管理服务/services/sc-001.py"
+  ],
+  "layer": 1,
+  "source": {
+    "wbs_id": "",
+    "prd_doc_id": "",
+    "sad_doc_id": "",
+    "lld_doc_id": "lld-KeyManagementService-001",
+    "lld_path": "",
+    "requirements": [],
+    "components": [],
+    "contracts": [],
+    "mde_turn_id": ""
+  },
+  "implementation_boundary": {
+    "allowed_paths": [
+      "src/密钥管理服务/services/sc-001.py"
+    ],
+    "allowed_path_globs": [],
+    "forbidden_paths": [
+      ".cogniforge/wiki/",
+      "schemas/",
+      "CLAUDE.md",
+      "DESIGN.html",
+      "FLOWCHARTS.html",
+      "README.md"
+    ],
+    "expected_output_files": [
+      "src/密钥管理服务/services/sc-001.py"
+    ],
+    "max_files_changed": 6,
+    "may_create_files": true
+  },
+  "validation": {
+    "commands": [
+      {
+        "name": "测试 SC-001",
+        "command": "pytest tests/密钥管理服务/test_sc-001.py -v",
+        "timeout_seconds": 120
+      }
+    ]
+  },
+  "dev_agent": {
+    "agent_type": "claude_code",
+    "allow_bash": false,
+    "test_execution_owner": "orchestrator",
+    "run_in_worktree": false
+  },
+  "file_locks": [
+    "src/密钥管理服务/services/sc-001.py"
+  ],
   "definition_of_done": []
 }
