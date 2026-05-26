@@ -1,0 +1,985 @@
+{
+  "meta": {
+    "doc_id": "lld-Gateway-001",
+    "type": "lld",
+    "module_type": "service",
+    "module": "API 网关",
+    "title": "API 网关 LLD",
+    "author": "design_agent",
+    "created": "2025-04-12T00:00:00Z",
+    "version": 1,
+    "status": "active"
+  },
+  "source": {
+    "prd": {
+      "doc_id": "prd-Gateway-001",
+      "version": 1,
+      "requirements": ["REQ-001", "REQ-002", "REQ-003", "REQ-004"]
+    },
+    "sad": {
+      "doc_id": "sad-Gateway-001",
+      "version": 1,
+      "components": ["CMP-001"],
+      "contracts": ["CTR-001", "CTR-002", "CTR-004", "CTR-005"],
+      "data_models": []
+    },
+    "pm_turn_id": "",
+    "se_turn_id": ""
+  },
+  "module_boundary": {
+    "in_scope": [
+      "请求认证 (JWT 验证)",
+      "路由转发 (REST + WebSocket)",
+      "限流控制",
+      "WebSocket 代理至部署编排服务实时日志",
+      "请求访问日志记录"
+    ],
+    "out_of_scope": [
+      "JWT 签发 (由认证服务负责)",
+      "业务逻辑处理",
+      "数据库直接操作",
+      "用户管理",
+      "项目管理",
+      "环境管理",
+      "密钥管理",
+      "部署编排",
+      "日志审计存储"
+    ],
+    "owned_components": ["CMP-001"],
+    "owned_contracts": [],
+    "consumed_contracts": ["CTR-001", "CTR-002", "CTR-004", "CTR-005"],
+    "owned_data_models": [],
+    "consumed_data_models": []
+  },
+  "overview": {
+    "description": "系统统一流量入口，负责请求认证（JWT验证）、根据URL路径将请求路由至对应的下游微服务（项目管理服务、环境管理服务、部署编排服务等），提供基础限流和访问控制，并将前端WebSocket连接代理至部署编排服务的实时日志流，同时记录请求访问日志供审计。",
+    "dependencies": [
+      "项目管理服务 (CMP-003)",
+      "环境管理服务 (CMP-004)",
+      "部署编排服务 (CMP-006)",
+      "日志与审计服务 (CMP-007)"
+    ],
+    "tech_stack": [
+      "Nginx + Lua/OpenResty (或 Kong)"
+    ]
+  },
+  "traceability": [
+    {
+      "requirement_id": "REQ-001",
+      "sad_component_ids": ["CMP-001"],
+      "sad_contract_ids": ["CTR-001"],
+      "lld_objects": {
+        "data_models": ["DM-001", "DM-002", "DM-003", "DM-004", "DM-005"],
+        "interfaces": ["IF-001"],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": ""
+    },
+    {
+      "requirement_id": "REQ-002",
+      "sad_component_ids": ["CMP-001"],
+      "sad_contract_ids": ["CTR-002"],
+      "lld_objects": {
+        "data_models": [],
+        "interfaces": ["IF-002"],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": ""
+    },
+    {
+      "requirement_id": "REQ-003",
+      "sad_component_ids": ["CMP-001"],
+      "sad_contract_ids": ["CTR-004"],
+      "lld_objects": {
+        "data_models": [],
+        "interfaces": ["IF-003"],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": ""
+    },
+    {
+      "requirement_id": "REQ-004",
+      "sad_component_ids": ["CMP-001"],
+      "sad_contract_ids": ["CTR-005"],
+      "lld_objects": {
+        "data_models": [],
+        "interfaces": ["IF-004"],
+        "domain_objects": [],
+        "service_contracts": []
+      },
+      "coverage": "full",
+      "notes": ""
+    }
+  ],
+  "data_models": [
+    {
+      "id": "DM-001",
+      "name": "路由规则模型",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "canonical",
+      "source": {
+        "doc_id": "lld-Gateway-001",
+        "model_name": "路由规则表"
+      },
+      "description": "定义将外部请求映射到上游服务的路由表条目，包含路径模式、目标服务地址、超时等属性。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string (UUID)",
+          "required": true,
+          "description": "路由规则唯一标识符"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "路由规则名称，便于识别"
+        },
+        {
+          "name": "path_pattern",
+          "type": "string",
+          "required": true,
+          "description": "请求路径匹配模式，如 /api/v1/projects/*"
+        },
+        {
+          "name": "methods",
+          "type": "array of string",
+          "required": false,
+          "description": "允许的HTTP方法列表，如 [\"GET\",\"POST\"]；为空表示所有方法"
+        },
+        {
+          "name": "upstream_host",
+          "type": "string",
+          "required": true,
+          "description": "上游服务主机地址，如 project-service"
+        },
+        {
+          "name": "upstream_port",
+          "type": "integer",
+          "required": false,
+          "description": "上游服务端口号，默认80"
+        },
+        {
+          "name": "upstream_path",
+          "type": "string",
+          "required": false,
+          "description": "转发到上游时重写的路径，可选，默认为原始路径"
+        },
+        {
+          "name": "timeout_ms",
+          "type": "integer",
+          "required": false,
+          "description": "上游连接超时时间（毫秒），默认60000"
+        },
+        {
+          "name": "retries",
+          "type": "integer",
+          "required": false,
+          "description": "失败重试次数，默认0"
+        },
+        {
+          "name": "strip_path",
+          "type": "boolean",
+          "required": false,
+          "description": "转发前是否去除匹配的前缀路径，默认true"
+        },
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "required": true,
+          "description": "路由是否启用，默认true"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "required": true,
+          "description": "最后更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_route_path_pattern",
+          "unique": true,
+          "columns": ["path_pattern"]
+        },
+        {
+          "name": "idx_route_name",
+          "unique": true,
+          "columns": ["name"]
+        }
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "通过网关管理接口或配置文件创建路由规则",
+        "update": "通过网关管理接口更新规则属性",
+        "delete": "通过网关管理接口删除路由规则",
+        "retention": "长期存储，与运行配置一致"
+      },
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-001"],
+      "source_contracts": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-002",
+      "name": "认证配置模型",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "canonical",
+      "source": {
+        "doc_id": "lld-Gateway-001",
+        "model_name": "认证配置表"
+      },
+      "description": "存储认证相关配置，如公开端点列表、JWT验证参数（签名密钥、过期时间等）、角色映射等。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string (UUID)",
+          "required": true,
+          "description": "配置项唯一标识符"
+        },
+        {
+          "name": "config_key",
+          "type": "string",
+          "required": true,
+          "description": "配置键，如 'jwt_secret', 'public_endpoints'"
+        },
+        {
+          "name": "config_value",
+          "type": "string (JSON)",
+          "required": true,
+          "description": "配置值，可存储复杂对象，如公开路径列表、JWT参数"
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "required": false,
+          "description": "配置项的用途说明"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "required": true,
+          "description": "最后更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_auth_config_key",
+          "unique": true,
+          "columns": ["config_key"]
+        }
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "初始化部署时设置默认配置，或通过管理接口添加",
+        "update": "通过管理接口修改配置值",
+        "delete": "通过管理接口删除配置项",
+        "retention": "长期存储，供网关实时读取"
+      },
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-001"],
+      "source_contracts": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-003",
+      "name": "限流策略模型",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "canonical",
+      "source": {
+        "doc_id": "lld-Gateway-001",
+        "model_name": "限流策略表"
+      },
+      "description": "定义全局、用户级别或特定端点的限流规则，包含速率限制、突发容量、时间窗口等参数。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string (UUID)",
+          "required": true,
+          "description": "限流策略唯一标识符"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "策略名称，如 'rate-limiting-basic'"
+        },
+        {
+          "name": "type",
+          "type": "enum('global', 'user', 'endpoint')",
+          "required": true,
+          "description": "策略类型：全局、用户级别、特定端点"
+        },
+        {
+          "name": "target",
+          "type": "string",
+          "required": false,
+          "description": "当type为endpoint时，指定路径模式；user类型时可为用户名或角色；全局为空"
+        },
+        {
+          "name": "rate_limit",
+          "type": "integer",
+          "required": true,
+          "description": "时间窗口内允许的最大请求数"
+        },
+        {
+          "name": "burst",
+          "type": "integer",
+          "required": false,
+          "description": "突发容量，允许瞬时超过rate_limit的请求数"
+        },
+        {
+          "name": "window_seconds",
+          "type": "integer",
+          "required": true,
+          "description": "限流时间窗口（秒）"
+        },
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "required": true,
+          "description": "策略是否启用"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "required": true,
+          "description": "最后更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_rate_limit_name",
+          "unique": true,
+          "columns": ["name"]
+        }
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "通过网关管理接口添加限流策略",
+        "update": "通过网关管理接口修改策略参数",
+        "delete": "通过网关管理接口删除策略",
+        "retention": "长期存储"
+      },
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-001"],
+      "source_contracts": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-004",
+      "name": "WebSocket 代理映射模型",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "canonical",
+      "source": {
+        "doc_id": "lld-Gateway-001",
+        "model_name": "WebSocket代理映射表"
+      },
+      "description": "建立前端 WebSocket 连接与后端部署编排服务实时日志流之间的代理规则。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string (UUID)",
+          "required": true,
+          "description": "映射规则唯一标识符"
+        },
+        {
+          "name": "ws_path",
+          "type": "string",
+          "required": true,
+          "description": "WebSocket 端点路径，如 /ws/deployments/{deployment_id}/logs"
+        },
+        {
+          "name": "upstream_host",
+          "type": "string",
+          "required": true,
+          "description": "上游服务主机，如 deployment-service"
+        },
+        {
+          "name": "upstream_port",
+          "type": "integer",
+          "required": true,
+          "description": "上游服务端口"
+        },
+        {
+          "name": "upstream_path",
+          "type": "string",
+          "required": true,
+          "description": "转发到上游的完整路径模板，支持变量"
+        },
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "required": true,
+          "description": "是否启用"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "required": true,
+          "description": "创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp",
+          "required": true,
+          "description": "最后更新时间"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_ws_path",
+          "unique": true,
+          "columns": ["ws_path"]
+        }
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "通过网关管理接口或配置文件添加映射",
+        "update": "通过网关管理接口修改映射配置",
+        "delete": "通过网关管理接口删除映射",
+        "retention": "长期存储"
+      },
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-001"],
+      "source_contracts": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "DM-005",
+      "name": "访问日志模型",
+      "type": "table",
+      "status": "active",
+      "version": 1,
+      "ownership": "canonical",
+      "source": {
+        "doc_id": "lld-Gateway-001",
+        "model_name": "访问日志表"
+      },
+      "description": "记录每个经过网关的请求的元数据，如时间戳、客户端 IP、方法、路径、状态码、延迟等，用于审计和分析。",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string (UUID)",
+          "required": true,
+          "description": "日志条目唯一标识符"
+        },
+        {
+          "name": "timestamp",
+          "type": "timestamp",
+          "required": true,
+          "description": "请求发生的时间"
+        },
+        {
+          "name": "client_ip",
+          "type": "string",
+          "required": true,
+          "description": "客户端IP地址"
+        },
+        {
+          "name": "method",
+          "type": "string",
+          "required": true,
+          "description": "HTTP请求方法，如GET、POST"
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "description": "请求的URI路径"
+        },
+        {
+          "name": "query_string",
+          "type": "string",
+          "required": false,
+          "description": "查询参数"
+        },
+        {
+          "name": "status_code",
+          "type": "integer",
+          "required": true,
+          "description": "返回的HTTP状态码"
+        },
+        {
+          "name": "latency_ms",
+          "type": "integer",
+          "required": true,
+          "description": "请求延迟（毫秒）"
+        },
+        {
+          "name": "upstream_host",
+          "type": "string",
+          "required": false,
+          "description": "转发的上游服务主机"
+        },
+        {
+          "name": "upstream_status_code",
+          "type": "integer",
+          "required": false,
+          "description": "上游返回的状态码"
+        },
+        {
+          "name": "user_agent",
+          "type": "string",
+          "required": false,
+          "description": "客户端User-Agent"
+        },
+        {
+          "name": "user_id",
+          "type": "string",
+          "required": false,
+          "description": "认证后的用户标识，若未认证则为空"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_access_log_timestamp",
+          "unique": false,
+          "columns": ["timestamp"]
+        },
+        {
+          "name": "idx_access_log_user_id",
+          "unique": false,
+          "columns": ["user_id"]
+        }
+      ],
+      "constraints": [],
+      "lifecycle": {
+        "create": "每个请求自动创建日志条目",
+        "update": "日志条目不可修改",
+        "delete": "按保留策略批量删除",
+        "retention": "保留90天，定期归档或删除"
+      },
+      "source_requirements": ["REQ-001"],
+      "source_components": ["CMP-001"],
+      "source_contracts": [],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "IF-001",
+      "name": "创建项目透传接口",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-001",
+      "provider_component_id": "CMP-001",
+      "method": "POST",
+      "endpoint": "/api/v1/projects",
+      "description": "将前端创建项目请求透明转发至项目管理服务，并返回展开的完整响应体。",
+      "parameters": [],
+      "request_body": {
+        "name": "string",
+        "description": "string",
+        "owner_id": "string"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "id": "string",
+          "name": "string",
+          "description": "string",
+          "owner_id": "string",
+          "created_at": "string"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "INVALID_REQUEST",
+          "message": "请求参数验证失败"
+        },
+        {
+          "status": 401,
+          "code": "UNAUTHORIZED",
+          "message": "认证失败"
+        },
+        {
+          "status": 502,
+          "code": "BAD_GATEWAY",
+          "message": "上游服务不可用"
+        }
+      ],
+      "auth": {
+        "required": true,
+        "policy": "JWT"
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": ["REQ-001"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-002",
+      "name": "测试环境连接透传接口",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-002",
+      "provider_component_id": "CMP-001",
+      "method": "POST",
+      "endpoint": "/api/v1/environments/{env_id}/test-connection",
+      "description": "将前端测试环境连接请求透明转发至环境管理服务，返回完整的连接测试结果。",
+      "parameters": [
+        {
+          "name": "env_id",
+          "type": "string",
+          "in": "path",
+          "required": true,
+          "description": "环境ID"
+        }
+      ],
+      "request_body": {
+        "host": "string",
+        "port": "integer",
+        "credentials": {
+          "username": "string",
+          "password": "string"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "success": "boolean",
+          "details": "string",
+          "timestamp": "string"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "INVALID_REQUEST",
+          "message": "请求参数验证失败"
+        },
+        {
+          "status": 401,
+          "code": "UNAUTHORIZED",
+          "message": "认证失败"
+        },
+        {
+          "status": 404,
+          "code": "ENVIRONMENT_NOT_FOUND",
+          "message": "环境不存在"
+        },
+        {
+          "status": 502,
+          "code": "BAD_GATEWAY",
+          "message": "上游服务不可用"
+        }
+      ],
+      "auth": {
+        "required": true,
+        "policy": "JWT"
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": ["REQ-002"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-003",
+      "name": "执行部署透传接口",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-004",
+      "provider_component_id": "CMP-001",
+      "method": "POST",
+      "endpoint": "/api/v1/deployments",
+      "description": "将前端部署请求透明转发至部署编排服务，返回包含 deployment_id 和 websocket_url 的响应。",
+      "parameters": [],
+      "request_body": {
+        "project_id": "string",
+        "environment_id": "string",
+        "version": "string",
+        "configuration": {}
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "deployment_id": "string",
+          "status": "string",
+          "websocket_url": "string"
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "INVALID_REQUEST",
+          "message": "请求参数验证失败"
+        },
+        {
+          "status": 401,
+          "code": "UNAUTHORIZED",
+          "message": "认证失败"
+        },
+        {
+          "status": 409,
+          "code": "DEPLOYMENT_CONFLICT",
+          "message": "部署冲突"
+        },
+        {
+          "status": 502,
+          "code": "BAD_GATEWAY",
+          "message": "上游服务不可用"
+        }
+      ],
+      "auth": {
+        "required": true,
+        "policy": "JWT"
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "not_applicable",
+      "source_requirements": ["REQ-003"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    },
+    {
+      "id": "IF-004",
+      "name": "查询部署记录透传接口",
+      "status": "active",
+      "version": 1,
+      "source_contract_id": "CTR-005",
+      "provider_component_id": "CMP-001",
+      "method": "GET",
+      "endpoint": "/api/v1/deployments",
+      "description": "将前端查询部署记录请求透明转发至日志与审计服务，返回过滤后的部署记录列表。",
+      "parameters": [
+        {
+          "name": "project_id",
+          "type": "string",
+          "in": "query",
+          "required": false,
+          "description": "项目ID"
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "in": "query",
+          "required": false,
+          "description": "部署状态"
+        },
+        {
+          "name": "start_date",
+          "type": "string",
+          "in": "query",
+          "required": false,
+          "description": "开始日期"
+        },
+        {
+          "name": "end_date",
+          "type": "string",
+          "in": "query",
+          "required": false,
+          "description": "结束日期"
+        }
+      ],
+      "request_body": {},
+      "response": {
+        "status": 200,
+        "body": {
+          "data": [
+            {
+              "id": "string",
+              "project_id": "string",
+              "environment_id": "string",
+              "status": "string",
+              "created_at": "string"
+            }
+          ],
+          "pagination": {
+            "page": "integer",
+            "page_size": "integer",
+            "total": "integer"
+          }
+        }
+      },
+      "error_codes": [
+        {
+          "status": 400,
+          "code": "INVALID_REQUEST",
+          "message": "请求参数验证失败"
+        },
+        {
+          "status": 401,
+          "code": "UNAUTHORIZED",
+          "message": "认证失败"
+        },
+        {
+          "status": 502,
+          "code": "BAD_GATEWAY",
+          "message": "上游服务不可用"
+        }
+      ],
+      "auth": {
+        "required": true,
+        "policy": "JWT"
+      },
+      "validation_rules": [],
+      "idempotency": "not_applicable",
+      "pagination": "offset_based",
+      "source_requirements": ["REQ-004"],
+      "change_history": [
+        {
+          "version": 1,
+          "change_type": "created",
+          "summary": "初始创建",
+          "reason": "首次生成 LLD"
+        }
+      ]
+    }
+  ],
+  "error_handling": {
+    "strategy": "网关层对下游服务错误进行统一封装，返回标准 JSON 错误体，包含错误码、错误信息和详情。对于认证失败和限流触发直接由网关返回错误，下游服务错误则透传并根据需要转换。",
+    "response_format": {
+      "body": {
+        "code": "integer",
+        "error": "string",
+        "detail": "string"
+      }
+    },
+    "categories": [
+      {
+        "code": "401",
+        "name": "认证失败",
+        "description": "JWT 令牌缺失、无效或过期，网关直接返回 401，提示需要有效认证。"
+      },
+      {
+        "code": "403",
+        "name": "权限不足",
+        "description": "令牌有效但角色或权限不匹配，网关返回 403，禁止访问。"
+      },
+      {
+        "code": "429",
+        "name": "请求限流",
+        "description": "客户端请求频率超过配置的限流阈值，网关返回 429，并在 Retry-After 头中指明等待时间。"
+      },
+      {
+        "code": "502",
+        "name": "下游服务不可用",
+        "description": "网关无法连接到下游服务或连接超时，返回 502，提示目标服务暂时不可用。"
+      },
+      {
+        "code": "503",
+        "name": "服务暂时过载",
+        "description": "下游服务返回 503 或由于限流导致服务不可用，网关返回 503，提示稍后重试。"
+      },
+      {
+        "code": "504",
+        "name": "下游服务响应超时",
+        "description": "下游服务在规定时间内未返回响应，网关返回 504，提示上游超时。"
+      },
+      {
+        "code": "500",
+        "name": "网关内部错误",
+        "description": "网关自身发生未预期异常，如配置加载失败或 Lua 脚本错误，返回 500，并记录详细日志。"
+      }
+    ]
+  },
+  "domain_objects": [],
+  "service_contracts": [],
+  "business_rules": {
+    "invariants": [],
+    "state_machines": [],
+    "cross_service_rules": []
+  },
+  "workflow": {
+    "name": "无",
+    "description": "无",
+    "steps": [],
+    "retry_strategy": {
+      "max_retries": 0,
+      "retry_interval_seconds": 0,
+      "retryable_errors": [],
+      "non_retryable_errors": []
+    }
+  }
+}
