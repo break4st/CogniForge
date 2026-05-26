@@ -1,9 +1,11 @@
 """MDE Router — non-LLM orchestrator for fan-out / fan-in of MDE agents.
 
-Reads ``config/module-registry.json`` and SAD wiki to decide
-which MDE modules are affected by an SE turn result, then generates
-per-module ``mde-request`` packets containing only the relevant PRD/SAD
-slices.
+Scans LLD wiki documents and SAD wiki to decide which MDE modules are
+affected by an SE turn result, then generates per-module ``mde-request``
+packets containing only the relevant PRD/SAD slices.
+
+The routing table is built at runtime by scanning all LLD files — each
+LLD declares its owned components/contracts in ``module_boundary``.
 """
 
 from __future__ import annotations
@@ -20,14 +22,33 @@ class MDERouter:
         self.repo_path = repo_path or Path.cwd()
 
     # ------------------------------------------------------------------
-    # Registry
+    # Registry (built from LLD scan)
     # ------------------------------------------------------------------
 
-    def load_registry(self) -> dict:
-        reg_path = self.repo_path / "config" / "module-registry.json"
-        if not reg_path.exists():
-            return {"modules": []}
-        return json.loads(reg_path.read_text(encoding="utf-8"))
+    def _scan_lld_modules(self) -> list[dict]:
+        """Scan all LLD files and build the in-memory routing table.
+
+        Each LLD declares what it owns/consumes in ``module_boundary``.
+        """
+        import glob
+        wiki_root = self.repo_path / ".cogniforge" / "wiki" / "lld"
+        modules: list[dict] = []
+        for fpath in sorted(glob.glob(str(wiki_root / "*" / "lld-*.json"))):
+            try:
+                lld = json.loads(Path(fpath).read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, ValueError):
+                continue
+            meta = lld.get("meta", {})
+            boundary = lld.get("module_boundary", {})
+            modules.append({
+                "module": meta.get("module", ""),
+                "module_type": meta.get("module_type", "service"),
+                "lld_path": str(Path(fpath).relative_to(self.repo_path)),
+                "owned_components": boundary.get("owned_components", []),
+                "owned_contracts": boundary.get("owned_contracts", []),
+                "consumed_contracts": boundary.get("consumed_contracts", []),
+            })
+        return modules
 
     # ------------------------------------------------------------------
     # Routing
@@ -46,8 +67,7 @@ class MDERouter:
                for c in coverage):
             return []
 
-        registry = self.load_registry()
-        all_modules = registry.get("modules", [])
+        registry = self._scan_lld_modules()
 
         affected_comps = {
             item["id"] for item in se_turn_result.get("affected_components", [])
@@ -61,7 +81,7 @@ class MDERouter:
             return []
 
         triggered: list[dict] = []
-        for mod in all_modules:
+        for mod in registry:
             owned_comps = set(mod.get("owned_components", []))
             owned_ctrs = set(mod.get("owned_contracts", []))
             consumed_ctrs = set(mod.get("consumed_contracts", []))

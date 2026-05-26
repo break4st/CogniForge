@@ -382,15 +382,20 @@ def _latest_prd(repo_path: Path) -> Optional[dict]:
         return None
 
 
-def _load_module_registry(repo_path: Path) -> list[dict]:
-    reg_path = repo_path / "config" / "module-registry.json"
-    if not reg_path.exists():
-        return []
-    try:
-        data = json.loads(reg_path.read_text(encoding="utf-8"))
-        return data.get("modules", [])
-    except Exception:
-        return []
+def _scan_lld_module_names(repo_path: Path) -> set[str]:
+    """Scan all LLD files and return the set of registered module names."""
+    import glob as _glob
+    pattern = str(repo_path / ".cogniforge" / "wiki" / "lld" / "*" / "lld-*.json")
+    names: set[str] = set()
+    for fpath in sorted(_glob.glob(pattern)):
+        try:
+            data = json.loads(Path(fpath).read_text(encoding="utf-8"))
+            mod = data.get("meta", {}).get("module", "")
+            if mod:
+                names.add(mod)
+        except Exception:
+            pass
+    return names
 
 
 def _merge_results(violations: list, warnings: list, result: dict) -> None:
@@ -539,8 +544,7 @@ def check_cross_lld(repo_path: Path) -> dict:
     llds = _all_llds(repo_path)
     prd = _latest_prd(repo_path)
     sad = _latest_sad(repo_path)
-    registry = _load_module_registry(repo_path)
-    registry_modules = {m.get("module") for m in registry if m.get("module")}
+    registry_modules = _scan_lld_module_names(repo_path)
 
     all_violations: list[dict] = []
     all_warnings: list[dict] = []
