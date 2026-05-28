@@ -156,6 +156,51 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
 
         return self._invoke_cli_stdin(cmd, full_prompt)
 
+    def generate_agentic_stream(
+        self,
+        prompt: str,
+        *,
+        role: str | None = None,
+        tools: list[dict] | None = None,
+        max_turns: int = 20,
+        progress_callback: callable = None,
+        content_callback: callable = None,
+        **kwargs,
+    ) -> LLMResponse:
+        """Streaming version of generate_agentic.
+
+        Calls content_callback with each line of stdout as the CLI produces it.
+        """
+        if progress_callback:
+            progress_callback("通过 Claude CLI 执行中...")
+        model = kwargs.get("model", self.model)
+
+        cmd = [
+            self.claude_cli_path, "-p", "-",
+            "--output-format", "json",
+            "--model", model,
+            "--tools", "Read,Write,Edit,Bash,Glob,Grep",
+            "--permission-mode", "acceptEdits",
+            "--max-turns", str(max_turns),
+        ]
+
+        if role and role in ROLE_PROMPTS:
+            cmd.extend(["--append-system-prompt", ROLE_PROMPTS[role]])
+
+        full_prompt = prompt
+        constraint_loader = self.config.get("constraint_loader")
+        if constraint_loader and role:
+            constraints = constraint_loader.load(role)
+            if constraints:
+                full_prompt = f"# 约束\n{constraints}\n\n# 任务\n{prompt}"
+
+        full_prompt += (
+            f"\n\n工作目录: {self.repo_path}\n"
+            "完成后用中文回复。"
+        )
+
+        return self._invoke_cli_stdin(cmd, full_prompt, content_callback=content_callback)
+
     # ------------------------------------------------------------------
     # Prompt helpers (shared by text mode and agent mode)
     # ------------------------------------------------------------------
@@ -191,8 +236,23 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
             content=content, model=self.model, provider="claude_code", usage=usage,
         )
 
-    def _invoke_cli_stdin(self, command: list[str], stdin_text: str) -> LLMResponse:
-        """Invoke CLI with prompt passed via stdin (avoids ARG_MAX limit)."""
+    def _invoke_cli_stdin(
+        self, command: list[str], stdin_text: str,
+        content_callback: callable = None,
+    ) -> LLMResponse:
+        """Invoke CLI with prompt passed via stdin (avoids ARG_MAX limit).
+
+        If content_callback is provided, it is called with each non-empty
+        line of stdout as it arrives (streaming mode via Popen + thread).
+        """
+        if content_callback is None:
+            return self._invoke_cli_stdin_blocking(command, stdin_text)
+        return self._invoke_cli_stdin_stream(command, stdin_text, content_callback)
+
+    def _invoke_cli_stdin_blocking(
+        self, command: list[str], stdin_text: str,
+    ) -> LLMResponse:
+        """Original blocking subprocess.run() path."""
         env = os.environ.copy()
         if self.api_key:
             env["ANTHROPIC_API_KEY"] = self.api_key
@@ -216,6 +276,89 @@ class ClaudeCodeAdapter(BaseLLMAdapter):
         content, usage = self._parse_output(result.stdout)
         if not content:
             content = result.stderr or result.stdout or ""
+        if not content:
+            raise RuntimeError("Claude Code CLI returned empty response")
+
+        return LLMResponse(
+            content=content, model=self.model, provider="claude_code", usage=usage,
+        )
+
+    def _invoke_cli_stdin_stream(
+        self, command: list[str], stdin_text: str,
+        content_callback: callable,
+    ) -> LLMResponse:
+        """Streaming path using Popen + reader thread.
+
+        content_callback is called with each line of stdout as it arrives.
+        """
+        import threading
+
+        env = os.environ.copy()
+        if self.api_key:
+            env["ANTHROPIC_API_KEY"] = self.api_key
+
+        try:
+            proc = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=str(self.repo_path),
+                env=env,
+                text=True,
+                encoding="utf-8",
+            )
+        except FileNotFoundError:
+            raise RuntimeError("Claude Code CLI not found.")
+
+        accumulated_stdout = []
+        read_error = None
+
+        def _read_stdout():
+            nonlocal read_error
+            try:
+                for line in proc.stdout:
+                    line = line.rstrip("\n").rstrip("\r")
+                    accumulated_stdout.append(line)
+                    if line.strip():
+                        content_callback(line)
+            except Exception as e:
+                read_error = e
+
+        reader = threading.Thread(target=_read_stdout, daemon=True)
+        reader.start()
+
+        # Write stdin
+        try:
+            proc.stdin.write(stdin_text)
+            proc.stdin.close()
+        except Exception:
+            pass
+
+        # Wait with timeout
+        try:
+            proc.wait(timeout=self.timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            raise RuntimeError(f"Claude Code CLI timeout after {self.timeout}s")
+
+        reader.join(timeout=5)
+
+        if read_error:
+            raise RuntimeError(f"Stream read error: {read_error}")
+
+        stderr_text = proc.stderr.read() if proc.stderr else ""
+
+        if proc.returncode != 0:
+            err = stderr_text or "\n".join(accumulated_stdout)
+            if "error" in err.lower() and "tool" not in err.lower():
+                raise RuntimeError(f"Claude CLI failed (exit {proc.returncode}): {err}")
+
+        full_output = "\n".join(accumulated_stdout)
+        content, usage = self._parse_output(full_output)
+        if not content:
+            content = stderr_text or full_output
         if not content:
             raise RuntimeError("Claude Code CLI returned empty response")
 

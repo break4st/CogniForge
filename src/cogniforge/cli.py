@@ -20,20 +20,10 @@ from cogniforge.wiki.wiki_system import WikiSystem
 from cogniforge.wiki.adr import ADRManager
 from cogniforge.task_engine.task_engine import TaskEngine
 from cogniforge.task_engine.dag import DAGStep, DAGDefinition, ApprovalStatus
-from cogniforge.llm.base import create_llm_adapter
 from cogniforge.agents.base import BaseAgent
-from cogniforge.agents.pm_agent import PMAgent
-from cogniforge.agents.architect_agent import ArchitectAgent
-from cogniforge.agents.design_agent import DesignAgent
-from cogniforge.agents.techlead_agent import TechLeadAgent
-from cogniforge.agents.dev_agent import DevAgent
-from cogniforge.agents.review_agent import ReviewAgent
-from cogniforge.agents.qa_agent import QAAgent
-from cogniforge.agents.devops_agent import DevOpsAgent
-from cogniforge.orchestration.workflow import Workflow, StepResult
-from cogniforge.execution.execution_engine import ExecutionEngine
-from cogniforge.execution.worker_pool import WorkerPool
+from cogniforge.orchestration.workflow import Workflow
 from cogniforge.constraints import ConstraintLoader
+from cogniforge.services import build_services
 
 
 # Configure logging
@@ -84,72 +74,6 @@ def _ensure_githooks(repo_path: Path) -> None:
         pass  # 静默失败，不阻塞 CLI
 
 
-def _build_providers(config: Config) -> dict[str, object]:
-    """Create provider adapter instances from config.
-
-    Returns a dict keyed by 'llm.<name>' and 'agent.<name>'.
-    """
-    from cogniforge.llm.base import LLMProvider
-    from cogniforge.constraints import ConstraintLoader
-
-    constraint_loader = ConstraintLoader(config.repo_path)
-    providers: dict[str, object] = {}
-
-    # LLM providers (API direct call)
-    for name, cfg in config.llm.items():
-        if not isinstance(cfg, dict):
-            continue
-        adapter = create_llm_adapter(
-            LLMProvider.DEEPSEEK,
-            config={
-                "api_key": cfg.get("api_key", ""),
-                "api_base": cfg.get("api_base", "https://api.deepseek.com/v1"),
-                "model": cfg.get("model", "deepseek-v4-pro"),
-                "max_tokens": cfg.get("max_tokens", 4096),
-                "repo_path": str(config.repo_path),
-                "constraint_loader": constraint_loader,
-            },
-        )
-        providers[f"llm.{name}"] = adapter
-
-    # AGENT providers (CLI-based)
-    for name, cfg in config.agent.items():
-        if not isinstance(cfg, dict):
-            continue
-        try:
-            provider_enum = LLMProvider(name)
-        except ValueError:
-            provider_enum = LLMProvider.CLAUDE_CODE
-
-        adapter_config: dict = {
-            "model": cfg.get("model", "claude-sonnet-4-20250514"),
-            "repo_path": str(config.repo_path),
-            "constraint_loader": constraint_loader,
-        }
-        if name == "claude_code":
-            adapter_config["claude_cli_path"] = cfg.get("cli_path", "claude")
-        elif name == "open_code":
-            adapter_config["codex_cli_path"] = cfg.get("cli_path", "codex")
-
-        adapter = create_llm_adapter(provider_enum, config=adapter_config)
-        providers[f"agent.{name}"] = adapter
-
-    return providers
-
-
-def _resolve_provider(role: str, config: Config, providers: dict) -> object:
-    """Resolve the adapter for a given agent role."""
-    default_ref = "agent.claude_code"
-    ref = config.roles.get(role, default_ref)
-    if ref in providers:
-        return providers[ref]
-    # Fallback: try default
-    if default_ref in providers:
-        return providers[default_ref]
-    # Last resort: first available
-    return next(iter(providers.values()))
-
-
 def _resolve_llm_adapter(config: Config, providers: dict) -> object:
     """Find an LLM-type adapter for REPL text mode, falling back to any provider."""
     for key, adapter in providers.items():
@@ -159,56 +83,16 @@ def _resolve_llm_adapter(config: Config, providers: dict) -> object:
 
 
 def init_context(ctx: Context) -> None:
-    """Initialize CLI context with role-based provider routing."""
-    ctx.config = Config.from_cogniforge_config(Path.cwd())
-    _ensure_githooks(ctx.config.repo_path)
-    ctx.git_storage = GitStorage(ctx.config.repo_path)
-    ctx.wiki_system = WikiSystem(ctx.config, ctx.git_storage)
-    ctx.context_loader = ContextLoader(ctx.config)
-    ctx.task_engine = TaskEngine(ctx.config, ctx.git_storage)
-    ctx.workflow = Workflow(DAGDefinition(), repo_path=ctx.config.repo_path)
-
-    providers = _build_providers(ctx.config)
-
-    # Store providers for later use (e.g. REPL)
-    ctx._providers = providers
-
-    # Initialize agents — each gets its role-specific adapter
-    ctx.agents = {
-        AgentRole.PM.value: PMAgent(
-            AgentRole.PM, ctx.wiki_system, ctx.context_loader, ctx.config,
-            agent=_resolve_provider("pm", ctx.config, providers),
-        ),
-        AgentRole.ARCHITECT.value: ArchitectAgent(
-            AgentRole.ARCHITECT, ctx.wiki_system, ctx.context_loader, ctx.config,
-            agent=_resolve_provider("architect", ctx.config, providers),
-        ),
-        AgentRole.DESIGN.value: DesignAgent(
-            AgentRole.DESIGN, ctx.wiki_system, ctx.context_loader, ctx.config,
-            agent=_resolve_provider("design", ctx.config, providers),
-        ),
-        AgentRole.TECHLEAD.value: TechLeadAgent(
-            AgentRole.TECHLEAD, ctx.wiki_system, ctx.context_loader, ctx.config,
-            task_engine=ctx.task_engine,
-            agent=_resolve_provider("techlead", ctx.config, providers),
-        ),
-        AgentRole.DEV.value: DevAgent(
-            AgentRole.DEV, ctx.wiki_system, ctx.context_loader, ctx.config,
-            agent=_resolve_provider("dev", ctx.config, providers),
-        ),
-        AgentRole.REVIEWER.value: ReviewAgent(
-            AgentRole.REVIEWER, ctx.wiki_system, ctx.context_loader, ctx.config,
-            agent=_resolve_provider("reviewer", ctx.config, providers),
-        ),
-        AgentRole.QA.value: QAAgent(
-            AgentRole.QA, ctx.wiki_system, ctx.context_loader, ctx.config,
-            agent=_resolve_provider("qa", ctx.config, providers),
-        ),
-        AgentRole.DEVOPS.value: DevOpsAgent(
-            AgentRole.DEVOPS, ctx.wiki_system, ctx.context_loader, ctx.config,
-            agent=_resolve_provider("devops", ctx.config, providers),
-        ),
-    }
+    """Initialize CLI context using the shared Service layer."""
+    svc = build_services(Path.cwd())
+    ctx.config = svc["config"]
+    ctx.git_storage = svc["git_storage"]
+    ctx.wiki_system = svc["wiki_system"]
+    ctx.context_loader = svc["context_loader"]
+    ctx.task_engine = svc["task_engine"]
+    ctx.workflow = svc["workflow"]
+    ctx.agents = svc["agents"]
+    ctx._providers = svc["_providers"]
 
 
 @click.group(invoke_without_command=True)
