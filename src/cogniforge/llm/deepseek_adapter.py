@@ -380,6 +380,7 @@ TOOL_DEFINITIONS: list[dict] = [
         "type": "function",
         "function": {
             "name": "Read",
+            "strict": True,
             "description": "读取文件内容。用于查看已有文档、代码或配置文件。",
             "parameters": {
                 "type": "object",
@@ -387,6 +388,7 @@ TOOL_DEFINITIONS: list[dict] = [
                     "path": {"type": "string", "description": "相对于项目根目录的文件路径"},
                 },
                 "required": ["path"],
+                "additionalProperties": False,
             },
         },
     },
@@ -394,6 +396,7 @@ TOOL_DEFINITIONS: list[dict] = [
         "type": "function",
         "function": {
             "name": "Write",
+            "strict": True,
             "description": "将内容写入文件。如果文件所在目录不存在会自动创建。",
             "parameters": {
                 "type": "object",
@@ -402,6 +405,7 @@ TOOL_DEFINITIONS: list[dict] = [
                     "content": {"type": "string", "description": "要写入的完整内容"},
                 },
                 "required": ["path", "content"],
+                "additionalProperties": False,
             },
         },
     },
@@ -409,6 +413,7 @@ TOOL_DEFINITIONS: list[dict] = [
         "type": "function",
         "function": {
             "name": "Edit",
+            "strict": True,
             "description": "在文件中查找并替换文本。old_string 必须在文件中唯一或首次出现。",
             "parameters": {
                 "type": "object",
@@ -418,6 +423,7 @@ TOOL_DEFINITIONS: list[dict] = [
                     "new_string": {"type": "string", "description": "替换后的新文本"},
                 },
                 "required": ["path", "old_string", "new_string"],
+                "additionalProperties": False,
             },
         },
     },
@@ -425,6 +431,7 @@ TOOL_DEFINITIONS: list[dict] = [
         "type": "function",
         "function": {
             "name": "Bash",
+            "strict": True,
             "description": "执行 shell 命令。用于运行测试、查看 git 状态、安装依赖等。",
             "parameters": {
                 "type": "object",
@@ -432,6 +439,7 @@ TOOL_DEFINITIONS: list[dict] = [
                     "command": {"type": "string", "description": "要执行的 shell 命令"},
                 },
                 "required": ["command"],
+                "additionalProperties": False,
             },
         },
     },
@@ -439,6 +447,7 @@ TOOL_DEFINITIONS: list[dict] = [
         "type": "function",
         "function": {
             "name": "Glob",
+            "strict": True,
             "description": "按模式搜索文件。支持 ** 递归匹配。",
             "parameters": {
                 "type": "object",
@@ -446,6 +455,7 @@ TOOL_DEFINITIONS: list[dict] = [
                     "pattern": {"type": "string", "description": "文件匹配模式，如 **/*.py"},
                 },
                 "required": ["pattern"],
+                "additionalProperties": False,
             },
         },
     },
@@ -453,6 +463,7 @@ TOOL_DEFINITIONS: list[dict] = [
         "type": "function",
         "function": {
             "name": "Grep",
+            "strict": True,
             "description": "在文件中搜索文本模式。返回匹配的行及文件名和行号。",
             "parameters": {
                 "type": "object",
@@ -460,7 +471,8 @@ TOOL_DEFINITIONS: list[dict] = [
                     "pattern": {"type": "string", "description": "要搜索的正则表达式或文本"},
                     "path": {"type": "string", "description": "搜索路径，默认为项目根目录"},
                 },
-                "required": ["pattern"],
+                "required": ["pattern", "path"],
+                "additionalProperties": False,
             },
         },
     },
@@ -508,7 +520,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
         self.api_base = (
             self.config.get("api_base")
             or os.environ.get("DEEPSEEK_API_BASE", "")
-            or "https://api.deepseek.com/v1"
+            or "https://api.deepseek.com/beta"
         )
         self.repo_path = Path(self.config.get("repo_path", Path.cwd())).resolve()
         self.max_tokens = int(self.config.get("max_tokens", 4096))

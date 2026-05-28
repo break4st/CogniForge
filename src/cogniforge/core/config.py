@@ -19,7 +19,7 @@ DEFAULT_CONFIG_YAML = """\
 llm:
   deepseek:
     api_key: ""                     # 填写你的 API key
-    api_base: "https://api.deepseek.com/v1"
+    api_base: "https://api.deepseek.com/beta"
     model: "deepseek-v4-pro"
     max_tokens: 4096
 
@@ -151,7 +151,7 @@ class Config(BaseModel):
         default_factory=lambda: {
             "deepseek": {
                 "api_key": "",
-                "api_base": "https://api.deepseek.com/v1",
+                "api_base": "https://api.deepseek.com/beta",
                 "model": "deepseek-v4-pro",
                 "max_tokens": 4096,
             }
@@ -419,11 +419,12 @@ class Config(BaseModel):
         for w in warnings:
             click.echo(f"  [WARN] {w}")
 
-        # --- Print errors and abort ---
+        # --- Print errors and abort (skip SystemExit in server mode) ---
         if errors:
             for e in errors:
                 click.echo(f"  [ERROR] {e}")
-            raise SystemExit(1)
+            if not os.environ.get("COGNIFORGE_SERVER_MODE"):
+                raise SystemExit(1)
 
     # ------------------------------------------------------------------
     # Helpers

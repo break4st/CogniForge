@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 from datetime import datetime
 
-from git import Repo, GitCommandError, InvalidGitRepositoryError
+from git import Repo, GitCommandError, InvalidGitRepositoryError, NoSuchPathError
 
 from cogniforge.core.config import Config
 from cogniforge.core.exceptions import GitStorageError
@@ -25,7 +25,7 @@ class GitStorage:
         self._write_lock = threading.Lock()
         try:
             self.repo = Repo(self.repo_path)
-        except (GitCommandError, InvalidGitRepositoryError):
+        except (GitCommandError, InvalidGitRepositoryError, NoSuchPathError):
             self.repo = Repo.init(self.repo_path)
 
     @contextmanager
@@ -93,7 +93,7 @@ class GitStorage:
         wiki_path = self.repo_path / ".cogniforge/wiki"
         try:
             return Repo(wiki_path)
-        except (GitCommandError, InvalidGitRepositoryError):
+        except (GitCommandError, InvalidGitRepositoryError, NoSuchPathError):
             return self._init_wiki_repo(wiki_path)
 
     def _init_wiki_repo(self, wiki_path: Path) -> Repo:
